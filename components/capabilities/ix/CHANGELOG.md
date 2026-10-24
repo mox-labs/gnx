@@ -6,6 +6,17 @@
 
 ### Changed (breaking)
 
+- **Where a design value came from is `origin`, not `source`.** Each entry of a design's
+  and a plan's `provenance` (`SourcedValue`) is `{path, value, origin, note}`; `origin` is
+  `experiment`, `genre` or `ix`, the name its type `Origin` and recon's provenance already
+  use. Who chose a sensor is `origin` too (`SelectedSensor.origin`, `sensors[].origin` in
+  the plan and the design). Read `.origin` where you read `.source`. A registration holds no
+  provenance, so its design values still match; but an experiment that lists `sensors:`
+  has a sensor whose `origin` is `experiment`, which the plan digest covers, so its digest
+  moves and its registration shows a `plan_digest` deviation: amend it
+  (`ix register <path> --amend --reason "origin rename"`). One whose sensors ix chose keeps
+  its digest. A run keeps its design whole, so `ix report` on a run recorded by an earlier
+  ix is refused (`config`): read it with the ix that wrote it.
 - **The `Recorded` scope port names sessions per task.** Its one member is now
   `attributed()`, an async context whose `Attribution.sessions()` names the session rows
   made in that task and the tasks it starts (matrix's `RunContext.attributed()`), in place

@@ -584,7 +584,7 @@ class TestMetricProviders:
         assert isinstance(experiment.probes, tuple)
         found = select_sensors(experiment, builtin_kinds, probe_set(experiment.probes))
         assert found.problems == ()
-        assert {s.label: (s.metrics, s.source) for s in found.sensors} == {
+        assert {s.label: (s.metrics, s.origin) for s in found.sensors} == {
             "timing": (("ttfb", "throughput"), "ix"),
             "memory": (("memory_peak",), "ix"),
         }
@@ -622,7 +622,7 @@ class TestMetricProviders:
         assert checked.problems == ()
         assert checked.design is not None
         (sensor,) = checked.design.sensors
-        assert (sensor.label, sensor.source) == ("timing", "experiment")
+        assert (sensor.label, sensor.origin) == ("timing", "experiment")
 
     def test_two_listed_providers_are_still_ambiguous(
         self, compare_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds

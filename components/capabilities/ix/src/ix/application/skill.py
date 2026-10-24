@@ -783,19 +783,20 @@ whether it came from the experiment, the genre or ix.
   the file holds none. The plan prints it as `Decides:`.
 - **Metrics come from sensors.** Name a metric; ix selects the one sensor that provides it
   and that the subjects and probes can feed. No sensor: `metric_unprovided`. Two:
-  `metric_ambiguous`, settled by listing one under `sensors:`.
+  `metric_ambiguous`, settled by listing one under `sensors:`. The plan's `sensors` say who
+  chose each (`origin`: `experiment` when listed, else `genre` or `ix`).
 - **A model-judged metric never decides.** Whether a metric is judged is declared by its
   sensor. A judged metric is refused as `primary` and as a guardrail in any genre with a
   verdict (`judged_gate`); it can still be reported under `metrics:`.
 - **Trials in flight.** `trials_in_flight: N` carries N trials out at once; left out it is
-  1, one at a time, and the plan says so (`Order:`, and `trials_in_flight` under the
-  provenance, from `ix` or the experiment). Use it to shorten a run of agent sessions or
-  model calls, whose trials do not disturb each other. Trials start in the plan's order,
-  at most N at once; each finishes when it finishes, and its rows carry its `seq`. The
-  trials and the verdict's arithmetic (the n it rests on) are the same at any width: what
-  changes is the load around each trial (a provider's rate limits, a timeout that a
-  slowed session now meets), which is why the width is part of the design, digested by
-  the plan and frozen by registration. Above 1 is refused (`trials_in_flight_refused`,
+  1, one at a time, and the plan says so (`Order:`, and `trials_in_flight` in its
+  `provenance`, whose `origin` is `ix` or `experiment`). Use it to shorten a run of
+  agent sessions or model calls, whose trials do not disturb each other. Trials start in
+  the plan's order, at most N at once; each finishes when it finishes, and its rows carry
+  its `seq`. The trials and the verdict's arithmetic (the n it rests on) are the same at
+  any width: what changes is the load around each trial (a provider's rate limits, a
+  timeout that a slowed session now meets), which is why the width is part of the design,
+  digested by the plan and frozen by registration. Above 1 is refused (`trials_in_flight_refused`,
   at `trials_in_flight`) where any kind in use is `overlap: forbidden`
   ({_overlap_forbidden(kinds)}),
   where a deciding metric (`primary`, a guardrail) is contended, as a time, a throughput or

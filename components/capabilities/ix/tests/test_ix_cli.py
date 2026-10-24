@@ -402,8 +402,8 @@ class TestPlanCommand:
             "location": str(file.parent / "experiment.registration.json"),
         }
         for value in document["provenance"]:
-            assert set(value) == {"path", "value", "source", "note"}
-            assert value["source"] in ("experiment", "genre", "ix")
+            assert set(value) == {"path", "value", "origin", "note"}
+            assert value["origin"] in ("experiment", "genre", "ix")
         for required in document["requirements"]:
             assert set(required) == {"need", "holds", "why", "fix", "needed_by"}
 
