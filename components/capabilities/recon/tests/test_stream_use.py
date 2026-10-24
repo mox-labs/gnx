@@ -314,7 +314,7 @@ class TestQueryAcrossWindows:
         assert later.rows == [{"lo": 19, "n": 16}]
         assert later.windows is not None
         assert later.windows.count == 2, "windows that ended before since are not read"
-        assert not [w for w in every.warnings if w["kind"] == "many_windows"]
+        assert not [w for w in every.warnings if w["kind"] == "windows_many"]
 
     def test_a_query_of_many_windows_warns_how_to_narrow_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -329,7 +329,7 @@ class TestQueryAcrossWindows:
 
         rows = recon_.query("m", "SELECT count(*) AS n FROM events", stream="events")
 
-        [warning] = [w for w in rows.warnings if w["kind"] == "many_windows"]
+        [warning] = [w for w in rows.warnings if w["kind"] == "windows_many"]
         assert warning["got"] == 4 and "--since" in warning["fix"]
 
     def test_windows_of_two_configs_are_refused_with_a_fix(self, tmp_path: Path) -> None:

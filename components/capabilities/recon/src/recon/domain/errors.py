@@ -144,14 +144,15 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "telemetry_stuck",
     # what a survey that died while making its archive left behind, unlisted
     "archive_abandoned",
-    # records of a stream that arrived and were dropped: a full buffer, or one too large
-    "stream_overflow",
+    # records of a stream that arrived and were dropped, one warning a cause (a full buffer,
+    # one too large, a stop at once), at the path of the key that governs it
+    "records_dropped",
     # a stream's source had not returned its next record when the stream stopped
     "source_stuck",
     # a stream that keeps every window because its entry sets no retain:
     "retain_unset",
     # a query of a stream that read more windows than it is cheap to open
-    "many_windows",
+    "windows_many",
 )
 
 

@@ -430,6 +430,62 @@ class TestFlow:
         assert window.dropped == 1
 
 
+class TestDropsAreWarnedByCause:
+    """Polish R7 (Karman 7, Ace 9): one ``stream_overflow`` warning lumped a full buffer's
+    drops with a record too large, and its fix named every knob at once. Drops are now
+    ``records_dropped``, one warning a cause, each at the path of its own knob, with its
+    count in ``got``: what an agent reads to know which key to raise."""
+
+    def _warned(
+        self, tmp_path: Path, timeline: list[tuple[float, dict[str, Any]]], buffer: BufferSpec
+    ) -> tuple[WindowOutcome, dict[str, Any]]:
+        clock = VirtualClock()
+        store = StalledArchives(clock)
+        source = Script(clock, timeline)
+        plan = _plan(WindowSpec(seconds=60), buffer=buffer, overflow="drop_newest")
+        stream = Stream(store, clock, "test", telemetry=_telemetry(store, []))
+        outcomes: list[WindowOutcome] = []
+        writer = threading.Thread(
+            target=lambda: stream.run(
+                tmp_path, plan, source.records, dict, close=source.close, on_window=outcomes.append
+            )  # fmt: skip
+        )
+        writer.start()
+        assert source.done.wait(10)
+        store.go.set()
+        writer.join(10)
+        [window] = outcomes
+        dropped = {w.path: w for w in stream.warnings if w.kind == "records_dropped"}
+        return window, dropped
+
+    def test_a_full_buffer_and_a_record_too_large_are_two_warnings_each_at_its_knob(
+        self, tmp_path: Path
+    ) -> None:
+        timeline = [(0.0, {"seq": i} | ({"big": "x" * 500} if i == 3 else {})) for i in range(13)]
+
+        window, dropped = self._warned(
+            tmp_path, timeline, BufferSpec(records=8, max_record_bytes=100)
+        )
+
+        full, large = (
+            dropped["collectors.0.buffer"],
+            dropped["collectors.0.buffer.max_record_bytes"],
+        )
+        assert (full.got, large.got) == (4, 1)
+        assert full.got + large.got == window.dropped == 5
+        assert "buffer.records" in full.fix and "max_record_bytes" not in full.fix
+        assert "buffer.max_record_bytes" in large.fix
+        assert set(dropped) == {"collectors.0.buffer", "collectors.0.buffer.max_record_bytes"}
+
+    def test_drops_of_one_cause_are_one_warning(self, tmp_path: Path) -> None:
+        timeline = [(0.0, {"seq": i}) for i in range(13)]
+
+        window, dropped = self._warned(tmp_path, timeline, BufferSpec(records=8))
+
+        assert list(dropped) == ["collectors.0.buffer"]
+        assert dropped["collectors.0.buffer"].got == window.dropped == 5
+
+
 class TestEveryRecordIsCountedWhenTheStreamBreaks:
     """Review (Dijkstra) of the window writer: when the stream ends early, each record it
     took is still written or counted dropped, once, and the drops later windows held are

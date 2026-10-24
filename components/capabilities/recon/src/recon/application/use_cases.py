@@ -117,7 +117,7 @@ ChannelFactory = Callable[[], "Channel"]
 
 DEFAULT_TEMPLATE = "code-forensics"
 
-#: Past this many windows, a query of a stream warns (``many_windows``) how to narrow it:
+#: Past this many windows, a query of a stream warns (``windows_many``) how to narrow it:
 #: each window is a file DuckDB opens.
 MANY_WINDOWS = 300
 
@@ -850,7 +850,7 @@ class Recon:
                     "",
                     f"the query read {len(selected)} windows of stream {stream}, each a file "
                     "DuckDB opens: it costs each window it reads",
-                    kind="many_windows",
+                    kind="windows_many",
                     fix=f"narrow it to the windows it needs: --since and --until (`recon status "
                     f"{name}` gives the stream's first and latest window)",
                     got=len(selected),
