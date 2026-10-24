@@ -34,6 +34,7 @@ recon watch <mission> [--archive <id>] [--cursor <cursor>] [--interval SECONDS] 
 | `--archive` | the mission's latest archive | the archive to read, by the id `recon status <mission>` lists |
 | `--cursor` | none: from the archive's first record | read on from where an earlier read left off |
 | `--interval` | 1 second | the wait between two reads, once caught up with a survey still writing |
+| `--max-bytes` | 1 MiB | the most bytes of records one read prints, cut at a whole record, at least one; a read it cuts is followed at once |
 | `--once` | off | read once, print it, and return, whatever the state |
 | `--json` | off | each read as one `recon.v1.records-since` document a line |
 
@@ -42,7 +43,7 @@ recon watch <mission> [--archive <id>] [--cursor <cursor>] [--interval SECONDS] 
 Refused, with exit 2 (`usage`) and a fix:
 
 - a `--cursor` recon did not give, or gave for another archive (the fix names that archive's `--archive`);
-- an `--interval` of 0 or less.
+- an `--interval` of 0 or less, or a `--max-bytes` below 1.
 
 ## `recon.v1.records-since`
 
@@ -56,8 +57,9 @@ Refused, with exit 2 (`usage`) and a fix:
 | `cursor` | opaque: pass it, unchanged, to the next read of the same archive |
 | `sealed` | the tables whose last record is now read |
 | `retracted` | the tables that failed after records of theirs were read: void those records |
+| `more` | a bound (`limit`, `max_bytes`) cut this read before all that was written was read: read again at once |
 
-Along a chain of cursors each table is told sealed, or retracted, once. Because `state` is read before the records, a read that says the archive is no longer `writing` and returns fewer records than its limit holds the archive's last records.
+Along a chain of cursors each table is told sealed, or retracted, once. Because `state` is read before the records, a read that says the archive is no longer `writing` and has no `more` holds the archive's last records.
 
 ## In a program
 
@@ -72,8 +74,8 @@ for read in recon.watch("my-scan", interval_s=0.5):  # returns when the survey e
         print(row["table"], row["record"])
 ```
 
-- `read_since(name, cursor=None, *, archive=None, limit=1000, root=None)`: one read of at most `limit` records. A `limit` below 1 is a `UsageError`, and so is a cursor recon did not give for that archive.
-- `watch(name, cursor=None, *, archive=None, interval_s=1.0, limit=1000, root=None)`: each read in turn, waiting `interval_s` whenever a read caught up while a survey still writes. An `interval_s` of 0 or less is a `UsageError`, raised when the first read is asked for.
+- `read_since(name, cursor=None, *, archive=None, limit=1000, max_bytes=1048576, root=None)`: one read of at most `limit` records and `max_bytes` bytes of them, cut at a whole record and never fewer than one. A `limit` or `max_bytes` below 1 is a `UsageError`, and so is a cursor recon did not give for that archive.
+- `watch(name, cursor=None, *, archive=None, interval_s=1.0, limit=1000, max_bytes=1048576, root=None)`: each read in turn, at once while a bound cuts them (`more`), and waiting `interval_s` whenever a read caught up while a survey still writes. An `interval_s` of 0 or less is a `UsageError`, raised when the first read is asked for.
 
 Reading writes nothing: an archive is byte for byte the same whether or not it was read while it was written.
 

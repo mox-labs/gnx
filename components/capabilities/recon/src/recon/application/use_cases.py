@@ -18,7 +18,12 @@ from recon.application.captures import record_hook_payload
 from recon.application.collectors import declared_env
 from recon.application.plan import Plan, build_plan, fan_out, plugin_warning
 from recon.application.survey import Survey
-from recon.domain.archives import ARCHIVE_ID_FORMAT, READ_LIMIT, WATCH_INTERVAL_S
+from recon.domain.archives import (
+    ARCHIVE_ID_FORMAT,
+    READ_LIMIT,
+    READ_MAX_BYTES,
+    WATCH_INTERVAL_S,
+)
 from recon.domain.deadline import Deadline
 from recon.domain.documents import (
     ArchiveStatus,
@@ -478,14 +483,15 @@ class Recon:
         *,
         archive: str | None = None,
         limit: int = READ_LIMIT,
+        max_bytes: int = READ_MAX_BYTES,
     ) -> RecordsSince:
         """The records of the mission's latest archive, or the one named, written since
-        ``cursor`` (None: from its first), at most ``limit``. The archive's state is read
-        before its records, so a read that finds it no longer ``writing`` and returns fewer
-        than ``limit`` holds its last records."""
+        ``cursor`` (None: from its first), at most ``limit`` and ``max_bytes`` of them. The
+        archive's state is read before its records, so a read that finds it no longer
+        ``writing`` and has no ``more`` holds its last records."""
         path = self._archive(name, archive)
         state = self._archives.state(path)
-        read = self._archives.read_since(path, cursor, limit=limit)
+        read = self._archives.read_since(path, cursor, limit=limit, max_bytes=max_bytes)
         return RecordsSince(
             mission=name,
             archive=str(path),
@@ -497,6 +503,7 @@ class Recon:
             cursor=read.cursor,
             sealed=read.sealed,
             retracted=read.retracted,
+            more=read.more,
         )
 
     def watch(
@@ -507,23 +514,26 @@ class Recon:
         archive: str | None = None,
         interval_s: float = WATCH_INTERVAL_S,
         limit: int = READ_LIMIT,
+        max_bytes: int = READ_MAX_BYTES,
     ) -> Iterator[RecordsSince]:
         """Follow the mission's latest archive, or the one named, from ``cursor``: each
         :meth:`read_since` in turn, waiting ``interval_s`` on the clock whenever a read
-        caught up while a survey still writes the archive. Ends after the read that finds it
-        no longer ``writing`` and returns fewer than ``limit`` records: at once for a
-        finished archive, read whole. Raises UsageError for an ``interval_s`` not above 0."""
+        caught up while a survey still writes the archive, and reading again at once while
+        a bound cuts the reads (``more``). Ends after the read that finds it no longer
+        ``writing`` with no ``more``: at once for a finished archive, read whole. Raises
+        UsageError for an ``interval_s`` not above 0."""
         if not interval_s > 0:
             raise UsageError(
                 f"the watch's interval is the seconds between two reads, above 0; got {interval_s}",
                 fix="leave the interval at its default (1 second), or give a number above 0",
             )
-        read = self.read_since(name, cursor, archive=archive, limit=limit)
+        bounds = {"limit": limit, "max_bytes": max_bytes}
+        read = self.read_since(name, cursor, archive=archive, **bounds)
         yield read
-        while read.state == "writing" or read.count >= limit:
-            if read.count < limit:
+        while read.state == "writing" or read.more:
+            if not read.more:
                 self._clock.sleep(interval_s)
-            read = self.read_since(name, read.cursor, archive=read.archive_id, limit=limit)
+            read = self.read_since(name, read.cursor, archive=read.archive_id, **bounds)
             yield read
 
     def _ended(self, archive: Path, state: ArchiveState) -> Ended | None:

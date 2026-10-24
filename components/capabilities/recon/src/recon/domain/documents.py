@@ -219,9 +219,8 @@ class QueryRows(Document):
 class RecordsSince(Document):
     """What one read of an archive found: the records written since the cursor it was given,
     and the cursor to read on from. A survey writing the archive is followed by reading again
-    with ``cursor`` until ``state`` is no longer ``writing`` and a read returns fewer records
-    than its limit: ``state`` is read before the records, so such a read holds the last of
-    them."""
+    with ``cursor`` until ``state`` is no longer ``writing`` and a read has no ``more``:
+    ``state`` is read before the records, so such a read holds the last of them."""
 
     schema_: Literal["recon.v1.records-since"] = Field(
         default="recon.v1.records-since", alias="schema"
@@ -243,6 +242,9 @@ class RecordsSince(Document):
     sealed: list[str]
     #: Tables that failed after records of theirs were read: those records are void.
     retracted: list[str]
+    #: A bound (``limit`` records, ``max_bytes`` bytes) cut this read before all that was
+    #: written by then was read: read again at once.
+    more: bool
 
 
 class TemplateInfo(Document):

@@ -143,6 +143,52 @@ class TestReadSince:
         assert sealed == [[], [], ["t"]], "sealed once its last line is read, not before"
 
 
+class TestAReadIsBoundedInBytes:
+    """Review (Knuth, Erlang): a read is bounded in bytes as well as in records (1 MiB by
+    default), cut at a whole record, and returns at least one record however large; ``more``
+    says a bound cut it, so the reader reads again at once."""
+
+    @staticmethod
+    def _archive(tmp_path: Path, sizes: list[int]) -> Path:
+        lines = "".join(f'{{"n": {n}, "pad": "{"x" * size}"}}\\n' for n, size in enumerate(sizes))
+        run_survey({"collectors": [{"name": "t", "type": "cli", "run": f"printf '{lines}'"}]},
+                   tmp_path)  # fmt: skip
+        return tmp_path
+
+    def test_a_read_stops_before_the_record_that_would_pass_the_bound(self, tmp_path: Path) -> None:
+        project = self._archive(tmp_path, [400, 400, 400])
+        first = recon.read_since("m", max_bytes=1000, root=project)
+        second = recon.read_since("m", first.cursor, max_bytes=1000, root=project)
+        assert ([r["record"]["n"] for r in first.records], first.more) == ([0, 1], True)
+        assert ([r["record"]["n"] for r in second.records], second.more) == ([2], False)
+        assert (first.sealed, second.sealed) == ([], ["t"])
+
+    def test_a_record_larger_than_the_bound_is_returned_alone(self, tmp_path: Path) -> None:
+        project = self._archive(tmp_path, [3000, 10])
+        first = recon.read_since("m", max_bytes=1000, root=project)
+        second = recon.read_since("m", first.cursor, max_bytes=1000, root=project)
+        assert [r["record"]["n"] for r in first.records] == [0]
+        assert [r["record"]["n"] for r in second.records] == [1]
+
+    def test_the_record_limit_cuts_a_read_too_and_says_so(self, tmp_path: Path) -> None:
+        project = self._archive(tmp_path, [1, 1, 1])
+        read = recon.read_since("m", limit=2, root=project)
+        assert (read.count, read.more) == (2, True)
+
+    def test_a_bound_below_one_byte_is_refused(self, tmp_path: Path) -> None:
+        project = self._archive(tmp_path, [1])
+        with pytest.raises(recon.UsageError) as raised:
+            recon.read_since("m", max_bytes=0, root=project)
+        assert raised.value.fix
+
+    def test_watch_reads_again_at_once_while_a_bound_cuts_its_reads(self, tmp_path: Path) -> None:
+        project = self._archive(tmp_path, [400, 400, 400])
+        clock = FixedClock()
+        reads = list(root({}, project=project, clock=clock).watch("m", max_bytes=500))
+        assert [read.count for read in reads] == [1, 1, 1]
+        assert clock.slept == [], "a cut read is followed at once, not after the interval"
+
+
 class TestWholeLinesOnly:
     """A line the writer has not finished is not read, and a cursor resumes after the last
     whole line it gave."""
@@ -152,10 +198,10 @@ class TestWholeLinesOnly:
         archive = store.create(tmp_path, "2026-01-02-030405-000001")
         live = archive / "t.jsonl.tmp"
         live.write_bytes(b'{"n": 0}\n{"n": ')
-        first = store.read_since(archive, None, limit=100)
+        first = store.read_since(archive, None, limit=100, max_bytes=1 << 20)
         with live.open("ab") as f:
             f.write(b'1}\n{"n": 2}\n')
-        second = store.read_since(archive, first.cursor, limit=100)
+        second = store.read_since(archive, first.cursor, limit=100, max_bytes=1 << 20)
         store.release(archive)
 
         assert [r.record for r in first.records] == [{"n": 0}]
@@ -180,19 +226,19 @@ class TestWholeLinesOnly:
         def short(descriptor: int, data: bytes) -> int:
             cut = data[: data.index(b"\n") + 3]  # a whole line, and part of the next
             written: int = os.write(descriptor, cut)
-            reads.append(store.read_since(archive, None, limit=100))
+            reads.append(store.read_since(archive, None, limit=100, max_bytes=1 << 20))
             return written
 
         def truncate(descriptor: int, size: int) -> None:
             os.ftruncate(descriptor, size)
-            reads.append(store.read_since(archive, reads[0].cursor, limit=100))
+            reads.append(store.read_since(archive, reads[0].cursor, limit=100, max_bytes=1 << 20))
 
         stand_in.__dict__.update(write=short, ftruncate=truncate)
         monkeypatch.setattr("recon.adapters._out.archive_files.os", stand_in)
         with pytest.raises(OSError, match="wrote"):
             store.write_table(archive, "t", (r for r in [{"n": 0}, {"n": 1}]))
         monkeypatch.undo()
-        after = store.read_since(archive, reads[1].cursor, limit=100)
+        after = store.read_since(archive, reads[1].cursor, limit=100, max_bytes=1 << 20)
         store.release(archive)
 
         assert [r.record for r in reads[0].records] == [{"n": 0}]

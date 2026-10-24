@@ -44,6 +44,10 @@ EVENT_LOG_NAME = "telemetry.jsonl"
 #: few enough that a read of a large archive's start stays small.
 READ_LIMIT = 1000
 
+#: The most bytes of records one read of an archive returns unless told otherwise: it stops
+#: before the record that would pass it, and always returns at least one record.
+READ_MAX_BYTES = 1024 * 1024
+
 #: By default, the seconds a watcher waits between reads of an archive a survey is writing,
 #: once it has read all there is so far (``progress_s``, the survey's own cadence, is 1.0).
 WATCH_INTERVAL_S = 1.0
@@ -112,13 +116,15 @@ class NewRecords:
     ``cursor`` is opaque: only the store that gave it reads it. ``sealed`` names each table
     whose last record is now read (it gains no more), and ``retracted`` each table this
     cursor had read from that failed, so the records read from it are void. Each table is
-    told sealed or retracted once along a chain of cursors.
+    told sealed or retracted once along a chain of cursors. ``more``: a bound (records or
+    bytes) ended the read before all that was written by then was read; read again at once.
     """
 
     records: list[TableRecord]
     cursor: str
     sealed: list[str] = field(default_factory=list)
     retracted: list[str] = field(default_factory=list)
+    more: bool = False
 
 
 class ArchiveStore(Protocol):
@@ -184,12 +190,15 @@ class ArchiveStore(Protocol):
         ``format_version`` is None when it is missing or unreadable."""
         ...
 
-    def read_since(self, archive: Path, cursor: str | None, *, limit: int) -> NewRecords:
+    def read_since(
+        self, archive: Path, cursor: str | None, *, limit: int, max_bytes: int
+    ) -> NewRecords:
         """The records of ``archive`` written since ``cursor`` (None: from the start), at
-        most ``limit`` of them, whole records only, from its sealed tables and the ones being
-        written alike, table by table in output-name order. Fewer than ``limit`` means the
-        read caught up. Raises UsageError for a cursor this store did not give for this
-        archive, and for a ``limit`` below 1."""
+        most ``limit`` of them and ``max_bytes`` of their lines, whole records only and at
+        least one, from its sealed tables and the ones being written alike, table by table
+        in output-name order; ``more`` when a bound cut it. Raises UsageError for a cursor
+        this store did not give for this archive, and for a ``limit`` or ``max_bytes``
+        below 1."""
         ...
 
     def tables(self, archive: Path) -> list[StoredTable]:

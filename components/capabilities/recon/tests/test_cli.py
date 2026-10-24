@@ -1427,6 +1427,15 @@ class TestWatch:
         assert len([read for read in reads if read["records"]]) > 1, "seen as it was written"
         assert [t for read in reads for t in read["sealed"]] == ["slow"]
 
+    def test_max_bytes_cuts_each_read_and_watch_reads_on_at_once(self, project: Path) -> None:
+        _mission(project, "m", OK_CONFIG)
+        _invoke("survey", "m")
+        result = _invoke("watch", "m", "--max-bytes", "1", "--json")
+        reads = [json.loads(line) for line in result.stdout.splitlines()]
+        assert [(r["count"], r["more"]) for r in reads] == [(1, True), (1, False)]
+        refused = _invoke("watch", "m", "--max-bytes", "0", "--json")
+        assert refused.exit_code == recon.EXIT_CODES["usage"] and _error(refused)["fix"]
+
     def test_once_reads_once_and_a_cursor_reads_on_from_it(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         _invoke("survey", "m")

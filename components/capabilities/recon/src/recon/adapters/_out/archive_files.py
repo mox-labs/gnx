@@ -245,22 +245,34 @@ class ArchiveFiles:
             }
         return {**raw, "tables": [t for t in raw.get("tables") or [] if isinstance(t, dict)]}
 
-    def read_since(self, archive: Path, cursor: str | None, *, limit: int) -> NewRecords:
+    def read_since(
+        self, archive: Path, cursor: str | None, *, limit: int, max_bytes: int
+    ) -> NewRecords:
         if limit < 1:
             raise UsageError(
                 f"a read's limit is the most records it returns, 1 or more; got {limit}",
                 fix="read with a limit of 1 or more, or leave it at its default",
+            )
+        if max_bytes < 1:
+            raise UsageError(
+                f"a read's max_bytes is the most bytes of records it returns, 1 or more; got "
+                f"{max_bytes}",
+                fix="read with a max_bytes of 1 or more, or leave it at its default (1 MiB)",
             )
         positions = _decode(cursor, archive)
         files = dict(_table_files(archive))
         records: list[TableRecord] = []
         sealed: list[str] = []
         retracted = [n for n, (_, told) in positions.items() if not told and n not in files]
+        budget = _Budget(limit, max_bytes)
         for name, path in files.items():
             offset, told = positions.get(name, (0, False))
-            if told or len(records) >= limit:
+            if told:
                 continue
-            read = _read_table(path, name, offset, limit - len(records))
+            if budget.spent():
+                budget.cut = True  # a table left unread, which may have records
+                continue
+            read = _read_table(path, name, offset, budget)
             if read is None:  # its .tmp went between listing and opening, and no table came
                 if name in positions:
                     retracted.append(name)
@@ -272,7 +284,8 @@ class ArchiveFiles:
                 sealed.append(name)
         for name in retracted:
             positions.pop(name, None)
-        return NewRecords(records, _encode(archive, positions), sealed, sorted(retracted))
+        cursor = _encode(archive, positions)
+        return NewRecords(records, cursor, sealed, sorted(retracted), more=budget.cut)
 
     def tables(self, archive: Path) -> list[StoredTable]:
         layout = self._table_layout(archive)
@@ -468,12 +481,39 @@ def _is_position(position: Any) -> bool:
     )
 
 
+class _Budget:
+    """What one read may still return: ``records`` and ``max_bytes`` of them, and always at
+    least one record. ``cut`` says it stopped a read before what was there was read."""
+
+    def __init__(self, records: int, max_bytes: int) -> None:
+        self._records = records
+        self._max_bytes = max_bytes
+        self._taken = 0
+        self._bytes = 0
+        self.cut = False
+
+    def spent(self) -> bool:
+        return self._taken >= self._records or self._bytes >= self._max_bytes
+
+    def take(self, line: bytes) -> bool:
+        """Count ``line`` in, unless it would pass a bound: a first record always is."""
+        if self._taken and (
+            self._taken >= self._records or self._bytes + len(line) > self._max_bytes
+        ):
+            self.cut = True
+            return False
+        self._taken += 1
+        self._bytes += len(line)
+        return True
+
+
 def _read_table(
-    path: Path, output: str, offset: int, limit: int
+    path: Path, output: str, offset: int, budget: _Budget
 ) -> tuple[list[bytes], tuple[int, bool], bool] | None:
-    """Up to ``limit`` whole lines of the table ``output`` from ``offset``; the offset after
-    them; and whether the table is sealed and read to its end. None when a table being
-    written went before it was opened, with no sealed file in its place: it was retracted."""
+    """The whole lines of the table ``output`` from ``offset`` that ``budget`` takes; the
+    offset after them; and whether the table is sealed and read to its end. None when a
+    table being written went before it was opened, with no sealed file in its place: it was
+    retracted."""
     candidates = [path] if not path.name.endswith(_LIVE) else [path, path.with_suffix("")]
     for candidate in candidates:
         try:
@@ -496,12 +536,14 @@ def _read_table(
                 return [], (size, False), True  # an empty table: its one line is no record
             f.seek(offset)
             lines: list[bytes] = []
-            while len(lines) < limit:
+            while True:
                 line = f.readline()
                 if not line.endswith(b"\n"):
                     break  # the end, or a line not yet whole
                 if not sealed and offset == 0 and _is_empty_sentinel(line):
                     break  # the table is about to be sealed empty: read it once it is
+                if not budget.take(line):
+                    break
                 lines.append(line)
                 offset += len(line)
             return lines, (offset, False), sealed and offset == size

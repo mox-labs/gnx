@@ -543,6 +543,15 @@ def query(name: str, sql: str, archive: str | None, as_json: bool) -> None:
     metavar="SECONDS",
     help="Seconds between two reads once caught up with a survey still writing (default: 1)",
 )
+@click.option(
+    "--max-bytes",
+    "max_bytes",
+    type=int,
+    default=None,
+    metavar="BYTES",
+    help="The most bytes of records one read prints, cut at a whole record and at least one "
+    "(default: 1 MiB); a read it cuts is followed at once",
+)
 @click.option("--once", is_flag=True, help="Read once, print it, and return, finished or not")
 @click.option(
     "--json",
@@ -555,6 +564,7 @@ def watch(
     archive: str | None,
     cursor: str | None,
     interval_s: float | None,
+    max_bytes: int | None,
     once: bool,
     as_json: bool,
 ) -> None:
@@ -571,9 +581,12 @@ def watch(
     \b
     recon watch my-scan
     recon watch my-scan --json --once
+    recon watch my-scan --json --max-bytes 65536
     recon watch my-scan --archive 2026-04-01-143022-000000 --cursor <cursor> --json
     """
-    given = {} if interval_s is None else {"interval_s": interval_s}
+    given: dict[str, Any] = {} if interval_s is None else {"interval_s": interval_s}
+    if max_bytes is not None:
+        given["max_bytes"] = max_bytes
     if not as_json:
         every = f"{interval_s:g}s (--interval)" if interval_s is not None else "1s (default)"
         err.print(f"[dim]watching {escape(name)}; reading again every {every} while it is "
