@@ -1,7 +1,10 @@
 """The archive ports: where a survey's tables are written, and how they are queried.
 
 An archive is one survey's output: a table per collector and source, a ``meta.yaml``, the
-survey's event log and, unless the survey finished with every table, an incomplete marker.
+survey's event log and, unless the survey finished with every table, an incomplete marker. A
+stream's window (:mod:`recon.domain.stream`) is an archive too, of one table, kept with the
+other windows of its stream rather than with the survey's archives; one writer at a time
+extends a stream, from :meth:`ArchiveStore.hold_stream` to :meth:`ArchiveStore.release_stream`.
 The marker is written when the archive is created and removed only once the survey has
 finished, so a survey that dies at any point, however it was stopped, leaves an archive
 that reads incomplete. While a survey writes its archive it holds it, from :meth:`create`
@@ -128,9 +131,40 @@ class NewRecords:
 
 
 class ArchiveStore(Protocol):
-    def create(self, mission_dir: Path, archive_id: str) -> Path:
+    def create(self, mission_dir: Path, archive_id: str, *, stream: str | None = None) -> Path:
         """A new archive of the mission, named ``archive_id``, holding only the incomplete
-        marker, and held by this writer until :meth:`release`: its state is ``writing``."""
+        marker, and held by this writer until :meth:`release`: its state is ``writing``. With
+        ``stream``, a window of that stream (``archive_id`` is a window's id), which this
+        writer holds (:meth:`hold_stream`). Raises ReconError (``store``) when the id is
+        taken."""
+        ...
+
+    def hold_stream(self, mission_dir: Path, stream: str) -> None:
+        """Hold the mission's ``stream`` for this writer until :meth:`release_stream` or its
+        death: no other writer, in this process or another on this host, can hold it
+        meanwhile, so the windows it adds take ids no other writer takes. Raises
+        ConflictError when another writer holds it."""
+        ...
+
+    def release_stream(self, mission_dir: Path, stream: str) -> None:
+        """Let go of a stream :meth:`hold_stream` held; one this writer does not hold is left
+        as it is."""
+        ...
+
+    def stream_state(self, mission_dir: Path, stream: str) -> ArchiveState | None:
+        """``writing`` while a writer holds the stream; else its last window's state; None
+        for a stream with no window."""
+        ...
+
+    def streams(self, mission_dir: Path) -> list[str]:
+        """The names of the mission's streams, sorted."""
+        ...
+
+    def last_record(self, archive: Path, output: str) -> dict[str, Any] | None:
+        """The last whole record of the table ``output``, sealed or left unsealed by a writer
+        that died; None when it has none. A torn last line, a write a dying writer cut short,
+        is first moved aside (it is no record), and every whole line is left as it was. For an
+        archive no writer holds."""
         ...
 
     def release(self, archive: Path) -> None:
@@ -180,14 +214,15 @@ class ArchiveStore(Protocol):
         ...
 
     def abandoned(self, mission_dir: Path) -> list[Path]:
-        """What a survey that died while making an archive of the mission left behind, which
-        :meth:`archives` never lists: each only once its maker is gone on this host. Nothing
-        is removed."""
+        """What a survey or a stream that died while making an archive or a window of the
+        mission left behind, which :meth:`archives` never lists: each only once its maker is
+        gone on this host. Nothing is removed."""
         ...
 
-    def archives(self, mission_dir: Path) -> list[Path]:
+    def archives(self, mission_dir: Path, *, stream: str | None = None) -> list[Path]:
         """The mission's archives, oldest first: its directories named by
-        :data:`ARCHIVE_ID_FORMAT`, and no other."""
+        :data:`ARCHIVE_ID_FORMAT`, and no other. With ``stream``, that stream's windows
+        instead, by index, at the cost of that stream's windows alone."""
         ...
 
     def read_meta(self, archive: Path) -> dict[str, Any]:
