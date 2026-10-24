@@ -8,6 +8,7 @@ Each operation returns one versioned document (``recon.domain.documents``), whos
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 from collections.abc import Callable
 from datetime import date
@@ -262,7 +263,8 @@ class Recon:
             telemetry = self._telemetry(archive)
             about = {"recon.mission": name, "recon.archive": archive.name}
             deadline = Deadline(self._clock)
-            with telemetry.span(SURVEY, about) as span:
+            # The operation's telemetry ends with its span: the event log's file is closed.
+            with contextlib.closing(telemetry), telemetry.span(SURVEY, about) as span:
                 built = self._build_collectors(mission, plan.config, telemetry, deadline)
                 try:
                     for broken in built.failed:

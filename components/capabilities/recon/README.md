@@ -135,12 +135,12 @@ An archive's `state`, in `status` and `query`, is `ok`, `incomplete` or `writing
 
 recon reports what it did on open standards, with a local record by default. The names below (spans, metrics, events, attribute keys) are not contract and may change without notice; what telemetry never carries, below, is.
 
-**The event log.** Every survey writes `telemetry.jsonl` into its archive, beside `meta.yaml`: one `recon.v1.event` line when a span starts and one when it ends, `{schema, name, time, span, parent, kind, attributes, status, message, duration_ms}`, the times from recon's clock so a survey against a fixed clock writes the same log twice. A start with no end is where a killed survey stopped. The spans:
+**The event log.** Every survey writes `telemetry.jsonl` into its archive, beside `meta.yaml`: one `recon.v1.event` line when a span starts and one when it ends (and one per progress event), `{schema, name, time, span, parent, kind, attributes, status, message, duration_ms}`, the times from recon's clock so a survey against a fixed clock writes the same log twice. A start with no end is where a killed survey stopped. The file is open for the whole survey and each line reaches it as it happens, so it can be read while the survey runs. The spans:
 
 | Span | Attributes |
 |---|---|
 | `recon.survey` | `recon.mission`, `recon.archive`; at its end `recon.tables`, `recon.tables.failed`, `recon.records` |
-| `recon.collect`, one per table | `recon.table`, `recon.collector`, `recon.collector.type`, `recon.source`; at its end `recon.records` |
+| `recon.collect`, one per table | `recon.table`, `recon.collector`, `recon.collector.type`, `recon.source`; at its end `recon.records`. While the table is written, a `recon.collect.progress` event of the span, at most once a second, carries `recon.records`, the records written so far (an OpenTelemetry span event) |
 | `recon.http.request`, one per attempt to send a request (kind client) | OpenTelemetry's HTTP client span attributes, [semantic conventions v1.44.0](https://github.com/open-telemetry/semantic-conventions/blob/v1.44.0/docs/http/http-spans.md#http-client-span) (stable): `http.request.method`, `server.address`, `server.port`, `url.full`, `http.response.status_code`, and `http.request.resend_count` on a retry |
 | `recon.mcp.call`, one per call to an MCP server, a listing included (kind client) | `mcp.method.name` (`tools/call`, `tools/list`, `resources/read`, ...), `gen_ai.tool.name` for a tool call, `recon.source`; never the arguments or the result |
 | `recon.query` | `recon.mission`, `recon.archive`; at its end `recon.rows` |

@@ -19,7 +19,8 @@ archive is created incomplete and marked complete only after ``meta.yaml`` is wr
 every table succeeded, so a survey that fails a table, is interrupted or is killed leaves an
 archive that reads incomplete. A survey that cannot write ``meta.yaml`` or mark the archive
 complete is not ``finished``, and says why in an ``archive_unfinished`` warning. Each table
-is a ``recon.collect`` span.
+is a ``recon.collect`` span, which says how many of its records are written, while it is
+written, at most once a second by the clock (``recon.collect.progress``).
 
 A table of a type that reads ``extract:`` (``CollectorType.extracts``) that gets exactly one
 record holding a list of objects, with neither ``extract:`` nor ``normalize:`` shaping it,
@@ -58,6 +59,9 @@ if TYPE_CHECKING:
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
     from recon.domain.telemetry import Span, Telemetry
 
+#: By default, the least seconds between two ``recon.collect.progress`` events of a table.
+PROGRESS_S = 1.0
+
 #: Receives each table's outcome as it lands: ``{"kind": "ok" | "error" | "table_warning" |
 #: "archive_warning", ...}``. The survey prints nothing itself.
 EventCallback = Callable[[dict[str, Any]], None]
@@ -88,7 +92,8 @@ class Survey:
     collector runs against the sources the plan resolved for it; ``warnings`` collects
     what the run found worth saying about tables that succeeded, and about an archive it
     could not finish. ``finished`` is false when ``meta.yaml`` could not be written or the
-    archive could not be marked complete, so it reads incomplete whatever its tables did."""
+    archive could not be marked complete, so it reads incomplete whatever its tables did.
+    ``progress_s`` is the least time between two progress events of a table."""
 
     def __init__(
         self,
@@ -101,8 +106,10 @@ class Survey:
         extracts: Collection[str] = (),
         kinds: Mapping[str, Collection[str]] | None = None,
         deadline: Deadline | None = None,
+        progress_s: float = PROGRESS_S,
     ) -> None:
         self._archives = archives
+        self._progress_s = progress_s
         self._clock = clock
         self._deadline = deadline if deadline is not None else Deadline(clock)
         self._recon_version = recon_version
@@ -214,9 +221,15 @@ class Survey:
         raise_it = f"raise deadline: on collector {entry.name!r}, or narrow what it asks for"
         try:
             with self._deadline.bound(entry.deadline, what, raise_it):
-                records = _within(
-                    self._deadline,
-                    _keeping_first(_tagged(collector, target, source, captures), first),
+                records = _reporting(
+                    self._telemetry,
+                    span,
+                    self._clock,
+                    self._progress_s,
+                    _within(
+                        self._deadline,
+                        _keeping_first(_tagged(collector, target, source, captures), first),
+                    ),
                 )
                 columns = list(entry.normalize or ())
                 try:
@@ -339,6 +352,30 @@ def _within(
         for record in records:
             deadline.check()
             yield record
+    finally:
+        records.close()
+
+
+def _reporting(
+    telemetry: Telemetry,
+    span: Span,
+    clock: Clock,
+    progress_s: float,
+    records: Generator[dict[str, Any], None, None],
+) -> Generator[dict[str, Any], None, None]:
+    """``records``, each counted once the store has it, and the count reported on ``span``
+    when ``progress_s`` seconds have passed since the table began or it was last reported. Closing
+    this closes ``records``."""
+    written = 0
+    reported = clock.monotonic()
+    try:
+        for record in records:
+            yield record
+            written += 1
+            now = clock.monotonic()
+            if now - reported >= progress_s:
+                telemetry.progress(span, {"recon.records": written})
+                reported = now
     finally:
         records.close()
 

@@ -109,6 +109,13 @@ class OtelEvents:
                 start_time=_nanoseconds(event.time),
             )
             return
+        if event.name.endswith(".progress"):
+            open_span = self._open.get(event.span)
+            if open_span is not None:
+                open_span.add_event(
+                    event.name, event.attributes, timestamp=_nanoseconds(event.time)
+                )
+            return
         span = self._open.pop(event.span, None)
         if span is None:
             return
