@@ -104,7 +104,7 @@ The source is read on a thread of the stream's own into the buffer, and each win
 
 ## Stopping, crashing and resuming
 
-A stream killed mid-window (SIGKILL, a crash) leaves that window unsealed: it reads `incomplete` and keeps every whole line it had; it is never changed, but a torn last line (a write the kill cut short) is moved aside to `<table>.jsonl.tmp.torn`. The next run chains its first window to it (`previous`) and resumes the source after the position of the last whole record kept: exactly once for a source with positions (`tail`, and `sse` whose server honours `Last-Event-ID`). A source without positions (`cli`) cannot go on from where it was: the stretch is recorded as a gap, `resumed: false`.
+A stream killed mid-window (SIGKILL, a crash) leaves that window unsealed: it reads `incomplete` and keeps every whole line it had; it is never changed, but a torn last line (a write the kill cut short) is moved aside to `<table>.jsonl.tmp.torn`. The next run chains its first window to it (`previous`) and resumes the source after the position of the last whole record kept: exactly once for a source with positions (`tail`, and `sse` whose server honours `Last-Event-ID`). Every restart is recorded as a gap in the first window of the run, from the last window's close (unknown after a crash) to the restart: `resumed: true` when the source was asked to go on from a position, so a source that does not honour it shows where; `resumed: false` for a source without positions (`cli`), which cannot go on from where it was.
 
 ## Reading a stream
 

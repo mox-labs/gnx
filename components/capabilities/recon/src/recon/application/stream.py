@@ -36,7 +36,7 @@ replays it. A window that dropped records cannot be replayed from its capture, a
 ``incomplete``, and never changed: its torn last line, if any, is moved aside. The next run of
 the stream chains its first window to it (``previous``), and resumes its source after the
 position of the last whole record kept (a record's ``_position``): exactly once for a source
-that has positions. For a source that has none, the stretch between is recorded as a gap.
+that has positions. Every restart is recorded as a gap, ``resumed`` when it went on from one.
 """
 
 from __future__ import annotations
@@ -829,7 +829,9 @@ class Stream:
                 before = _stream_meta(self._archives.read_meta(windows[-2]))
                 after = _carried(before) if before is not None else None
             since = None
-        gap = None if after is not None else Gap(since, self._clock.now(), resumed=False)
+        # Every restart is a stretch no process read, recorded in the chain: resumed from a
+        # position when there is one (and a source that does not honour it shows where).
+        gap = Gap(since, self._clock.now(), resumed=after is not None)
         return _Start(index, last.name, after, gap)
 
     def _retain(

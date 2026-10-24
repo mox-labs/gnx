@@ -138,7 +138,10 @@ class TestKilledThenResumed:
         assert document.last is not None
         first_resumed = yaml.safe_load((after[len(windows)] / "meta.yaml").read_text())
         assert first_resumed["stream"]["previous"] == dead.name
-        assert first_resumed["stream"]["sources"][0]["gaps"] == [], "nothing was missed"
+        # The restart is in the chain, resumed from the position kept (nothing was missed:
+        # every line is there once); since when is unknown, the writer having died.
+        [gap] = first_resumed["stream"]["sources"][0]["gaps"]
+        assert (gap["from"], gap["resumed"]) == (None, True)
 
     def test_a_source_without_positions_records_the_gap(self, tmp_path: Path) -> None:
         printer = (

@@ -123,6 +123,10 @@ class TestReconStream:
         assert second.last is not None and second.last.index == 2
         meta = yaml.safe_load((Path(second.last.archive) / "meta.yaml").read_text())
         assert first.last is not None and meta["stream"]["previous"] == first.last.id
+        # Every restart is in the chain (review item 3): the stretch no process read, here
+        # resumed from a position, so a source that does not honour it shows where.
+        [gap] = meta["stream"]["sources"][0]["gaps"]
+        assert (gap["from"], gap["resumed"]) == (first.last.closed_at, True)
         rows = [
             json.loads(line)["seq"]
             for line in (Path(second.last.archive) / "events.jsonl").read_text().splitlines()
