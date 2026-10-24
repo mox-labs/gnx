@@ -36,13 +36,16 @@ lets SQL write wherever it may read, so a query runs only SELECT statements (``W
 from __future__ import annotations
 
 import csv
+import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from recon.adapters._out.private_files import make_dirs
 from recon.domain.archives import Rows, table_name
-from recon.domain.errors import NotFoundError, Problem, QueryError
+from recon.domain.errors import NotFoundError, Problem, QueryError, ReconError
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Sequence
@@ -327,17 +330,24 @@ def _fix(exc: Exception, archive: Path, tables: list[str], sql: str) -> str:
 #
 # DuckdbJoin: the KeyJoin (``recon.domain.changes``) of a large told index, on a DuckDB
 # connection of its own that runs no SQL but this module's. The told index and the table's keys
-# are written, as they are read, to two CSV files in a temporary directory of the join's own,
-# which DuckDB reads; every answer is read back a batch at a time. So the process holds a batch,
-# and DuckDB at most ``memory_limit``, spilling the rest into the same directory, which
-# ``close`` removes. The connection is confined before it reads anything, as the query's is:
-# it reads and spills only under its directory, loads no extension and reaches no network.
+# are written, as they are read, to two CSV files in a directory of the join's own, which DuckDB
+# reads; every answer is read back a batch at a time. So the process holds a batch, and DuckDB
+# at most ``memory_limit``, spilling the rest into the same directory, at most
+# ``max_temp_directory_size`` of it; past that the join fails, classified (``store``). The
+# directory is made under the ``scratch`` the caller gives (the mission's ``.joins``, 0700), named
+# for the process, and ``close`` removes it; one a process that died left (its CSV copies of keys
+# and hashes, its spill) is removed when the next join starts there (Erlang, round-4 review F7).
+# The connection is confined before it reads anything, as the query's is: it reads and spills
+# only under its directory, loads no extension and reaches no network.
 # A key goes to DuckDB as the hex of its UTF-8 bytes (a lone surrogate passed through as its
 # code point's bytes, which DuckDB's text would refuse) and comes back decoded: hex orders as
 # its bytes do, and UTF-8's bytes as the code points the in-memory join sorts by.
 
 #: By default, the most memory the join's DuckDB holds before it spills to disk.
 MEMORY_LIMIT = "96MB"
+
+#: By default, the most the join's DuckDB spills to disk; past it the join fails.
+MAX_TEMP_DIRECTORY_SIZE = "4GiB"
 
 #: The rows read back from DuckDB at a time.
 _BATCH = 10_000
@@ -354,16 +364,29 @@ FROM new_keys GROUP BY k
 
 
 class DuckdbJoin:
-    """Joins on DuckDB within ``memory_limit`` and ``threads``."""
+    """Joins on DuckDB within ``memory_limit``, ``threads`` and ``max_temp_directory_size``
+    (DuckDB's own names for them)."""
 
-    def __init__(self, *, memory_limit: str = MEMORY_LIMIT, threads: int = 1) -> None:
+    def __init__(
+        self,
+        *,
+        memory_limit: str = MEMORY_LIMIT,
+        threads: int = 1,
+        max_temp_directory_size: str = MAX_TEMP_DIRECTORY_SIZE,
+    ) -> None:
         self._memory_limit = memory_limit
         self._threads = threads
+        self._max_temp = max_temp_directory_size
 
     def join(
-        self, told: Iterable[tuple[str, str]], new: Iterable[tuple[int, str, str]]
+        self,
+        told: Iterable[tuple[str, str]],
+        new: Iterable[tuple[int, str, str]],
+        *,
+        scratch: Path | None = None,
     ) -> _DuckdbJoined:
-        return _DuckdbJoined(told, new, self._memory_limit, self._threads)
+        return _DuckdbJoined(told, new, self._memory_limit, self._threads, self._max_temp,
+                             scratch)  # fmt: skip
 
 
 class _DuckdbJoined:
@@ -373,23 +396,35 @@ class _DuckdbJoined:
         new: Iterable[tuple[int, str, str]],
         memory_limit: str,
         threads: int,
+        max_temp: str,
+        scratch: Path | None,
     ) -> None:
         import duckdb  # only a large comparison needs it
 
-        self._directory = tempfile.TemporaryDirectory(prefix="recon-join-")
+        self._failed = duckdb.Error
+        self._max_temp = max_temp
+        if scratch is not None:
+            _sweep(scratch)
+        self._directory = tempfile.TemporaryDirectory(
+            prefix=f"{os.getpid()}-" if scratch is not None else "recon-join-",
+            dir=scratch,
+        )
         home = Path(self._directory.name)
         try:
             _write_csv(home / "told.csv", ((_hex(k), *_halves(h)) for k, h in told))
             _write_csv(home / "new.csv", ((i, _hex(k), *_halves(h)) for i, k, h in new))
             # A database file of the join's own, so its tables page to disk as its memory fills.
             self._conn: Any = duckdb.connect(str(home / "join.duckdb"))
-            _confine_join(self._conn, home, memory_limit, threads)
+            _confine_join(self._conn, home, memory_limit, threads, max_temp)
             told_csv = _read_csv(home / "told.csv", "k", "a", "b")
             new_csv = _read_csv(home / "new.csv", "i", "k", "a", "b")
             self._conn.execute(f"CREATE TABLE told AS SELECT * FROM {told_csv}")
             self._conn.execute(f"CREATE TABLE new_keys AS SELECT * FROM {new_csv}")
             self._conn.execute(_KEYS)
             self.ambiguous: int = self._count("SELECT count(*) FROM nk WHERE amb")
+        except duckdb.Error as exc:
+            self.close()
+            raise self._store_failure(exc) from exc
         except BaseException:
             self.close()
             raise
@@ -436,9 +471,43 @@ class _DuckdbJoined:
         return f"{kept} UNION ALL {others}"
 
     def _rows(self, sql: str) -> Iterator[Any]:
-        cursor = self._conn.execute(sql)
-        while rows := cursor.fetchmany(_BATCH):
-            yield from (tuple(row) for row in rows)
+        try:
+            cursor = self._conn.execute(sql)
+            while rows := cursor.fetchmany(_BATCH):
+                yield from (tuple(row) for row in rows)
+        except self._failed as exc:
+            raise self._store_failure(exc) from exc
+
+    def _store_failure(self, exc: Exception) -> ReconError:
+        """DuckDB's failure as the join's: past its memory and its spill's cap, or a disk
+        that is full. The table is kept; its changes are told next time."""
+        return ReconError(
+            f"the join of a large told index failed: {exc}",
+            kind="store",
+            fix=f"give the join more room, DuckdbJoin(memory_limit=..., max_temp_directory_size"
+            f"=...) in root(key_join=) (its spill is capped at {self._max_temp}), or free space "
+            "under the mission; the next survey compares the table again",
+        )
+
+
+def _sweep(scratch: Path) -> None:
+    """Make ``scratch`` (its owner's alone), and remove each join's directory in it whose
+    process is gone: a join that died (killed, its host down) left its files there."""
+    make_dirs(scratch)
+    for leftover in scratch.iterdir():
+        pid, dash, _ = leftover.name.partition("-")
+        if dash and pid.isdigit() and not _alive(int(pid)):
+            shutil.rmtree(leftover, ignore_errors=True)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # another user's: alive, and not ours to sweep
+    return True
 
 
 def _hex(key: str) -> str:
@@ -473,11 +542,13 @@ def _read_csv(path: Path, *columns: str) -> str:
     )
 
 
-def _confine_join(conn: Any, home: Path, memory_limit: str, threads: int) -> None:
-    """Hold a fresh connection to reading and spilling under ``home``, within its memory and
-    threads, before it reads anything; no extension, no network, and its settings locked."""
+def _confine_join(conn: Any, home: Path, memory_limit: str, threads: int, max_temp: str) -> None:
+    """Hold a fresh connection to reading and spilling under ``home``, within its memory,
+    threads and spill, before it reads anything; no extension, no network, and its settings
+    locked."""
     root = str(home).replace("'", "''")
     conn.execute(f"SET memory_limit='{memory_limit}'")
+    conn.execute(f"SET max_temp_directory_size='{max_temp.replace(chr(39), '')}'")
     conn.execute(f"SET threads={int(threads)}")
     conn.execute("SET preserve_insertion_order=false")
     conn.execute(f"SET temp_directory='{root}/spill'")

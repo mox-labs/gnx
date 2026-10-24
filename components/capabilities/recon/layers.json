@@ -87,10 +87,11 @@
     {
       "name": "query",
       "files": ["src/recon/adapters/_out/duckdb_query.py"],
-      "allow": ["*", "recon.domain"],
+      "allow": ["*", "recon.domain", "recon.adapters._out.private_files"],
       "forbid": ["yaml"],
       "why": {
-        "recon.domain only": "which files make an archive is the ArchiveStore's secret (domain/archives.py); the query reads the tables the store names, never the store adapter's layout"
+        "recon.domain only": "which files make an archive is the ArchiveStore's secret (domain/archives.py); the query reads the tables the store names, never the store adapter's layout",
+        "private_files": "the large join's directory under the mission is made private, as every directory of a mission is (ruling A2; round-4 review F7)"
       }
     },
     {

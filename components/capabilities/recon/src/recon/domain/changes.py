@@ -44,6 +44,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
+    from pathlib import Path
 
 #: What a change row says happened to its key.
 ChangeOp = Literal["insert", "update", "delete", "rebaselined"]
@@ -130,8 +131,14 @@ class KeyJoin(Protocol):
     """Joins a table's keys with a told index. ``told`` is ``(key, content)`` sorted by key;
     ``new`` is ``(ordinal, key, content)`` for each keyed record of the table, in table order.
     Both are read through before :meth:`join` returns. A key is the canonical JSON of its
-    values; a content is a hash. It runs no SQL a mission wrote."""
+    values; a content is a hash. It runs no SQL a mission wrote. ``scratch`` is a directory
+    the join may keep files in (the mission's own, private), each join's removed when it
+    closes; None: the join keeps none, or chooses."""
 
     def join(
-        self, told: Iterable[tuple[str, str]], new: Iterable[tuple[int, str, str]]
+        self,
+        told: Iterable[tuple[str, str]],
+        new: Iterable[tuple[int, str, str]],
+        *,
+        scratch: Path | None = None,
     ) -> Joined: ...

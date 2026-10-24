@@ -7,7 +7,11 @@ properties are ``test_changes_property.py``'s."""
 from __future__ import annotations
 
 import json
+import os
 import stat
+import subprocess
+import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -381,7 +385,7 @@ class TestWhatWasTold:
         class EndsOnSecond:
             joins = 0
 
-            def join(self, told: Any, new: Any) -> Any:
+            def join(self, told: Any, new: Any, **kw: Any) -> Any:
                 self.joins += 1
                 if self.joins == 2:
                     raise how()
@@ -465,7 +469,7 @@ class TestHostileContent:
         self, tmp_path: Path
     ) -> None:
         class Broken:
-            def join(self, told: Any, new: Any) -> Any:
+            def join(self, told: Any, new: Any, **kw: Any) -> Any:
                 raise RuntimeError("the join broke")
 
         _mission(tmp_path, {"key": ["id"]})
@@ -500,11 +504,77 @@ class _Counting:
     def __init__(self) -> None:
         self.joins = 0
 
-    def join(self, told: Any, new: Any) -> Any:
+    def join(self, told: Any, new: Any, **kw: Any) -> Any:
         from recon.adapters._out.duckdb_query import DuckdbJoin
 
         self.joins += 1
-        return DuckdbJoin().join(told, new)
+        return DuckdbJoin().join(told, new, **kw)
+
+
+class TestTheJoinsFiles:
+    """Erlang F7: the DuckDB join's files (CSV copies of keys and hashes, its database and
+    its spill) are the mission's, private, and bounded: under ``<mission>/.joins``, 0700, a
+    join's left by a process that died swept when the next one starts, and its spill capped
+    (``max_temp_directory_size``, 4 GiB by default), past which the table's changes fail,
+    classified, never its survey."""
+
+    def _dead_pid(self) -> int:
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait()
+        return child.pid
+
+    def test_a_large_join_keeps_its_files_under_the_mission_and_sweeps_the_dead(
+        self, tmp_path: Path
+    ) -> None:
+        _mission(tmp_path, {"key": ["id"]})
+        joins = tmp_path / ".recon" / "m" / ".joins"
+        dead = joins / f"{self._dead_pid()}-left"
+        live = joins / f"{os.getpid()}-another"
+        joins.mkdir(mode=0o700)
+        for leftover in (dead, live):
+            leftover.mkdir()
+            (leftover / "told.csv").write_text("k,1,2\n")
+        before = set(Path(tempfile.gettempdir()).glob("recon-join-*"))
+        surveys = Surveys(tmp_path)
+        surveys.recon = root({}, project=tmp_path, clock=surveys.clock, memory_keys=0,
+                             requester=lambda t, d, r: surveys.inbox)  # fmt: skip
+        archive, _ = surveys.survey(A, B)
+        assert _ops(archive) == [("insert", "a"), ("insert", "b")]
+        assert not dead.exists(), "a join a dead process left is swept"
+        assert live.exists(), "one a live process holds is not"
+        assert sorted(p.name for p in joins.iterdir()) == [live.name], "its own is removed"
+        assert set(Path(tempfile.gettempdir()).glob("recon-join-*")) == before
+
+    def test_its_spill_is_capped_and_the_cap_is_a_setting(self, tmp_path: Path) -> None:
+        from recon.adapters._out.duckdb_query import MAX_TEMP_DIRECTORY_SIZE, DuckdbJoin
+
+        assert MAX_TEMP_DIRECTORY_SIZE == "4GiB"
+        told = [(canonical([f"k{n:06d}"]), f"{n:032x}") for n in range(10)]
+        for join, cap in ((DuckdbJoin(), "4.0 GiB"),
+                          (DuckdbJoin(max_temp_directory_size="64MiB"), "64.0 MiB")):  # fmt: skip
+            joined = join.join(iter(told), iter([]), scratch=tmp_path / ".joins")
+            try:
+                setting = joined._conn.execute(
+                    "SELECT current_setting('max_temp_directory_size')").fetchone()  # fmt: skip
+                assert setting == (cap,)
+            finally:
+                joined.close()
+        assert stat.S_IMODE((tmp_path / ".joins").stat().st_mode) == 0o700, "made private"
+
+    def test_past_the_cap_the_table_s_changes_fail_classified(self, tmp_path: Path) -> None:
+        from recon.adapters._out.duckdb_query import DuckdbJoin
+        from recon.domain.errors import ReconError
+
+        many = ((n, canonical([f"key-{n:09d}-" + "x" * 40]), f"{n:032x}") for n in range(400_000))
+        tight = DuckdbJoin(memory_limit="8MB", max_temp_directory_size="1MB")
+        with pytest.raises(ReconError) as raised:
+            joined = tight.join(iter([]), many, scratch=tmp_path / ".joins")
+            try:
+                list(joined.told(deletes=False))
+            finally:
+                joined.close()
+        assert raised.value.kind == "store"
+        assert "max_temp_directory_size" in (raised.value.fix or "")
 
 
 class TestALargeComparison:
@@ -885,7 +955,7 @@ class TestStreams:
         """F6 for a stream: the change phase never fails a window."""
 
         class Broken:
-            def join(self, told: Any, new: Any) -> Any:
+            def join(self, told: Any, new: Any, **kw: Any) -> Any:
                 raise RuntimeError("the join broke")
 
         _stream_mission(tmp_path)

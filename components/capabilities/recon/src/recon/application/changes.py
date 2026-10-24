@@ -148,7 +148,11 @@ class MemoryJoin:
     of the table's keys."""
 
     def join(
-        self, told: Iterable[tuple[str, str]], new: Iterable[tuple[int, str, str]]
+        self,
+        told: Iterable[tuple[str, str]],
+        new: Iterable[tuple[int, str, str]],
+        *,
+        scratch: Path | None = None,
     ) -> _MemoryJoined:
         return _MemoryJoined(dict(told), new)
 
@@ -194,6 +198,27 @@ class _MemoryJoined:
 
     def close(self) -> None:
         self._told, self._new = {}, {}
+
+
+#: Where under its mission a large join keeps its files (``KeyJoin.join``'s ``scratch``).
+JOINS = ".joins"
+
+
+@dataclass(frozen=True)
+class _Scratched:
+    """A large join given its mission's ``scratch`` on every join."""
+
+    large: KeyJoin
+    scratch: Path
+
+    def join(
+        self,
+        told: Iterable[tuple[str, str]],
+        new: Iterable[tuple[int, str, str]],
+        *,
+        scratch: Path | None = None,
+    ) -> Joined:
+        return self.large.join(told, new, scratch=self.scratch)
 
 
 # --- a comparison -------------------------------------------------------------------------
@@ -516,7 +541,7 @@ class ChangeDetector:
 
     def _join(self, *sizes: int) -> KeyJoin:
         if self._large is not None and max(sizes) > self._memory_keys:
-            return self._large
+            return _Scratched(self._large, self._mission_dir / JOINS)
         return MemoryJoin()
 
     # --- the chain ---

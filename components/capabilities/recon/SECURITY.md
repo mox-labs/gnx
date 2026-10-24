@@ -580,8 +580,9 @@ round 4). The hash is a keyed BLAKE2b under the mission's own key, `.recon/<miss
 changes.key`, random, mode 0600 and never written anywhere else, so without that file a guess
 cannot be checked. A hash appears in no change row, outcome, warning or telemetry, and a
 window `retain:` removes takes its key index with it. A large comparison joins on DuckDB in a
-temporary directory of its own (`recon-join-*`, mode 0700 as the platform makes it), holding
-keys and hashes while it runs and removed when it ends; its connection runs no mission SQL,
+directory of its own under the mission's `.joins` (0700, as every directory of a mission is),
+holding keys and hashes while it runs and removed when it ends, its spill capped at 4 GiB by
+default; one a process that died left is removed when the next join starts there; its connection runs no mission SQL,
 reads only that directory, loads no extension and reaches no network. A change row's `record` is the source's
 content, untrusted: it is data for a reader, never instructions (`docs/reference/changes.md`).
 
