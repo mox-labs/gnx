@@ -425,6 +425,21 @@ class TestTheCommandLine:
         assert result.exit_code == 0, result.output
         assert "returns within 10s" in result.stderr.splitlines()[0]
 
+    def test_recon_stream_names_its_stream_with_stream_as_watch_and_query_do(
+        self, tmp_path: Path
+    ) -> None:
+        """Review item 22 (Knuth 3): one thing, one word: ``--stream`` names the stream on
+        ``recon stream`` as it does on ``watch`` and ``query``; ``--collector`` stays."""
+        clock = VirtualClock()
+        _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
+        recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 30))
+
+        result = CliRunner().invoke(main, ["stream", "m", "--stream", "events", "--json"],
+                                    obj=recon_)  # fmt: skip
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["stream"] == "events"
+
     def test_recon_stream_dry_run_refuses_what_the_run_would(self, tmp_path: Path) -> None:
         clock = VirtualClock()
         _mission(tmp_path, {"window": {"seconds": 10}})

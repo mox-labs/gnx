@@ -510,6 +510,6 @@ def stream_failure(document: StreamDocument) -> ReconError | None:
         kind=kind,
         fix=error.fix
         or f"read the window's error, fix its cause, then: recon stream {document.mission} "
-        f"--collector {document.stream}",
+        f"--stream {document.stream}",
         details={"archive": last.archive, "window": last.id},
     )

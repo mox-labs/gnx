@@ -672,7 +672,7 @@ def _decode(cursor: str | None, archive: Path) -> dict[str, tuple[int, bool]]:
         or body.get("format") != _CURSOR_FORMAT
         or not isinstance(body.get("archive"), str)
         or not isinstance(tables, dict)
-        or not all(_is_position(position) for position in tables.values())
+        or not all(_is_offset(offset) for offset in tables.values())
     ):
         raise UsageError(
             "the cursor is not one recon gave: pass on the cursor the last read returned, "
@@ -689,14 +689,16 @@ def _decode(cursor: str | None, archive: Path) -> dict[str, tuple[int, bool]]:
     return {str(name): (int(offset), bool(told)) for name, (offset, told) in tables.items()}
 
 
-def _is_position(position: Any) -> bool:
+def _is_offset(offset: Any) -> bool:
+    """A cursor's say of one table: ``[offset, told]``, the byte offset read to and whether
+    the table's seal or retraction was told. Not a record's ``_position``."""
     return (
-        isinstance(position, list)
-        and len(position) == 2
-        and isinstance(position[0], int)
-        and not isinstance(position[0], bool)
-        and position[0] >= 0
-        and isinstance(position[1], bool)
+        isinstance(offset, list)
+        and len(offset) == 2
+        and isinstance(offset[0], int)
+        and not isinstance(offset[0], bool)
+        and offset[0] >= 0
+        and isinstance(offset[1], bool)
     )
 
 

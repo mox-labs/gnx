@@ -52,7 +52,7 @@ The table being written is not a table yet: query it once `recon watch` says it 
 A stream (a collector with `window:`, or a `tail` or `sse` one) writes window after window. `--stream` follows it from its latest window into each one after, and returns once nothing extends the stream:
 
 ```bash
-recon stream my-feed --collector events --forever &   # or from cron: recon survey my-feed
+recon stream my-feed --stream events --forever &   # or from cron: recon survey my-feed
 recon watch my-feed --stream events --json
 recon query my-feed "SELECT count(*) FROM events" --stream events --json
 ```

@@ -872,7 +872,7 @@ class Recon:
             raise NotFoundError(
                 f"stream {stream!r} of mission {name!r} has no window"
                 + ("" if stream in known else f"; its streams: {', '.join(known) or '(none)'}"),
-                fix=f"recon stream {name} --collector {stream} seals one; `recon status {name}` "
+                fix=f"recon stream {name} --stream {stream} seals one; `recon status {name}` "
                 "lists the streams",
                 details={"value": stream, "allowed": known},
             )
@@ -1079,7 +1079,7 @@ def _stream_bound(
 ) -> int | None:
     """The windows a stream's run seals at most (None: no bound by count), refusing a bound it
     cannot keep. With no bound given, one window: a stream returns unless told otherwise."""
-    run = f"recon stream {mission} --collector {collector}"
+    run = f"recon stream {mission} --stream {collector}"
     if forever and (windows is not None or until is not None):
         raise UsageError(
             "--forever runs the stream until it is stopped, so it takes no --windows or --until",
@@ -1113,7 +1113,7 @@ def _planned_stream(plan: Plan, mission: str, collector: str) -> PlannedStream:
     raise NotFoundError(
         f"no stream {collector!r} in mission {mission!r}; its streams: "
         f"{', '.join(known) or '(none)'}",
-        fix=f"recon stream {mission} --collector <one of: {', '.join(known)}>"
+        fix=f"recon stream {mission} --stream <one of: {', '.join(known)}>"
         if known
         else "give a collector window: to make it a stream (recon --skill -r streaming)",
         details={"value": collector, "allowed": known},

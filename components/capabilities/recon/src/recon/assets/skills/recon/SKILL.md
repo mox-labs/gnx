@@ -87,7 +87,7 @@ A survey with failed tables still writes its archive, marked incomplete, and lis
 
 **Watch.** `recon watch <name> --json` follows an archive as a survey writes it, a `recon.v1.records-since` line per read, and returns when the survey ends; `--once` reads once. Records of a table later `retracted` are void. Flags, defaults, refusals, `state`, `ended` and the library calls: `recon --skill -r live-reading`.
 
-**Streams.** A source that never ends (`tail` a file, `sse` events) is a stream, sealed in windows: `recon stream <name> --collector <c>` runs one window and blocks until it ends (300 s by default: set `window:`, or run it in the background); `--windows N`, `--until`, `--forever` run more. All: `recon --skill -r streaming`.
+**Streams.** A source that never ends (`tail` a file, `sse` events) is a stream, sealed in windows: `recon stream <name> --stream <c>` runs one window and blocks until it ends (300 s by default: set `window:`, or run it in the background); `--windows N`, `--until`, `--forever` run more. All: `recon --skill -r streaming`.
 
 ## Errors and exit codes
 

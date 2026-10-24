@@ -193,7 +193,7 @@ def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
     recon survey my-scan                  collect into a new archive
     recon query my-scan "SELECT ..."      SQL over the latest archive
     recon watch my-scan                   follow an archive as a survey writes it
-    recon stream my-feed --collector ev   collect a source that does not end, in windows
+    recon stream my-feed --stream ev      collect a source that does not end, in windows
     recon status                          missions, archives, installed plugins
     """
     if reference is not None and not skill:
@@ -321,11 +321,13 @@ def _instant(ctx: click.Context, param: click.Parameter, value: str | None) -> d
 @main.command(epilog=EXIT_CODES)
 @click.argument("name")
 @click.option(
+    "--stream",
     "--collector",
+    "collector",
     required=True,
     metavar="NAME",
     help="The stream to run: a collector of the mission with window:, or of a type whose "
-    "records do not end",
+    "records do not end (--stream, as watch and query name it; --collector is the same)",
 )
 @click.option(
     "--windows",
@@ -372,10 +374,10 @@ def stream(
     written with `recon watch NAME --stream COLLECTOR`; query it with --stream.
 
     \b
-    recon stream my-feed --collector events --dry-run
-    recon stream my-feed --collector events --windows 12
-    recon stream my-feed --collector events --until 2026-10-24T18:00:00Z --json
-    recon stream my-feed --collector events --forever
+    recon stream my-feed --stream events --dry-run
+    recon stream my-feed --stream events --windows 12
+    recon stream my-feed --stream events --until 2026-10-24T18:00:00Z --json
+    recon stream my-feed --stream events --forever
     """
     setup = _telemetry_warnings()
     if dry_run:

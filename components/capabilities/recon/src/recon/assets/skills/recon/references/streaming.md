@@ -64,12 +64,12 @@ Refused by the plan, each with its path and a fix: a `window:` with no bound, or
 ## Running a stream
 
 ```
-recon stream <mission> --collector <name> [--windows N | --until TIME | --forever] [--dry-run] [--json]
+recon stream <mission> --stream <name> [--windows N | --until TIME | --forever] [--dry-run] [--json]
 ```
 
 | Flag | Default | Does |
 |---|---|---|
-| `--collector` | required | the stream to run: a collector of the mission that is a stream |
+| `--stream` (or `--collector`) | required | the stream to run: a collector of the mission that is a stream |
 | `--windows` | 1, when neither `--until` nor `--forever` is given | stop after sealing N windows |
 | `--until` | none | stop at TIME (ISO 8601, UTC unless it names its offset): the window it cuts is sealed `until` |
 | `--forever` | off | run until stopped |
