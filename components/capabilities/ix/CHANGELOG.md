@@ -51,7 +51,8 @@
   registration: they are checked each time an experiment is.
 - **`examples/trials-in-flight/`**: the live validation slice, run by hand and never in CI.
   Ten deterministic probes (five that read a fixture with tools), screened by a pilot;
-  six S and six P runs paired by run, probe and repeat; the decision in `analysis.py`
+  ten S and ten P runs paired by run, probe and repeat (200 pairs, the n at which it can
+  show non-inferiority; about 450 sessions and 680 requests with the pilot); the decision in `analysis.py`
   (non-inferiority of the pass rate by Newcombe's paired interval, one-sided 2.5%, 5pp;
   tokens and turns by TOST at 5%; registered inconclusive rules), which CI tests and
   simulates; a k6 negative control on a delay server that takes `--capacity N`. A pass

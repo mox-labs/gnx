@@ -2,12 +2,12 @@
 
 The slice (``examples/trials-in-flight/``) is run by hand and never here; its analysis is
 code (``analysis.py`` beside it), and this file holds that code to what the slice's README
-states, then simulates the slice at its own n (six runs a side, 20 trials a run: 120 pairs)
-through that same code, seeded. The cases are the ones the slice's design was set to meet
-(record §27): with a difference of twice the margin it does not hold, at the margin it holds
-at about the one-sided level, and its inconclusive rules trip on what they are there for.
-With no difference it holds only about 60% of the time at this n, short of the 80% the
-design asked; that case is reported in the record, not asserted.
+states, then simulates the slice at its own n (ten runs a side, 20 trials a run: 200
+pairs) through that same code, seeded. The cases are the ones the slice's design was set to
+meet (record §27): with no difference it holds, with a difference of twice the margin it
+does not, at the margin it holds at about the one-sided level, and its inconclusive rules
+trip on what they are there for. Its n is the one at which the first holds: at 120 pairs it
+held about 60% of the time (the record keeps the figures).
 
 The cases run 2,000 replicates each, the design's number; they take a few seconds.
 """
@@ -30,7 +30,8 @@ if TYPE_CHECKING:
 
 SLICE = Path(__file__).resolve().parents[1] / "examples" / "trials-in-flight"
 REPLICATES = 2000
-PAIRS = 120  # six runs a side of ten probes x two repeats
+PAIRS = 200  # ten runs a side of ten probes x two repeats
+RUNS = 10  # S runs
 
 
 def _load() -> ModuleType:
@@ -228,15 +229,20 @@ AT_MOST_NOMINAL = 0.025 + 2 * math.sqrt(0.025 * 0.975 / REPLICATES)
 
 @pytest.mark.parametrize(
     ("p_s", "p_p", "verdict"),
-    [(0.98, 0.88, "fails at least 80%"), (0.98, 0.93, "holds at most 2.5%")],
+    [
+        (0.98, 0.98, "holds at least 80%"),
+        (0.98, 0.88, "fails at least 80%"),
+        (0.98, 0.93, "holds at most 2.5%"),
+    ],
 )
 def test_the_pass_rate_decision_at_the_slices_n(p_s: float, p_p: float, verdict: str) -> None:
-    """(b) a loss of twice the margin fails, (c) a loss of exactly the margin holds no more
-    often than the one-sided 2.5% the test is set at. (a), no difference holding at least
-    80% of the time, does not hold at this n (about 60% at 0.98): record §27 has the
-    figures, and the n it needs is the owner's to set."""
+    """(a) no difference holds, (b) a loss of twice the margin fails, (c) a loss of exactly
+    the margin holds no more often than the one-sided 2.5% the test is set at. Regression:
+    at the first design's 120 pairs, (a) held about 60% of the time."""
     held = _share(REPLICATES, _non_inferior(p_s, p_p), seed=20261024)
-    if verdict == "fails at least 80%":
+    if verdict == "holds at least 80%":
+        assert held >= 0.80, held
+    elif verdict == "fails at least 80%":
         assert 1 - held >= 0.80, held
     else:
         assert held <= AT_MOST_NOMINAL, held
@@ -275,13 +281,13 @@ def test_the_token_decision_at_the_slices_n(ratio: float, verdict: str) -> None:
 def _baseline(
     rng: random.Random, rates: list[float], log_shift: list[float] | None = None
 ) -> list[Any]:
-    """Six S runs of 20 trials, run ``k`` passing at ``rates[k]`` and its tokens shifted by
+    """``RUNS`` S runs of 20 trials, run ``k`` passing at ``rates[k]`` and its tokens shifted by
     ``log_shift[k]``."""
-    shifts = log_shift or [0.0] * 6
+    shifts = log_shift or [0.0] * RUNS
     return [
         _trial("S", run + 1, f"p{index % 10}", index // 10 + 1, rng.random() < rates[run],
                tokens=100.0 * math.exp(shifts[run] + rng.gauss(0, 0.15)), turns=1.0)
-        for run in range(6)
+        for run in range(RUNS)
         for index in range(20)
     ]  # fmt: skip
 
@@ -301,14 +307,14 @@ def _trips(
 def test_drift_between_runs_trips_the_dispersion_rule() -> None:
     """(e) the S runs' pass rate stepping down part way through, or their tokens climbing
     4% run on run, is dispersion; the rule calls the slice inconclusive on either. (A pass
-    rate falling gradually from 0.99 to 0.82 trips it only about 40% of the time at 20
-    trials a run: record §27.)"""
-    stepped = [1.0, 1.0, 1.0, 0.80, 0.80, 0.80]
+    rate falling gradually from 0.99 to 0.82 trips it only about 35% of the time at 20
+    trials a run: the README says so.)"""
+    stepped = [1.0] * (RUNS // 2) + [0.80] * (RUNS - RUNS // 2)
     assert _share(REPLICATES, _trips("dispersion", stepped), seed=1) >= 0.80
-    climbing = [0.0, 0.04, 0.08, 0.12, 0.16, 0.20]
-    assert _share(REPLICATES, _trips("dispersion", [0.98] * 6, climbing), seed=2) >= 0.80
+    climbing = [0.04 * run for run in range(RUNS)]
+    assert _share(REPLICATES, _trips("dispersion", [0.98] * RUNS, climbing), seed=2) >= 0.80
 
 
 def test_a_baseline_below_the_floor_trips_its_rule() -> None:
     """(e) a baseline pass rate of 0.95 trips the 0.97 floor."""
-    assert _share(REPLICATES, _trips("baseline", [0.95] * 6), seed=3) >= 0.80
+    assert _share(REPLICATES, _trips("baseline", [0.95] * RUNS), seed=3) >= 0.80

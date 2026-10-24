@@ -31,11 +31,12 @@ Each of those needs a slice of its own.
    (`python3 analysis.py screen <pilot run>`); delete the others from `experiment.yaml`
    before the first S run, and record which. A probe that fails alone measures the probe,
    not the width.
-2. **Runs**: six S (one trial at a time) and six P (`--trials-in-flight 4`), each the kept
-   probes twice: up to 120 trials an arm. In the order **S P P S S P P S S P P S**, which
-   balances drift over the session (a provider's load, a cache warming) between the arms.
+2. **Runs**: ten S (one trial at a time) and ten P (`--trials-in-flight 4`), each the kept
+   probes twice: up to 200 trials an arm. In the order **S P P S S P P S S P P S S P P S S P P S** (S P P S, five
+   times), which balances drift over the session (a provider's load, a cache warming)
+   between the arms.
 3. **Pairs**: each arm's runs are numbered in the order run (S1 P1 P2 S2 S3 P3 ...), and
-   trial (run k, probe, repeat) of S is paired with the same of P.
+   trial (run k, probe, repeat) of S is paired with the same of P: up to 200 pairs.
 
 ## What decides
 
@@ -63,17 +64,26 @@ Each of those needs a slice of its own.
 gates on; a gate with a smaller margin needs a smaller δ, so a slice of its own. The noise
 of the baseline sets the number of runs and the inconclusive rules, never the margin.
 
-**What the simulation found** (record §27, `tests/test_width_slice.py`, 2,000 seeded
-replicates each through `analysis.py`): at 120 pairs, a loss of twice the margin fails and a
-loss of exactly the margin holds at about the 2.5% the test is set at; tokens at σ = 0.15
-(the spread of the paired log ratio) behave as registered; drift trips the dispersion rule,
-and a baseline of 0.95 trips the floor. **But with no difference at a pass rate of 0.98, the
-primary holds only about 60% of the time at 120 pairs** (about 86% at 200). As registered
-here, a slice that fails to show non-inferiority is not evidence of a loss. The number of
-runs is the owner's to set before the first S run.
+**Its power** (record §27, `tests/test_width_slice.py`: 2,000 seeded replicates a case
+through `analysis.py`, in CI). The number of runs is the one at which the slice can show
+what it is for: at 200 pairs, with no difference at a pass rate of 0.98, the primary holds
+at least 80% of the time (about 86%; at 120 pairs it was about 60%, which is why there are
+ten runs a side). A loss of twice the margin fails; a loss of exactly the margin holds at
+about the 2.5% the test is set at. Tokens at σ = 0.15 (the spread of the paired log ratio)
+are equivalent at a ratio of 1.0 and not at 1.10.
 
-**Cost**: about 290 sessions (the pilot's 50 and twelve runs of 20), about 580 model
-requests (a probe that reads takes two).
+**Its weak spots**, at ten S runs of 20, from the same simulation:
+
+- the dispersion rule catches a step in the S pass rate (1.0 to 0.80: about 98%) and tokens
+  climbing 4% a run (about 100%), but a pass rate falling gradually from 0.99 to 0.82 only
+  about 35% of the time;
+- it trips falsely about 9.5% of the time when nothing drifts (two tests at 5% each);
+- the 0.97 floor trips about 10% of the time at a true rate of 0.98;
+- so a slice of a baseline at 0.98 comes out inconclusive about 23% of the time, whatever
+  P does: run it again rather than read it.
+
+**Cost**: about 450 sessions (the pilot's 50 and twenty runs of 20) and, when every probe
+is kept, about 680 model requests (a single-turn probe takes one, a probe that reads two).
 
 ## The runs
 
@@ -81,14 +91,14 @@ requests (a probe that reads takes two).
 ix validate examples/trials-in-flight
 ix run examples/trials-in-flight --exploratory --repeats 5            # the pilot, width 1
 python3 examples/trials-in-flight/analysis.py screen <pilot run>      # edit the probes
-# S P P S S P P S S P P S
+# S P P S S P P S S P P S S P P S S P P S
 ix run examples/trials-in-flight --exploratory                        # S
 ix run examples/trials-in-flight --exploratory --trials-in-flight 4   # P
 ix run examples/trials-in-flight --exploratory --trials-in-flight 4   # P
 ix run examples/trials-in-flight --exploratory                        # S
 # ... and so on, in the order above
 python3 examples/trials-in-flight/analysis.py decide --model claude-sonnet-4-5 \
-  --s <S1> <S2> <S3> <S4> <S5> <S6> --p <P1> <P2> <P3> <P4> <P5> <P6>
+  --s <S1> ... <S10> --p <P1> ... <P10>
 ```
 
 Each P report lists `trials_in_flight: 4 in place of 1 (--trials-in-flight)` under

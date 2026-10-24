@@ -1267,8 +1267,9 @@ def test_the_live_slice_is_what_its_protocol_says(tmp_path: Path) -> None:
     assert len(probes) == 10 and sum("fixtures/" in p["prompt"] for p in probes) == 5
     assert agent["subjects"]["agent"]["max_turns"] == 4 and agent["repeats"] == 2
     readme = " ".join((SLICE / "README.md").read_text().split())
-    for registered in ("S P P S S P P S S P P S", "-5pp", "one-sided at 2.5%", "Newcombe",
-                       "below 0.97", "up to 4 turns", "about 290 sessions"):  # fmt: skip
+    for registered in ("S P P S S P P S S P P S S P P S S P P S", "-5pp", "one-sided at 2.5%",
+                       "Newcombe", "below 0.97", "up to 4 turns", "about 450 sessions",
+                       "about 35%", "about 9.5%", "about 10%"):  # fmt: skip
         assert registered in readme, registered
 
 

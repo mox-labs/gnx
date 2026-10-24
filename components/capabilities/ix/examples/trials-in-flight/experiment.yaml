@@ -6,8 +6,8 @@
 #
 # It is never run in CI: every trial is a real claude-sdk session, which calls a model and
 # costs money. README.md beside this file is the protocol, registered before any run: a
-# pilot that screens the probes, then twelve exploratory runs of this file in the order
-# S P P S S P P S S P P S (S one at a time, P `--trials-in-flight 4`), decided by
+# pilot that screens the probes, then twenty exploratory runs of this file, S P P S five
+# times (S one at a time, P `--trials-in-flight 4`), decided by
 # analysis.py beside it, with k6-control.yaml as the negative control.
 #
 # The file writes no trials_in_flight: S and P are the same file, the width given on the
