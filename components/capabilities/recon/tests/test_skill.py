@@ -137,6 +137,20 @@ def test_the_capture_format_page_is_the_skill_reference() -> None:
     assert page.read_text(encoding="utf-8") == REFERENCES["capture-format"]
 
 
+def test_the_live_reading_page_is_the_skill_reference() -> None:
+    """Watching a survey, ``read_since`` and an archive's states are taught in full by
+    ``recon --skill -r live-reading``, and the skill points there (progressive disclosure:
+    the skill stays in its budget). One text, as the capture format's is."""
+    page = PACKAGE / "docs" / "reference" / "live-reading.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    assert page.read_text(encoding="utf-8") == REFERENCES["live-reading"]
+    assert "recon --skill -r live-reading" in SKILL
+    for taught in ("--max-bytes", "--interval", "--once", "--cursor", "`ended`", "`more`",
+                   "retracted", "sealed", "usage"):  # fmt: skip
+        assert taught in REFERENCES["live-reading"], taught
+
+
 # --- frontmatter and budget ------------------------------------------------------------
 
 
