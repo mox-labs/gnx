@@ -10,6 +10,14 @@ Determinism (the contract the tests in ``test_determinism.py`` hold):
     archive is the same: its name, every table, and ``meta.yaml``. The one exception is the
     capture log a mission with ``preserve_raw`` keeps: each capture has a unique ``id``.
 
+    A stream's window keeps the same contract, window by window (``stream.py``): given the
+    same records arriving at the same stamps on the clock port, each window holds the same
+    records, in the same order, with the same ``meta.yaml`` and event log, whatever thread
+    wrote it. Which window a record falls in is a pure function of its order of arrival, its
+    stamp and the window spec, and a window kept with ``preserve_raw`` replays from its
+    capture to the same table under any clock. What a full buffer drops depends on how fast
+    the windows are written, so a window that dropped records says it cannot be replayed.
+
 Tables run one at a time, in config order, each collector against each of its sources in
 catalog order. A table that fails is recorded with its error and the rest still run. A
 mission's ``deadline:`` bounds them all, and a collector's each of its tables

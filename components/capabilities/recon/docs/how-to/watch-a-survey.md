@@ -47,4 +47,16 @@ recon query my-scan "SELECT count(*) FROM first_table" --json
 
 The table being written is not a table yet: query it once `recon watch` says it is sealed.
 
-The flags, the defaults and the library calls are in [docs/reference/live-reading.md](../reference/live-reading.md).
+## 5. Follow a stream
+
+A stream (a collector with `window:`, or a `tail` or `sse` one) writes window after window. `--stream` follows it from its latest window into each one after, and returns once nothing extends the stream:
+
+```bash
+recon stream my-feed --collector events --forever &   # or from cron: recon survey my-feed
+recon watch my-feed --stream events --json
+recon query my-feed "SELECT count(*) FROM events" --stream events --json
+```
+
+A window whose source failed keeps the records it got: nothing printed from a stream is ever void.
+
+The flags, the defaults and the library calls are in [docs/reference/live-reading.md](../reference/live-reading.md), and a stream's in [docs/reference/streaming.md](../reference/streaming.md).

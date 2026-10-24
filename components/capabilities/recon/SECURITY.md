@@ -1,7 +1,8 @@
 # Security — recon
 
 recon collects from heterogeneous sources — HTTP APIs, local CLIs, web pages, MCP servers,
-capture logs — and normalises the results to JSONL. Two things make it worth reading before
+capture logs, files followed as they grow, server-sent events — and normalises the results to
+JSONL. Two things make it worth reading before
 you run someone else's config: **a recon config runs programs** (shell commands, and the MCP
 servers it starts), and recon handles source credentials.
 
@@ -269,6 +270,37 @@ only to test it, so a reader changes no byte of the archive.
 
 What this does **not** do: anything about the records themselves, which are the same
 untrusted text as a query's (boundary 6).
+
+A stream's cursor (`--stream`) wraps the store's: hex-encoded JSON naming the stream and a
+window. One that does not decode, names another stream, or names a window the stream does
+not have is refused as a `usage` error (or `not_found`); the window it names is only matched
+against the stream's windows as listed, never made into a path.
+
+### 10. A stream's source → its windows (`tail`, `sse`, `recon stream`)
+
+A stream runs for as long as it is told to, so what it reaches, it reaches for that long.
+
+- **`tail` reads any file the config names** that the user running recon can read: a
+  relative `url` is the project root's, an absolute one is anywhere. As with a `local`
+  source, the config decides, and the plan shows the path (`path`) before anything runs.
+  A line longer than the source's `max_bytes` fails the stream rather than being held in
+  memory.
+- **`sse` is an `api` source's request, held open**: the same credential rule (the
+  source's `auth`, to its origin only, a redirect elsewhere followed without it), the same
+  rate limit (a token per connection), and a connect or a silence longer than the source's
+  `timeout` ends the connection. A reconnect sends the last event id it got, which is the
+  server's own value. The body is read a line at a time, each line bounded by `max_bytes`.
+- **Memory is bounded by the config**: at most `buffer.bytes` + `buffer.max_record_bytes`
+  of records wait between the source and the window being written; a record over
+  `max_record_bytes` is dropped and counted, never buffered. A source that sends faster than
+  the windows are written either waits (`block`) or has records dropped, each drop counted
+  (`stream_overflow`).
+- **`retain:` deletes data**: a rule removes the oldest sealed windows, leaving a tombstone
+  for each. It is opt-in (the default, `all`, removes nothing, and the plan says so), it
+  never removes the newest window or one that was never sealed, and it removes only
+  directories in the stream's own directory, by the names the store listed.
+- **One writer a stream**: a second `recon stream` of the same stream is refused
+  (`conflict`) by an `flock` held for the run, so two processes never write one window id.
 
 ## Findings
 

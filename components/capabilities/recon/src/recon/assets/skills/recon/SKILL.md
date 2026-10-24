@@ -87,6 +87,8 @@ A survey with failed tables still writes its archive, marked incomplete, and lis
 
 **Watch.** `recon watch <name> --json` follows an archive as a survey writes it, a `recon.v1.records-since` line per read, and returns when the survey ends; `--once` reads once. Records of a table later `retracted` are void. Flags, defaults, refusals, `state`, `ended` and the library calls: `recon --skill -r live-reading`.
 
+**Streams.** A source that never ends (`tail` a file, `sse` events) is a stream, sealed in windows: `recon stream <name> --collector <c>` runs one (`--windows N`, `--until`, `--forever` for more). Keys, defaults, refusals: `recon --skill -r streaming`.
+
 ## Errors and exit codes
 
 Act on the exit code, then on the error's `fix`:
@@ -100,7 +102,7 @@ Act on the exit code, then on the error's `fix`:
 | 4 | `not_found` | no such mission, archive or template | run the command the error's `fix` names |
 | 5 | `transient` | every failed table failed transiently (HTTP 429, 5xx, network, a deadline); the archive is kept, marked incomplete | if a table's error names a `deadline:` or `timeout:`, raise it (a retry fails too); else survey again later |
 | 6 | `auth` | a table failed on credentials (HTTP 401, 403); the archive is kept, marked incomplete | set the variable the failing source's auth.env names to a valid key, then survey again |
-| 7 | `conflict` | init, or survey -c, would overwrite a different mission config | add --replace to overwrite it, or choose another mission name |
+| 7 | `conflict` | init, or survey -c, would overwrite a different mission config; or another recon writes the stream | add --replace to overwrite it, or choose another mission name; or let that stream run |
 | 8 | `run_failed` | a table failed, and not only on credentials or transiently; the archive is kept, marked incomplete | read each failed table's error and fix its cause, then plan and survey again |
 | 9 | `store` | the survey could not finish its archive; it is kept, marked incomplete | free space where the archive is, or make it writable, then survey again |
 | 10 | `query` | the SQL failed, or reached outside the mission's archives | correct the SQL as the error's `fix` says; for a missing table, it names the tables there are |

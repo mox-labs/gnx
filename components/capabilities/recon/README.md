@@ -2,7 +2,7 @@
 
 > Heterogeneous sources in, structured data out. Claude queries the result.
 
-Recon fetches from HTTP APIs, runs CLI tools, scrapes web pages, calls the tools and reads the resources of MCP servers, and reads capture logs that other tools wrote, then reshapes every response into uniform JSONL that Claude can query with SQL. The reshape is declarative, not code. Write a YAML config once; recon plans it, then runs it mechanically — no LLM in the loop.
+Recon fetches from HTTP APIs, runs CLI tools, scrapes web pages, calls the tools and reads the resources of MCP servers, and reads capture logs that other tools wrote, then reshapes every response into uniform JSONL that Claude can query with SQL. A source that never ends (a log file that keeps growing, a server that keeps sending events) is collected as a stream, into windows that are archives too. The reshape is declarative, not code. Write a YAML config once; recon plans it, then runs it mechanically — no LLM in the loop.
 
 ## Why
 
@@ -54,6 +54,7 @@ Recon is general-purpose. The built-in templates each showcase a distinct capabi
 | Content tracking | RSS / Atom feeds via XML parsing | `rss-monitor` |
 | MCP servers | A stdio or remote server's tools and resources, called by recon | `mcp-server` |
 | MCP tool results | Results a Claude Code hook captured, normalized without refetching (a server behind a browser sign-in) | `mcp-captures` |
+| Streams | A log file followed as it grows (`tail`), server-sent events (`sse`), into windows | *(see `recon --skill -r streaming`)* |
 | Literature review | Semantic Scholar, arXiv, OpenAlex, Zenodo | *(a catalog owned by the consuming plugin — `recon init -c`)* |
 | Dependency audits, issue triage, API snapshots | `cargo tree`, `gh issue list`, any REST endpoint | *(see `recon --skill -r config-patterns`)* |
 
@@ -143,7 +144,7 @@ recon reports what it did on open standards, with a local record by default. The
 | Span | Attributes |
 |---|---|
 | `recon.survey` | `recon.mission`, `recon.archive`; at its end `recon.tables`, `recon.tables.failed`, `recon.records` |
-| `recon.collect`, one per table | `recon.table`, `recon.collector`, `recon.collector.type`, `recon.source`; at its end `recon.records`. While the table is written, a `recon.collect.progress` event of the span, at most once a second, carries `recon.records`, the records written so far (an OpenTelemetry span event) |
+| `recon.collect`, one per table | `recon.table`, `recon.collector`, `recon.collector.type`, `recon.source`; at its end `recon.records`. While the table is written, a `recon.collect.progress` event of the span, at most once a second, carries `recon.records`, the records written so far (an OpenTelemetry span event). A stream's window is one too, in the window's own event log, with `recon.stream` and `recon.window` (its index), and `recon.dropped` in its progress and at its end; its times are the window's own (its open, its records' arrivals, its close) |
 | `recon.http.request`, one per attempt to send a request (kind client) | OpenTelemetry's HTTP client span attributes, [semantic conventions v1.44.0](https://github.com/open-telemetry/semantic-conventions/blob/v1.44.0/docs/http/http-spans.md#http-client-span) (stable): `http.request.method`, `server.address`, `server.port`, `url.full`, `http.response.status_code`, and `http.request.resend_count` on a retry |
 | `recon.mcp.call`, one per call to an MCP server, a listing included (kind client) | `mcp.method.name` (`tools/call`, `tools/list`, `resources/read`, ...), `gen_ai.tool.name` for a tool call, `recon.source`; never the arguments or the result |
 | `recon.query` | `recon.mission`, `recon.archive`; at its end `recon.rows` |
@@ -158,17 +159,17 @@ A span that failed has `status: error`, a `message` in recon's own words that qu
 
 - **Not an agent.** Recon doesn't use an LLM during execution. It runs the config you wrote. Intelligence lives outside the tool.
 - **Not a research autopilot.** Recon produces structured data; synthesis stays with Claude and with the human.
-- **Not a message bus.** A survey asks each source what its mission says, writes the answers into one timestamped archive, and ends. What it writes can be read while it runs (`recon watch`, `recon.read_since`), as the archive's own files; recon pushes nothing to subscribers.
+- **Not a message bus.** A survey asks each source what its mission says, writes the answers into one timestamped archive, and ends. A source that does not end is collected as a stream, into windows each sealed as an archive (`recon stream`), and a stream runs one window unless told otherwise. What either writes can be read while it is written (`recon watch`, `recon watch --stream`, `recon.read_since`), as the archives' own files; recon pushes nothing to subscribers.
 
 ## Design
 
-Library first, hexagonal. `import recon` is the API: `recon.init`, `plan`, `survey`, `status`, `query`, `read_since`, `templates`, `capture` each return a versioned document (a frozen pydantic record, `recon.SurveyDocument` and its siblings) whose `.document()` is what the CLI prints under `--json`, or raise an error whose `kind` says what to do. Each takes `root=`, the project its missions live in, so a program need not change directory: `recon.survey("m", root=Path("~/src/app").expanduser())`. `ConfigError` is also a `ValueError` and `NotFoundError` a `KeyError`. The CLI calls those names and nothing else.
+Library first, hexagonal. `import recon` is the API: `recon.init`, `plan`, `survey`, `stream`, `status`, `query`, `read_since`, `templates`, `capture` each return a versioned document (a frozen pydantic record, `recon.SurveyDocument` and its siblings) whose `.document()` is what the CLI prints under `--json`, or raise an error whose `kind` says what to do. Each takes `root=`, the project its missions live in, so a program need not change directory: `recon.survey("m", root=Path("~/src/app").expanduser())`. `ConfigError` is also a `ValueError` and `NotFoundError` a `KeyError`. The CLI calls those names and nothing else.
 
-The domain holds the frozen Pydantic models, the normalize language, and the ports, each hiding a decision likely to change: `MissionStore` (where missions live, and that they are YAML), `ArchiveStore` (how an archive is stored), `ArchiveQuery` (the SQL engine and its sandbox), `Clock`, `Requester` (HTTP), `ShellRunner`, `DocumentConverter`, `CaptureLog` and `EventSink` (where telemetry goes). The application plans a mission (`plan.py`), builds a survey's collectors and holds every type to the same rules (`collectors.py`: only the types the mission uses, each seeing only the environment it declares, `normalize:` applied to every type), runs a survey over the ports (`survey.py`), and composes the operations (`use_cases.py`). Outbound adapters implement the ports with YAML files, JSONL directories, DuckDB, httpx2, subprocess, markitdown and OpenTelemetry, and the `mcp` collector type is FastMCP's client on the MCP SDK; `composition.py` is the one place they meet, and holds no policy. Its `root()` binds each port to its adapter unless it is given one (the clock, the plugins, the archive store, the survey's requester, the shell, the converter), so a test's root is recon's own with fakes, and the command line runs over a root passed to it as `main(obj=...)`. `layers.json`, run by `tests/test_layering.py`, holds the import rules, and `tests/test_determinism.py` the contract that the same mission and the same answers give the same records.
+The domain holds the frozen Pydantic models, the normalize language, and the ports, each hiding a decision likely to change: `MissionStore` (where missions live, and that they are YAML), `ArchiveStore` (how an archive is stored), `ArchiveQuery` (the SQL engine and its sandbox), `Clock`, `Requester` (HTTP), `ShellRunner`, `DocumentConverter`, `CaptureLog` and `EventSink` (where telemetry goes). The application plans a mission (`plan.py`), builds a survey's collectors and holds every type to the same rules (`collectors.py`: only the types the mission uses, each seeing only the environment it declares, `normalize:` applied to every type), runs a survey over the ports (`survey.py`), runs a stream through its window writer, a bounded buffer and a thread that reads its source (`stream.py`), and composes the operations (`use_cases.py`). Outbound adapters implement the ports with YAML files, JSONL directories, DuckDB, httpx2, subprocess, markitdown and OpenTelemetry, and the `mcp` collector type is FastMCP's client on the MCP SDK; `composition.py` is the one place they meet, and holds no policy. Its `root()` binds each port to its adapter unless it is given one (the clock, the plugins, the archive store, the survey's requester, the shell, the converter), so a test's root is recon's own with fakes, and the command line runs over a root passed to it as `main(obj=...)`. `layers.json`, run by `tests/test_layering.py`, holds the import rules, and `tests/test_determinism.py` the contract that the same mission and the same answers give the same records.
 
 Collector types and transforms are extensions, loaded from the entry-point groups `recon.collectors` and `recon.transforms`. The built-ins register through the same groups:
 
-- collector types: `api`, `cli`, `web`, `capture`, `mcp`
+- collector types: `api`, `cli`, `web`, `capture`, `mcp`, and `tail` and `sse`, whose records do not end
 - transforms: `$html2text`, `$inverted_index`, `$join`, `$first`, `$markitdown`
 
 A plugin that fails to load is reported by `recon status` and `survey --dry-run` and does not break the others. A collector type declares the keys it takes (a schema the plan validates them by), the source kinds it adds and the keys those take, and may hold a session across its tables, which recon closes when the survey ends; a type that declares a preflight is asked by a dry run what each of its runs needs of the host. To write one: [docs/reference/extending.md](docs/reference/extending.md).
@@ -187,9 +188,10 @@ The tests run offline, except the live integration tests against OpenAlex, arXiv
 - [docs/reference/capture-format.md](docs/reference/capture-format.md) — the capture log format (`recon.v1.capture`), for a tool that writes captures
 - [docs/reference/telemetry.md](docs/reference/telemetry.md) — the event log, the spans and attributes, exporting through OpenTelemetry, and its warnings
 - [docs/reference/live-reading.md](docs/reference/live-reading.md) — `recon watch`, `read_since` and archive states: the contract, the defaults, the refusals
+- [docs/reference/streaming.md](docs/reference/streaming.md) — streams: `window:`, `buffer:`, `retain:`, the `tail` and `sse` types, `recon stream`, `--stream`; every default and refusal
 - [docs/design/2026-10-19-record.md](docs/design/2026-10-19-record.md) — the design judgments behind 0.11.0 and 0.12.0, and recon's claims
 - [CHANGELOG.md](CHANGELOG.md)
-- `recon --skill` — the skill Claude uses to author missions; `-r normalize-spec`, `-r config-patterns`, `-r capture-format`, `-r live-reading`, `-r telemetry` for the references. The plugin's copy is generated from it (`just recon-skill`).
+- `recon --skill` — the skill Claude uses to author missions; `-r normalize-spec`, `-r config-patterns`, `-r capture-format`, `-r live-reading`, `-r streaming`, `-r telemetry` for the references. The plugin's copy is generated from it (`just recon-skill`).
 
 ## License
 
