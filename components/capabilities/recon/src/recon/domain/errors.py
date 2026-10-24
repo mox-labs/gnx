@@ -101,7 +101,8 @@ EXIT_NEXT: dict[str, str] = {
     "store": "free space where the archive is, or make it writable, then survey again",
     "query": "correct the SQL as the error's `fix` says; for a missing table, it names the "
     "tables there are",
-    "busy": "let that stream run, or stop it (`recon status` shows it writing), then stream again",
+    "busy": "let that stream run, or stop its writer as the `fix` says (`kill -TERM <pid>`, "
+    "the pid in `details`, seals its window), then stream again",
     "interrupted": "run the command again",
 }
 
