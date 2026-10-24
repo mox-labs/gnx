@@ -28,9 +28,11 @@ from matrix import (
     TASK,
     Executor,
     JsonlConstructStore,
+    Limits,
     MatrixConfig,
     RunContext,
     Session,
+    compose,
     digest,
     record_session,
     wire,
@@ -373,12 +375,15 @@ class _Scope:
 
 class _Subject:
     """Counts the trials holding a subject; logs each release with its trial's ``seq``,
-    which the probe writes into the target."""
+    which the probe writes into the target. A release takes ``release_s``; the one of the
+    trial ``fails`` raises once it has let go."""
 
-    def __init__(self, log: Log) -> None:
+    def __init__(self, log: Log, release_s: float = 0.0, fails: int | None = None) -> None:
         self.log = log
         self.holding = 0
         self.most = 0
+        self.release_s = release_s
+        self.fails = fails
 
     @asynccontextmanager
     async def reach(self, name: str, subject: Any, *, base: str) -> AsyncIterator[Target]:
@@ -388,8 +393,29 @@ class _Subject:
         try:
             yield target
         finally:
+            if self.release_s:
+                await asyncio.sleep(self.release_s)
             self.holding -= 1
-            self.log.append(("released", target.facets.get("seq")))
+            seq = target.facets.get("seq")
+            self.log.append(("released", seq))
+            if seq is not None and seq == self.fails:
+                raise RuntimeError(f"the subject of trial {seq} would not stop")
+
+
+class _Stuck:
+    """A sensor whose watch never begins and never looks at the stop flag: a stop is not
+    honoured, so matrix cuts the trials off after its grace."""
+
+    def watch(self, target: Target, options: Any) -> Any:
+        @asynccontextmanager
+        async def watching() -> AsyncIterator[dict[str, Any]]:
+            await asyncio.Event().wait()
+            yield {}
+
+        return watching()
+
+    async def sense(self, interaction: Any, *, truth: Any, options: Any) -> Any:
+        return {}
 
 
 class _Probe:
@@ -654,6 +680,80 @@ class TestDispatch:
         assert run.subject.holding == 0
         assert sorted(seq for name, seq, *_ in run.log if name == "released") == [0, 1, 2, 3]
 
+    def test_the_trials_cut_off_are_released_together_within_matrixs_cleanup(
+        self, write_experiment: Write, tmp_path: Path
+    ) -> None:
+        """I4's bound at width 4: matrix gives the deferred release ``cleanup_s`` and then
+        abandons it. Each subject takes 0.4 of that to let go, so four released one after
+        another would overrun it; released together, all four are let go in time.
+        Regression: the release closed what each trial held one at a time."""
+        cleanup_s = 0.5
+        run = _Dispatch(4)
+        run.subject.release_s = 0.4 * cleanup_s
+        prepared = _prepared(write_experiment(experiment()))
+        design = {**prepared.manifest.design, "trials_in_flight": 4}
+        manifest = prepared.manifest.model_copy(update={"design": design})
+        kit = dataclasses.replace(
+            run.kit(_Probe(run.log, _seeds(prepared.trials)), NoEnvironment()),
+            sensors={schema.url("sensor", "timing"): _Stuck()},
+        )
+
+        async def cancelled() -> None:
+            container = compose(
+                MatrixConfig.model_validate(COMPOSITION),
+                registry=fake_registry(),
+                context={NEED: kit},
+            )
+            carried = asyncio.ensure_future(
+                container.executor().run(
+                    container.wire(),
+                    {schema.RUN: manifest, schema.TRIAL: list(prepared.trials)},
+                    store=JsonlConstructStore(tmp_path / "runs"),
+                    run_id=manifest.run,
+                    limits=Limits(grace_s=0.05, cleanup_s=cleanup_s),
+                )
+            )
+            while run.subject.holding < 4:
+                await asyncio.sleep(0.001)
+            carried.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await carried
+
+        asyncio.run(cancelled())
+        assert run.subject.most == 4 and run.subject.holding == 0
+        assert [name for name, *_ in run.log].count("released") == 4
+
+    def test_a_release_that_fails_leaves_the_others_released_and_is_reported(
+        self, write_experiment: Write
+    ) -> None:
+        """One subject that raises as it is let go does not strand the others, and its error
+        is what the release reports. Regression: the first error ended the release, and the
+        trials after it were never let go."""
+        run = _Dispatch(4)
+        run.subject.fails = 1
+        setup, trials = run.setup(write_experiment)
+        probe = _Probe(run.log, _seeds(trials), held=frozenset(range(len(trials))))
+        kit = run.kit(probe, NoEnvironment())
+
+        async def cancelled() -> None:
+            carried = asyncio.ensure_future(
+                running.carry_out(
+                    setup, kit, trials=trials, bindings={}, scope=run.scope, land=run.land
+                )
+            )
+            while run.subject.holding < 4:
+                await asyncio.sleep(0.001)
+            carried.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await carried
+            with pytest.raises(HarnessError, match="trial 1 would not stop") as failed:
+                await run.scope.release()
+            assert failed.value.reason == "release_failed"
+
+        asyncio.run(cancelled())
+        assert run.subject.holding == 0
+        assert sorted(seq for name, seq, *_ in run.log if name == "released") == [0, 1, 2, 3]
+
     def test_matrix_releases_every_trial_it_cut_off_when_the_stop_is_not_honoured(
         self, write_experiment: Write, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -665,19 +765,6 @@ class TestDispatch:
         prepared = _prepared(write_experiment(experiment()))
         design = {**prepared.manifest.design, "trials_in_flight": 4}
         manifest = prepared.manifest.model_copy(update={"design": design})
-
-        class _Stuck:
-            def watch(self, target: Target, options: Any) -> Any:
-                @asynccontextmanager
-                async def watching() -> AsyncIterator[dict[str, Any]]:
-                    await asyncio.Event().wait()
-                    yield {}
-
-                return watching()
-
-            async def sense(self, interaction: Any, *, truth: Any, options: Any) -> Any:
-                return {}
-
         kit = dataclasses.replace(
             run.kit(_Probe(run.log, _seeds(prepared.trials)), NoEnvironment()),
             sensors={schema.url("sensor", "timing"): _Stuck()},

@@ -639,8 +639,17 @@ async def carry_out(
     open_now: list[AsyncExitStack] = []
 
     async def release_open() -> None:
-        for stack in list(open_now):
-            await stack.aclose()
+        # Together: matrix bounds this release by one cleanup_s, which width releases one
+        # after another could overrun; and one that raises strands none of the others.
+        left = list(open_now)
+        done = await asyncio.gather(*(stack.aclose() for stack in left), return_exceptions=True)
+        failed = [error for error in done if isinstance(error, BaseException)]
+        if failed:
+            said = "; ".join(f"{type(error).__name__}: {error}" for error in failed)
+            raise HarnessError(
+                "release_failed",
+                f"{len(failed)} of the {len(left)} trials cut off could not be released: {said}",
+            ) from failed[0]
 
     scope.defer(release_open)  # the backstop, for a trial abandoned mid-flight
     slots = asyncio.Semaphore(setup.design.trials_in_flight)

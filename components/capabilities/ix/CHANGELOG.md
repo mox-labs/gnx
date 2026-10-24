@@ -34,7 +34,10 @@
   after it ended found the environment up. On a loss nothing more starts and every trial
   unconfirmed lands as `environment_lost`; on a stop nothing more starts and every trial in
   flight lands, its own outcome or `cancelled`. At 1 the run is the serial run it was.
-  `invoke` takes the flag its probe races (`stopping=`; the scope's when not given).
+  `invoke` takes the flag its probe races (`stopping=`; the scope's when not given). The
+  trials a hard stop cuts off are released together, within the one `cleanup_s` matrix
+  gives the release; one that cannot be released strands none of the others, and the
+  release reports each that failed (`release_failed`).
 - **Sensing at the same width.** `sense` reads as many interactions at once as
   `trials_in_flight`, each reading in a task of its own, naming only the sessions its
   sensor made for that trial; a sensor whose kind forbids overlap reads one at a time. Its
