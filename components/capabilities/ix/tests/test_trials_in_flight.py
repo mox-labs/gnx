@@ -41,7 +41,9 @@ from matrix import (
 import ix
 from ix.adapters._in.matrix_components import COMPOSITION, NEED
 from ix.adapters._out import matrix_runs
+from ix.adapters._out.agent_sensors import FunctionTestSensor, OutcomeSensor
 from ix.adapters._out.environments import NoEnvironment
+from ix.adapters._out.matrix_process import MatrixLauncher
 from ix.application import running
 from ix.composition import Root
 from ix.composition.settings import IxSettings
@@ -946,6 +948,80 @@ class TestSensing:
         first = LOG.index("sense")
         assert LOG.count("sense") == 15
         assert not [line for line in LOG[first:] if line != "sense"]
+
+    def test_a_sensors_timeout_under_width_is_that_readings_alone(self, tmp_path: Path) -> None:
+        """Review: ``function-test`` and ``outcome`` run code under a timeout, and now read
+        side by side. A reading that overruns is that sensor's, for that trial (a test that
+        overran; a grader that could not grade), and the readings beside it, of other
+        trials and other sensors, read as they would alone."""
+        cases = {
+            "function_name": "double",
+            "test_cases": [{"input": 2, "expected": 4}, {"input": 0, "expected": 0}],
+        }
+        folder = _canned(
+            tmp_path,
+            probes=[
+                {"id": "fast", "kind": "prompt", "prompt": "Double it.", "truth": cases},
+                {"id": "slow", "kind": "prompt", "prompt": "Double it.", "truth": cases},
+            ],
+            primary={"metric": "tests_passed"}, metrics=["outcome_score"],
+            sensors=[{"kind": "function-test", "timeout": "1s"},
+                     {"kind": "outcome", "graders": "graders.py", "timeout": "1s"}],
+            trials_in_flight=4,
+        )  # fmt: skip
+        (folder / "graders.py").write_text(
+            "def quick(text):\n    return 1.0\n"
+            "def stuck(text):\n    while True: pass\n"
+            "GRADERS = {'fast': quick, 'slow': stuck}\n"
+        )
+        assert ix.validate(folder).valid
+        root = _root()
+        vocabulary = root.vocabulary(folder)
+        examined = ix.application.experiments.examine(
+            yaml.safe_load((folder / "experiment.yaml").read_text()), vocabulary
+        )
+        prepared = running.prepare(
+            examined, vocabulary, None, run="r", base=str(folder), now="", version="",
+            exploratory=True,
+        )  # fmt: skip
+        setup = running.setup_of(prepared.manifest)
+        code = {
+            "fast": "```python\ndef double(x):\n    return 2 * x\n```",
+            "slow": "```python\ndef double(x):\n    while True: pass\n```",
+        }
+        interactions = [
+            Interaction(seq=t.seq, subject=t.subject, role=t.role, probe=t.probe,
+                        started_ns=0, duration_ns=0,
+                        observations={"response": {"text": code[t.probe]}})
+            for t in prepared.trials[:4]  # two repeats of each probe
+        ]  # fmt: skip
+        kit = running.Kit(
+            subjects={},
+            probes={},
+            sensors={
+                schema.url("sensor", "function-test"): FunctionTestSensor(MatrixLauncher()),
+                schema.url("sensor", "outcome"): OutcomeSensor(MatrixLauncher()),
+            },
+            environments={},
+            clock_ns=time.monotonic_ns,
+            kinds=vocabulary.kinds.kinds,
+        )
+        readings = asyncio.run(
+            running.sense(setup, kit, trials=prepared.trials, interactions=interactions)
+        )
+        probe = {t.seq: t.probe for t in prepared.trials}
+        by = {(probe[r.seq], r.seq, r.metric): r for r in readings}
+        assert {p for p, _, _ in by} == {"fast", "slow"} and len(by) == 4 * 2
+        for (which, _, metric), reading in by.items():
+            if metric == "tests_passed":
+                assert reading.failure is None and reading.value is (which == "fast")
+                if which == "slow":
+                    assert "overran" in reading.detail["failures"][0]
+            elif which == "fast":
+                assert reading.failure is None and reading.value == 1.0
+            else:
+                assert reading.failure is not None and reading.failure.owner == "sensor"
+                assert "overran" in reading.failure.message
 
     def test_a_sensor_that_forbids_overlap_reads_one_trial_at_a_time(
         self, write_experiment: Write, builtin_kinds: Kinds
