@@ -70,7 +70,7 @@ import httpx2
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from recon.domain.errors import CollectionError, ErrorKind
-from recon.domain.http import HttpResponse, reported_url
+from recon.domain.http import LONG_LINE, HttpResponse, reported_url
 from recon.domain.telemetry import HTTP_REQUEST, Telemetry
 
 if TYPE_CHECKING:
@@ -347,19 +347,33 @@ def _to_domain(resp: httpx2.Response, body: bytes) -> HttpResponse:
 class _LiveBody:
     """A streaming response's body, line by line as it arrives (``LiveBody``)."""
 
-    def __init__(self, resp: httpx2.Response, source: SourceEntry, shown: str) -> None:
+    def __init__(
+        self, resp: httpx2.Response, source: SourceEntry, shown: str, max_line: int | None
+    ) -> None:
         self._resp = resp
         self._source = source
         self._shown = shown
+        self._max_line = max_line
         self._closed = False
 
     def __iter__(self) -> Iterator[str]:
         pending = b""
+        skipping = False  # in a line past max_line: let go to its newline
         try:
             for chunk in self._resp.iter_bytes():
+                if skipping:
+                    end = chunk.find(b"\n")
+                    if end == -1:
+                        continue
+                    skipping, chunk = False, chunk[end + 1 :]
+                    yield LONG_LINE
                 pending += chunk
                 *lines, pending = pending.split(b"\n")
-                if len(pending) > self._source.max_bytes:
+                for line in lines:
+                    yield LONG_LINE if self._too_long(line) else _text(line)
+                if self._too_long(pending):
+                    skipping, pending = True, b""
+                elif len(pending) > self._source.max_bytes:
                     raise CollectionError(
                         f"{self._shown} sent a line longer than max_bytes "
                         f"({self._source.max_bytes:,} bytes) for source {self._source.name!r}",
@@ -367,14 +381,19 @@ class _LiveBody:
                         fix=f"raise max_bytes on source {self._source.name!r}, if its lines are "
                         "meant to be that long",
                     )
-                for line in lines:
-                    yield _text(line)
         except httpx2.HTTPError as exc:
             if self._closed:
                 return
             raise _broke_off(exc, self._shown, self._source) from exc
-        if pending and not self._closed:
-            yield _text(pending)
+        if self._closed:
+            return
+        if skipping:
+            yield LONG_LINE
+        elif pending:
+            yield LONG_LINE if self._too_long(pending) else _text(pending)
+
+    def _too_long(self, line: bytes) -> bool:
+        return self._max_line is not None and len(line) > self._max_line
 
     def close(self) -> None:
         """Shut the connection's socket down, which ends a read blocked on it in another
@@ -608,13 +627,16 @@ class HttpRequester:
         *,
         params: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
+        max_line: int | None = None,
     ) -> Iterator[_LiveBody]:
         """One GET whose body is read as it arrives (``recon.domain.http.LiveBody``), for a
         body that does not end: server-sent events. A token is drawn from the source's rate
         limit first; a connect, and each read, times out after the source's ``timeout``; a
         status other than success fails it as :meth:`request` would, with no retry, since a
-        stream's collector reconnects itself. The credential rule for redirects holds. The
-        response is closed when the block ends."""
+        stream's collector reconnects itself. The credential rule for redirects holds. With
+        ``max_line``, a longer line is let go as it arrives and given as ``LONG_LINE``, so no
+        more than that and a chunk of a line is held. The response is closed when the block
+        ends."""
         try:
             target = httpx2.URL(url).copy_merge_params(params or {})
         except httpx2.InvalidURL as exc:
@@ -651,6 +673,6 @@ class HttpRequester:
                     kind=kind,
                     fix=_HTTP_FIX[kind],
                 ) from status
-            yield _LiveBody(resp, source, shown)
+            yield _LiveBody(resp, source, shown, max_line)
         finally:
             resp.close()

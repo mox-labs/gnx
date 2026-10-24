@@ -14,8 +14,10 @@ position: a stream resumed after it sends ``Last-Event-ID``, so a server that ke
 events sends each once. An event before any id has no position.
 
 An event's data is held to the stream's ``max_record_bytes`` (its ``buffer:``, or recon's
-default) as its lines arrive: one past it is dropped, its later lines read and let go, and
-counted dropped in the window being filled (``CollectorContext.gaps``).
+default) as its lines arrive, and so is each line, which the requester lets go past it
+(``follow(max_line=)``) rather than hold: an event past it is dropped, its later lines read
+and let go, and counted dropped in the window being filled (``CollectorContext.gaps``). So a
+stream holds no more than ``buffer.bytes`` + ``max_record_bytes`` of its source.
 
 **Reconnecting.** When the connection ends or breaks off (the server closed it, the network
 failed, a quiet source outlasted its ``timeout``, a ``transient`` status), the collector
@@ -50,7 +52,7 @@ from recon.adapters._out.http_source import auth_headers, auth_params, build_url
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.domain.collector import CollectorType
 from recon.domain.errors import CollectionError, Problem
-from recon.domain.http import REDACTED, reported_url
+from recon.domain.http import LONG_LINE, REDACTED, reported_url
 from recon.domain.stream import POSITION_FIELD, BufferSpec, Gap
 
 if TYPE_CHECKING:
@@ -165,7 +167,7 @@ class SseCollector:
                 headers["Last-Event-ID"] = last
             connected = False
             try:
-                with follow(source, url, params=params, headers=headers) as body:
+                with follow(source, url, params=params, headers=headers, max_line=cap) as body:
                     self._body = body
                     connected, failed = True, 0
                     if self._closed.is_set():
@@ -223,6 +225,9 @@ def _events(lines: Iterable[str], cap: int) -> Iterator[_Event | _TooLarge | int
             elif data:
                 yield _Event(event_id, kind or "message", "\n".join(data))
             kind, data, size, over = "", [], 0, False
+            continue
+        if line == LONG_LINE:  # a line past the cap, let go: its event goes with it
+            over, data = True, []
             continue
         if line.startswith(":"):
             continue

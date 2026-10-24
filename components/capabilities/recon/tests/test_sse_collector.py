@@ -63,6 +63,7 @@ class Listening:
         pause: Any = DEFAULT,
         timeout: float | None = None,
         buffer: dict[str, int] | None = None,
+        max_bytes: int | None = None,
     ) -> None:
         """Waits before a reconnect are recorded on a :class:`HurriedClock` and skipped, from
         a jitter seeded the same each time, unless ``jitter`` or ``pause`` says otherwise
@@ -81,7 +82,9 @@ class Listening:
             {"name": "events", "type": "sse", "endpoint": "/events", "reconnect": reconnect,
              **({"buffer": buffer} if buffer else {})}
         )  # fmt: skip
-        given = {"timeout": timeout} if timeout is not None else {}
+        given: dict[str, Any] = {"timeout": timeout} if timeout is not None else {}
+        if max_bytes is not None:
+            given["max_bytes"] = max_bytes
         source = SourceEntry.model_validate(
             {"name": "feed", "url": url, "auth": auth or {}, **given}
         )
@@ -252,6 +255,21 @@ class TestLargeEvents:
             records = listening.until(2)
             listening.stop()
 
+        assert [r["id"] for r in records] == ["1", "3"]
+        assert listening.gaps.drops == 1
+
+    def test_a_line_over_max_record_bytes_is_skipped_not_held(self) -> None:
+        """Erlang's re-check: a line was held whole up to the source's ``max_bytes`` (50 MB
+        by default) and failed the stream past it. A line past ``max_record_bytes`` is let go
+        as it arrives, to its newline, and its event dropped and counted: here the line is
+        past the source's ``max_bytes`` too, which only a line never held can survive."""
+        events = [("1", "small"), ("2", "x" * 300_000), ("3", "after")]  # many chunks
+        with SseServer(events) as server:
+            listening = Listening(server.url, buffer={"max_record_bytes": 100}, max_bytes=1000)
+            records = listening.until(2)
+            listening.stop()
+
+        assert listening.error is None
         assert [r["id"] for r in records] == ["1", "3"]
         assert listening.gaps.drops == 1
 

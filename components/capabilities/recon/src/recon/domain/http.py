@@ -11,7 +11,7 @@ plan's runs, and both redact it the one way :func:`reported_url` does.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel
@@ -58,12 +58,19 @@ class HttpResponse(BaseModel, frozen=True):
     content_type: str
 
 
+#: What a followed body gives in place of a line longer than its ``max_line``: a newline,
+#: which no line holds, so it cannot be mistaken for one.
+LONG_LINE: Final = "\n"
+
+
 class LiveBody(Protocol):
     """A response body read as it arrives: its lines, in order, each without its line end,
     for as long as the server sends (a body that never ends, as server-sent events' does).
     Iterating raises CollectionError when the connection breaks off (``transient``), or a line
-    is longer than the source's ``max_bytes`` (``run_failed``); it ends when the server ends
-    the body, or when :meth:`close` is called."""
+    is longer than the source's ``max_bytes`` (``run_failed``); a body followed with a
+    ``max_line`` gives :data:`LONG_LINE` instead for a line longer than that, let go as it
+    arrives, never held. It ends when the server ends the body, or when :meth:`close` is
+    called."""
 
     def __iter__(self) -> Iterator[str]: ...
 
