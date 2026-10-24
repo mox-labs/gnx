@@ -14,7 +14,7 @@ A survey's archive can be read while the survey writes it: `recon watch` on the 
 
 A state, where a table's `ok` or `error` is an outcome. Beside it, `ended` says whether the survey ran to its end: `finished` (it wrote `meta.yaml`, so an `incomplete` archive's tables failed), `stopped` (it was stopped or died first, or could not write `meta.yaml`), or null while `writing`.
 
-The survey holds an `flock` on `writer.lock` in the archive while it writes, and removes the file when it is done, so a survey that died reads `incomplete` at once, never `writing`. Whether a survey is alive is read from that lock, which a reader on the survey's own host sees reliably; on a shared filesystem read from another host, it may not be.
+The survey holds an `flock` on `writer.lock` in the archive while it writes, and removes the file when it is done, so a survey that died reads `incomplete` at once, never `writing`. An archive is made whole, its lock and marker in place, under a hidden name (`.<archive id>.<pid>.making`) and renamed into place, so none is ever listed half made. A survey killed while making one leaves that hidden directory: `recon status` names each whose survey is gone in an `archive_abandoned` warning, with the command that removes it, and removes nothing itself. Whether a survey is alive is read from that lock, which a reader on the survey's own host sees reliably; on a shared filesystem read from another host, it may not be.
 
 ## A table while it is written
 

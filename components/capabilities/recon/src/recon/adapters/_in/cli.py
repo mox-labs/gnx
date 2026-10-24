@@ -402,6 +402,7 @@ def status(mission: str | None, as_json: bool) -> None:
     if as_json:
         _emit(document.document())
         return
+    _print_warnings(document.warnings)
     plugins = document.plugins
     for broken in plugins.broken:
         err.print(

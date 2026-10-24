@@ -179,6 +179,12 @@ class ArchiveStore(Protocol):
         """Raises OSError when ``meta.yaml`` cannot be written; nothing partial is left."""
         ...
 
+    def abandoned(self, mission_dir: Path) -> list[Path]:
+        """What a survey that died while making an archive of the mission left behind, which
+        :meth:`archives` never lists: each only once its maker is gone on this host. Nothing
+        is removed."""
+        ...
+
     def archives(self, mission_dir: Path) -> list[Path]:
         """The mission's archives, oldest first: its directories named by
         :data:`ARCHIVE_ID_FORMAT`, and no other."""

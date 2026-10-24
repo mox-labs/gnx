@@ -1454,6 +1454,32 @@ class TestWatch:
         assert _error(bad_interval)["kind"] == "usage"
 
 
+def test_status_reports_an_archive_a_dead_survey_left_half_made(project: Path) -> None:
+    """Review (Dijkstra): a survey killed while making its archive leaves the hidden
+    directory it was making; no listing shows it and nothing removes it. status names each
+    whose survey is gone, with how to remove it, and removes nothing itself."""
+    _mission(project, "m", OK_CONFIG)
+    _invoke("survey", "m")
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    archives = project / ".recon" / "m" / "archive"
+    dead = archives / f".2026-01-02-030405-000001.{gone.pid}.making"
+    alive = archives / f".2026-01-02-030405-000002.{os.getpid()}.making"
+    for left in (dead, alive):
+        left.mkdir()
+        (left / ".incomplete").write_text("")
+
+    document = _doc(_invoke("status", "m", "--json"))
+    human = unstyle(_invoke("status").stderr)
+
+    [warning] = document["warnings"]
+    assert warning["kind"] == "archive_abandoned" and str(dead) in warning["message"]
+    assert str(dead) in warning["fix"]
+    assert str(dead) in human
+    assert dead.is_dir() and alive.is_dir(), "status removes nothing"
+    assert len(document["missions"][0]["history"]) == 1
+
+
 def test_a_killed_survey_reads_incomplete(project: Path) -> None:
     """SIGKILL runs no handler, so the archive is incomplete from the moment it is made."""
     survey, command_group = _survey_process(project, f"recon-sigkill-{uuid.uuid4().hex}")

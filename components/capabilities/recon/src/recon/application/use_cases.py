@@ -403,7 +403,21 @@ class Recon:
             root=str(self._missions.root),
             missions=[self._mission_status(name, history=mission is not None) for name in names],
             plugins=_installed(self._plugins),
+            warnings=[w.document() for name in names for w in self._abandoned(name)],
         )
+
+    def _abandoned(self, name: str) -> list[Problem]:
+        return [
+            Problem(
+                "",
+                f"mission {name}: a survey that died while making an archive left {left}, "
+                "which no listing shows and nothing reads",
+                kind="archive_abandoned",
+                fix=f"nothing was collected into it; remove it: rm -r '{left}'",
+                got=str(left),
+            )
+            for left in self._archives.abandoned(self._missions.mission_dir(name))
+        ]
 
     def _mission_status(self, name: str, *, history: bool = False) -> MissionStatus:
         mission = self._missions.mission_dir(name)

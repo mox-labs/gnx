@@ -136,6 +136,8 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "events_dropped",
     # a receiver of a survey's events had not returned from one when the survey ended
     "telemetry_stuck",
+    # what a survey that died while making its archive left behind, unlisted
+    "archive_abandoned",
 )
 
 

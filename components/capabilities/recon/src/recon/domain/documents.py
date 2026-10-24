@@ -200,6 +200,9 @@ class StatusDocument(Document):
     root: str
     missions: list[MissionStatus]
     plugins: InstalledPlugins
+    #: Problem records that do not stop the command: ``archive_abandoned``, each half-made
+    #: archive a dead survey left, with how to remove it.
+    warnings: list[dict[str, Any]] = []
 
 
 class QueryRows(Document):

@@ -224,6 +224,25 @@ class ArchiveFiles:
                 tmp.unlink()
             raise
 
+    def abandoned(self, mission_dir: Path) -> list[Path]:
+        archive = mission_dir / "archive"
+        if not archive.is_dir():
+            return []
+        left = []
+        for path in sorted(archive.iterdir()):
+            parts = path.name.split(".")  # "", archive id, pid, "making"
+            if (
+                path.is_dir()
+                and len(parts) == 4
+                and parts[0] == ""
+                and parts[3] == "making"
+                and _is_archive_id(parts[1])
+                and parts[2].isdigit()
+                and not _alive(int(parts[2]))
+            ):
+                left.append(path)
+        return left
+
     def archives(self, mission_dir: Path) -> list[Path]:
         archive = mission_dir / "archive"
         if not archive.is_dir():
@@ -576,6 +595,18 @@ def _hold(path: Path) -> int:
         os.close(descriptor)
         raise
     return descriptor
+
+
+def _alive(pid: int) -> bool:
+    """Whether a process ``pid`` runs on this host. A pid reused since reads alive, so what
+    it made is not reported: the error is on the side of saying nothing."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # another user's
+        return True
+    return True
 
 
 def _locked(path: Path) -> bool:
