@@ -143,7 +143,7 @@ class ArchiveStore(Protocol):
         """Hold the mission's ``stream`` for this writer until :meth:`release_stream` or its
         death: no other writer, in this process or another on this host, can hold it
         meanwhile, so the windows it adds take ids no other writer takes. Raises
-        ConflictError when another writer holds it."""
+        ReconError (``busy``) when another writer holds it."""
         ...
 
     def release_stream(self, mission_dir: Path, stream: str) -> None:

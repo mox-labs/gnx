@@ -14,7 +14,7 @@ import pytest
 
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.system_clock import SystemClock
-from recon.domain.errors import ConflictError
+from recon.domain.errors import EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT, ReconError
 from recon.domain.stream import window_id
 
 AT = datetime(2026, 10, 24, 1, 2, 3, tzinfo=UTC)
@@ -78,13 +78,19 @@ class TestAWindowIsAnArchive:
 
 
 class TestOneWriterAStream:
-    def test_a_second_writer_of_a_stream_is_refused_as_a_conflict(self, tmp_path: Path) -> None:
+    def test_a_second_writer_of_a_stream_is_refused_as_busy(self, tmp_path: Path) -> None:
+        """``busy``, recon's own kind with its own exit code: ``conflict`` means a config
+        would be overwritten, and a writer that holds the stream is another thing."""
         held = _store()
         held.hold_stream(tmp_path, "events")
 
-        with pytest.raises(ConflictError, match="another recon is writing stream events") as raised:
+        with pytest.raises(ReconError, match="another recon is writing stream events") as raised:
             _store().hold_stream(tmp_path, "events")
+        assert raised.value.kind == "busy"
+        assert raised.value.exit_code == EXIT_CODES["busy"] == 11
         assert raised.value.fix and "recon status" in raised.value.fix
+        assert "busy" in EXIT_MEANINGS and "busy" in EXIT_NEXT
+        assert "stream" not in EXIT_MEANINGS["conflict"], "conflict keeps its one meaning"
         held.release_stream(tmp_path, "events")
         _store().hold_stream(tmp_path, "events")
 

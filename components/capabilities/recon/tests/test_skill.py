@@ -178,7 +178,7 @@ def test_the_streaming_page_is_the_skill_reference() -> None:
     assert "recon --skill -r streaming" in SKILL
     for taught in ("window", "buffer.overflow", "drop_newest", "retain_unset", "provenance",
                    "--windows", "--until", "--forever", "--stream", "--since", "closed_by",
-                   "_position", "stream_overflow", "unbounded", "paced_by", "conflict",
+                   "_position", "stream_overflow", "unbounded", "paced_by", "busy",
                    "usage", "tail", "sse", "Last-Event-ID", "tombstone"):  # fmt: skip
         assert taught in REFERENCES["streaming"], taught
 

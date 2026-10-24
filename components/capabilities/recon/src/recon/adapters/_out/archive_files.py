@@ -84,7 +84,7 @@ from recon.domain.archives import (
     TableRecord,
 )
 from recon.domain.capture import CAPTURE_LOG_NAME
-from recon.domain.errors import ConflictError, QueryError, ReconError, UsageError
+from recon.domain.errors import QueryError, ReconError, UsageError
 from recon.domain.stream import window_index
 from recon.domain.type_url import DEFAULT_RECORDS_TYPE_URL
 
@@ -195,9 +195,10 @@ class ArchiveFiles:
         try:
             self._streams[directory] = _hold(directory / WRITER_LOCK)
         except OSError as exc:
-            raise ConflictError(
+            raise ReconError(
                 f"another recon is writing stream {stream} of {mission_dir.name}; a stream has "
                 "one writer at a time",
+                kind="busy",
                 fix=f"let it run, or stop it (`recon status {mission_dir.name}` shows the "
                 "stream writing); then stream again",
                 details={"stream": stream},

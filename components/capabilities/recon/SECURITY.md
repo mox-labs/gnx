@@ -300,7 +300,7 @@ A stream runs for as long as it is told to, so what it reaches, it reaches for t
   never removes the newest window or one that was never sealed, and it removes only
   directories in the stream's own directory, by the names the store listed.
 - **One writer a stream**: a second `recon stream` of the same stream is refused
-  (`conflict`) by an `flock` held for the run, so two processes never write one window id.
+  (`busy`) by an `flock` held for the run, so two processes never write one window id.
 
 ## Findings
 

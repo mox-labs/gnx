@@ -454,7 +454,7 @@ class Stream:
         interrupt seals it at once, what waits dropped). ``collect(after)`` starts the source
         after the position ``after`` (None: from its start); ``normalize`` shapes each record;
         ``close`` ends the collector, which ends a source that would not. Raises
-        ConflictError when another writer holds the stream."""
+        ReconError (``busy``) when another writer holds the stream."""
         self._archives.hold_stream(mission_dir, plan.name)
         try:
             return self._run(

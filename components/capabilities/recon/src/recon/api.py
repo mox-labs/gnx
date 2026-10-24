@@ -125,7 +125,7 @@ def stream(
     ``forever``, after one window, so it returns unless told otherwise. A later call goes on
     from the last window, its source resumed after the last record kept. ``on_event``
     receives each window as it is sealed. Raises UsageError for a bound it cannot keep,
-    NotFoundError for a collector that is no stream of the mission, ConflictError while
+    NotFoundError for a collector that is no stream of the mission, ReconError (``busy``) while
     another writer holds the stream. A window whose source failed is in the document:
     :func:`stream_failure` turns it into the error to act on."""
     return _root(root).stream(

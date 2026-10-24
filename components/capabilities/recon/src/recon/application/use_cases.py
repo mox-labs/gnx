@@ -446,7 +446,7 @@ class Recon:
         being written is then sealed ``signal``, and this returns. With none of ``windows``,
         ``until`` and ``forever``, it runs one window, so it always returns unless told
         otherwise. Raises UsageError for a bound it cannot keep, NotFoundError for a
-        collector that is no stream of the mission, ConflictError when another writer holds
+        collector that is no stream of the mission, ReconError (``busy``) when another writer holds
         the stream; a window whose source failed is in the document, and
         :func:`~recon.domain.documents.stream_failure` says what it adds up to."""
         windows = _stream_bound(windows, until, forever, self._clock.now(), name, collector)
