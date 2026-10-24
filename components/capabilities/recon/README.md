@@ -70,6 +70,8 @@ recon survey <mission> [-n|--dry-run] [-c <file> [--replace]]
 recon status [<mission>]                               missions, archives, installed plugins;
                                                        with a mission, every archive it has
 recon query <mission> "SQL" [--archive <id>]           DuckDB over an archive's tables
+recon watch <mission> [--archive <id>] [--cursor <c>] [--interval <s>] [--once]
+                                                       follow an archive as a survey writes it
 recon templates                                        list built-in templates
 recon capture <mission>                                append a hook payload (stdin) as a capture
 recon --skill [-r <reference>]                         print the skill (for Claude)
@@ -79,7 +81,7 @@ recon --skill [-r <reference>]                         print the skill (for Clau
 
 `init` reports its `outcome`: `created`, `unchanged` (the mission already had this config, byte for byte) or `replaced` (`--replace` overwrote a different one). A dry run shows each HTTP run's request as it would be sent: the method, the URL with every query parameter, the headers the mission decides and the body, with a credential `REDACTED` as telemetry has it. It runs and fetches nothing, but for an `mcp` run's preflight, which it names: it starts each stdio server (and connects to each remote one), lists its tools, checks each run's tool and arguments against them, and stops it. What it found is the plan's `requirements`, each with whether it holds, and `runnable`; a survey fails the table whose requirement does not hold, as `config`. `recon query` names the archive its rows came from (`archive_id`); `recon status <mission>` lists that mission's archives as `missions[0].history`, each with its id, path, when it started and finished, its state and its tables. One table SQL cannot read, such as an OpenAlex record keeping its word-keyed `abstract_inverted_index`, is a `table_unreadable` warning at the end of the survey, and does not stop queries of the others: they run with the same warning, and a query of that table fails as `query` with the fix. A failed query's fix is about what failed: the tables there are for a missing table, DuckDB's message and its SQL documentation otherwise. A row is cited by its line in one archive's table file: `SELECT ordinality AS line, * FROM read_json_auto('<archive path>/<table>.jsonl') WITH ORDINALITY`, never a glob across archives, whose columns can differ.
 
-Every command takes `--json`: one JSON document on stdout whose `schema` names its shape (`recon.v1.survey`, `recon.v1.plan`, `recon.v1.status`, `recon.v1.query-rows`, `recon.v1.templates`, `recon.v1.mission`, `recon.v1.capture`); collections are always wrapped in an object.
+Every command takes `--json`: one JSON document on stdout whose `schema` names its shape (`recon.v1.survey`, `recon.v1.plan`, `recon.v1.status`, `recon.v1.query-rows`, `recon.v1.templates`, `recon.v1.mission`, `recon.v1.capture`); collections are always wrapped in an object. `recon watch --json` is the one command that prints more than one: a `recon.v1.records-since` document a line, one per read, until it returns.
 
 ### Exit codes
 
@@ -125,7 +127,7 @@ A collector may declare `type_url:` (dotted grammar, default `recon.v1.records`)
 
 An archive's `state`, in `status` and `query`, is `ok`, `incomplete` or `writing`. The survey holds an `flock` on `writer.lock` while it writes, so `writing` is a survey running now, on this host, and `incomplete` is one that failed a table, was stopped or died. A table being written reaches its file a whole line at a time, at most 64 KiB or 250 ms after its collector gives each record; it is sealed when it ends, and a table that fails is retracted, its records with it. `query` reads only sealed tables, so a query of an archive being written sees the tables finished so far.
 
-`recon.read_since(mission, cursor)` follows an archive while it is written: each call returns the whole records written since `cursor` (from the first, without one), at most `limit` (1000 by default), from the sealed tables and the one being written alike, with the archive's `state`, the tables `sealed` or `retracted` since, and the `cursor` for the next call (`recon.v1.records-since`). The cursor is opaque: pass it on unchanged, with the archive's id as `archive=`; one recon did not give for that archive is a `usage` error. A table not yet sealed may still be retracted, which voids the records read from it. Reading writes nothing, so an archive is byte for byte the same whether or not it was read while being written.
+`recon watch <mission>` follows an archive while a survey writes it, printing each record as it is written, and returns when the survey ends (at once for a finished archive; `--once` reads once). In a program, `recon.read_since(mission, cursor)` is one read, and `recon.watch` each read in turn: each call returns the whole records written since `cursor` (from the first, without one), at most `limit` (1000 by default), from the sealed tables and the one being written alike, with the archive's `state`, the tables `sealed` or `retracted` since, and the `cursor` for the next call (`recon.v1.records-since`). The cursor is opaque: pass it on unchanged, with the archive's id as `archive=`; one recon did not give for that archive is a `usage` error. A table not yet sealed may still be retracted, which voids the records read from it. Reading writes nothing, so an archive is byte for byte the same whether or not it was read while being written.
 
 ## Capture logs
 
@@ -155,7 +157,7 @@ A span that failed has `status: error`, a `message` in recon's own words that qu
 
 - **Not an agent.** Recon doesn't use an LLM during execution. It runs the config you wrote. Intelligence lives outside the tool.
 - **Not a research autopilot.** Recon produces structured data; synthesis stays with Claude and with the human.
-- **Not a stream processor.** Each run produces a timestamped snapshot. Recon does one-shot collection, not pub/sub.
+- **Not a message bus.** A survey asks each source what its mission says, writes the answers into one timestamped archive, and ends. What it writes can be read while it runs (`recon watch`, `recon.read_since`), as the archive's own files; recon pushes nothing to subscribers.
 
 ## Design
 
@@ -179,8 +181,10 @@ The tests run offline, except the live integration tests against OpenAlex, arXiv
 - [docs/how-to/search-api-post-body.md](docs/how-to/search-api-post-body.md) — POST-body search APIs (Exa, Firecrawl, Tavily, Serper)
 - [docs/how-to/collect-from-an-mcp-server.md](docs/how-to/collect-from-an-mcp-server.md) — call an MCP server's tools and read its resources
 - [docs/how-to/capture-mcp-results.md](docs/how-to/capture-mcp-results.md) — capture MCP tool results with a hook and query them
+- [docs/how-to/watch-a-survey.md](docs/how-to/watch-a-survey.md) — read a survey's records while it runs
 - [docs/reference/extending.md](docs/reference/extending.md) — adding a collector type or a transform
 - [docs/reference/capture-format.md](docs/reference/capture-format.md) — the capture log format (`recon.v1.capture`), for a tool that writes captures
+- [docs/reference/live-reading.md](docs/reference/live-reading.md) — `recon watch`, `read_since` and archive states: the contract, the defaults, the refusals
 - [docs/design/2026-10-19-record.md](docs/design/2026-10-19-record.md) — the design judgments behind 0.11.0 and 0.12.0, and recon's claims
 - [CHANGELOG.md](CHANGELOG.md)
 - `recon --skill` — the skill Claude uses to author missions; `-r normalize-spec`, `-r config-patterns`, `-r capture-format` for the references. The plugin's copy is generated from it (`just recon-skill`).

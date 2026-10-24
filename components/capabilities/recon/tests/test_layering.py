@@ -309,7 +309,7 @@ class TestLibrarySurface:
         declared names too."""
         operations = {"init", "plan", "survey", "status", "query", "templates", "capture",
                       "survey_failure", "error_document", "skill", "skill_references",
-                      "configure_telemetry", "read_since"}  # fmt: skip
+                      "configure_telemetry", "read_since", "watch"}  # fmt: skip
         documents = {"MissionDocument", "PlanDocument", "SurveyDocument", "TableOutcome",
                      "StatusDocument", "QueryRows", "TemplatesDocument", "Capture",
                      "ErrorDocument", "RecordsSince"}  # fmt: skip
@@ -466,6 +466,6 @@ def test_the_public_names_are_the_ones_callers_use() -> None:
         "ReconError", "StatusDocument", "SurveyDocument", "TableOutcome", "TemplatesDocument",
         "UsageError", "__version__", "capture", "configure_telemetry", "error_document", "init",
         "plan", "query", "read_since", "RecordsSince", "skill", "skill_references", "status",
-        "survey", "survey_failure",
+        "survey", "survey_failure", "watch",
         "templates",
     }  # fmt: skip

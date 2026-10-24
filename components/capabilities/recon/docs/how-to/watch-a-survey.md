@@ -1,0 +1,50 @@
+# Watch a survey while it runs
+
+A survey of many sources can take minutes. You do not have to wait for it to end to read what it has collected: `recon watch` prints each record as the survey writes it, and returns when the survey ends.
+
+## 1. Start the survey
+
+```bash
+recon survey my-scan
+```
+
+In a second terminal, or from an agent that started the survey in the background:
+
+## 2. Watch it
+
+```bash
+recon watch my-scan
+```
+
+Each record is a line on stdout, `{"table": "...", "record": {...}}`, as soon as it is written (at most a quarter of a second after the collector gives it). Stderr says when each table is sealed, and the archive's state when the survey ends. `recon watch` then returns.
+
+For an agent, `--json` prints each read as one `recon.v1.records-since` document a line, with its `state`, its `records`, the tables `sealed` and `retracted` since, and a `cursor`:
+
+```bash
+recon watch my-scan --json
+```
+
+To look once and come back later, read once and keep the cursor:
+
+```bash
+recon watch my-scan --once --json          # note "archive_id" and "cursor"
+recon watch my-scan --archive <archive_id> --cursor <cursor> --json
+```
+
+The cursor is recon's: pass it on unchanged. One recon did not give for that archive exits 2, and its fix says to read without it.
+
+## 3. Read a failed table right
+
+A table that fails is retracted: the records printed from it are void, and stderr (or `retracted`, under `--json`) names it. Its error is in the archive's `meta.yaml`, and `recon status my-scan` shows it once the survey ends.
+
+## 4. Query what is sealed
+
+`recon query` on an archive being written reads the tables already sealed, and says `state: writing`:
+
+```bash
+recon query my-scan "SELECT count(*) FROM first_table" --json
+```
+
+The table being written is not a table yet: query it once `recon watch` says it is sealed.
+
+The flags, the defaults and the library calls are in [docs/reference/live-reading.md](../reference/live-reading.md).

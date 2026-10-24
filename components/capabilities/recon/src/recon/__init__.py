@@ -21,6 +21,7 @@ from recon.api import (
     status,
     survey,
     templates,
+    watch,
 )
 from recon.domain.documents import (
     Capture,
@@ -96,4 +97,5 @@ __all__ = [
     "survey",
     "survey_failure",
     "templates",
+    "watch",
 ]

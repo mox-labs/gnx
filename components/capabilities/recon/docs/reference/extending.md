@@ -9,6 +9,8 @@ Collector types and normalize transforms are extensions, registered through Pyth
 
 `recon status --json` lists what is installed under `plugins`, and lists separately anything that failed to load.
 
+A collector type's records are watched as they are written (`recon watch`, `recon.read_since`) with nothing asked of the type: recon writes each record it yields. A type that yields each record as it gets it is seen record by record; one that gathers everything first is seen when it yields.
+
 ## A collector type
 
 ```python

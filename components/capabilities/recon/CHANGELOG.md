@@ -5,20 +5,21 @@
 ### Changed (breaking)
 
 - **An archive's `state` can be `writing`.** `status` (each archive's `state`) and `query` (the document's `state`) say `writing` while a survey writes the archive, where they said `incomplete`, so a consumer that matched on `ok` and `incomplete` alone meets a third value. The survey holds an `flock` on `writer.lock` in the archive while it writes and removes it when done, so `incomplete` now means the survey failed a table, was stopped or died, never that it is still running. A survey's own `status` stays `ok` or `incomplete`.
-- **The `ArchiveStore` port** (what `root(archives=...)` takes) has `state(archive)` (`writing`, `complete` or `incomplete`) and `release(archive)` in place of `is_incomplete(archive)`, and its `tables()` lists a table not yet sealed, with `StoredTable.sealed` false.
+- **The `ArchiveStore` port** (what `root(archives=...)` takes) has `state(archive)` (`writing`, `complete` or `incomplete`) and `release(archive)` in place of `is_incomplete(archive)`, and `read_since(archive, cursor, *, limit)`; its `tables()` lists a table not yet sealed, with `StoredTable.sealed` false.
 
 ### Added
 
+- **`recon watch <mission>`** follows an archive as a survey writes it: each record as a JSON line, or under `--json` each read as a `recon.v1.records-since` line, and returns when the archive is no longer being written and all of it is printed (at once for a finished archive). `--once` reads once; `--interval` sets the seconds between reads (1 by default); `--cursor` reads on from an earlier read; `--archive` names an archive other than the latest. A cursor recon did not give, or an interval of 0 or less, exits 2 with a fix. `recon.watch(...)` is the same in a program. Its contract: `docs/reference/live-reading.md`; a walk-through: `docs/how-to/watch-a-survey.md`.
 - **`recon.read_since(mission, cursor=None, *, archive=None, limit=1000)`** follows an archive while a survey writes it. It returns `recon.v1.records-since`: the whole records written since the cursor, from sealed tables and the one being written, at most `limit`; the archive's `state`; the tables `sealed` and `retracted` since, each told once; and the opaque `cursor` to read on from. A cursor recon did not give for that archive, or a `limit` below 1, is a `usage` error with a fix.
 
 ### Changed
 
+- **The `TelemetryFactory` a `Recon` is built with** takes the survey's channel as a second argument, None for an operation with none.
 - **No receiver slows a survey.** OpenTelemetry's sink and the `on_event` callback receive a survey's events through a bounded queue (`ThreadChannel(queue=4096, drain_s=10.0)`, `root(channel=)`) that a thread drains, so a slow one neither slows the writing of the archive nor changes it. An event the queue cannot hold, or that the survey's end could not wait for, is dropped and counted in an `events_dropped` warning, a new problem kind. **An `on_event` that raises no longer fails the survey**: it gets nothing more, and is a `telemetry_failed` warning. `on_event` is called on that thread, not the survey's, and every call is made before `survey` returns.
 - **A table's progress is in its telemetry.** While a table is written, its `recon.collect` span has a `recon.collect.progress` event at most once a second (`Survey(progress_s=)`, 1.0 by default, timed by the clock port), carrying `recon.records`, the records written so far: a line in the archive's `telemetry.jsonl`, and a span event in OpenTelemetry.
 - **The event log opens its file once per survey**, not once per event, writes each event in one write as it happens, and closes it when the survey ends (`Telemetry.close()`).
 - **`query` reads only sealed tables.** A query of an archive being written sees the tables finished so far; the one being written is not a table yet, and the human output warns that the archive is being written.
-
-- **A table being written is readable as it goes.** Its records reach the table's file as whole lines at most 64 KiB or 250 ms after the collector gives them, never part of a line, where they were buffered and reached it every 1000 records. Flushing to the disk stays every 1000 records. `scripts/bench_table_write.py` measures the cost: 3.6-3.9% on a 200,000-line `cli` survey, against 84-89% for a write per line.
+- **A table being written is readable as it goes.** Its records reach the table's file as whole lines at most 64 KiB or 250 ms after the collector gives them, never part of a line, where they were buffered and reached it every 1000 records. Flushing to the disk stays every 1000 records. `scripts/bench_table_write.py` measures the cost: 3.6-3.9% on a 200,000-line `cli` survey, against 84-89% for a write per line. `ArchiveFiles(flush_bytes=, flush_s=)` sets other bounds.
 
 ## 0.12.0 — 2026-10-22
 

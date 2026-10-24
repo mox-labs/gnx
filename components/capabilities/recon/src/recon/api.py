@@ -14,10 +14,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from recon.domain.archives import READ_LIMIT
+from recon.domain.archives import READ_LIMIT, WATCH_INTERVAL_S
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from recon.composition import Recon
@@ -123,6 +123,24 @@ def read_since(
     reader changes no byte of the archive. Raises UsageError for a cursor recon did not give
     for that archive, or a ``limit`` below 1."""
     return _root(root).read_since(name, cursor, archive=archive, limit=limit)
+
+
+def watch(
+    name: str,
+    cursor: str | None = None,
+    *,
+    archive: str | None = None,
+    interval_s: float = WATCH_INTERVAL_S,
+    limit: int = READ_LIMIT,
+    root: Path | None = None,
+) -> Iterator[RecordsSince]:
+    """Follow the latest archive of ``name``, or the archive named, from ``cursor``: each
+    :func:`read_since` in turn, waiting ``interval_s`` seconds whenever a read has caught up
+    with a survey still writing it. Ends after the read that finds the archive no longer
+    ``writing`` with nothing left to read, so it returns: at once, after reading it whole,
+    for a finished archive. Raises UsageError for an ``interval_s`` not above 0, and as
+    :func:`read_since` does."""
+    return _root(root).watch(name, cursor, archive=archive, interval_s=interval_s, limit=limit)
 
 
 def configure_telemetry() -> list[Problem]:

@@ -1377,6 +1377,70 @@ def test_a_running_survey_reads_writing_and_queries_only_its_sealed_tables(proje
     assert _doc(_invoke("status", "--json"))["missions"][0]["latest"]["state"] == "incomplete"
 
 
+class TestWatch:
+    """A7: ``recon watch`` follows an archive as a survey writes it, over ``read_since``, and
+    returns: on a finished archive once it has printed it, on a live one once the survey ends
+    (or after one read, with ``--once``)."""
+
+    def test_a_finished_archive_is_printed_and_watch_returns(self, project: Path) -> None:
+        _mission(project, "m", OK_CONFIG)
+        _invoke("survey", "m")
+        human = _invoke("watch", "m")
+        reads = [json.loads(line) for line in _invoke("watch", "m", "--json").stdout.splitlines()]
+
+        assert human.exit_code == 0
+        assert [json.loads(line) for line in human.stdout.splitlines()] == [
+            {"table": "hello", "record": {"a": 1}},
+            {"table": "hello", "record": {"a": 2}},
+        ]
+        assert "hello sealed" in unstyle(human.stderr)
+        assert [r["schema"] for r in reads] == ["recon.v1.records-since"]
+        assert (reads[0]["state"], reads[0]["count"], reads[0]["sealed"]) == ("ok", 2, ["hello"])
+
+    def test_a_running_survey_is_followed_until_it_ends(self, project: Path) -> None:
+        _mission(project, "m", {"collectors": [
+            {"name": "slow", "type": "cli",
+             "run": "echo '{\"n\": 1}'; sleep 1; echo '{\"n\": 2}'; sleep 1; echo '{\"n\": 3}'"},
+        ]})  # fmt: skip
+        survey = subprocess.Popen(
+            [str(Path(sys.executable).with_name("recon")), "survey", "m", "--json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )  # fmt: skip
+        try:
+            archives = project / ".recon" / "m" / "archive"
+            for _ in range(100):
+                if archives.exists() and any(archives.iterdir()):
+                    break
+                time.sleep(0.05)
+            result = _invoke("watch", "m", "--json", "--interval", "0.1")
+        finally:
+            survey.communicate(timeout=30)
+
+        reads = [json.loads(line) for line in result.stdout.splitlines()]
+        assert result.exit_code == 0
+        assert reads[0]["state"] == "writing" and reads[-1]["state"] == "ok"
+        assert [r["record"]["n"] for read in reads for r in read["records"]] == [1, 2, 3]
+        assert len([read for read in reads if read["records"]]) > 1, "seen as it was written"
+        assert [t for read in reads for t in read["sealed"]] == ["slow"]
+
+    def test_once_reads_once_and_a_cursor_reads_on_from_it(self, project: Path) -> None:
+        _mission(project, "m", OK_CONFIG)
+        _invoke("survey", "m")
+        first = json.loads(_invoke("watch", "m", "--once", "--json").stdout)
+        again = _invoke("watch", "m", "--cursor", first["cursor"], "--json")
+        assert first["count"] == 2
+        assert json.loads(again.stdout)["records"] == []
+
+    def test_a_bad_cursor_or_interval_is_a_usage_error_with_a_fix(self, project: Path) -> None:
+        _mission(project, "m", OK_CONFIG)
+        _invoke("survey", "m")
+        bad_cursor = _invoke("watch", "m", "--cursor", "nonsense", "--json")
+        bad_interval = _invoke("watch", "m", "--interval", "0", "--json")
+        assert bad_cursor.exit_code == bad_interval.exit_code == recon.EXIT_CODES["usage"]
+        assert "without a cursor" in _error(bad_cursor)["fix"]
+        assert _error(bad_interval)["kind"] == "usage"
+
+
 def test_a_killed_survey_reads_incomplete(project: Path) -> None:
     """SIGKILL runs no handler, so the archive is incomplete from the moment it is made."""
     survey, command_group = _survey_process(project, f"recon-sigkill-{uuid.uuid4().hex}")

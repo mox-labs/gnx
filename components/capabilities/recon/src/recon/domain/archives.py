@@ -44,6 +44,10 @@ EVENT_LOG_NAME = "telemetry.jsonl"
 #: few enough that a read of a large archive's start stays small.
 READ_LIMIT = 1000
 
+#: By default, the seconds a watcher waits between reads of an archive a survey is writing,
+#: once it has read all there is so far (``progress_s``, the survey's own cadence, is 1.0).
+WATCH_INTERVAL_S = 1.0
+
 #: Where the writing of an archive stands. ``writing``: a survey holds it and is writing it.
 #: ``complete``: its survey finished it with every table. ``incomplete``: no survey holds it
 #: and it was never completed (a table failed, or its survey was stopped or died). A reader
