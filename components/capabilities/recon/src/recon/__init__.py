@@ -1,6 +1,7 @@
 """recon: config-driven collection. One YAML file names the sources and what to ask them;
 recon plans it, fetches or runs what it names, and writes the answers as JSONL tables that
-SQL can query.
+SQL can query. A source that does not end is collected as a stream, into windows that are
+archives too.
 
 The names below are the library API: the operations (each returns a versioned document),
 the skill text, the errors and the tables of error kinds and exit codes. The command line
@@ -19,6 +20,7 @@ from recon.api import (
     query,
     read_since,
     status,
+    stream,
     survey,
     templates,
     watch,
@@ -31,10 +33,13 @@ from recon.domain.documents import (
     QueryRows,
     RecordsSince,
     StatusDocument,
+    StreamDocument,
     SurveyDocument,
     TableOutcome,
     TemplatesDocument,
+    WindowOutcome,
     error_document,
+    stream_failure,
     survey_failure,
 )
 from recon.domain.errors import (
@@ -79,10 +84,12 @@ __all__ = [
     "ReconError",
     "RecordsSince",
     "StatusDocument",
+    "StreamDocument",
     "SurveyDocument",
     "TableOutcome",
     "TemplatesDocument",
     "UsageError",
+    "WindowOutcome",
     "__version__",
     "capture",
     "configure_telemetry",
@@ -94,6 +101,8 @@ __all__ = [
     "skill",
     "skill_references",
     "status",
+    "stream",
+    "stream_failure",
     "survey",
     "survey_failure",
     "templates",

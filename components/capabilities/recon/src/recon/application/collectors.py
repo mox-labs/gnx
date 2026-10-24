@@ -73,7 +73,8 @@ class CollectorPorts:
 class SurveyCollectors:
     """One survey's collectors by type name, the types whose factory raised, what to end
     when the survey ends, and, by type name, each collector's ``requirements`` when it has
-    one."""
+    one. ``raw`` is each collector as its type built it, before ``normalize:`` is applied to
+    what it yields: a stream normalizes each record itself, after it has captured it."""
 
     collectors: dict[str, Collector]
     failed: list[BrokenPlugin]
@@ -81,6 +82,7 @@ class SurveyCollectors:
     requirements: dict[
         str, Callable[[CollectorEntry, SourceEntry | None], Collection[Requirement]]
     ] = field(default_factory=dict)
+    raw: dict[str, Collector] = field(default_factory=dict)
 
     def close(self) -> list[BrokenPlugin]:
         """Close each collector that has a ``close()``, then the survey's Requester, once
@@ -250,6 +252,7 @@ def build_collectors(
         if ct.preflight and callable(requirements):
             built.requirements[name] = requirements
         built.collectors[name] = collector if ct.normalizes else Normalizing(collector, transforms)
+        built.raw[name] = collector
     close = getattr(requester, "close", None)
     if callable(close):
         built._ends.append(("requester", close))

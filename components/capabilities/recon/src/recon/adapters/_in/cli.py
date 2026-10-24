@@ -1,4 +1,4 @@
-"""The ``recon`` command line: init, survey, status, query, watch, templates, capture.
+"""The ``recon`` command line: init, survey, stream, status, query, watch, templates, capture.
 
 An inbound adapter over the library API and nothing else: every call goes through
 ``recon``'s declared names, so a program importing ``recon`` gets exactly what these
@@ -20,6 +20,7 @@ import json
 import signal
 import sys
 import traceback
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
@@ -189,6 +190,7 @@ def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
     recon survey my-scan                  collect into a new archive
     recon query my-scan "SELECT ..."      SQL over the latest archive
     recon watch my-scan                   follow an archive as a survey writes it
+    recon stream my-feed --collector ev   collect a source that does not end, in windows
     recon status                          missions, archives, installed plugins
     """
     if reference is not None and not skill:
@@ -297,6 +299,112 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
         _fail(failure, as_json=as_json)
 
 
+def _instant(ctx: click.Context, param: click.Parameter, value: str | None) -> datetime | None:
+    """A time given on the command line: ISO 8601, in UTC unless it names its offset."""
+    if value is None:
+        return None
+    try:
+        at = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise click.BadParameter(
+            f"{value!r} is not an ISO 8601 time (2026-10-24T18:00:00Z)", ctx, param
+        ) from exc
+    return at if at.tzinfo is not None else at.replace(tzinfo=UTC)
+
+
+# --- stream ------------------------------------------------------------------------------
+
+
+@main.command(epilog=EXIT_CODES)
+@click.argument("name")
+@click.option(
+    "--collector",
+    required=True,
+    metavar="NAME",
+    help="The stream to run: a collector of the mission with window:, or of a type whose "
+    "records do not end",
+)
+@click.option(
+    "--windows",
+    type=int,
+    default=None,
+    metavar="N",
+    help="Stop after sealing N windows (default: 1, unless --until or --forever is given)",
+)
+@click.option(
+    "--until",
+    callback=_instant,
+    default=None,
+    metavar="TIME",
+    help="Stop at TIME, ISO 8601 (UTC unless it names its offset); the window it cuts is "
+    "sealed until",
+)
+@click.option(
+    "--forever",
+    is_flag=True,
+    help="Run until stopped (Ctrl-C or SIGTERM seal the window being written, then return)",
+)
+@_config_option
+@_replace_option
+@click.option(
+    "-n", "--dry-run", is_flag=True, help="Validate and print the plan, every default with it"
+)
+@_json_option
+def stream(
+    name: str,
+    collector: str,
+    windows: int | None,
+    until: datetime | None,
+    forever: bool,
+    config: Path | None,
+    replace: bool,
+    dry_run: bool,
+    as_json: bool,
+) -> None:
+    """Collect a stream: a source that does not end, into windows, each sealed as an archive.
+
+    Each window ends when the first of its entry's window: bounds is reached (seconds,
+    records, bytes). It runs one window unless told otherwise, so it returns. Run again,
+    it goes on from the last window, after the last record it kept. Follow it as it is
+    written with `recon watch NAME --stream COLLECTOR`; query it with --stream.
+
+    \b
+    recon stream my-feed --collector events --dry-run
+    recon stream my-feed --collector events --windows 12
+    recon stream my-feed --collector events --until 2026-10-24T18:00:00Z --json
+    recon stream my-feed --collector events --forever
+    """
+    setup = _telemetry_warnings()
+    if dry_run:
+        plan = _operations().plan(name, config=config, replace=replace)
+        plan = plan.model_copy(update={"warnings": setup + plan.warnings})
+        if as_json:
+            _emit(plan.document())
+        else:
+            _print_plan(name, plan)
+        return
+    if not as_json:
+        _print_warnings(setup)
+    # Ctrl-C and SIGTERM reach the stream as KeyboardInterrupt, which it answers by sealing
+    # the window being written and returning: a stop of a stream is no failure.
+    document = _operations().stream(
+        name, collector, windows=windows, until=until, forever=forever, config=config,
+        replace=replace, on_event=None if as_json else _print_event,
+    )  # fmt: skip
+    document = document.model_copy(update={"warnings": setup + document.warnings})
+    if as_json:
+        _emit(document.document())
+    else:
+        _print_warnings(document.warnings)
+        err.print(f"[dim]{document.windows} window(s), {document.records} record(s), "
+                  f"{document.dropped} dropped; stream {escape(document.stream)}: "
+                  f"{document.state}[/]")  # fmt: skip
+        click.echo(document.path)
+    failure = recon.stream_failure(document)
+    if failure is not None:
+        _fail(failure, as_json=as_json)
+
+
 def _print_plan(name: str, plan: recon.PlanDocument) -> None:
     _print_warnings(plan.warnings)
     table = Table(show_header=True, header_style="dim", title=f"recon survey {name}: plan")
@@ -320,6 +428,10 @@ def _print_plan(name: str, plan: recon.PlanDocument) -> None:
         out.print(f"{holds}  {escape(said)}")
     if not plan.runnable:
         out.print("[red]Runnable: no[/]: a survey fails each table whose requirement is NO")
+    for value in plan.provenance:
+        said = f"{value.path} = {json.dumps(value.value)} ({value.source}"
+        said += f": {value.note})" if value.note else ")"
+        out.print(f"[dim]{escape(said)}[/]")
     if plan.writes.config:
         out.print(f"[dim]Would copy the config to {plan.writes.config}[/]")
     if plan.preflight:
@@ -378,6 +490,15 @@ def _print_event(event: dict[str, Any]) -> None:
         err.print(f"[yellow]  warning: archive: {escape(event['reason'])}[/]")
         if event.get("fix"):
             err.print(f"[dim]    fix: {escape(event['fix'])}[/]")
+    elif kind == "window":
+        said = (f"  {name} window {event['index']} ({event['id']}): {event['records']} "
+                f"records, {event['dropped']} dropped, closed by {event['closed_by']}")  # fmt: skip
+        if event["status"] == "error":
+            err.print(f"[red]{escape(said)}: ERROR {escape(event.get('reason') or '')}[/]")
+            if event.get("fix"):
+                err.print(f"[dim]    fix: {escape(event['fix'])}[/]")
+        else:
+            err.print(f"[dim]{escape(said)}[/]")
 
 
 # --- status ------------------------------------------------------------------------------
@@ -415,6 +536,12 @@ def status(mission: str | None, as_json: bool) -> None:
         _print_table(_missions_table(document))
     for table in _archive_tables(document):
         _print_table(table)
+    for listed in document.missions:
+        for stream in listed.streams:
+            latest = stream.latest.id if stream.latest else "-"
+            said = (f"{listed.name} stream {stream.name}: {stream.state or '-'}, "
+                    f"{stream.windows} window(s), latest {latest}")  # fmt: skip
+            err.print(f"[dim]{escape(said)}[/]")
     types = ", ".join(c.type for c in plugins.collectors) or "(none)"
     err.print(f"[dim]Collector types: {types}[/]")
     err.print(f"[dim]Transforms: {', '.join(plugins.transforms) or '(none)'}[/]")
@@ -471,10 +598,40 @@ def _archive_tables(document: recon.StatusDocument) -> list[Table]:
 @click.option(
     "--archive",
     default=None,
-    help="An archive id, as `recon status <mission>` lists them (default: the latest)",
+    help="An archive id, as `recon status <mission>` lists them (default: the latest); with "
+    "--stream, one window's id",
+)
+@click.option(
+    "--stream",
+    default=None,
+    metavar="NAME",
+    help="Query the stream's windows instead, each table the union of its windows' (default: "
+    "every window)",
+)
+@click.option(
+    "--since",
+    callback=_instant,
+    default=None,
+    metavar="TIME",
+    help="With --stream: only the windows that end after TIME (ISO 8601, UTC unless it says)",
+)
+@click.option(
+    "--until",
+    callback=_instant,
+    default=None,
+    metavar="TIME",
+    help="With --stream: only the windows that open before TIME",
 )
 @_json_option
-def query(name: str, sql: str, archive: str | None, as_json: bool) -> None:
+def query(
+    name: str,
+    sql: str,
+    archive: str | None,
+    stream: str | None,
+    since: datetime | None,
+    until: datetime | None,
+    as_json: bool,
+) -> None:
     """Query a mission's latest archive, or the one --archive names, with SQL (DuckDB).
 
     Each table is a view named after its file, every character but a letter, digit or _
@@ -483,15 +640,20 @@ def query(name: str, sql: str, archive: str | None, as_json: bool) -> None:
     file: read_json_auto('<archive dir>/<table>.jsonl') for an earlier archive,
     read_ndjson_objects(...) for each line as JSON text, and WITH ORDINALITY after either
     for each row's line number in the file. Read one archive's file: a glob across archives
-    numbers all its files' lines as one, and their columns can differ.
+    numbers all its files' lines as one, and their columns can differ. With --stream, the
+    stream's windows are read as one, chosen by --since and --until from their ids alone;
+    windows collected under different configs are refused, with the ranges to narrow to.
 
     \b
     recon query my-scan "SELECT title, year FROM s2_search LIMIT 10"
     recon status my-scan
     recon query my-scan "SELECT count(*) FROM s2_search" --archive 2026-04-01-143022-000000
+    recon query my-feed "SELECT count(*) FROM events" --stream events --since 2026-10-24T00:00Z
     """
     setup = _telemetry_warnings()
-    document = _operations().query(name, sql, archive=archive)
+    document = _operations().query(
+        name, sql, archive=archive, stream=stream, since=since, until=until
+    )
     document = document.model_copy(update={"warnings": setup + document.warnings})
     if as_json:
         _emit(document.document())
@@ -528,7 +690,14 @@ def query(name: str, sql: str, archive: str | None, as_json: bool) -> None:
 @click.option(
     "--archive",
     default=None,
-    help="An archive id, as `recon status <mission>` lists them (default: the latest)",
+    help="An archive id, as `recon status <mission>` lists them (default: the latest); with "
+    "--stream, the window to start from",
+)
+@click.option(
+    "--stream",
+    default=None,
+    metavar="NAME",
+    help="Follow the stream instead, window after window, from its latest window",
 )
 @click.option(
     "--cursor",
@@ -563,6 +732,7 @@ def query(name: str, sql: str, archive: str | None, as_json: bool) -> None:
 def watch(
     name: str,
     archive: str | None,
+    stream: str | None,
     cursor: str | None,
     interval_s: float | None,
     max_bytes: int | None,
@@ -577,13 +747,16 @@ def watch(
     {"table", "record"}, a JSON line on stdout; under --json each read is one
     recon.v1.records-since document a line instead, with the `cursor` to read on from.
     A table that fails while it is watched is retracted: the records printed from it are
-    void, and stderr (or `retracted`) says so. Reading writes nothing.
+    void, and stderr (or `retracted`) says so. Reading writes nothing. With --stream, the
+    stream is followed from its latest window (or --archive's) into each window after it,
+    and the watch returns once nothing extends the stream and its last window is printed.
 
     \b
     recon watch my-scan
     recon watch my-scan --json --once
     recon watch my-scan --json --max-bytes 65536
     recon watch my-scan --archive 2026-04-01-143022-000000 --cursor <cursor> --json
+    recon watch my-feed --stream events --json
     """
     given: dict[str, Any] = {} if interval_s is None else {"interval_s": interval_s}
     if max_bytes is not None:
@@ -592,6 +765,8 @@ def watch(
         every = f"{interval_s:g}s (--interval)" if interval_s is not None else "1s (default)"
         err.print(f"[dim]watching {escape(name)}; reading again every {every} while it is "
                   "written[/]")  # fmt: skip
+    if stream is not None:
+        given["stream"] = stream
     for read in _operations().watch(name, cursor, archive=archive, **given):
         if as_json:
             click.echo(json.dumps(read.document(), default=str))

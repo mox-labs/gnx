@@ -125,18 +125,22 @@ class Survey:
         started: datetime,
         config_sha256: str | None = None,
         resolved: Mapping[str, Any] | None = None,
+        streams: Collection[int] = (),
     ) -> list[TableOutcome]:
         """Run every table into ``archive``, a new one :meth:`ArchiveStore.create` made at
         ``started``, and write its ``meta.yaml``. Returns the tables, which also land in
         ``meta.yaml`` under ``tables``. ``resolved`` says where what the survey resolved came
         from (how its project root was found, which declared variables were set), and is
-        written as given."""
+        written as given. The entries at the positions in ``streams`` are streams, written
+        window by window into their own archives, so they are no table here."""
         captures = self._archives.capture_log(archive) if config.preserve_raw else None
         tables: list[TableOutcome] = []
         what = f"the survey's deadline ({config.deadline:g}s)" if config.deadline else ""
         fix = "raise deadline: at the top of the mission, or survey fewer tables"
         with self._deadline.bound(config.deadline, what, fix):
             for index, entry in enumerate(config.collectors):
+                if index in streams:
+                    continue
                 tables += self._run_entry(index, entry, config, collectors, archive, captures)
         meta = {
             "format_version": META_FORMAT_VERSION,

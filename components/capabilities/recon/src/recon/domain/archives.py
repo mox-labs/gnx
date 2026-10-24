@@ -276,6 +276,12 @@ class ArchiveQuery(Protocol):
         """
         ...
 
+    def execute_across(self, archives: Sequence[Path], sql: str) -> Rows:
+        """Run ``sql`` as :meth:`execute` does, against the sealed tables of every one of
+        ``archives`` (a stream's windows, in order, in one directory) at once: each table is
+        the union of its records in each, by column name. Raises as :meth:`execute` does."""
+        ...
+
     def unreadable(self, archive: Path) -> list[Problem]:
         """A ``table_unreadable`` problem for each of the archive's tables SQL cannot read,
         with the fix :meth:`execute` gives; none for an archive with no tables."""

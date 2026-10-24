@@ -841,7 +841,7 @@ def test_a_query_span_ends_with_the_count_of_its_rows(tmp_path: Path) -> None:
     sink, clock = Recorded(), FixedClock()
     archives = ArchiveFiles(clock)
 
-    def no_survey(*args: Any) -> Any:
+    def no_survey(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("a query builds no collector")
 
     querying = Recon(
@@ -851,7 +851,7 @@ def test_a_query_span_ends_with_the_count_of_its_rows(tmp_path: Path) -> None:
         clock=clock,
         plugins=load_plugins(),
         build_collectors=no_survey,
-        telemetry=lambda archive, channel: Telemetry([sink], clock),
+        telemetry=lambda archive, channel, reads=None: Telemetry([sink], clock),
         env={},
         version="0",
     )

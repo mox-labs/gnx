@@ -18,6 +18,7 @@ from recon.domain.archives import READ_LIMIT, READ_MAX_BYTES, WATCH_INTERVAL_S
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
+    from datetime import datetime
     from pathlib import Path
 
     from recon.composition import Recon
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
         QueryRows,
         RecordsSince,
         StatusDocument,
+        StreamDocument,
         SurveyDocument,
         TemplatesDocument,
     )
@@ -87,6 +89,37 @@ def survey(
     return _root(root).survey(name, config=config, replace=replace, on_event=on_event)
 
 
+def stream(
+    name: str,
+    collector: str,
+    *,
+    windows: int | None = None,
+    until: datetime | None = None,
+    forever: bool = False,
+    config: Path | None = None,
+    replace: bool = False,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+    root: Path | None = None,
+) -> StreamDocument:
+    """Plan, then collect the mission's stream ``collector`` (a collector with ``window:``,
+    or of a type whose records do not end) window after window, each sealed as an archive.
+    ``recon.v1.stream``.
+
+    It stops after ``windows`` windows, at ``until`` (a time with its zone), when its source
+    ends, or when this thread is interrupted (``KeyboardInterrupt``: the window being written
+    is sealed ``signal``, and this returns); with none of ``windows``, ``until`` and
+    ``forever``, after one window, so it returns unless told otherwise. A later call goes on
+    from the last window, its source resumed after the last record kept. ``on_event``
+    receives each window as it is sealed. Raises UsageError for a bound it cannot keep,
+    NotFoundError for a collector that is no stream of the mission, ConflictError while
+    another writer holds the stream. A window whose source failed is in the document:
+    :func:`stream_failure` turns it into the error to act on."""
+    return _root(root).stream(
+        name, collector, windows=windows, until=until, forever=forever, config=config,
+        replace=replace, on_event=on_event,
+    )  # fmt: skip
+
+
 def status(mission: str | None = None, *, root: Path | None = None) -> StatusDocument:
     """Every mission with its latest archive, and the installed plugins. ``recon.v1.status``.
 
@@ -97,11 +130,24 @@ def status(mission: str | None = None, *, root: Path | None = None) -> StatusDoc
 
 
 def query(
-    name: str, sql: str, *, archive: str | None = None, root: Path | None = None
+    name: str,
+    sql: str,
+    *,
+    archive: str | None = None,
+    stream: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    root: Path | None = None,
 ) -> QueryRows:
     """Rows from the latest archive of ``name``, or the archive named (an id ``status(name)``
-    lists). ``recon.v1.query-rows``, naming the archive as ``archive_id``."""
-    return _root(root).query(name, sql, archive=archive)
+    lists). ``recon.v1.query-rows``, naming the archive as ``archive_id``.
+
+    With ``stream``, rows from that stream's windows, each table the union of its windows':
+    every window, the one ``archive`` names, or those meeting ``[since, until)`` (times with
+    their zones), which ``windows`` lists. Windows collected under different configs are
+    refused (QueryError), with the ranges to narrow to."""
+    return _root(root).query(name, sql, archive=archive, stream=stream, since=since,
+                             until=until)  # fmt: skip
 
 
 def read_since(
@@ -109,6 +155,7 @@ def read_since(
     cursor: str | None = None,
     *,
     archive: str | None = None,
+    stream: str | None = None,
     limit: int = READ_LIMIT,
     max_bytes: int = READ_MAX_BYTES,
     root: Path | None = None,
@@ -123,8 +170,13 @@ def read_since(
     ``state`` says whether a survey is still writing the archive; ``sealed`` and
     ``retracted`` name the tables that ended since, a retracted table's records void. Reads
     write nothing, so a reader changes no byte of the archive. Raises UsageError for a
-    cursor recon did not give for that archive, or a ``limit`` or ``max_bytes`` below 1."""
-    return _root(root).read_since(name, cursor, archive=archive, limit=limit, max_bytes=max_bytes)
+    cursor recon did not give for that archive, or a ``limit`` or ``max_bytes`` below 1.
+
+    With ``stream``, a read of that stream's latest window (or the window ``archive`` names,
+    or where ``cursor`` left off): ``archive_id`` is the window read, and a read that ends a
+    sealed window with a later one there returns that one's cursor and ``more``."""
+    return _root(root).read_since(name, cursor, archive=archive, stream=stream, limit=limit,
+                                  max_bytes=max_bytes)  # fmt: skip
 
 
 def watch(
@@ -132,6 +184,7 @@ def watch(
     cursor: str | None = None,
     *,
     archive: str | None = None,
+    stream: str | None = None,
     interval_s: float = WATCH_INTERVAL_S,
     limit: int = READ_LIMIT,
     max_bytes: int = READ_MAX_BYTES,
@@ -142,10 +195,15 @@ def watch(
     with a survey still writing it. Ends after the read that finds the archive no longer
     ``writing`` with nothing left to read, so it returns: at once, after reading it whole,
     for a finished archive. Raises UsageError for an ``interval_s`` not above 0, and as
-    :func:`read_since` does."""
+    :func:`read_since` does.
+
+    With ``stream``, follow that stream from its latest window (or the one ``archive``
+    names) into every window after it; ends once nothing extends the stream and its last
+    window is read to its end."""
     return _root(root).watch(
-        name, cursor, archive=archive, interval_s=interval_s, limit=limit, max_bytes=max_bytes
-    )
+        name, cursor, archive=archive, stream=stream, interval_s=interval_s, limit=limit,
+        max_bytes=max_bytes,
+    )  # fmt: skip
 
 
 def configure_telemetry() -> list[Problem]:

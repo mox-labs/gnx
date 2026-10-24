@@ -161,12 +161,14 @@ def root(
         clock=clock,
     )
 
-    def telemetry(archive: Path | None, channel: Channel | None) -> Telemetry:
+    def telemetry(
+        archive: Path | None, channel: Channel | None, reads: Clock | None = None, /
+    ) -> Telemetry:
         otel = OtelEvents(__version__)
         sinks: list[EventSink] = [otel if channel is None else channel.sink(otel)]
         if archive is not None:
             sinks.insert(0, archives.event_log(archive))
-        return Telemetry(sinks, clock)
+        return Telemetry(sinks, reads or clock)
 
     found, found_by = (project.resolve(), "argument") if project else find_project(Path.cwd())
     missions = MissionFiles(found, clock)
