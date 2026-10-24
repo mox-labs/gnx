@@ -9,6 +9,7 @@ import hashlib
 import json
 import threading
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -17,6 +18,7 @@ import yaml
 
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.application.stream import Arrivals, Stream, StreamGaps, StreamPlan, StreamRun
+from recon.composition import root
 from recon.domain.models import CollectorEntry
 from recon.domain.stream import (
     POSITION_FIELD,
@@ -58,11 +60,15 @@ class Script:
         #: Set once the last record of the timeline has been taken from the source.
         self.done = threading.Event()
         self.after: Any = None
+        #: How many records the source has handed out: the pump has put each before it took
+        #: the next, so with ``given`` at n + 1 the first n are in the buffer or dropped.
+        self.given = 0
 
     def records(self, after: Any) -> Iterator[dict[str, Any]]:
         self.after = after
         for at, record in self._timeline:
             self._clock.set(at)
+            self.given += 1
             yield record
         self.done.set()
         if self._then == "fail":
@@ -302,6 +308,8 @@ class TestFlow:
         writer.start()
         if overflow != "block":  # a blocked source cannot finish before the store goes
             assert source.done.wait(10)
+        else:  # the pump holds the record after the bound's: the buffer is full
+            _wait_for(lambda: source.given > bound)
         store.go.set()
         writer.join(10)
         _, [window], _ = result[0]
@@ -324,7 +332,7 @@ class TestFlow:
         assert written == kept
         assert window.dropped == 13 - len(kept)
         assert _meta(window)["stream"]["sources"][0]["dropped"] == window.dropped
-        assert window.high_water <= 8
+        assert window.high_water == 8, "the buffer filled to its bound, and no further"
 
     def test_what_arrives_is_written_or_dropped_once_by_sequence_id(self, tmp_path: Path) -> None:
         """B10 #2: across windows and a burst, emitted = written + dropped; no id twice."""
@@ -357,6 +365,39 @@ class TestFlow:
                 assert span["last"] - span["first"] + 1 == o.table.records
         for before, after in zip(admitted, admitted[1:], strict=False):
             assert before["last"] + 1 == after["first"]
+
+    @pytest.mark.parametrize("overflow", ["drop_newest", "drop_oldest"])
+    def test_each_window_writes_or_drops_exactly_what_was_stamped_in_it(
+        self, tmp_path: Path, overflow: Overflow
+    ) -> None:
+        """Review item 13 (Ixian): conservation holds window by window, not only in total:
+        what a window wrote and dropped is the records whose stamps fall in it, and each it
+        wrote is one of those, whichever record the policy drops."""
+        clock = VirtualClock()
+        store = StalledArchives(clock)
+        timeline = [(i * 0.5, {"seq": i}) for i in range(200)]
+        source = Script(clock, timeline)
+        plan = _plan(WindowSpec(seconds=7), buffer=BufferSpec(records=16), overflow=overflow)
+        result: list[Any] = []
+        writer = threading.Thread(
+            target=lambda: result.append(_run(tmp_path, clock, plan, source, store=store))
+        )
+        writer.start()
+        assert source.done.wait(10)
+        store.go.set()
+        writer.join(10)
+        run, outcomes, _ = result[0]
+
+        stamped: dict[int, list[int]] = {}
+        for at, record in timeline:
+            stamped.setdefault(int(at // 7), []).append(record["seq"])
+        assert sum(o.dropped for o in outcomes) > 0, "the burst overflowed"
+        assert [o.index for o in outcomes] == sorted(stamped)
+        for o in outcomes:
+            written = [row["seq"] for row in _rows(o)]
+            assert o.table.records + o.dropped == len(stamped[o.index]), o.index
+            assert set(written) <= set(stamped[o.index]), o.index
+        assert run.records + run.dropped == 200
 
     def test_a_record_over_max_record_bytes_is_dropped_and_counted(self, tmp_path: Path) -> None:
         clock = VirtualClock()
@@ -689,15 +730,57 @@ class TestDeterminism:
         assert trees[0] == trees[1]
         assert len(trees[0]) > 10, "several windows were compared"
 
+    def test_a_window_that_dropped_records_is_not_reproducible(self, tmp_path: Path) -> None:
+        """Review item 12 (Ixian): what the buffer dropped depends on the writer's speed,
+        and its capture holds only what was written, so the window says it cannot be
+        replayed, though it keeps a capture (one that dropped nothing can: the replay test
+        below)."""
+        clock = VirtualClock()
+        store = StalledArchives(clock)
+        source = Script(clock, [(0.0, {"seq": i}) for i in range(12)])
+        plan = _plan(WindowSpec(seconds=20), buffer=BufferSpec(records=8),
+                     overflow="drop_newest")  # fmt: skip
+        result: list[Any] = []
+        writer = threading.Thread(
+            target=lambda: result.append(
+                _run(tmp_path, clock, plan, source, store=store, preserve_raw=True)
+            )
+        )
+        writer.start()
+        assert source.done.wait(10)
+        store.go.set()
+        writer.join(10)
+        _, [burst], _ = result[0]
+
+        assert burst.dropped == 4
+        assert _meta(burst)["stream"]["reproducible"] is False
+        assert (Path(burst.archive) / "captures.jsonl").exists(), "captured, yet not replayable"
+
+    def test_a_window_kept_without_captures_is_not_reproducible(self, tmp_path: Path) -> None:
+        clock = VirtualClock()
+
+        _, [window], _ = _run(
+            tmp_path, clock, _plan(WindowSpec(seconds=60)), Script(clock, _seq(3)),
+            preserve_raw=False,
+        )  # fmt: skip
+
+        assert window.dropped == 0
+        assert _meta(window)["stream"]["reproducible"] is False
+        assert not (Path(window.archive) / "captures.jsonl").exists()
+
     def test_a_sealed_window_replays_exactly_from_its_capture_under_another_clock(
         self, tmp_path: Path
     ) -> None:
+        """Review item 15 (Ixian): the replay is recon's own: a mission whose ``capture``
+        collector reads the window's capture, surveyed on a clock at another epoch, writes the
+        window's table byte for byte. Each frame's offset also puts it in its window by the
+        stream's own windowing, which a frame moved across the boundary fails."""
         clock = VirtualClock()
         timeline = [(i * 1.3, {"seq": i, POSITION_FIELD: i}) for i in range(30)]
         spec = WindowSpec(seconds=10)
 
         _, outcomes, _ = _run(
-            tmp_path,
+            tmp_path / "streamed",
             clock,
             _plan(spec),
             Script(clock, timeline),
@@ -708,21 +791,17 @@ class TestDeterminism:
         sealed = [o for o in outcomes if o.closed_by == "window"]
         assert len(sealed) >= 2
         for window in sealed:
-            frames = _frames(Path(window.archive))
+            archive = Path(window.archive)
+            table = (archive / window.table.file).read_bytes()
             assert _meta(window)["stream"]["reproducible"] is True
-            assert (
-                _replay(frames, spec, window.index)
-                == (Path(window.archive) / window.table.file).read_bytes()
-            )
+            assert table.count(b"\n") >= 7, "the window holds records to replay"
+            assert _replayed(tmp_path / f"replay-{window.index}", archive) == table
+            assert _members(_frames(archive), spec, window.index)
 
-        # Check the checker: one arrival moved across the boundary changes the replay.
-        window = sealed[0]
-        frames = _frames(Path(window.archive))
-        frames[-1] = {**frames[-1], "at": 10.0}
-        assert (
-            _replay(frames, spec, window.index)
-            != (Path(window.archive) / window.table.file).read_bytes()
-        )
+        # Check the checker: one arrival moved across the boundary leaves the window.
+        frames = _frames(Path(sealed[0].archive))
+        frames[-1] = {**frames[-1], "at": spec.seconds}
+        assert not _members(frames, spec, sealed[0].index)
 
 
 # --- helpers ---------------------------------------------------------------------------------
@@ -763,17 +842,32 @@ def _frames(archive: Path) -> list[dict[str, Any]]:
     return [json.loads(frame) for frame in body.splitlines()]
 
 
-def _replay(frames: list[dict[str, Any]], spec: WindowSpec, index: int) -> bytes:
-    """The window's table, rebuilt from its frames alone: assigned to windows again from
-    their offsets, then shaped as the stream shaped them."""
+def _members(frames: list[dict[str, Any]], spec: WindowSpec, index: int) -> bool:
+    """Whether every frame's offset puts it in window ``index``, by the stream's windowing."""
     windowing = Windowing(spec, 0.0, index=index)
-    lines = []
     for frame in frames:
-        record = frame["record"]
-        size = len(json.dumps(record, default=str).encode())
+        size = len(json.dumps(frame["record"], default=str).encode())
         _, window, _ = windowing.arrive(frame["at"], size)
         if window != index:
-            continue
-        shaped = {"n": record["seq"], POSITION_FIELD: record[POSITION_FIELD]}
-        lines.append(json.dumps(shaped, default=str) + "\n")
-    return "".join(lines).encode()
+            return False
+    return True
+
+
+def _replayed(project: Path, window: Path) -> bytes:
+    """The window's table, collected again by recon's own ``capture`` collector from the
+    window's capture alone, shaped as the stream shaped it, on a clock at another epoch."""
+    mission = project / ".recon" / "replay"
+    mission.mkdir(parents=True)
+    (project / ".git").mkdir()
+    shaped = {"n": "record.seq", POSITION_FIELD: f"record.{POSITION_FIELD}"}
+    collector = {"name": "s", "type": "capture", "path": str(window / "captures.jsonl"),
+                 "normalize": shaped}  # fmt: skip
+    config = yaml.safe_dump({"collectors": [collector]}, sort_keys=False)
+    (mission / "config.yaml").write_text(config)
+    later = VirtualClock(datetime(2031, 6, 7, 8, 9, 10, tzinfo=UTC))
+
+    document = root({}, project=project, clock=later).survey("replay")
+
+    assert document.status == "complete", document.warnings
+    [table] = document.tables
+    return (Path(document.archive) / table.file).read_bytes()
