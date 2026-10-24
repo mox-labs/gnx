@@ -78,7 +78,7 @@ if TYPE_CHECKING:
     from recon.domain.documents import Capture
     from recon.domain.missions import ConfigFile, MissionStore
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
-    from recon.domain.stream import GapLog
+    from recon.domain.stream import GapLog, WindowSpec
     from recon.domain.telemetry import Channel, EventCallback, Telemetry
 
 
@@ -240,7 +240,8 @@ class Recon:
         With ``stream``, what :meth:`stream` would do with ``windows``, ``until`` and
         ``forever``: it refuses what that refuses, and ``provenance`` also says how long the
         run is and why (``stream.windows``, one by default; ``stream.until``;
-        ``stream.forever``)."""
+        ``stream.forever``), and when it returns at the latest (``stream.returns``: seconds
+        from its start, or null when only a stop or its source ends it)."""
         bound = None if stream is None else _stream_bound(
             windows, until, forever, self._clock.now(), name, stream
         )  # fmt: skip
@@ -249,8 +250,12 @@ class Recon:
         assert plan.config is not None  # _prepare raises on an invalid plan
         provenance = list(plan.provenance)
         if stream is not None:
-            _planned_stream(plan, name, stream)
+            planned = _planned_stream(plan, name, stream)
             provenance += _run_bound(bound, windows, until, forever)
+            returns_s, returns = _returns(planned.window, bound, until, forever, self._clock.now())
+            provenance.append(
+                SourcedValue(path="stream.returns", value=returns_s, source="recon", note=returns)
+            )
         requirements, said, broken = self._preflight(mission, plan.config)
         return PlanDocument(
             mission=name,
@@ -456,7 +461,8 @@ class Recon:
         for a collector that is no stream of the mission, ReconError (``busy``) when another
         writer holds the stream; a window whose source failed is in the document, and
         :func:`~recon.domain.documents.stream_failure` says what it adds up to."""
-        windows = _stream_bound(windows, until, forever, self._clock.now(), name, collector)
+        now = self._clock.now()
+        windows = _stream_bound(windows, until, forever, now, name, collector)
         source, plan, copy_to = self._prepare(name, config, replace)
         assert plan.config is not None  # _prepare raises on an invalid plan
         planned = _planned_stream(plan, name, collector)
@@ -464,10 +470,27 @@ class Recon:
             self._missions.write_config(name, source.text)
         mission = self._missions.mission_dir(name)
         sha256 = hashlib.sha256(source.text).hexdigest()
+        started: list[Problem] = []
+        if on_event is not None:
+            returns_s, returns = _returns(planned.window, windows, until, forever, now)
+            try:
+                on_event({"kind": "stream", "name": collector, "returns_s": returns_s,
+                          "returns": returns})  # fmt: skip
+            except Exception as exc:  # a receiver that fails is said, never the stream's end
+                started.append(
+                    Problem(
+                        "",
+                        f"telemetry stopped going to a receiver that failed: {exc!r}",
+                        kind="telemetry_failed",
+                        fix="the collected data is unaffected; fix the on_event callback",
+                    )
+                )
+                on_event = None
         run, found = self._run_stream(
             mission, plan.config, planned, sha256, windows=windows, until=until,
             on_event=on_event, stop=stop,
         )  # fmt: skip
+        found = started + found
         return StreamDocument(
             mission=name,
             stream=collector,
@@ -1127,6 +1150,28 @@ def _run_bound(
             )
         )
     return said
+
+
+def _returns(
+    window: WindowSpec, bound: int | None, until: datetime | None, forever: bool, now: datetime
+) -> tuple[float | None, str]:
+    """When a stream's run returns at the latest, in seconds from its start (None when no time
+    bounds it), and that said for a person or an agent deciding whether to wait for it."""
+    if forever:
+        return None, "only when stopped (Ctrl-C or SIGTERM), or when its source ends"
+    limits = [] if bound is None or window.seconds is None else [bound * window.seconds]
+    if until is not None:
+        limits.append(max(0.0, (until - now).total_seconds()))
+    if not limits:
+        return None, (
+            f"after {bound} window(s), each ended by its records or bytes: when the source has "
+            "sent them, or it ends, or the stream is stopped"
+        )
+    most = min(limits)
+    return most, (
+        f"returns within {most:g}s; sooner when its source ends or a window's records or bytes "
+        "end it first. To not wait: a shorter window: seconds, or run it in the background"
+    )
 
 
 def _collect(

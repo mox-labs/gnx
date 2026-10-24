@@ -386,6 +386,45 @@ class TestTheCommandLine:
         assert {(v["path"], v["value"], v["source"]) for v in provenance} >= {said}
         assert path.startswith("stream.")
 
+    @pytest.mark.parametrize(
+        ("flags", "returns"), [([], 10.0), (["--windows", "4"], 40.0), (["--forever"], None)]
+    )
+    def test_recon_stream_dry_run_says_when_the_run_returns(
+        self, tmp_path: Path, flags: list[str], returns: float | None
+    ) -> None:
+        """Review item 21 (Erlang): an agent learns before it runs a stream how long the
+        command holds it: at most, in seconds, or null for one only a stop ends."""
+        clock = VirtualClock()
+        _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
+        recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 3))
+
+        result = CliRunner().invoke(
+            main, ["stream", "m", "--collector", "events", "--dry-run", "--json", *flags],
+            obj=recon_,
+        )  # fmt: skip
+
+        assert result.exit_code == 0, result.output
+        said = {v["path"]: v for v in json.loads(result.stdout)["provenance"]}
+        assert said["stream.returns"]["value"] == returns
+        assert said["stream.returns"]["note"]
+
+    def test_recon_stream_says_when_it_will_return_as_it_starts(self, tmp_path: Path) -> None:
+        clock = VirtualClock()
+        _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
+        events: list[dict[str, Any]] = []
+        _root(tmp_path, clock, Feed(clock, 1.0, 30)).stream("m", "events", on_event=events.append)
+        again = VirtualClock()
+
+        result = CliRunner().invoke(
+            main, ["stream", "m", "--collector", "events"],
+            obj=_root(tmp_path, again, Feed(again, 1.0, 30)),
+        )  # fmt: skip
+
+        assert events[0]["kind"] == "stream"
+        assert (events[0]["name"], events[0]["returns_s"]) == ("events", 10.0)
+        assert result.exit_code == 0, result.output
+        assert "returns within 10s" in result.stderr.splitlines()[0]
+
     def test_recon_stream_dry_run_refuses_what_the_run_would(self, tmp_path: Path) -> None:
         clock = VirtualClock()
         _mission(tmp_path, {"window": {"seconds": 10}})

@@ -73,10 +73,10 @@ recon stream <mission> --collector <name> [--windows N | --until TIME | --foreve
 | `--windows` | 1, when neither `--until` nor `--forever` is given | stop after sealing N windows |
 | `--until` | none | stop at TIME (ISO 8601, UTC unless it names its offset): the window it cuts is sealed `until` |
 | `--forever` | off | run until stopped |
-| `-n`, `--dry-run` | off | print the plan and run nothing, refusing what the run would; `provenance` also says how long the run is and why (`stream.windows`, `stream.until`, `stream.forever`, `source` `command` or `recon`) |
+| `-n`, `--dry-run` | off | print the plan and run nothing, refusing what the run would; `provenance` also says how long the run is and why (`stream.windows`, `stream.until`, `stream.forever`, `source` `command` or `recon`), and when it returns at the latest: `stream.returns`, seconds from its start (one 300 s window: 300), or null when only a stop or the source ends it |
 | `-c`, `--replace` | | as `recon survey`'s |
 
-It always returns unless told otherwise. Ctrl-C or SIGTERM is a stop, not a failure: the window being written is sealed `signal` once what waits in the buffer is written, however busy the writer is when it comes, and the command returns. A second one seals it at once: what waits, and what later windows had counted, is counted dropped in it. A third is an interrupt, as for any other command. One process runs one stream; a second writer of the same stream is refused with `busy` (exit 11). Run again, a stream goes on from its last window.
+It always returns unless told otherwise, and says when as it starts (stderr; `{"kind": "stream", "returns_s", "returns"}` to `on_event`): one window of the default 300 s holds the command up to five minutes, so set a shorter `window:` or run it in the background when that is too long to wait. Ctrl-C or SIGTERM is a stop, not a failure: the window being written is sealed `signal` once what waits in the buffer is written, however busy the writer is when it comes, and the command returns. A second one seals it at once: what waits, and what later windows had counted, is counted dropped in it. A third is an interrupt, as for any other command. One process runs one stream; a second writer of the same stream is refused with `busy` (exit 11). Run again, a stream goes on from its last window.
 
 Refused with exit 2 (`usage`) and a fix: `--forever` with `--windows` or `--until`; `--windows` below 1; an `--until` that has passed. A collector that is no stream of the mission is `not_found` (exit 4), naming the mission's streams.
 

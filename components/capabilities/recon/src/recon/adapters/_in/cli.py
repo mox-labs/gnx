@@ -531,6 +531,8 @@ def _print_event(event: dict[str, Any]) -> None:
         err.print(f"[yellow]  warning: archive: {escape(event['reason'])}[/]")
         if event.get("fix"):
             err.print(f"[dim]    fix: {escape(event['fix'])}[/]")
+    elif kind == "stream":
+        err.print(f"[dim]stream {escape(name)}: {escape(event['returns'])}[/]")
     elif kind == "window":
         said = (f"  {name} window {event['index']} ({event['id']}): {event['records']} "
                 f"records, {event['dropped']} dropped, closed by {event['closed_by']}")  # fmt: skip
