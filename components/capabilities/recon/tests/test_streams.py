@@ -22,6 +22,7 @@ from recon.domain.stream import (
     POSITION_FIELD,
     BufferSpec,
     Overflow,
+    StreamStop,
     Windowing,
     WindowSpec,
 )
@@ -117,10 +118,18 @@ def _run(
     windows: int | None = None,
     preserve_raw: bool = False,
     normalize: Callable[[dict[str, Any]], dict[str, Any]] = dict,
+    stop: StreamStop | None = None,
+    on_window: Callable[[WindowOutcome], None] | None = None,
 ) -> tuple[StreamRun, list[WindowOutcome], list[dict[str, Any]]]:
     store = store or ArchiveFiles(clock)
     events: list[dict[str, Any]] = []
     outcomes: list[WindowOutcome] = []
+
+    def sealed(outcome: WindowOutcome) -> None:
+        outcomes.append(outcome)
+        if on_window is not None:
+            on_window(outcome)
+
     stream = Stream(store, clock, "test", telemetry=_telemetry(store, events))
     run = stream.run(
         project,
@@ -130,7 +139,8 @@ def _run(
         close=source.close,
         windows=windows,
         preserve_raw=preserve_raw,
-        on_window=outcomes.append,
+        on_window=sealed,
+        stop=stop,
     )
     return run, outcomes, events
 
@@ -428,6 +438,101 @@ class TestEveryRecordIsCountedWhenTheStreamBreaks:
 
         assert window.closed_by == "error", "no ticker, no until: still it ends"
         assert run.records == 1
+
+
+class TestAStopAsked:
+    """Review item 6 (Erlang #3): a stop is asked of the stream (what ``recon stream``'s
+    SIGINT and SIGTERM handlers do), never raised in the writer, so the first one drains
+    however busy the writer is when it comes, and a second seals at once: before the stop
+    object, the first Ctrl-C usually landed inside the store's write and halted at once."""
+
+    def _stalled(
+        self, tmp_path: Path, plan: StreamPlan, stop: StreamStop, **given: Any
+    ) -> tuple[Script, StalledArchives, threading.Thread, list[Any]]:
+        clock = VirtualClock()
+        store = StalledArchives(clock)
+        source = Script(clock, _seq(10), then="quiet", quiet_to=10.0)
+        result: list[Any] = []
+        writer = threading.Thread(
+            target=lambda: result.append(
+                _run(tmp_path, clock, plan, source, store=store, stop=stop, **given)
+            )
+        )
+        writer.start()
+        assert source.done.wait(10)
+        return source, store, writer, result
+
+    def test_the_first_stop_seals_the_window_once_what_waits_is_written(
+        self, tmp_path: Path
+    ) -> None:
+        stop = StreamStop()
+        plan = _plan(WindowSpec(seconds=60))
+        _, store, writer, result = self._stalled(tmp_path, plan, stop)
+
+        stop.ask()  # the writer is in the store's write, holding none of the ten
+        _wait_for(lambda: stop.heard == 1)
+        store.go.set()
+        writer.join(10)
+        run, [window], _ = result[0]
+
+        assert (window.closed_by, window.table.records, window.dropped) == ("signal", 10, 0)
+        assert run.records == 10
+
+    def test_a_second_stop_seals_it_at_once_what_waits_counted_dropped(
+        self, tmp_path: Path
+    ) -> None:
+        stop = StreamStop()
+        plan = _plan(WindowSpec(seconds=60))
+        _, store, writer, result = self._stalled(tmp_path, plan, stop)
+
+        stop.ask()
+        stop.ask()
+        _wait_for(lambda: stop.heard == 2)
+        store.go.set()
+        writer.join(10)
+        run, [window], _ = result[0]
+
+        assert (window.closed_by, window.table.records, window.dropped) == ("signal", 0, 10)
+        assert run.records + run.dropped == 10
+
+    def test_a_second_stop_between_windows_counts_the_next_ones_records_in_it(
+        self, tmp_path: Path
+    ) -> None:
+        """The first window sealed, the second's records waiting, and both stops asked before
+        the writer opens it: the second window is sealed ``signal``, its records dropped."""
+        clock = VirtualClock()
+        stop = StreamStop()
+        source = Script(clock, _seq(8), then="quiet", quiet_to=8.0)
+
+        def between(outcome: WindowOutcome) -> None:
+            if outcome.index == 0:
+                assert source.done.wait(10), "the second window's three wait"
+                stop.ask()
+                stop.ask()
+                _wait_for(lambda: stop.heard == 2)
+
+        run, outcomes, _ = _run(
+            tmp_path, clock, _plan(WindowSpec(records=5)), source, stop=stop, on_window=between
+        )
+
+        assert [(o.closed_by, o.table.records, o.dropped) for o in outcomes] == [
+            ("records", 5, 0),
+            ("signal", 0, 3),
+        ]
+        assert run.records + run.dropped == 8
+
+    def test_a_stop_asked_before_the_stream_starts_stops_it_as_it_starts(
+        self, tmp_path: Path
+    ) -> None:
+        clock = VirtualClock()
+        stop = StreamStop()
+        stop.ask()
+        source = Script(clock, [], then="quiet", quiet_to=1.0)
+
+        run, outcomes, _ = _run(tmp_path, clock, _plan(WindowSpec(seconds=60)), source, stop=stop)
+
+        assert [o.closed_by for o in outcomes] == ["signal"]
+        assert run.records == 0
 
 
 class TestTheMetaIsTheSealedFile:

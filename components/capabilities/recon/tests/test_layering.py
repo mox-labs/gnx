@@ -73,7 +73,10 @@ PURE_STDLIB = frozenset(
 #: What a layer may import beyond that. The application hashes the config it ran and encodes
 #: a hook payload as JSON; the domain does neither. The domain reads ``threading.TIMEOUT_MAX``,
 #: the longest wait the platform's timers take, to hold a source's ``timeout`` and rate to it
-#: (``domain/clock.py``); it starts no thread. Accepted (owner ruling 2026-10-22).
+#: (``domain/clock.py``); it starts no thread. Accepted (owner ruling 2026-10-22). The public
+#: ``StreamStop`` (``domain/stream.py``, review item 6) holds a condition a stream's own thread
+#: waits on, and starts no thread either; it is in the domain because the facade may import
+#: nothing else (not yet ruled on by the owner).
 LAYER_STDLIB = {
     "domain": frozenset({"threading"}),
     "application": frozenset({"hashlib", "json", "threading"}),
@@ -308,7 +311,8 @@ class TestLibrarySurface:
         collector types lives in ``recon.domain.collector`` and is not re-exported.
 
         Changed requirement: the operations return typed documents, so their types are
-        declared names too."""
+        declared names too. Changed again (review item 6): a control an operation takes to be
+        steered while it runs, ``StreamStop``, is declared too."""
         operations = {"init", "plan", "survey", "status", "query", "templates", "capture",
                       "survey_failure", "error_document", "skill", "skill_references",
                       "configure_telemetry", "read_since", "watch", "stream",
@@ -321,7 +325,8 @@ class TestLibrarySurface:
                   "QueryError", "CollectionError", "Problem"}  # fmt: skip
         tables = {"ERROR_KINDS", "EXIT_CODES", "EXIT_MEANINGS", "EXIT_NEXT", "PROBLEM_KINDS",
                   "__version__"}  # fmt: skip
-        assert set(recon.__all__) == operations | documents | errors | tables
+        controls = {"StreamStop"}  # what an operation takes to be steered while it runs
+        assert set(recon.__all__) == operations | documents | errors | tables | controls
 
     def test_no_declared_name_is_shadowed_by_a_subpackage(self) -> None:
         """Importing ``recon.<sub>`` binds ``<sub>`` on ``recon``; a function of the same
@@ -473,4 +478,5 @@ def test_the_public_names_are_the_ones_callers_use() -> None:
         "survey", "survey_failure", "watch",
         "templates",
         "stream", "stream_failure", "StreamDocument", "WindowOutcome",
+        "StreamStop",
     }  # fmt: skip

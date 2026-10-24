@@ -56,6 +56,7 @@ from recon.domain.errors import ErrorKind, Problem, ReconError
 from recon.domain.stream import (
     POSITION_FIELD,
     Gap,
+    StreamStop,
     WindowEnd,
     Windowing,
     window_id,
@@ -194,6 +195,10 @@ class Arrivals:
         self._ledgers: dict[int, _Ledger] = {}
         #: False once the stream has ended: no record is admitted, or counted, after that.
         self._admitting = True
+        #: The window the writer is writing, or opens next: a second stop counts in it.
+        self._writing = windowing.index
+        #: The stops asked so far (:meth:`interrupt`).
+        self._stops = 0
 
     # --- the pump's side ---
 
@@ -291,6 +296,19 @@ class Arrivals:
                 self._events.append(_End("signal", self._clock.monotonic()))
             self._cond.notify_all()
 
+    def interrupt(self) -> bool:
+        """A stop asked of the stream (a signal, a :class:`StreamStop`'s ask, or the writer's
+        thread interrupted): the first stops it once what waits is written; a later one stops
+        it now, what waits counted dropped in the window the writer is writing or opens next.
+        True when this one stopped it now."""
+        with self._cond:
+            self._stops += 1
+            if self._stops == 1:
+                self.stop()
+                return False
+            self.abandon(into=self._writing)
+            return True
+
     def abandon(self, into: int | None = None) -> None:
         """Stop the stream at once, as a second signal or a failure does: nothing more is
         admitted or written, and what waits is dropped, its stream's end the one event left.
@@ -313,8 +331,10 @@ class Arrivals:
             self._cond.notify_all()
 
     def ledger(self, window: int) -> _Ledger:
-        """What window ``window``'s arrivals came to, taken out: called once it is sealed."""
+        """What window ``window``'s arrivals came to, taken out: called once it is sealed, so
+        the writer is on to the next."""
         with self._cond:
+            self._writing = window + 1
             return self._ledgers.pop(window, _Ledger())
 
     def dropped(self, window: int) -> int:
@@ -378,6 +398,14 @@ class StreamGaps:
             to.gap(gap)
 
 
+def _listen(stop: StreamStop, arrivals: Arrivals) -> None:
+    """The listener's thread: each ask of ``stop`` to the buffer, outside the stop's lock,
+    until the run is over."""
+    while stop.next_ask():
+        arrivals.interrupt()
+        stop.acted()
+
+
 # --- the writer ----------------------------------------------------------------------------
 
 
@@ -438,8 +466,6 @@ class Stream:
         self._stop_s = stop_s
         self.warnings: list[Problem] = []
         self._overflowed = (0, 0)  # windows that dropped records, and how many they dropped
-        #: A first interrupt was had in this run: a second one stops it at once.
-        self._signalled = False
 
     def run(
         self,
@@ -456,19 +482,22 @@ class Stream:
         config_sha256: str | None = None,
         resolved: Mapping[str, Any] | None = None,
         on_window: Callable[[WindowOutcome], None] | None = None,
+        stop: StreamStop | None = None,
     ) -> StreamRun:
         """Run the stream until it ends: after ``windows`` windows, at ``until``, when its
-        source ends or fails, or when the caller's thread is interrupted (``KeyboardInterrupt``:
-        the window being written is sealed ``signal`` once what waits is written; a second
-        interrupt seals it at once, what waits dropped). ``collect(after)`` starts the source
-        after the position ``after`` (None: from its start); ``normalize`` shapes each record;
-        ``close`` ends the collector, which ends a source that would not. Raises
+        source ends or fails, or when it is asked to stop (``stop``) or the caller's thread is
+        interrupted (``KeyboardInterrupt``): the window being written is then sealed
+        ``signal`` once what waits is written; a second stop seals it at once, what waits
+        dropped. An interrupt that lands in the store's write seals the window at once.
+        ``collect(after)`` starts the source after the position ``after`` (None: from its
+        start); ``normalize`` shapes each record; ``close`` ends the collector, which ends a
+        source that would not. Raises
         ReconError (``busy``) when another writer holds the stream."""
         self._archives.hold_stream(mission_dir, plan.name)
         try:
             return self._run(
                 mission_dir, plan, collect, normalize, close, gaps, windows, until,
-                preserve_raw, config_sha256, dict(resolved or {}), on_window,
+                preserve_raw, config_sha256, dict(resolved or {}), on_window, stop,
             )  # fmt: skip
         finally:
             self._archives.release_stream(mission_dir, plan.name)
@@ -487,6 +516,7 @@ class Stream:
         config_sha256: str | None,
         resolved: dict[str, Any],
         on_window: Callable[[WindowOutcome], None] | None,
+        stop: StreamStop | None,
     ) -> StreamRun:
         start = self._resume(mission_dir, plan)
         opened_wall, opened = self._clock.now(), self._clock.monotonic()
@@ -507,6 +537,12 @@ class Stream:
             daemon=True,
         )  # fmt: skip
         pump.start()
+        listener = None
+        if stop is not None:
+            listener = threading.Thread(
+                target=_listen, args=(stop, arrivals), name="recon-stream-stop", daemon=True
+            )
+            listener.start()
         if plan.window.seconds is not None or until_at is not None:
             threading.Thread(
                 target=_tick, args=(self._clock, arrivals), name="recon-stream-ticker", daemon=True
@@ -518,10 +554,9 @@ class Stream:
         outcome: WindowOutcome | None = None
         previous, carried = start.previous, start.after
         index, window_opened = start.index, opened
-        self._signalled = False
         try:
             while True:
-                event = self._next(arrivals, index)
+                event = self._next(arrivals)
                 ends_bare = isinstance(event, _End) and event.error is None
                 if ends_bare and sealed and not arrivals.noted(index):
                     break  # the source ended as a window opened: it has nothing to keep
@@ -553,6 +588,9 @@ class Stream:
                 previous, carried = window.id, window.last
                 index, window_opened = window.end.index + 1, window.end.closed
         finally:
+            if stop is not None and listener is not None:
+                stop.end()
+                listener.join(self._stop_s)
             arrivals.abandon()
             close()
             pump.join(self._stop_s)
@@ -560,26 +598,14 @@ class Stream:
                 self._warn_stuck(plan)
         return StreamRun(sealed, records, dropped, first, outcome)
 
-    def _next(self, arrivals: Arrivals, index: int) -> _Event:
-        """The next event, waiting for it, left in the buffer: a first interrupt stops the
-        stream, and the wait goes on for what was admitted before it; a second stops it at
-        once, what waits counted dropped in window ``index``, the one about to open."""
+    def _next(self, arrivals: Arrivals) -> _Event:
+        """The next event, waiting for it, left in the buffer: an interrupt is a stop asked
+        (:meth:`Arrivals.interrupt`), and the wait goes on for what it leaves."""
         while True:
             try:
                 return arrivals.peek()
             except KeyboardInterrupt:
-                self._interrupted(arrivals, index)
-
-    def _interrupted(self, arrivals: Arrivals, index: int) -> bool:
-        """Answer an interrupt the writer had while waiting: the first stops the stream
-        once what waits is written; a second stops it now (True), what waits counted dropped
-        in window ``index``."""
-        if self._signalled:
-            arrivals.abandon(into=index)
-            return True
-        self._signalled = True
-        arrivals.stop()
-        return False
+                arrivals.interrupt()
 
     def _halt(self, window: _Window, arrivals: Arrivals) -> None:
         """Stop the stream now, in ``window``: what waits, and what the writer held, are
@@ -693,7 +719,7 @@ class Stream:
             try:
                 event = arrivals.peek()
             except KeyboardInterrupt:
-                if self._interrupted(arrivals, window.index):  # a second: seal now
+                if arrivals.interrupt():  # a second: seal now
                     window.end = _End("signal", self._clock.monotonic())
                     return
                 continue

@@ -4,9 +4,10 @@ SQL can query. A source that does not end is collected as a stream, into windows
 archives too.
 
 The names below are the library API: the operations (each returns a versioned document),
-the skill text, the errors and the tables of error kinds and exit codes. The command line
-calls these and nothing else. Collector types and transforms are extensions: their contract
-is ``recon.domain.collector``. Telemetry goes through OpenTelemetry's API only; an
+the skill text, the errors and the tables of error kinds and exit codes, and
+:class:`StreamStop`, which stops a running stream. The command line calls these and nothing
+else. Collector types and transforms are extensions: their contract is
+``recon.domain.collector``. Telemetry goes through OpenTelemetry's API only; an
 application installs the SDK (:func:`configure_telemetry`, or its own setup).
 """
 
@@ -57,6 +58,7 @@ from recon.domain.errors import (
     ReconError,
     UsageError,
 )
+from recon.domain.stream import StreamStop
 from recon.skill_files import skill, skill_references
 
 try:
@@ -85,6 +87,7 @@ __all__ = [
     "RecordsSince",
     "StatusDocument",
     "StreamDocument",
+    "StreamStop",
     "SurveyDocument",
     "TableOutcome",
     "TemplatesDocument",

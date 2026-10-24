@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         TemplatesDocument,
     )
     from recon.domain.errors import Problem
+    from recon.domain.stream import StreamStop
 
 
 def _root(project: Path | None) -> Recon:
@@ -113,6 +114,7 @@ def stream(
     config: Path | None = None,
     replace: bool = False,
     on_event: Callable[[dict[str, Any]], None] | None = None,
+    stop: StreamStop | None = None,
     root: Path | None = None,
 ) -> StreamDocument:
     """Plan, then collect the mission's stream ``collector`` (a collector with ``window:``,
@@ -120,8 +122,10 @@ def stream(
     ``recon.v1.stream``.
 
     It stops after ``windows`` windows, at ``until`` (a time with its zone), when its source
-    ends, or when this thread is interrupted (``KeyboardInterrupt``: the window being written
-    is sealed ``signal``, and this returns); with none of ``windows``, ``until`` and
+    ends, or when it is stopped: ``stop.ask()`` (a :class:`StreamStop`, safe from any thread
+    or a signal handler) or this thread interrupted (``KeyboardInterrupt``). The window being
+    written is then sealed ``signal`` once what waits is written, a second stop seals it at
+    once, and this returns; with none of ``windows``, ``until`` and
     ``forever``, after one window, so it returns unless told otherwise. A later call goes on
     from the last window, its source resumed after the last record kept. ``on_event``
     receives each window as it is sealed. Raises UsageError for a bound it cannot keep,
@@ -130,7 +134,7 @@ def stream(
     :func:`stream_failure` turns it into the error to act on."""
     return _root(root).stream(
         name, collector, windows=windows, until=until, forever=forever, config=config,
-        replace=replace, on_event=on_event,
+        replace=replace, on_event=on_event, stop=stop,
     )  # fmt: skip
 
 

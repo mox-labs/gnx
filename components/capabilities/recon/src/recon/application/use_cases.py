@@ -64,7 +64,7 @@ from recon.domain.errors import (
     UsageError,
 )
 from recon.domain.normalize import apply_normalize
-from recon.domain.stream import window_index, window_opened
+from recon.domain.stream import StreamStop, window_index, window_opened
 from recon.domain.telemetry import QUERY, SURVEY
 
 if TYPE_CHECKING:
@@ -444,15 +444,17 @@ class Recon:
         config: Path | None = None,
         replace: bool = False,
         on_event: EventCallback | None = None,
+        stop: StreamStop | None = None,
     ) -> StreamDocument:
         """Plan, then run the stream of the mission's collector ``collector``, window after
-        window, until ``windows`` are sealed, ``until`` comes, its source ends or fails, or the
-        caller's thread is interrupted (Ctrl-C, or SIGTERM under the command line): the window
-        being written is then sealed ``signal``, and this returns. With none of ``windows``,
-        ``until`` and ``forever``, it runs one window, so it always returns unless told
-        otherwise. Raises UsageError for a bound it cannot keep, NotFoundError for a
-        collector that is no stream of the mission, ReconError (``busy``) when another writer holds
-        the stream; a window whose source failed is in the document, and
+        window, until ``windows`` are sealed, ``until`` comes, its source ends or fails, or it
+        is stopped: ``stop`` asked (as the command line's SIGINT and SIGTERM ask it), or the
+        caller's thread interrupted. The window being written is then sealed ``signal`` once
+        what waits is written (a second stop seals it at once), and this returns. With none
+        of ``windows``, ``until`` and ``forever``, it runs one window, so it always returns
+        unless told otherwise. Raises UsageError for a bound it cannot keep, NotFoundError
+        for a collector that is no stream of the mission, ReconError (``busy``) when another
+        writer holds the stream; a window whose source failed is in the document, and
         :func:`~recon.domain.documents.stream_failure` says what it adds up to."""
         windows = _stream_bound(windows, until, forever, self._clock.now(), name, collector)
         source, plan, copy_to = self._prepare(name, config, replace)
@@ -464,7 +466,7 @@ class Recon:
         sha256 = hashlib.sha256(source.text).hexdigest()
         run, found = self._run_stream(
             mission, plan.config, planned, sha256, windows=windows, until=until,
-            on_event=on_event,
+            on_event=on_event, stop=stop,
         )  # fmt: skip
         return StreamDocument(
             mission=name,
@@ -489,6 +491,7 @@ class Recon:
         windows: int | None,
         until: datetime | None,
         on_event: EventCallback | None,
+        stop: StreamStop | None = None,
     ) -> tuple[StreamRun, list[Problem]]:
         """Run one stream of ``config`` through the window writer, over a collector built for
         it alone (its ``close()`` is what stops a source that would not); the run, and what it
@@ -548,6 +551,7 @@ class Recon:
                 preserve_raw=config.preserve_raw,
                 config_sha256=config_sha256,
                 resolved=self._resolved(subset),
+                stop=stop,
             )
         finally:
             close()

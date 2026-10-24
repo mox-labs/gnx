@@ -22,6 +22,7 @@ import tracemalloc
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import pytest
 import yaml
 
 from recon.adapters._out.archive_files import ArchiveFiles
@@ -174,6 +175,44 @@ class TestKilledThenResumed:
         # windows), and not when its writer died in it.
         assert gap["from"] == (sealed["closed_at"] if sealed else None)
         assert meta["stream"]["previous"] == last.name
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
+def test_a_signal_seals_the_window_with_every_record_it_had(
+    tmp_path: Path, signum: signal.Signals
+) -> None:
+    """Review item 6 (Erlang #3): ``recon stream`` answers SIGTERM and Ctrl-C by sealing the
+    window being written, once what waits is written, and returning success."""
+    lines = 25
+    log = tmp_path / "app.log"
+    log.write_text("".join(json.dumps({"seq": n}) + "\n" for n in range(lines)))
+    stream = _project(
+        tmp_path,
+        {"name": "log", "type": "tail", "source": "app", "start": "beginning",
+         "interval": 0.02, "window": {"seconds": 300}, "retain": "all"},
+        [{"name": "app", "type": "file", "url": "app.log"}],
+    )  # fmt: skip
+    command = [sys.executable, "-c", CLI, "stream", "m", "--collector", "log", "--forever",
+               "--json"]  # fmt: skip
+    process = subprocess.Popen(command, cwd=tmp_path, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)  # fmt: skip
+    try:
+        started = time.monotonic()
+        while not stream.is_dir() or _written(stream, "log") < lines:
+            assert process.poll() is None, "the stream ended before it was stopped"
+            assert time.monotonic() - started < 30, "the stream never wrote its records"
+            time.sleep(0.02)
+        process.send_signal(signum)
+        out, err = process.communicate(timeout=30)
+    finally:
+        if process.poll() is None:
+            process.kill()
+
+    assert process.returncode == 0, err.decode()
+    document = json.loads(out)
+    assert (document["windows"], document["records"], document["dropped"]) == (1, lines, 0)
+    assert document["last"]["closed_by"] == "signal"
+    assert document["state"] == "complete"
 
 
 def test_a_stream_of_a_quiet_command_leaves_no_process_behind(tmp_path: Path) -> None:

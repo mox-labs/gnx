@@ -16,7 +16,9 @@ is wrapped: a path or a command stays on one line, whole.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import signal
 import sys
 import traceback
@@ -32,6 +34,7 @@ from rich.table import Table
 import recon
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from types import FrameType
 
 out = Console(soft_wrap=True)
@@ -388,12 +391,12 @@ def stream(
         return
     if not as_json:
         _print_warnings(setup)
-    # Ctrl-C and SIGTERM reach the stream as KeyboardInterrupt, which it answers by sealing
-    # the window being written and returning: a stop of a stream is no failure.
-    document = _operations().stream(
-        name, collector, windows=windows, until=until, forever=forever, config=config,
-        replace=replace, on_event=None if as_json else _print_event,
-    )  # fmt: skip
+    stop = recon.StreamStop()
+    with _stopping(stop, as_json=as_json):
+        document = _operations().stream(
+            name, collector, windows=windows, until=until, forever=forever, config=config,
+            replace=replace, on_event=None if as_json else _print_event, stop=stop,
+        )  # fmt: skip
     document = document.model_copy(update={"warnings": setup + document.warnings})
     if as_json:
         _emit(document.document())
@@ -406,6 +409,41 @@ def stream(
     failure = recon.stream_failure(document)
     if failure is not None:
         _fail(failure, as_json=as_json)
+
+
+@contextlib.contextmanager
+def _stopping(stop: recon.StreamStop, *, as_json: bool) -> Iterator[None]:
+    """Ctrl-C and SIGTERM ask ``stop``, never raise: the first seals the window being
+    written once what waits is written, the second seals it at once, and a stop of a stream
+    is no failure. After the second, the handlers before these are back, so a third is the
+    interrupt every other command has."""
+    signals = (signal.SIGINT, signal.SIGTERM)
+    previous = {signum: signal.getsignal(signum) for signum in signals}
+    asked = 0
+
+    def restore() -> None:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+    def ask(signum: int, frame: FrameType | None) -> None:
+        nonlocal asked
+        asked += 1
+        stop.ask()
+        if asked > 1:
+            restore()
+        if not as_json:  # raw, on the descriptor: a handler may land inside another write
+            said = (b"stopping now: what waits is counted dropped\n" if asked > 1 else
+                    b"stopping: the window being written is sealed once what waits is "
+                    b"written (again to stop now)\n")  # fmt: skip
+            with contextlib.suppress(OSError):
+                os.write(2, said)
+
+    for signum in signals:
+        signal.signal(signum, ask)
+    try:
+        yield
+    finally:
+        restore()
 
 
 def _print_plan(name: str, plan: recon.PlanDocument) -> None:
