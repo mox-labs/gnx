@@ -238,6 +238,21 @@ class TestTheBaseline:
         fourth, _ = surveys.survey()
         assert _ops(fourth) == [("delete", "zzz")]
 
+    def test_a_rebuilt_told_index_keeps_the_deletes_of_its_time(self, tmp_path: Path) -> None:
+        """Dijkstra F2: a told index computed again folds each table as it was told then. With
+        deletes off, a key a table lacked stayed told; switching deletes on later must not
+        make the rebuild drop it unseen, or its delete is never told."""
+        _mission(tmp_path, {"key": ["id"]})
+        surveys = Surveys(tmp_path)
+        surveys.survey(A, B)
+        second, document = surveys.survey(A)
+        assert _ops(second) == [] and document.tables[0].changes.deletes_told is False
+        _mission(tmp_path, {"key": ["id"], "deletes": True})
+        (second / "inbox.keys.jsonl").unlink()
+        third, document = surveys.survey(A)
+        assert _ops(third) == [("delete", "b")]
+        assert document.tables[0].changes.deletes_told is True
+
     def test_the_first_told_index_is_its_table_s_keys(self, tmp_path: Path) -> None:
         """C9, as the survey keeps it: nothing told before, the told index is every unambiguous
         key of the table, sorted, with its content."""

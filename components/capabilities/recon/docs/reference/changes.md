@@ -49,10 +49,11 @@ The table's outcome (`meta.yaml`'s `tables[]`, the survey's `tables`) says what 
 ```
 changes: {table: inbox.changes, type_url: recon.v1.changes, previous: 2026-10-24-101500-000000,
           spec: <digest>, normalize: <digest>, rows: 3, inserts: 1, updates: 1, deletes: 1,
-          rebaselined: false, keyless: 0, ambiguous: 0, deletes_withheld: null}
+          rebaselined: false, keyless: 0, ambiguous: 0, deletes_withheld: null,
+          deletes_told: true}
 ```
 
-When `deletes: true` and the table's deletes were not told, `deletes_withheld` says why (`truncated`, `keyless`, `ambiguous`) and the survey warns `deletes_withheld`, at `collectors.<i>.changes.deletes`, with what to change.
+When `deletes: true` and the table's deletes were not told, `deletes_withheld` says why (`truncated`, `keyless`, `ambiguous`) and the survey warns `deletes_withheld`, at `collectors.<i>.changes.deletes`, with what to change. `deletes_told` says whether they were told: a told index computed again folds each table as it was told then, so switching `deletes:` on later never drops a key no delete row told.
 
 ## The content hash and the key index
 

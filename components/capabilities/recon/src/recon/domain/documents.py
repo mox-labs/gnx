@@ -179,6 +179,10 @@ class ChangeSummary(Document):
     keyless: int = 0
     ambiguous: int = 0
     deletes_withheld: DeletesWithheld | None = None
+    #: True: this table's deletes were told (asked for, and not withheld), so its told index
+    #: holds no key the table lacks. A told index computed again folds the table as it was
+    #: told then, whatever ``deletes:`` says now.
+    deletes_told: bool = False
 
 
 class TableOutcome(Document):

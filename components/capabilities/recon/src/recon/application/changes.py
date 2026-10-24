@@ -195,7 +195,8 @@ class Comparison:
     index (``told``: None when nothing was told before, so every key is an insert and no
     delete is considered), through ``join``. ``whole``: the table sealed ``ok``, not
     truncated, its survey run to its end. Its deletes are told when the spec asks for them,
-    the table is whole and holds no keyless and no ambiguous record."""
+    the table is whole and holds no keyless and no ambiguous record; or, given ``deletes``,
+    as that says: a table compared again folds as it was told when first compared."""
 
     def __init__(
         self,
@@ -205,6 +206,7 @@ class Comparison:
         join: KeyJoin,
         *,
         whole: bool,
+        deletes: bool | None = None,
     ) -> None:
         self.counts = Counts()
         self._new = new
@@ -212,7 +214,9 @@ class Comparison:
         self._joined: Joined = join.join(told if told is not None else (), self._keys(new()))
         self.counts.ambiguous = self._joined.ambiguous
         self.deletes = False
-        if hasher.spec.deletes and told is not None:
+        if deletes is not None:
+            self.deletes = deletes and told is not None
+        elif hasher.spec.deletes and told is not None:
             withheld: DeletesWithheld | None = None
             if not whole:
                 withheld = "truncated"
@@ -291,12 +295,13 @@ def told_lines(
 
 @dataclass(frozen=True)
 class _Compared:
-    """An earlier table that was compared: where, how many records it held, whether it was
-    whole, whether it started the told index again, and the one compared before it."""
+    """An earlier table that was compared: where, how many records it held, whether its
+    deletes were told, whether it started the told index again, and the one compared before
+    it."""
 
     archive: Path
     records: int
-    whole: bool
+    deletes_told: bool
     rebaselined: bool
     previous: str | None
     normalize: str | None
@@ -430,6 +435,7 @@ class ChangeDetector:
             keyless=counts.keyless,
             ambiguous=counts.ambiguous,
             deletes_withheld=None if rebaselined else counts.withheld,
+            deletes_told=comparison.deletes,
         )
         return table.model_copy(update={"changes": summary})
 
@@ -470,7 +476,8 @@ class ChangeDetector:
                 None if compared.rebaselined else told.pairs,
                 hasher,
                 self._join(compared.records, told.keys),
-                whole=compared.whole,
+                whole=True,
+                deletes=compared.deletes_told,
             )
             told.close()
             told = _Told(comparison.told(), comparison.told_count(), [comparison])
@@ -508,13 +515,9 @@ class ChangeDetector:
         changes = entry.get("changes") if entry is not None else None
         if entry is None or not isinstance(changes, dict):
             return None
-        stream = self._archives.read_meta(archive).get("stream")
-        whole = isinstance(stream, dict) or (
-            not entry.get("truncated") and self._ended(archive) == "finished"
-        )
-        return _Compared(archive, int(entry.get("records") or 0), whole,
-                         bool(changes.get("rebaselined")), changes.get("previous"),
-                         changes.get("normalize"))  # fmt: skip
+        return _Compared(archive, int(entry.get("records") or 0),
+                         changes.get("deletes_told") is True, bool(changes.get("rebaselined")),
+                         changes.get("previous"), changes.get("normalize"))  # fmt: skip
 
     def _ended(self, archive: Path) -> Any:
         return self._archives.read_meta(archive).get("ended")
