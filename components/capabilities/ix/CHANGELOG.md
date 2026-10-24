@@ -1,5 +1,24 @@
 # Changelog — ix
 
+## Unreleased
+
+`docs/design/2026-10-19-record.md` §27 has the reasons for these changes.
+
+### Changed (breaking)
+
+- **The `Recorded` scope port names sessions per task.** Its one member is now
+  `attributed()`, an async context whose `Attribution.sessions()` names the session rows
+  made in that task and the tasks it starts (matrix's `RunContext.attributed()`), in place
+  of `sessions()`, which named every row since the scope's last hand-over. A scope that
+  implemented `sessions()` is no longer `Recorded`, and its trials name no sessions.
+
+### Fixed
+
+- **Each row's ledger entry names its own sessions.** The `sense` component handed its
+  readings over at once, so matrix's ledger credited every reading with every judgement of
+  the run; each reading is now handed over naming the sessions its sensor made reading that
+  trial (`Reading.sessions`), and each interaction those of its own trial.
+
 ## 0.6.0 — 2026-10-22
 
 `docs/design/2026-10-19-record.md` has the reasons for this release's changes, from §16 on.

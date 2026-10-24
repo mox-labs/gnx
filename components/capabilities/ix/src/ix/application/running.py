@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import Mapping
-from contextlib import AsyncExitStack, contextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeGuard
 
@@ -50,13 +50,14 @@ from ix.domain.run import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 
     from ix.application.experiments import Examined, Vocabulary
     from ix.domain.experiment import ProbeSet
     from ix.domain.kind import Kind, Metric
     from ix.domain.plan import Required
     from ix.domain.ports import (
+        Attribution,
         Environment,
         Measured,
         Probe,
@@ -112,16 +113,23 @@ class _Quiet:
         return None
 
 
-def _recorded(scope: Scope | None) -> tuple[int, ...]:
-    """The session rows recorded on the scope's behalf since it last handed a row over; none
-    when it is not :class:`Recorded`."""
-    return scope.sessions() if isinstance(scope, Recorded) else ()
+class _Unrecorded:
+    """What a scope that is not :class:`Recorded` attributes to a block: no session."""
+
+    def sessions(self) -> tuple[int, ...]:
+        return ()
 
 
-def _since(before: tuple[int, ...], scope: Scope | None) -> tuple[int, ...]:
-    """The session rows recorded on the scope's behalf since it held ``before``."""
-    held = set(before)
-    return tuple(row for row in _recorded(scope) if row not in held)
+@asynccontextmanager
+async def _attributed(scope: Scope | None) -> AsyncIterator[Attribution]:
+    """The sessions the block makes, in its own task and the tasks it starts, when the scope
+    is :class:`Recorded`; none when it is not. Opened inside the task whose work it
+    attributes, so trials in flight side by side each name only their own."""
+    if isinstance(scope, Recorded):
+        async with scope.attributed() as attribution:
+            yield attribution
+    else:
+        yield _Unrecorded()
 
 
 @contextmanager
@@ -475,12 +483,28 @@ async def invoke(
 
     Order: the subject is reached, then each sensor that must watch begins, then the probe
     is applied; the watchers stop, then the subject is released. The interaction names the
-    session rows recorded meanwhile, when the scope is :class:`Recorded`. ``hold`` holds the
-    stack of whatever is open from the moment the trial starts until that stack has been
-    closed, so that a caller whose trial was cancelled mid-flight can still release it.
+    session rows made in this trial's own task, when the scope is :class:`Recorded`: call it
+    in the task that carries the trial out, and trials in flight beside it are not counted.
+    ``hold`` holds the stack of whatever is open from the moment the trial starts until that
+    stack has been closed, so that a caller whose trial was cancelled mid-flight can still
+    release it.
     """
+    async with _attributed(scope) as attribution:
+        interaction = await _carried(trial, setup, kit, scope, hold=hold, bindings=bindings)
+    return interaction.model_copy(update={"sessions": attribution.sessions()})
+
+
+async def _carried(
+    trial: Trial,
+    setup: Setup,
+    kit: Kit,
+    scope: Scope,
+    *,
+    hold: list[AsyncExitStack] | None,
+    bindings: Bindings | None,
+) -> Interaction:
+    """One trial carried out as :func:`invoke` says, before its sessions are named."""
     started = kit.clock_ns()
-    before = _recorded(scope)
     adapters = _adapters(trial, setup, kit)
     subject = setup.experiment.subjects[trial.subject]
     services = bound(bindings or {})
@@ -538,7 +562,6 @@ async def invoke(
         watched={kind: dict(seen) for kind, seen in watching.items()},
         failure=failure,
         simulated=simulated,
-        sessions=_since(before, scope),
     )
 
 
@@ -815,8 +838,9 @@ async def sense(
     One reading per metric the design names, from the sensor the design selected for it. A
     sensor that raises gives each of its metrics a ``sensor`` failure. Each reading names
     the session rows its sensor made while reading the interaction (a judge's calls), when
-    the scope is :class:`Recorded`. It needs only the
-    stored tables, so it can be run again over a run that ended before it got this far.
+    the scope is :class:`Recorded`; hand each over naming those (``Reading.sessions``) and
+    no more. It needs only the stored tables, so it can be run again over a run that ended
+    before it got this far.
     """
     planned = {trial.seq: trial for trial in trials}
     readings: list[Reading] = []
@@ -836,9 +860,11 @@ async def sense(
                 **{"ix.run.id": setup.manifest.run, "ix.sensor": selected.kind},
                 **{"ix.trial.seq": interaction.seq, "ix.subject": interaction.subject},
             ) as span:
-                before = _recorded(scope)
-                measured = await measure(kit.sensors[selected.kind], interaction, truth, options)
-                sessions = _since(before, scope)
+                async with _attributed(scope) as attribution:
+                    measured = await measure(
+                        kit.sensors[selected.kind], interaction, truth, options
+                    )
+                sessions = attribution.sessions()
                 for name in selected.metrics:
                     metric = setup.design.metric(name)
                     if metric is None:

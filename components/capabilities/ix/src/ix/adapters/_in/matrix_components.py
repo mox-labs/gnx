@@ -6,9 +6,11 @@ killed run keeps every trial it finished; ``sense`` requires the interactions an
 ``ix.v1.reading``. ``ix.v1.run`` (the manifest) and ``ix.v1.trial`` (the schedule) are run
 inputs. Each component needs :data:`NEED`, the :class:`~ix.application.running.Kit` of
 adapters the run uses, and passes its matrix context on as the run's scope, traced by the
-kit's tracer when it has one. The scope is :class:`~ix.domain.ports.Recorded`: what it says
-of the sessions a trial or a sensor ran is matrix's ``RunContext.sessions()``, so each
-interaction and reading names its rows of ``matrix.v1.session``.
+kit's tracer when it has one. The scope is :class:`~ix.domain.ports.Recorded`: each trial,
+and each sensor reading one, opens matrix's ``RunContext.attributed()`` in its own task, so
+each interaction and reading names exactly its own rows of ``matrix.v1.session``, and is
+handed over naming those (``provide(..., sessions=...)``): its ledger entry says the same,
+whatever ran beside it.
 """
 
 from __future__ import annotations
@@ -21,9 +23,9 @@ from ix.domain.run import BindingsRow, Interaction, Reading, RunManifest, Trial
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
-    from contextlib import AbstractContextManager
+    from contextlib import AbstractAsyncContextManager, AbstractContextManager
 
-    from matrix import Inputs, RunContext
+    from matrix import Attribution, Inputs, RunContext
 
     from ix.application.running import Kit
     from ix.domain.ports import Flag, Scope, Span, Traced
@@ -81,8 +83,8 @@ class _TracedScope:
     def trace(self, name: str, /, **attributes: Any) -> AbstractContextManager[Span]:
         return self._tracer.trace(name, **attributes)
 
-    def sessions(self) -> tuple[int, ...]:
-        return self._ctx.sessions()
+    def attributed(self) -> AbstractAsyncContextManager[Attribution]:
+        return self._ctx.attributed()
 
 
 def _scope(ctx: RunContext, kit: Kit) -> Scope:
@@ -128,12 +130,15 @@ class TrialsComponent:
             trials=_trials(inputs),
             bindings=bindings,
             scope=_scope(ctx, self._kit),
-            land=lambda interaction: ctx.provide(schema.INTERACTION, interaction),
+            land=lambda interaction: ctx.provide(
+                schema.INTERACTION, interaction, sessions=interaction.sessions
+            ),
         )
 
 
 class SenseComponent:
-    """Turns the interactions into readings."""
+    """Turns the interactions into readings, each handed over with the sessions its sensor
+    made reading it."""
 
     requires = (schema.RUN, schema.TRIAL, schema.INTERACTION)
     provides = (schema.READING,)
@@ -141,7 +146,7 @@ class SenseComponent:
     def __init__(self, kit: Kit) -> None:
         self._kit = kit
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> Mapping[str, Any]:
+    async def run(self, inputs: Inputs, ctx: RunContext) -> None:
         interactions = [Interaction.model_validate(row) for row in inputs[schema.INTERACTION]]
         readings = await running.sense(
             _setup(inputs),
@@ -150,7 +155,8 @@ class SenseComponent:
             interactions=interactions,
             scope=_scope(ctx, self._kit),
         )
-        return {schema.READING: readings}
+        for reading in readings:
+            ctx.provide(schema.READING, reading, sessions=reading.sessions)
 
 
 def _environment(*, ix_kit: Kit) -> EnvironmentComponent:
