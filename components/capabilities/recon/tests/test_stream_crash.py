@@ -173,6 +173,37 @@ class TestKilledThenResumed:
         assert meta["stream"]["previous"] == last.name
 
 
+def test_a_stream_of_a_quiet_command_leaves_no_process_behind(tmp_path: Path) -> None:
+    """Review item 2 (Erlang): a stream of a ``cli`` command that goes quiet (``tail -f``,
+    ``kubectl logs -f``) stops with the command killed, its process group with it, not left
+    running once recon has returned."""
+    _project(
+        tmp_path,
+        {"name": "quiet", "type": "cli", "source": "here",
+         "run": 'echo "{\\"pid\\": $$}"; exec sleep 600', "window": {"seconds": 1},
+         "retain": "all"},
+        [{"name": "here", "type": "local", "url": ".", "timeout": 3600}],
+    )  # fmt: skip
+
+    document = root({}, project=tmp_path).stream("m", "quiet", windows=1)
+
+    assert document.last is not None
+    [row] = _rows(Path(document.last.archive), "quiet")
+    started = time.monotonic()
+    while _running(row["pid"]):
+        assert time.monotonic() - started < 5, "the command outlived the stream"
+        time.sleep(0.02)
+    assert not [w for w in document.warnings if w["kind"] == "source_stuck"]
+
+
+def _running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 def test_memory_stays_flat_over_a_long_stream(tmp_path: Path) -> None:
     """B10 #11: 60 windows of 500 records, at a modest rate on a virtual clock; what the
     stream holds does not grow with the windows it has sealed."""

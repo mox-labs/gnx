@@ -18,6 +18,7 @@ import selectors
 import signal
 import subprocess
 import threading
+from collections.abc import Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -30,7 +31,7 @@ from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, bound
 from recon.domain.substitution import substitute
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Iterator, Mapping
+    from collections.abc import Callable, Iterator, Mapping
 
     from recon.domain.capture import CaptureLog
     from recon.domain.collector import Transform
@@ -58,9 +59,34 @@ def _settings(entry: CollectorEntry) -> CliSettings:
     return CliSettings.model_validate(entry.settings)
 
 
+class _Command(Generator[str, None, int]):
+    """A command's lines as they come (the generator ``run_lines`` gives), which can also be
+    killed from another thread: ``kill()`` kills the command's process group, so a read of
+    it blocked in another thread ends. A stream's ``cli`` collector kills its command so."""
+
+    def __init__(self, lines: Callable[[_Command], Generator[str, None, int]]) -> None:
+        self.process: subprocess.Popen[bytes] | None = None
+        self._lines = lines(self)
+
+    def send(self, value: None) -> str:
+        return self._lines.send(value)
+
+    def throw(self, *args: Any) -> str:
+        return self._lines.throw(*args)
+
+    def close(self) -> None:
+        self._lines.close()
+
+    def kill(self) -> None:
+        process = self.process
+        if process is not None:
+            _kill_group(process)
+
+
 class PopenRunner:
     """The ShellRunner over ``/bin/sh``. A timer kills the command at its timeout, so the
-    deadline holds however slowly the lines are read, and no clock is read here."""
+    deadline holds however slowly the lines are read, and no clock is read here. The lines it
+    gives have a ``kill()``, which kills the command from any thread."""
 
     def run_lines(
         self,
@@ -69,6 +95,16 @@ class PopenRunner:
         timeout: float,
         *,
         capture_path: Path | None = None,
+    ) -> Generator[str, None, int]:
+        return _Command(lambda command: self._lines(cmd, cwd, timeout, capture_path, command))
+
+    def _lines(
+        self,
+        cmd: str,
+        cwd: Path | None,
+        timeout: float,
+        capture_path: Path | None,
+        command: _Command,
     ) -> Generator[str, None, int]:
         # shell=True is intentional: configs are trusted local input.
         proc = subprocess.Popen(  # noqa: S602
@@ -80,6 +116,7 @@ class PopenRunner:
             cwd=cwd,
             start_new_session=True,
         )
+        command.process = proc
         expired = threading.Event()
 
         def expire() -> None:
@@ -176,6 +213,17 @@ class CliCollector:
         self._runner = runner if runner is not None else PopenRunner()
         self._transforms = transforms
         self._deadline = deadline
+        #: The command running now, and whether the collector was closed.
+        self._running: Any = None
+        self._closed = threading.Event()
+
+    def close(self) -> None:
+        """Kill the command in flight, from any thread, and start no other: a stream's
+        source that goes quiet (``tail -f``) ends so, its process group with it."""
+        self._closed.set()
+        kill = getattr(self._running, "kill", None)
+        if kill is not None:
+            kill()
 
     def collect(
         self,
@@ -205,12 +253,15 @@ class CliCollector:
         transforms = bound(self._transforms, base=cwd) if cwd is not None else self._transforms
         try:
             for pattern, cmd in commands:
+                if self._closed.is_set():
+                    return
                 # A deadline shorter than the command's timeout cuts it: the error says so.
                 limit = timeout
                 if self._deadline is not None:
                     self._deadline.check()
                     limit = self._deadline.limit(timeout)
                 lines = self._runner.run_lines(cmd, cwd, limit, capture_path=capture_path)
+                self._running = lines
                 try:
                     exit_codes.append((yield from self._records(lines, entry, pattern, transforms)))
                 except CollectionError as exc:
