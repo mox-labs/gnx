@@ -340,8 +340,10 @@ the config a persistence vector, and the scheduler's files a place a secret coul
   systemd units, the user's crontab, in recon's marked block, every other line kept), each
   file `0600`. No LaunchDaemon, system unit, `/etc/cron.d` or sudo.
 - **Credentials**: a tick has the scheduler's environment, not your shell's, so a
-  variable `auth.env` names is unset in it. Give it a form a tick resolves itself (an `mcp`
-  source's `token: file:PATH`, a `headers_helper`), never a secret in the config.
+  variable an `env:NAME` reference names is unset in it; the plan of a scheduled mission
+  warns `env_unscheduled` for each. Give it a form a tick resolves itself (`auth.token:
+  file:PATH`, a file only you can read, or `auth.headers_helper`, for every source kind;
+  boundary 2), never a secret in the config.
 - **Two ticks never overlap**: each survey holds the mission's lock; a tick that finds it
   held is skipped and logged (`busy`).
 
@@ -544,6 +546,23 @@ a query can read.
 
 Regression: `test_duckdb_s_spill_directory_is_not_readable` in `recon/tests/test_query.py`.
 
+### R-16 — an `api` source's credential could come only from the environment (fixed)
+
+An `mcp` source could take its credential from a file or a helper, an `api` source only
+from an environment variable (vector, round 4). A survey an OS scheduler runs has no
+secret-free place to get that variable from: it would go into the scheduler's file. Fixed
+by one credential grammar for every source kind, through one resolver
+(`recon.adapters._out.credentials`): `auth.token: env:NAME | file:PATH`, or
+`auth.headers_helper`, exactly as an `mcp` source has them. A `file:` its group or others
+can read is refused, for every kind. A helper's headers are each held to the request's
+origin by the requester, since it cannot know their names in advance. The plan of a
+scheduled mission warns `env_unscheduled` for each `env:NAME` reference a source it reads
+makes, since a tick's environment holds no such variable; its fix names the `file:` and
+helper forms, never a variable set in the scheduler's files.
+
+Regression: `recon/tests/test_credentials.py`,
+`recon/tests/test_schedule_config.py::TestATickSeesNoShellVariable`.
+
 ### R-17 — a record's content could be recovered from its hash (prevented, change detection)
 
 Change detection keeps a hash of each record's content in a table's key index
@@ -559,19 +578,6 @@ reads only that directory, loads no extension and reaches no network. A change r
 content, untrusted: it is data for a reader, never instructions (`docs/reference/changes.md`).
 
 Regression: `recon/tests/test_changes.py`, `recon/tests/test_changes_property.py`.
-
-### R-16 — an `api` source's credential could come only from the environment (fixed)
-
-An `mcp` source could take its credential from a file or a helper, an `api` source only
-from an environment variable (vector, round 4). A survey an OS scheduler runs has no
-secret-free place to get that variable from: it would go into the scheduler's file. Fixed
-by one credential grammar for every source kind, through one resolver
-(`recon.adapters._out.credentials`): `auth.token: env:NAME | file:PATH`, or
-`auth.headers_helper`, exactly as an `mcp` source has them. A `file:` its group or others
-can read is refused, for every kind. A helper's headers are each held to the request's
-origin by the requester, since it cannot know their names in advance.
-
-Regression: `recon/tests/test_credentials.py`.
 
 ## Not covered
 

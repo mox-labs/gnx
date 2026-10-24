@@ -77,7 +77,22 @@ Each tick runs `recon schedule tick <mission> --project <project> --config-sha25
 
 ## Credentials in a tick
 
-A tick's environment is the scheduler's: the installed `PATH`, and what the scheduler itself sets, never your shell's. A variable a mission's `auth.env` names, set in your shell, is unset in a tick, and its requests go without it (the plan warns `env_unset` when you plan from such an environment). Give a tick's credentials a form it resolves itself: an `mcp` source's `token: file:PATH` (a file only you can read) or `headers_helper` (a command that reads a keychain); a stdio MCP server that holds its own token. Never put a secret in the config, or in the scheduler's files, which recon never does.
+A tick's environment is the scheduler's: the installed `PATH`, and what the scheduler itself sets, never your shell's. A variable a credential names as `env:NAME`, set in your shell, is unset in a tick, and its requests go without it. The plan of a scheduled mission warns `env_unscheduled` for each such reference a source it reads makes, at its path (`catalog.<i>.auth.token`, an `mcp` source's `catalog.<i>.token` or `catalog.<i>.env.<NAME>`), even when the variable is set where you plan; `env_unset` is only for one unset there too.
+
+Give a tick's credentials a form it resolves itself, the same grammar for every source kind:
+
+```yaml
+# in an api source: a token from a file only you can read
+auth: {token: "file:mail.token", header: Authorization, prefix: "Bearer "}
+# or every header from a command
+auth: {headers_helper: "/usr/bin/security find-generic-password -w -s mail-headers"}
+```
+
+- `auth.token: file:PATH` reads the credential from a file, a relative path being relative to the mission's directory. The file must be readable by you alone (`chmod 600`): one its group or others can read is refused before anything is sent, `config`, with the `chmod` that fixes it.
+- `auth.headers_helper` names a command, run once a survey within the source's `timeout`, whose standard output is a JSON object of the headers to send: a keychain read, a cloud CLI's token. Name it by an absolute path, since a tick's `PATH` is the installed one.
+- An `mcp` source takes the same: `token: file:PATH` or `headers_helper` for a remote server, `env: {NAME: file:PATH}` for what a stdio server is given; or a stdio server that holds its own token.
+
+Never put a secret in the config, or in the scheduler's files, which recon never does.
 
 ## The log, and status
 
@@ -109,6 +124,7 @@ The log is bounded: at 1 MiB it becomes `schedule.log.1`, replacing the one befo
 | a tick's config is not the one installed | `stale` (12) | read the change, then `recon schedule install <mission>` |
 | a tick while another survey holds the mission | `busy` (11), `details.skips` | let it run; from the second skip in a row, raise `every` or lower `deadline:` |
 | `missed: once` under cron | `missed_ignored` warning | install for launchd or systemd, or write `missed: skip` |
+| a credential named `env:NAME` in a scheduled mission | `env_unscheduled` warning in the plan, at the reference's path | name it as `file:PATH` (mode 0600), or `headers_helper` for a token, then install again |
 | a config changed since install | `config_changed` warning in `status` | read it, then install again |
 | two or more busy skips in a row | `schedule_overrun` warning in `status` | raise `every`, or lower `deadline:` |
 

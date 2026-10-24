@@ -111,3 +111,105 @@ class TestEveryProblemHasAPathAndAFix:
         problems = _problems(_plan(plugins, schedule=600))
 
         assert problems["schedule"].kind == "wrong_shape"
+
+
+def _sourced(
+    plugins: Plugins, sources: list[dict[str, Any]], env: dict[str, str] | None = None, **top: Any
+) -> Plan:
+    """A plan of a mission reading each of ``sources``, one collector a source kind."""
+    kinds = {source["type"] for source in sources}
+    collectors = [{"name": "mail", "type": "api", "endpoint": "/m"}] if "api" in kinds else []
+    collectors += [{"name": "tools", "type": "mcp", "tool": "t"}] if "mcp" in kinds else []
+    return build_plan({"catalog": sources, "collectors": collectors, **top}, plugins, env or {})
+
+
+def _unscheduled(plan: Plan) -> dict[str, Any]:
+    return {w.path: w for w in plan.warnings if w.kind == "env_unscheduled"}
+
+
+class TestATickSeesNoShellVariable:
+    """A tick runs in the scheduler's environment, never the user's shell's, so a credential a
+    mission names as ``env:NAME`` is unset on every tick even when it is set where the plan
+    runs. The plan of a scheduled mission says so for each such reference, with the forms a
+    tick resolves itself: a ``file:`` only its owner can read, or ``headers_helper``."""
+
+    API = {"name": "inbox", "type": "api", "url": "https://mail.example.org",
+           "auth": {"token": "env:MAIL_TOKEN", "header": "Authorization"}}  # fmt: skip
+
+    def test_an_api_token_from_the_environment_is_warned_with_file_and_helper(
+        self, plugins: Plugins
+    ) -> None:
+        plan = _sourced(plugins, [self.API], schedule={"every": 600})
+
+        assert plan.valid, plan.problems
+        [warning] = _unscheduled(plan).values()
+        assert (warning.path, warning.got) == ("catalog.0.auth.token", "MAIL_TOKEN")
+        assert "tick" in warning.message
+        for named in ("auth.token: file:", "0600", "auth.headers_helper",
+                      "recon schedule install"):  # fmt: skip
+            assert named in warning.fix, named
+
+    def test_it_is_warned_even_when_the_variable_is_set_where_the_plan_runs(
+        self, plugins: Plugins
+    ) -> None:
+        plan = _sourced(plugins, [self.API], {"MAIL_TOKEN": "s3cret"}, schedule={"every": 600})
+
+        assert "catalog.0.auth.token" in _unscheduled(plan)
+        assert not [w for w in plan.warnings if w.kind == "env_unset"], "set here: not unset"
+        assert all("s3cret" not in str(w) + w.fix for w in plan.warnings)
+
+    def test_an_unscheduled_mission_is_not_warned(self, plugins: Plugins) -> None:
+        assert _unscheduled(_sourced(plugins, [self.API], {"MAIL_TOKEN": "x"})) == {}
+
+    @pytest.mark.parametrize(
+        "auth",
+        [
+            {"token": "file:mail.token", "header": "Authorization"},
+            {"headers_helper": "/usr/bin/security find-generic-password -w -s mail"},
+            {},
+        ],
+    )
+    def test_a_form_a_tick_resolves_itself_is_not_warned(
+        self, plugins: Plugins, auth: dict[str, Any]
+    ) -> None:
+        plan = _sourced(plugins, [{**self.API, "auth": auth}], schedule={"every": 600})
+
+        assert plan.valid, plan.problems
+        assert _unscheduled(plan) == {}
+
+    def test_an_mcp_source_s_token_and_server_variables_are_warned_each(
+        self, plugins: Plugins
+    ) -> None:
+        """A kind's own references (``CollectorType.source_env``) are warned as ``auth.token``
+        is, so a third party's source kind is held to it through the same entry point."""
+        sources: list[dict[str, Any]] = [
+            {"name": "s", "type": "mcp", "command": "/usr/local/bin/srv",
+             "env": {"GH": "env:GITHUB_TOKEN", "LEVEL": "debug"}},
+            {"name": "r", "type": "mcp", "url": "https://x.test/mcp", "token": "env:REMOTE"},
+        ]  # fmt: skip
+        plan = _sourced(plugins, sources, schedule={"every": 600})
+
+        warned = _unscheduled(plan)
+        assert {path: w.got for path, w in warned.items()} == {
+            "catalog.0.env.GH": "GITHUB_TOKEN",
+            "catalog.1.token": "REMOTE",
+        }
+        assert "token: file:" in warned["catalog.1.token"].fix
+        assert "headers_helper" in warned["catalog.1.token"].fix
+        assert "env.GH: file:" in warned["catalog.0.env.GH"].fix
+        assert "headers_helper" not in warned["catalog.0.env.GH"].fix, "a server's variable"
+
+    def test_a_source_no_collector_reads_is_not_warned(self, plugins: Plugins) -> None:
+        plan = build_plan(
+            {"catalog": [self.API], "collectors": [{"name": "now", "type": "cli", "run": "date"}],
+             "schedule": {"every": 600}},
+            plugins,
+            {},
+        )  # fmt: skip
+
+        assert _unscheduled(plan) == {}
+
+    def test_the_kind_is_a_warning_kind_recon_publishes(self) -> None:
+        from recon.domain.errors import PROBLEM_KINDS
+
+        assert "env_unscheduled" in PROBLEM_KINDS

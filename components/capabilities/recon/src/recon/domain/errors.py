@@ -175,6 +175,8 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "schedule_overrun",
     # a mission's directory or file that users other than its owner can reach
     "mission_exposed",
+    # a scheduled mission's credential named as env:NAME, which no tick's environment holds
+    "env_unscheduled",
 )
 
 

@@ -301,6 +301,8 @@ def build_plan(
     if is_directory is not None:
         problems += _directory_problems(sources, used_sources, is_directory, base)
     warnings += _credential_warnings(sources, used_sources - refused, env, plugins)
+    if schedule is not None:
+        warnings += _unscheduled_env(sources, used_sources - refused, plugins)
     config = None
     if not problems:
         deadline = raw.get("deadline")
@@ -1400,4 +1402,47 @@ def _credential_warnings(
                         got=name,
                     )
                 )
+    return warnings
+
+
+def _unscheduled_env(
+    sources: list[tuple[int, SourceEntry]], used: set[str], plugins: Plugins
+) -> list[Problem]:
+    """A scheduled mission's warning for each ``env:NAME`` reference a used source makes, as
+    ``auth.token`` or through its kind's own settings (``CollectorType.source_env``): a tick
+    runs in the scheduler's environment, never the user's shell's, so the variable is unset
+    on every tick, however it is set where the plan runs. The fix names the forms a tick
+    resolves itself, at the key the reference is written: a ``file:`` only its owner can read
+    or, for a token, a ``headers_helper``."""
+    adders = _kind_types(plugins)
+    warnings = []
+    for i, src in sources:
+        if src.name not in used:
+            continue
+        named: dict[str, str] = {}
+        if (variable := env_name(src.auth.token)) is not None:
+            named[variable] = "auth.token"
+        ctype = adders.get(src.type)
+        if ctype is not None and ctype.source_settings is not None:
+            for variable, where in ctype.source_env(src).items():
+                named.setdefault(variable, where)
+        for variable, where in named.items():
+            helper = where.removesuffix("token") + "headers_helper"
+            instead = (
+                f"{where}: file:PATH (a file only you can read, mode 0600) or {helper} (a "
+                "command that prints the headers, from a keychain say)"
+                if where.endswith("token")
+                else f"{where}: file:PATH (a file only you can read, mode 0600)"
+            )
+            warnings.append(
+                Problem(
+                    f"catalog.{i}.{where}",
+                    f"{variable} is read from the environment, and a scheduled tick runs in "
+                    f"the scheduler's, not your shell's: {src.name!r} will be reached without "
+                    "it on every tick",
+                    kind="env_unscheduled",
+                    fix=f"name the credential as {instead}, then `recon schedule install` again",
+                    got=variable,
+                )
+            )
     return warnings
