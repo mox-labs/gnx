@@ -567,6 +567,7 @@ class Recon:
                 overflow=planned.overflow,
                 columns=tuple(entry.normalize or ()),
                 retain=planned.retain,
+                package=self._plugins.collector_packages.get(entry.type),
             )
             run = engine.run(
                 mission,

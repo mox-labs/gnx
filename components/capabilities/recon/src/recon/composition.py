@@ -79,9 +79,7 @@ def _discover(group: str) -> list[EntryPoint]:
 def _load(
     group: str, accept: Callable[[Any], bool], expected: str, discover: Discover
 ) -> tuple[dict[str, Any], list[BrokenPlugin]]:
-    found = list(discover(group))
-    # recon's own registrations first, so a third party cannot shadow a built-in.
-    found.sort(key=lambda ep: (getattr(ep.dist, "name", None) != "recon", ep.name))
+    found = _ours_first(discover(group))
     loaded: dict[str, Any] = {}
     broken: list[BrokenPlugin] = []
     for ep in found:
@@ -123,10 +121,38 @@ def load_transforms(
 
 
 def load_plugins(discover: Discover = _discover) -> Plugins:
-    """Every installed collector type and transform, and the plugins that failed to load."""
+    """Every installed collector type and transform, the plugins that failed to load, and
+    the package that registered each collector type."""
     types, broken_types = load_collector_types(discover)
     transforms, broken_transforms = load_transforms(discover)
-    return Plugins(types, transforms, broken_types + broken_transforms)
+    packages = {
+        name: package
+        for name, package in _packages(COLLECTORS_GROUP, discover).items()
+        if name in types
+    }
+    return Plugins(types, transforms, broken_types + broken_transforms, packages)
+
+
+def _packages(group: str, discover: Discover) -> dict[str, str]:
+    """The package (the distribution, as installed) of each name's entry point in ``group``
+    that :func:`_load` keeps: recon's own before any other's. A name whose entry point has no
+    package found is left out."""
+    packages: dict[str, str] = {}
+    seen: set[str] = set()
+    for ep in _ours_first(discover(group)):
+        if ep.name in seen:
+            continue  # shadowed: _load refused it
+        seen.add(ep.name)
+        package = getattr(ep.dist, "name", None)
+        if isinstance(package, str):
+            packages[ep.name] = package
+    return packages
+
+
+def _ours_first(found: Iterable[EntryPoint]) -> list[EntryPoint]:
+    """``found`` with recon's own registrations first, so a third party cannot shadow a
+    built-in, each part by name."""
+    return sorted(found, key=lambda ep: (getattr(ep.dist, "name", None) != "recon", ep.name))
 
 
 def root(

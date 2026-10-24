@@ -105,7 +105,9 @@ WindowTelemetry = Callable[
 class StreamPlan:
     """One stream, as its plan resolved it: its name (the collector's), where its entry is in
     the config (``collectors.<i>``), the entry its window table is written for (named for its
-    output) and its source, and the effective window, buffer and overflow."""
+    output) and its source, and the effective window, buffer and overflow. ``package`` is
+    the package that registered the entry's collector type, when it is known (``recon`` for
+    its own), so a warning about the type says whose it is."""
 
     name: str
     at: str
@@ -116,6 +118,7 @@ class StreamPlan:
     overflow: Overflow
     columns: tuple[str, ...] = ()
     retain: Retain = "all"
+    package: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1029,6 +1032,16 @@ class Stream:
               "fix": warning.fix})  # fmt: skip
 
     def _warn_stuck(self, plan: StreamPlan) -> None:
+        """One ``source_stuck`` warning, whose fix says whose the type is: recon's own is a
+        bug in recon; another's is its package's, to report there or upgrade."""
+        kind = plan.entry.type
+        if plan.package == "recon":
+            whose = (f"collector type {kind} is recon's own: report this as a bug in recon, "
+                     "with the stream's entry")  # fmt: skip
+        else:
+            package = plan.package or f"the package that registers collector type {kind}"
+            whose = (f"report it to {package}, or upgrade it: its type's close() should end a "
+                     "read in progress, or the read should time out")  # fmt: skip
         self.warnings.append(
             Problem(
                 "",
@@ -1036,8 +1049,8 @@ class Stream:
                 f"{self._stop_s:g}s after the stream stopped and its collector was closed; its "
                 "thread is left until it does, and what it returns is not kept",
                 kind="source_stuck",
-                fix="the windows are whole; give the collector type a close() that ends a "
-                "read in progress, or a timeout on it",
+                fix=f"the windows are whole; {whose}",
+                got=kind,
             )
         )
 

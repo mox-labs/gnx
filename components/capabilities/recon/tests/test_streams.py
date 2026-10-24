@@ -655,6 +655,46 @@ class TestWhatTheEndOfARunDiscardsIsCounted:
         assert arrivals.ledger(0).refused == 1, "window 1's record, counted in window 0"
 
 
+class TestASourceThatWillNotStop:
+    """Polish R6 (Ace 8): a source whose read ``close()`` cannot end is a ``source_stuck``
+    warning, whose fix said to give the type a ``close()``: advice for the type's author,
+    which an agent running a built-in type cannot act on. The fix now says whose it is: a
+    bug to report in recon for its own types, the package that registered a third party's."""
+
+    @pytest.mark.parametrize(
+        ("package", "said"),
+        [
+            ("recon", "bug in recon"),
+            ("acme-recon-feed", "acme-recon-feed"),
+            (None, "the package that registers collector type fake"),
+        ],
+    )
+    def test_source_stuck_s_fix_names_whose_the_type_is(
+        self, tmp_path: Path, package: str | None, said: str
+    ) -> None:
+        clock = VirtualClock()
+        let_go = threading.Event()
+
+        def deaf(after: Any) -> Iterator[dict[str, Any]]:
+            let_go.wait(10)  # a read its close() cannot end
+            yield from ()
+
+        store = ArchiveFiles(clock)
+        stream = Stream(store, clock, "test", telemetry=_telemetry(store, []), stop_s=0.05)
+        plan = dataclasses.replace(_plan(WindowSpec(records=1)), package=package)
+        stop = StreamStop()
+        stop.ask()  # the stream stops as it starts, its source still in its read
+        try:
+            stream.run(tmp_path, plan, deaf, dict, close=lambda: None, stop=stop)
+        finally:
+            let_go.set()
+
+        [stuck] = [w for w in stream.warnings if w.kind == "source_stuck"]
+        assert said in stuck.fix
+        if package == "recon":
+            assert "close()" not in stuck.fix, "nothing for the agent to give recon's own type"
+
+
 class TestTheMetaIsTheSealedFile:
     """Review item 1 (Dijkstra F1, Erlang #2): a window's ``meta.yaml`` says what its sealed
     table holds, read from the table, so a store that fails mid-window leaves no claim of a
