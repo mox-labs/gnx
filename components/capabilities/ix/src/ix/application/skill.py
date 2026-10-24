@@ -1182,7 +1182,7 @@ probes and a metric. What makes it one is the kinds.
   `tokens_output`, `cost`, `turns`, `tool_calls`, `duration`, `rounds`, `hit_limit`
   (`usage`: what the runtime did not report is left out, so a model call has no `turns`),
   the judged `judged_score` and `judged_pass` (`judge`, option `rubric`), and
-  pydantic-evals' evaluators: `eval_passed`, `eval_score`, `eval_duration_held`
+  pydantic-evals' evaluators: `eval_passed`, `eval_score`, `eval_duration_passed`
   (`MaxDuration`'s, contended) and the judged `judged_eval_passed` and `judged_eval_score`
   (`evaluator`, below).
 - **Validate checks that the sensors can see.** A setting that makes what a sensor reads
@@ -1304,7 +1304,7 @@ are in the reading's detail. One `evaluator` entry per experiment: a second is
 
 - **Reading the reply**: `Equals`, `EqualsExpected` (the truth's `expected_output`),
   `Contains`, `IsInstance`.
-- **Reading the time**: `MaxDuration` gives `eval_duration_held` (whether the probe took
+- **Reading the time**: `MaxDuration` gives `eval_duration_passed` (whether the probe took
   no longer than `seconds`), never `eval_passed` (`metric_unprovided`, whose fix names
   it). A time is contended, so it decides no run with `trials_in_flight` above 1.
 - **Reading the spans**: `ToolCorrectness`, `TrajectoryMatch` (an `eval_score`),

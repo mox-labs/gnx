@@ -87,7 +87,7 @@ JUDGED = "judged_"
 
 #: The metric of an evaluator that reads how long the probe took, in place of ``eval_passed``:
 #: a time, which the kind declares contended, so it never decides a run with trials in flight.
-DURATION_HELD = "eval_duration_held"
+DURATION_PASSED = "eval_duration_passed"
 
 #: pydantic-evals' evaluators that read how long the probe took.
 READS_DURATION = frozenset({"MaxDuration"})
@@ -551,7 +551,7 @@ class EvaluatorSensor:
         result = options.get("result")
         values = _values(results, judged=judged, result=None if result is None else str(result))
         if evaluator.get_serialization_name() in READS_DURATION:
-            values = {DURATION_HELD: held} if (held := values.get(PASSED)) is not None else {}
+            values = {DURATION_PASSED: passed} if (passed := values.get(PASSED)) is not None else {}
         detail: dict[str, Any] = {
             "evaluator": evaluator.get_serialization_name(),
             "results": results,
@@ -587,7 +587,7 @@ def _spans_read(context: Any, spans: SpanTree | SpanTreeRecordingError) -> int |
 def _unprovided(name: str, judge: bool, around: Surroundings, at: str) -> list[Problem]:
     """A metric named of this sensor that an evaluator of this sort never gives: a judged
     one from an evaluator that calls no model, or the other way round; and from one that
-    reads how long the probe took, any but ``eval_duration_held``, and that one from any
+    reads how long the probe took, any but ``eval_duration_passed``, and that one from any
     other."""
     given = _given(name, judge)
     why = (
@@ -617,5 +617,5 @@ def _given(name: str, judge: bool) -> tuple[str, ...]:
     if judge:
         return (f"{JUDGED}{PASSED}", f"{JUDGED}{SCORE}")
     if name in READS_DURATION:
-        return (DURATION_HELD,)
+        return (DURATION_PASSED,)
     return (PASSED, SCORE)

@@ -63,11 +63,11 @@
 
 ### Changed (breaking)
 
-- **`MaxDuration` gives `eval_duration_held`, not `eval_passed`.** The evaluator sensor
+- **`MaxDuration` gives `eval_duration_passed`, not `eval_passed`.** The evaluator sensor
   reads how long the probe took into a metric of its own, declared contended, so a
   decision on it is refused with trials in flight. An experiment that decided `eval_passed`
   on a `MaxDuration` entry is refused (`metric_unprovided`, its fix naming
-  `eval_duration_held`): rename the metric and amend the registration.
+  `eval_duration_passed`): rename the metric and amend the registration.
 
 ### Fixed
 

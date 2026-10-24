@@ -12,8 +12,8 @@ options:
 needs: [response]
 truth: [expected_output, metadata]
 metrics:
-  - {name: eval_passed, direction: higher, shape: boolean, description: "every assertion an evaluator that calls no model gave held: ToolCorrectness, MaxToolCalls, Equals, Contains and the other pass/fail evaluators; MaxDuration gives eval_duration_held instead"}
-  - {name: eval_duration_held, direction: higher, shape: boolean, contended: true, description: "MaxDuration's assertion held: the probe took no longer than its seconds. A time, so what runs beside the trial moves it"}
+  - {name: eval_passed, direction: higher, shape: boolean, description: "every assertion an evaluator that calls no model gave held: ToolCorrectness, MaxToolCalls, Equals, Contains and the other pass/fail evaluators; MaxDuration gives eval_duration_passed instead"}
+  - {name: eval_duration_passed, direction: higher, shape: boolean, contended: true, description: "MaxDuration's assertion passed: the probe took no longer than its seconds. A time, so what runs beside the trial moves it"}
   - {name: eval_score, direction: higher, shape: scalar, description: "the score an evaluator that calls no model gave, on its own scale: TrajectoryMatch's F1 from 0 to 1"}
   - {name: judged_eval_passed, direction: higher, shape: boolean, judged: true, description: "every assertion an evaluator that calls a model gave held: LLMJudge's pass"}
   - {name: judged_eval_score, direction: higher, shape: scalar, judged: true, description: "the score an evaluator that calls a model gave, on its own scale: GEval's, LLMJudge's when it is asked for one"}
