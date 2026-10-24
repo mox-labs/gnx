@@ -326,18 +326,18 @@ class _Lines:
     cuts short is taken back before the error is raised. What reaches the disk itself is
     left to :meth:`sync`.
 
-    Measured by ``scripts/bench_table_write.py`` (a 200,000-line ``cli`` survey, against the
-    buffered writer before it): one ``write`` per line cost 84-89%, past ruling A2's 5%
-    bound, so lines are batched as the ruling says to then, which cost 3.6-3.9%. A thread
-    writes what waits on time, so a collector that is slow to give its next record does not
-    hold back the last one."""
+    Measured by ``scripts/bench_table_write.py`` (200,000-line ``cli`` surveys against the
+    buffered writer before it): one ``write`` per line cost 82-111%, past ruling A2's 5%
+    bound, so lines are batched as the ruling says to then. A thread writes what waits on
+    time, so a collector that is slow to give its next record does not hold back the last
+    one; adding a line takes no lock, which a lock per line cost on short lines."""
 
     def __init__(self, path: Path, flush_bytes: int, flush_s: float) -> None:
         self._descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
         self._flush_bytes = flush_bytes
         self._flush_s = flush_s
         self._size = 0
-        self._waiting: list[bytes] = []
+        self._waiting: list[str] = []
         self._waiting_bytes = 0
         self._lock = threading.Lock()
         self._failed: OSError | None = None
@@ -355,14 +355,17 @@ class _Lines:
         os.close(self._descriptor)
 
     def write(self, line: str) -> None:
-        data = line.encode()
-        with self._lock:
-            if self._failed is not None:
-                raise self._failed
-            self._waiting.append(data)
-            self._waiting_bytes += len(data)
-            if self._waiting_bytes >= self._flush_bytes:
+        # The hot path takes no lock: lines are only ever appended here, and only taken from
+        # the front, under the lock, by whoever writes them (a list's append and its slice
+        # deletion are each atomic), so order is kept. A line is encoded when written.
+        if self._failed is not None:
+            raise self._failed
+        self._waiting.append(line)
+        self._waiting_bytes += len(line)  # a JSON line is ASCII: one byte a character
+        if self._waiting_bytes >= self._flush_bytes:
+            with self._lock:
                 self._write_waiting()
+            self._waiting_bytes = 0
 
     def sync(self) -> None:
         """Write what waits, then flush the file to the disk."""
@@ -373,17 +376,18 @@ class _Lines:
             os.fsync(self._descriptor)
 
     def _write_waiting(self) -> None:
-        """Write every waiting line in one ``write``. The lock is held."""
-        if not self._waiting:
+        """Write every line waiting now in one ``write``, and take them from the front of
+        the queue. The lock is held; the writer may append meanwhile."""
+        waiting = len(self._waiting)
+        if not waiting:
             return
-        data = b"".join(self._waiting)
-        self._waiting.clear()
-        self._waiting_bytes = 0
+        data = "".join(self._waiting[:waiting]).encode()
         written = os.write(self._descriptor, data)
         if written != len(data):
             with contextlib.suppress(OSError):  # the error below is the one to report
                 os.ftruncate(self._descriptor, self._size)
             raise OSError(f"wrote {written} of {len(data)} bytes of lines to the table")
+        del self._waiting[:waiting]
         self._size += written
 
     def _write_on_time(self) -> None:

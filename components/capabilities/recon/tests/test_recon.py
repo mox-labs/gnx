@@ -407,6 +407,14 @@ class TestATableIsWrittenInWholeLines:
         )
         assert waited[0] < 2, "within the 250 ms bound, with room for a slow machine"
 
+    def test_lines_added_while_the_timer_writes_keep_their_order(self, tmp_path: Path) -> None:
+        """Adding a line takes no lock, while the timer's thread writes what waits: every
+        line still reaches the file once, in the order given."""
+        store = ArchiveFiles(SystemClock(), flush_bytes=1 << 30, flush_s=0.0005)
+        store.write_table(tmp_path, "out", ({"n": n} for n in range(50_000)))
+        lines = (tmp_path / "out.jsonl").read_text().splitlines()
+        assert [json.loads(line)["n"] for line in lines] == list(range(50_000))
+
     def test_a_burst_of_records_is_written_in_few_writes_of_whole_lines(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
