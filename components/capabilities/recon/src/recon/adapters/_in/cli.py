@@ -996,7 +996,10 @@ def tick(name: str, project: Path, config_sha256: str, as_json: bool) -> None:
     survey's otherwise.
     """
     os.chdir(project)
-    document = _operations().schedule_tick(name, config_sha256=config_sha256)
+    operations = _operations()
+    # The project given, not the one found around it: a root passed in is one already.
+    given = {"root": project.resolve()} if operations is recon else {}
+    document = operations.schedule_tick(name, config_sha256=config_sha256, **given)
     if as_json:
         _emit(document.document())
     elif document.survey is not None:

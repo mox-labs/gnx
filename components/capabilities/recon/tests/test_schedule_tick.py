@@ -14,6 +14,7 @@ exit, kind, archive, skipped_by, late_s), its archive recording ``scheduled_at``
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from datetime import UTC, datetime, timedelta
@@ -308,6 +309,29 @@ class TestTheCommandLine:
         assert result.exit_code == 0, result.stderr
         assert json.loads(result.stdout)["schema"] == "recon.v1.tick"
         assert Path.cwd() == tmp_path, "a tick runs where its project is"
+        assert len(_log(mission)) == 1
+
+    def test_tick_surveys_the_project_it_is_given_not_the_one_around_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``--project`` is the project, as installed: a mission of a directory inside a
+        repository (a library caller's ``root=``) is not looked for at the repository's root."""
+        (tmp_path / ".git").mkdir()
+        project = tmp_path / "sub"
+        mission = _mission(project, type_="cli")
+        config = yaml.safe_load((mission / "config.yaml").read_text())
+        config["collectors"][0]["run"] = "echo '{\"a\": 1}'"
+        (mission / "config.yaml").write_text(yaml.safe_dump(config))
+        digest = hashlib.sha256((mission / "config.yaml").read_bytes()).hexdigest()
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            main, ["schedule", "tick", "m", "--project", str(project), "--config-sha256", digest,
+                   "--json"], catch_exceptions=False,
+        )  # fmt: skip
+
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout)["survey"]["status"] == "complete"
         assert len(_log(mission)) == 1
 
     def test_tick_with_another_digest_exits_7(
