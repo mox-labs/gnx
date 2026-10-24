@@ -65,7 +65,7 @@ Another tool may write either kind, or a log anywhere else that a `capture` coll
 
 | `kind` | `request` holds |
 |---|---|
-| `http` | `method`, `url` (with an `auth.param` query value redacted), and `body` for a JSON request body |
+| `http` | `method`, `url` (with an `auth.param` query value redacted), `body` for a JSON request body, and `page` for a page of a paginated table: its ordinal, from 0 |
 | `web` | `method`, `url` |
 | `cli` | `commands` (each substituted command, in order), `cwd`, `exit_codes` |
 | `mcp` | `server` (the stdio command line, or the remote's URL with user information redacted) and `tool` with `arguments`, or `resource`. The body is the whole result as JSON (`content`, `structuredContent`, `isError`; a resource's `contents`), with every credential value the source resolved (its token; each header its helper prints whose name says it is a credential, such as `Authorization`, `X-Api-Key` or `Private-Token`, and the token after an auth scheme; the variables a stdio server is given by reference) replaced by `«redacted by recon»`, in the body and the request: one of 8 characters or more wherever it appears, a shorter one only where it is a whole JSON string or query parameter value, never in a number, a boolean or longer text, so the body stays JSON. A helper's other headers (`X-Org`) are not credentials, and their values stay in the body |
@@ -97,4 +97,4 @@ The capture collector parses each matching body by its `content_type`, unless th
 | `application/xml`, `text/xml`, `*+xml` | XML (as the `api` collector parses it) | `extract` path, then each dict is a record |
 | anything else | text lines | each line is a record: a JSON object as-is, else `{line_number, line}` |
 
-A `normalize` spec then applies as usual, and may also read the capture line itself as `_capture` (`_capture.collector`, `_capture.request.tool_input.query`, `_capture.captured_at`). Without a normalize spec, records are written exactly as parsed.
+A `normalize` spec then applies as usual, and may also read the capture line itself as `_capture` (`_capture.collector`, `_capture.request.tool_input.query`, `_capture.captured_at`). Without a normalize spec, records are written exactly as parsed. A capture whose `request` names a `page` gives each of its records `_position`, `{page, i}` (`i` its index in the body), beside the columns, as the paginated table it was captured from did, so the table replays byte for byte.

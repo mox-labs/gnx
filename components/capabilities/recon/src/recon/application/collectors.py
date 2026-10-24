@@ -8,9 +8,10 @@ to, whoever wrote it.
   may hold a session across them (a connection, a stdio server); recon calls its ``close()``
   once when the survey ends, however it ends, and closes the survey's Requester
   (:meth:`SurveyCollectors.close`).
-* **A type sees only the environment its mission declares for it**: the ``auth.env`` names of
-  the catalog sources its collectors run against, and the variables those sources name
-  through their kind's own settings (``CollectorType.source_env``) (:class:`ScopedEnv`).
+* **A type sees only the environment its mission declares for it**: the ``auth.token:
+  env:NAME`` variables of the catalog sources its collectors run against, and the variables
+  those sources name through their kind's own settings (``CollectorType.source_env``)
+  (:class:`ScopedEnv`).
 * **A source's rate limit holds whoever calls it**: one limiter, one bucket per source, serves
   the survey's Requester and every type that reaches a source another way.
 * **A dry run asks only the types that declare a preflight**: their collectors' optional
@@ -31,8 +32,10 @@ from typing import TYPE_CHECKING, Any
 
 from recon.application.plan import accepted_kinds, fan_out
 from recon.domain.collector import BrokenPlugin, CollectorContext
+from recon.domain.credentials import env_name
 from recon.domain.errors import CollectionError, ReconError
 from recon.domain.normalize import apply_normalize, bound
+from recon.domain.paginate import NoPages
 from recon.domain.ratelimit import RateLimiter
 from recon.domain.stream import NoGaps
 
@@ -46,6 +49,7 @@ if TYPE_CHECKING:
     from recon.domain.deadline import Deadline
     from recon.domain.http import Requester
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
+    from recon.domain.paginate import PageLog
     from recon.domain.shell import ShellRunner
     from recon.domain.stream import GapLog
     from recon.domain.telemetry import Telemetry
@@ -101,7 +105,8 @@ class SurveyCollectors:
 class ScopedEnv(Mapping[str, str]):
     """The environment one collector type may read: the variables its sources declare.
 
-    A mission declares a variable by naming it as ``auth.env`` on a catalog source. A
+    A mission declares a variable by naming it as ``auth.token: env:NAME`` on a catalog
+    source, or through the source kind's own settings (an ``mcp`` source's ``env:NAME``). A
     declared variable that is unset is absent, as in any mapping. Reading a name the mission
     did not declare raises instead: answering "not set" would be indistinguishable from an
     unset credential, and the request would go out without it.
@@ -118,7 +123,7 @@ class ScopedEnv(Mapping[str, str]):
                 f"collector type {self._owner!r} read the environment variable {name!r}, "
                 "which this mission does not declare for it",
                 kind="config",
-                fix=f"name {name} as auth.env on a catalog source that a "
+                fix=f"name it as auth.token: env:{name} on a catalog source that a "
                 f"{self._owner} collector uses",
             )
         return self._env[name]
@@ -133,7 +138,8 @@ class ScopedEnv(Mapping[str, str]):
 def declared_env(
     config: ReconConfig, types: Mapping[str, CollectorType] | None = None
 ) -> dict[str, set[str]]:
-    """For each collector type the config uses, the ``auth.env`` names of the sources its
+    """For each collector type the config uses, the ``auth.token: env:NAME`` variables of the
+    sources its
     collectors run against, and the names each such source reads through its kind's own
     settings, as the installed type that adds the kind says (``CollectorType.source_env``)."""
     catalog = {s.name: s for s in config.catalog}
@@ -147,8 +153,8 @@ def declared_env(
         for source, _output in fan_out(entry, catalog, accepted_kinds(types or {}, entry)):
             if source is None:
                 continue
-            if source.auth.env:
-                names.add(source.auth.env)
+            if (named := env_name(source.auth.token)) is not None:
+                names.add(named)
             adder = adders.get(source.type)
             if adder is not None and adder.source_settings is not None:
                 names.update(adder.source_env(source))
@@ -208,12 +214,14 @@ def build_collectors(
     *,
     project: Path | None = None,
     gaps: GapLog | None = None,
+    pages: PageLog | None = None,
 ) -> SurveyCollectors:
     """One collector for each installed type ``config`` uses, sharing one Requester and the
     survey's ``telemetry``, and the types whose factory raised. Each factory is handed a
     ``ScopedEnv`` over ``env`` holding only the variables ``config`` declares for that type's
-    sources, ``project``, the project root, the clock, and ``gaps``, where a stream's
-    collector says when its source was not read (none kept, without one)."""
+    sources, ``project``, the project root, the clock, ``gaps``, where a stream's collector
+    says when its source was not read, and ``pages``, where a paginated table's collector says
+    its pages (none kept, without one)."""
     transforms = confined_transforms(plugins.transforms, config, mission_dir)
     rate_limiter = RateLimiter(ports.clock)
     requester = ports.requester(telemetry, deadline, rate_limiter)
@@ -231,6 +239,7 @@ def build_collectors(
         project_dir=project,
         clock=ports.clock,
         gaps=gaps if gaps is not None else NoGaps(),
+        pages=pages if pages is not None else NoPages(),
     )
     declared = declared_env(config, plugins.collector_types)
     built = SurveyCollectors({}, [])

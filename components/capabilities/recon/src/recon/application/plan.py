@@ -27,12 +27,15 @@ from typing import TYPE_CHECKING, Any, get_args
 
 from pydantic import BaseModel, ValidationError
 
-from recon.domain.archives import EVENT_LOG_NAME, table_name
+from recon.domain.archives import EVENT_LOG_NAME, SIDECARS, table_name
 from recon.domain.capture import CAPTURE_LOG_NAME
+from recon.domain.changes import CHANGES_SUFFIX, changes_output
+from recon.domain.credentials import env_name
 from recon.domain.documents import SourcedValue
 from recon.domain.errors import Problem
 from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
 from recon.domain.normalize import path_problem, spec_problems
+from recon.domain.paginate import COUNTED, crawl_floor_s
 from recon.domain.schedule import ScheduleSpec, every_fix
 from recon.domain.stream import (
     DEFAULT_WINDOW_S,
@@ -62,6 +65,11 @@ RESERVED_OUTPUT_NAMES = frozenset(
 
 #: What an output name may not hold: it is the stem of one file in the archive.
 _NOT_IN_A_FILE_NAME = ("/", "\\", "..")
+
+#: The suffixes recon gives the files it writes beside a table, each with what it holds: an
+#: output named so would be one of them.
+_BESIDE = {"pages": "page log", "keys": "key index", CHANGES_SUFFIX: "change table"}
+assert set(SIDECARS) < set(_BESIDE)
 
 #: pydantic's error types, as problem kinds; a type error not listed is ``wrong_shape`` when
 #: its name says the value had the wrong type, else ``invalid_value``.
@@ -263,10 +271,24 @@ def build_plan(
                 warnings += unset
         else:
             problems.extend(_not_a_stream(i, entry))
+            if entry.paginate is not None:
+                problems.extend(_position_problems(i, entry))
+                values, short = _paginate(i, entry, targets, raw.get("deadline"))
+                provenance += values
+                warnings += short
+        if entry.changes is not None:
+            problems.extend(_changes_problems(i, entry, is_stream))
+            values, shifting = _changes(i, entry)
+            provenance += values
+            problems += shifting
         for source, output in targets:
             problems.extend(_output_problems(i, output, produced_by))
             for key in _table_keys(output):
                 produced_by.setdefault(key, (i, output))
+            if entry.changes is not None:
+                problems.extend(_change_table_problems(i, output, produced_by))
+                for key in _table_keys(changes_output(output)):
+                    produced_by.setdefault(key, (i, changes_output(output)))
             if source is not None:
                 used_sources.add(source.name)
             # A type's describe sees only a source whose own settings were accepted.
@@ -431,15 +453,14 @@ def _stream_problems(
                 got=entry.deadline,
             )
         )
-    if POSITION_FIELD in (entry.normalize or {}):
+    problems += _position_problems(i, entry)
+    if entry.paginate is not None:
         problems.append(
             Problem(
-                f"{at}.normalize.{POSITION_FIELD}",
-                f"{POSITION_FIELD} is the field recon keeps a stream's record's position in its "
-                "source in, and writes beside the columns normalize: makes",
-                kind="name_taken",
-                fix=f"name the column something else; {POSITION_FIELD} is in every row already",
-                got=POSITION_FIELD,
+                f"{at}.paginate",
+                "a stream does not read its source page by page yet: paginate: is a snapshot "
+                "table's",
+                fix="remove window: to survey it as a snapshot table, or remove paginate:",
             )
         )
     buffer = entry.buffer
@@ -454,6 +475,74 @@ def _stream_problems(
             )
         )
     return problems
+
+
+def _position_problems(i: int, entry: CollectorEntry) -> list[Problem]:
+    """A ``normalize:`` column named as the field recon keeps a record's position in, in an
+    entry whose records carry one (a stream's, a paginated table's)."""
+    if POSITION_FIELD not in (entry.normalize or {}):
+        return []
+    return [
+        Problem(
+            f"collectors.{i}.normalize.{POSITION_FIELD}",
+            f"{POSITION_FIELD} is the field recon keeps a record's position in its source in "
+            "(a stream's, or a paginated table's), and writes beside the columns normalize: makes",
+            kind="name_taken",
+            fix=f"name the column something else; {POSITION_FIELD} is in every row already",
+            got=POSITION_FIELD,
+        )
+    ]
+
+
+def _paginate(
+    i: int,
+    entry: CollectorEntry,
+    targets: list[tuple[SourceEntry | None, str]],
+    deadline: Any,
+) -> tuple[list[SourcedValue], list[Problem]]:
+    """A paginated entry's cap and where it came from; for each run, the least seconds its
+    crawl takes at its source's rate limit (``(pages - burst) / rps``), against the deadline
+    that bounds its table; and a warning for each run whose deadline is shorter than that."""
+    spec = entry.paginate
+    assert spec is not None
+    at = f"collectors.{i}.paginate"
+    origin: Origin = "mission" if "pages" in spec.model_fields_set else "recon"
+    values = [SourcedValue(path=f"{at}.pages", value=spec.pages, origin=origin)]
+    warnings: list[Problem] = []
+    # The mission's deadline as written: one that is not a number is its own problem.
+    numeric = isinstance(deadline, int | float) and not isinstance(deadline, bool)
+    written = [
+        (entry.deadline, f"collectors.{i}.deadline"),
+        (deadline if numeric else None, "deadline"),
+    ]
+    bounds = [(seconds, path) for seconds, path in written if seconds is not None]
+    for source, output in targets:
+        if source is None:
+            continue
+        rate = source.rate_limit
+        floor = crawl_floor_s(spec.pages, burst=rate.burst, rps=rate.rps)
+        bound = min(bounds, key=lambda bounded: bounded[0], default=None)
+        against = f"the deadline ({bound[1]}: {bound[0]:g}s)" if bound else "no deadline: bounds it"
+        note = (
+            f"{output}: {spec.pages} page(s) at source {source.name!r}'s rate_limit "
+            f"({rate.rps:g} rps, burst {rate.burst}) take at least {floor:g}s; {against}"
+        )
+        values.append(SourcedValue(path=f"{at}.floor_s", value=floor, origin="recon", note=note))
+        if bound is not None and floor > bound[0]:
+            warnings.append(
+                Problem(
+                    bound[1],
+                    f"{output} may read {spec.pages} page(s), which take at least {floor:g}s at "
+                    f"source {source.name!r}'s rate_limit, past the deadline of {bound[0]:g}s: "
+                    "a crawl that long fails its table as transient",
+                    kind="deadline_short",
+                    fix=f"raise {bound[1]} to {floor:g} or more, lower paginate.pages on "
+                    f"collector {entry.name!r}, or raise the source's rate_limit if the API "
+                    "allows it",
+                    got=bound[0],
+                )
+            )
+    return values, warnings
 
 
 def _not_a_stream(i: int, entry: CollectorEntry) -> list[Problem]:
@@ -809,6 +898,27 @@ def _entry_problems(
                 f"{at}.extract", problem, fix="use at most one * in the path", got=entry.extract
             )
         )
+    paginate = entry.paginate
+    if paginate is not None and ctype is not None and not ctype.paginates:
+        problems.append(
+            Problem(
+                f"{at}.paginate",
+                f"a {entry.type} collector does not read its source page by page, so it takes "
+                "no paginate:",
+                kind="unknown_key",
+                fix="remove paginate: (an api collector reads pages)",
+                allowed=_entry_keys(ctype),
+            )
+        )
+    elif paginate is not None and paginate.next and (problem := path_problem(paginate.next)):
+        problems.append(
+            Problem(
+                f"{at}.paginate.next",
+                problem,
+                fix="use at most one * in the path",
+                got=paginate.next,
+            )
+        )
     transforms = tuple(sorted(f"${name}" for name in plugins.transforms))
     for column, message in spec_problems(entry.normalize or {}, plugins.transforms).items():
         unknown = message.startswith("unknown transform")
@@ -912,6 +1022,7 @@ def _entry_keys(ctype: CollectorType) -> tuple[str, ...]:
     """Every key an entry of this type may hold: recon's own and the type's settings."""
     own = set(ctype.settings.model_fields) if ctype.settings is not None else set()
     shared = set(CollectorEntry.model_fields) - (set() if ctype.extracts else {"extract"})
+    shared -= set() if ctype.paginates else {"paginate"}
     return tuple(sorted(shared | own))
 
 
@@ -1068,6 +1179,17 @@ def _output_problems(
                 got=output,
             )
         )
+    elif suffix := next((s for s in _BESIDE if output.casefold().endswith(f".{s}")), None):
+        problems.append(
+            Problem(
+                at,
+                f"output {output!r} is named as recon names a file of its own beside a table "
+                f"(<table>.{suffix}.jsonl: its {_BESIDE[suffix]})",
+                kind="name_taken",
+                fix="rename the collector",
+                got=output,
+            )
+        )
     taken = next((produced_by[key] for key in _table_keys(output) if key in produced_by), None)
     if taken is not None and taken[1] == output:
         problems.append(
@@ -1093,6 +1215,90 @@ def _output_problems(
             )
         )
     return problems
+
+
+def _change_table_problems(
+    i: int, output: str, produced_by: Mapping[str, tuple[int, str]]
+) -> list[Problem]:
+    """A problem when ``output``'s change table would be one table with an output already
+    named: SQL knows it as ``<output>_changes``."""
+    changes = changes_output(output)
+    taken = next((produced_by[key] for key in _table_keys(changes) if key in produced_by), None)
+    if taken is None:
+        return []
+    return [
+        Problem(
+            f"collectors.{i}.changes",
+            f"{output}'s change table, {changes} (SQL: {table_name(changes)}), would be one "
+            f"table with the output of collectors.{taken[0]} ({taken[1]!r})",
+            kind="name_taken",
+            fix="rename one of the two collectors",
+            got=taken[1],
+        )
+    ]
+
+
+def _changes_problems(i: int, entry: CollectorEntry, is_stream: bool) -> list[Problem]:
+    """What ``changes:`` may not say: a key or volatile field ``normalize:`` does not make,
+    and deletes of a stream, whose windows never yield one."""
+    spec = entry.changes
+    assert spec is not None
+    at = f"collectors.{i}.changes"
+    problems = []
+    columns = tuple(entry.normalize or ())
+    if columns:
+        for name in ("key", "volatile"):
+            for position, field in enumerate(getattr(spec, name)):
+                if field not in columns:
+                    problems.append(
+                        Problem(
+                            f"{at}.{name}.{position}",
+                            f"{field} is not a column normalize: makes, so no record has it",
+                            kind="name_unknown",
+                            fix=f"name a column of normalize: in changes.{name}",
+                            got=field,
+                            allowed=columns,
+                        )
+                    )
+    if is_stream and spec.deletes:
+        problems.append(
+            Problem(
+                f"{at}.deletes",
+                "a stream's window never yields a delete: a window holds what arrived in it, "
+                "not all its source holds",
+                fix="remove deletes: (a stream's change tables tell inserts and updates)",
+                got=True,
+            )
+        )
+    return problems
+
+
+def _changes(i: int, entry: CollectorEntry) -> tuple[list[SourcedValue], list[Problem]]:
+    """``changes:``'s effective key, volatile fields and deletes, with where each came from;
+    and a problem when deletes are asked of a table an ``offset`` or ``page`` crawl reads,
+    whose records shift under it when the source loses one during the crawl."""
+    spec = entry.changes
+    assert spec is not None
+    at = f"collectors.{i}.changes"
+    values = [
+        SourcedValue(path=f"{at}.{key}", value=getattr(spec, key),
+                     origin="mission" if key in spec.model_fields_set else "recon")
+        for key in ("key", "volatile", "deletes")
+    ]  # fmt: skip
+    problems = []
+    if spec.deletes and entry.paginate is not None and entry.paginate.type in COUNTED:
+        problems.append(
+            Problem(
+                f"{at}.deletes",
+                f"a {entry.paginate.type} crawl of a source that loses a record while it is read "
+                "shifts the next record onto a page already read, so it is skipped, and would "
+                "be told as deleted",
+                fix="use link, cursor or header pagination if the API offers one, or set "
+                "deletes: false",
+                got=True,
+            )
+        )
+    return values, problems
 
 
 def plugin_warning(broken: BrokenPlugin) -> Problem:
@@ -1161,22 +1367,23 @@ def _credential_warnings(
     env: Mapping[str, str],
     plugins: Plugins,
 ) -> list[Problem]:
-    """A warning for each variable a used source names, as ``auth.env`` or through its kind's
-    own settings (``CollectorType.source_env``), that ``env`` does not set."""
+    """A warning for each variable a used source names, as ``auth.token: env:NAME`` or
+    through its kind's own settings (``CollectorType.source_env``), that ``env`` does not set."""
     adders = _kind_types(plugins)
     warnings = []
     for i, src in sources:
         if src.name not in used:
             continue
-        if src.auth.env and not env.get(src.auth.env):
+        named = env_name(src.auth.token)
+        if named is not None and not env.get(named):
             warnings.append(
                 Problem(
-                    f"catalog.{i}.auth.env",
-                    f"{src.auth.env} is not set; requests to {src.name!r} will be sent "
-                    "without credentials",
+                    f"catalog.{i}.auth.token",
+                    f"{named} is not set; requests to {src.name!r} will be sent without "
+                    "credentials",
                     kind="env_unset",
-                    fix=f"set {src.auth.env}, or leave it unset to send the requests without it",
-                    got=src.auth.env,
+                    fix=f"set {named}, or leave it unset to send the requests without it",
+                    got=named,
                 )
             )
         ctype = adders.get(src.type)

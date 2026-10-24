@@ -48,15 +48,21 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from recon.adapters._out.http_source import auth_headers, auth_params, build_url
+from recon.adapters._out.credentials import Credentials
+from recon.adapters._out.http_source import (
+    auth_headers,
+    auth_params,
+    build_url,
+    described_credential,
+)
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.domain.collector import CollectorType
 from recon.domain.errors import CollectionError, Problem
-from recon.domain.http import LONG_LINE, REDACTED, reported_url
+from recon.domain.http import LONG_LINE, reported_url
 from recon.domain.stream import POSITION_FIELD, BufferSpec, Gap
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator, Mapping
+    from collections.abc import Callable, Iterable, Iterator
     from datetime import datetime
 
     from recon.domain.capture import CaptureLog
@@ -106,7 +112,7 @@ class SseCollector:
         requester: Requester,
         clock: Clock | None,
         gaps: GapLog,
-        env: Mapping[str, str],
+        credentials: Credentials,
         user_agent: str,
         jitter: random.Random | None = None,
         pause: Callable[[float], object] | None = None,
@@ -121,7 +127,7 @@ class SseCollector:
         self._requester = requester
         self._clock = clock
         self._gaps = gaps
-        self._env = env
+        self._credentials = credentials
         self._user_agent = user_agent
         self._jitter = jitter or random.Random()
         self._closed = threading.Event()
@@ -152,7 +158,7 @@ class SseCollector:
                 fix="survey through recon's own requester (root() without requester=)",
             )
         url = build_url(source.url, settings.endpoint, {})
-        params = {**settings.params, **auth_params(source, self._env)}
+        params = {**settings.params, **auth_params(source, self._credentials)}
         last: str | None = None if after is None else str(after)
         cap = (entry.buffer or BufferSpec()).max_record_bytes
         wait_s = 1.0
@@ -161,7 +167,7 @@ class SseCollector:
         lost: datetime | None = None
         self._closed.clear()
         while not self._closed.is_set():
-            headers = {**auth_headers(source, self._env, self._user_agent),
+            headers = {**auth_headers(source, self._credentials, self._user_agent),
                        "Accept": "text/event-stream", "Cache-Control": "no-cache"}  # fmt: skip
             if last is not None:
                 headers["Last-Event-ID"] = last
@@ -278,25 +284,31 @@ def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, An
     settings = SseSettings.model_validate(entry.settings)
     if source is None or not settings.endpoint:
         return {}
-    params = dict(settings.params)
-    if source.auth.param and source.auth.env:
-        params[source.auth.param] = REDACTED
+    secret_params, secret_headers = described_credential(source)
+    params = dict(settings.params) | secret_params
     query = "&".join(f"{key}={value}" for key, value in params.items())
     url = build_url(source.url, settings.endpoint, {}) + (f"?{query}" if query else "")
     headers = {"User-Agent": source.user_agent or DEFAULT_USER_AGENT,
                "Accept": "text/event-stream"}  # fmt: skip
-    if source.auth.header and source.auth.env:
-        headers[source.auth.header] = REDACTED
-    return {
+    described: dict[str, Any] = {
         "method": "GET",
         "url": reported_url(url, source.auth.param),
-        "headers": headers,
+        "headers": headers | secret_headers,
         "reconnect": settings.reconnect,
     }
+    if source.auth.headers_helper is not None:
+        described["headers_helper"] = source.auth.headers_helper
+    return described
 
 
 collector_type = CollectorType(
-    create=lambda ctx: SseCollector(ctx.requester, ctx.clock, ctx.gaps, ctx.env, ctx.user_agent),
+    create=lambda ctx: SseCollector(
+        ctx.requester,
+        ctx.clock,
+        ctx.gaps,
+        Credentials(ctx.env, ctx.mission_dir, ctx.shell, ctx.deadline),
+        ctx.user_agent,
+    ),
     effects=frozenset({"network"}),
     summary="server-sent events → each event a record, positioned by its id",
     settings=SseSettings,

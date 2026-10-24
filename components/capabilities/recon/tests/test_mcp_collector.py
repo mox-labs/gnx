@@ -87,7 +87,7 @@ def _problems(catalog: list[dict[str, Any]], collectors: list[dict[str, Any]]) -
          "catalog.0.env", "unknown_key"),
         ({"name": "s", "type": "mcp", "url": "https://x.test/mcp", "token": "sk-live-123"},
          "catalog.0.token", "invalid_value"),
-        ({"name": "s", "type": "mcp", "url": "https://x.test/mcp", "auth": {"env": "T"}},
+        ({"name": "s", "type": "mcp", "url": "https://x.test/mcp", "auth": {"token": "env:T"}},
          "catalog.0.auth", "unknown_key"),
         ({**STDIO, "name": "s", "cwd": "/tmp"}, "catalog.0.cwd", "unknown_key"),
     ],

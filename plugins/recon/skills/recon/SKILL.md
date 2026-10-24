@@ -18,7 +18,6 @@ Do not use recon:
 - to read one page or one API response once: fetch it directly.
 - for a page that renders its content with JavaScript: the `web` collector does one HTTP GET and converts what comes back.
 - to write to a remote system: recon only reads.
-- to follow pagination: a collector makes one request per source; list one collector per page, or use a `cli` collector whose command pages.
 
 ## Prerequisites
 
@@ -101,7 +100,7 @@ Act on the exit code, then on the error's `fix`:
 | 3 | `config` | the mission config or another input is invalid | fix each problem at its `path` as its `fix` says, then plan again; when `complete` is false, more problems may follow the fix |
 | 4 | `not_found` | no such mission, archive or template | run the command the error's `fix` names |
 | 5 | `transient` | every failed table failed transiently (HTTP 429, 5xx, network, a deadline); the archive is kept, marked incomplete | if a table's error names a `deadline:` or `timeout:`, raise it (a retry fails too); else survey again later |
-| 6 | `auth` | a table failed on credentials (HTTP 401, 403); the archive is kept, marked incomplete | set the variable the failing source's auth.env names to a valid key, then survey again |
+| 6 | `auth` | a table failed on credentials (HTTP 401, 403); the archive is kept, marked incomplete | give the failing source's auth.token (or headers_helper) a valid key, then survey again |
 | 7 | `conflict` | init, or survey -c, would overwrite a different mission config | add --replace to overwrite it, or choose another mission name |
 | 8 | `run_failed` | a table failed, and not only on credentials or transiently; the archive is kept, marked incomplete | read each failed table's error and fix its cause, then plan and survey again |
 | 9 | `store` | the survey could not finish its archive; it is kept, marked incomplete | free space where the archive is, or make it writable, then survey again |
@@ -116,7 +115,7 @@ A survey whose archive could not be finished (a full disk) exits 9 (`store`) wha
 {"schema": "recon.v1.error", "error": {"kind": "config", "message": "<file>: 1 problem(s)", "fix": "fix each problem, then: recon survey m --dry-run", "complete": true, "problems": [{"path": "collectors.0.type", "kind": "name_unknown", "message": "unknown collector type 'ftp'; installed: api, capture, cli, mcp, sse, tail, web", "fix": "use one of: api, capture, cli, mcp, sse, tail, web", "allowed": ["api", "capture", "cli", "mcp", "sse", "tail", "web"], "got": "ftp", "source": ""}], "details": {}}}
 ```
 
-A problem's `path` is dotted from the top of the file (`collectors.0.type`); `allowed` lists the legal values where the set is closed; `got` is the value written, when there is one. `details` carries structured values: a failed survey's `archive` and `failed` tables. A problem's `kind` is one of `yaml_syntax`, `wrong_shape`, `unknown_key`, `missing_key`, `invalid_value`, `name_unknown`, `name_taken`, `unresolved`, `env_unset`, `plugin_broken`, `otel_unavailable`, `telemetry_failed`, `extract_missing`, `table_unreadable`, `archive_unfinished`, `extract_unresolved`, `records_not_objects`, `captures_unmatched`, `result_empty`, `events_dropped`, `telemetry_stuck`, `archive_abandoned`, `records_dropped`, `source_stuck`, `retain_unset`, `windows_many`, `config_changed`, `missed_ignored`, `schedule_overrun`, `mission_exposed`; the last twenty-two are warnings. `error.kind` is one of `unknown`, `usage`, `config`, `not_found`, `transient`, `auth`, `conflict`, `run_failed`, `store`, `query`, `busy`, `stale`, `interrupted`. A warning is a problem record in the document's `warnings` list (`recon.v1.plan`, `recon.v1.survey`, `recon.v1.query-rows`): it does not stop the command.
+A problem's `path` is dotted from the top of the file, list positions included (`collectors.0.type`); `allowed` lists the legal values where the set is closed; `got` is the value written, when there is one. `details` carries structured values: a failed survey's `archive` and `failed` tables, a wrong `value` and the `allowed` ones. A problem's `kind` is one of `yaml_syntax`, `wrong_shape`, `unknown_key`, `missing_key`, `invalid_value`, `name_unknown`, `name_taken`, `unresolved`, `env_unset`, `plugin_broken`, `otel_unavailable`, `telemetry_failed`, `extract_missing`, `table_unreadable`, `archive_unfinished`, `extract_unresolved`, `records_not_objects`, `captures_unmatched`, `result_empty`, `events_dropped`, `telemetry_stuck`, `archive_abandoned`, `records_dropped`, `source_stuck`, `retain_unset`, `windows_many`, `page_cap`, `paginate_loop`, `paginate_empty`, `deadline_short`, `deletes_withheld`, `config_changed`, `missed_ignored`, `schedule_overrun`, `mission_exposed`; the last twenty-seven are warnings. `error.kind` is one of `unknown`, `usage`, `config`, `not_found`, `transient`, `auth`, `conflict`, `run_failed`, `store`, `query`, `busy`, `stale`, `interrupted`. A warning is a problem record in the document's `warnings` list (`recon.v1.plan`, `recon.v1.survey`, `recon.v1.query-rows`): it does not stop the command.
 
 Documents name their shape in `schema`: `recon.v1.plan`, `recon.v1.survey`, `recon.v1.status`, `recon.v1.query-rows`, `recon.v1.templates`, `recon.v1.mission`, `recon.v1.capture`, `recon.v1.records-since`, `recon.v1.error`, and `recon.v1.event` for the lines of an archive's event log. A reader ignores a field it does not know, and handles an error or problem kind it does not know by the exit code; both sets grow. A document whose schema has another major version (`recon.v2.*`) is not a `recon.v1` document.
 
@@ -131,13 +130,13 @@ catalog:                       # where to look; optional
   - name: <source>             # required, unique
     type: api                  # api | web | local | mcp, or a kind an installed type adds
     url: <base URL, or a directory for local>   # required, but by an mcp stdio source
-    auth: {env: <VAR>, header: <Header-Name>, param: <query param>, prefix: "Bearer "}
+    auth: {token: env:<VAR>, header: <Header-Name>, param: <query param>, prefix: "Bearer "}
+    # or auth: {headers_helper: <command>}
     rate_limit: {rps: 10.0, burst: 3}   # tokens a second (> 0), most held (>= 1)
     timeout: 60                # seconds a send may take, first byte to last (> 0)
     max_bytes: 50000000        # largest response body; a larger one fails the table
     user_agent: <string>       # default: recon/<version> (+https://github.com/mox-labs/gnx)
-    # mcp: command, args, env (each value as is, or env:NAME) for a stdio server; or url with
-    #      token (env:NAME | file:PATH) or headers_helper (a command printing JSON headers)
+    # mcp: command, args, env (as is, or env:NAME) for stdio; or url, token, headers_helper
 collectors:                    # what to ask; required, at least one
   - name: <output>             # required; names the table
     type: api                  # api | cli | web | capture | mcp, or an installed plugin type
@@ -145,6 +144,8 @@ collectors:                    # what to ask; required, at least one
     type_url: recon.v1.records # what the records are: <namespace>.v<N>.<kebab-name>
     normalize: {<column>: "<path>|$<transform>"}   # every type; omit to keep records whole
     extract: <path>            # api, capture and mcp: where the records are in a body
+    paginate: {type: link}     # api: page by page; -r pagination
+    changes: {key: [<field>]}  # tell what changed; -r changes
     deadline: 120              # optional: seconds each of its tables may take (> 0)
     # Every other key is the type's own:
     # api:     endpoint, params (the query), vars (fill {placeholders}),
@@ -162,7 +163,7 @@ These are all the keys there are: an unknown key at the top level, in a source, 
 
 **Placeholders.** A placeholder is `{name}`, the name a letter or `_` and then letters, digits or `_`, so a regular expression's `\w{3}` or `{2,5}` is not one; `{{` and `}}` are a literal brace (a GraphQL body's `{viewer{{login}}}`), except in `run:`. In an `api` collector, `{key}` in `endpoint` and in the string values of `body` is filled from `vars:`, which are sent nowhere else; `params:` are the query string, each value sent as written. A placeholder nothing fills is a plan problem (`unresolved`), and so is one in a `params:` value. In an `mcp` collector, `vars:` fill `{key}` in the string values of `arguments` and in `resource`. A `web` collector fills none, so a placeholder in its `endpoint` is a plan problem. In a `cli` collector recon fills `{url}`, the source's `url`, and `{pattern}`, each entry of `patterns:` in turn: `{pattern}` without `patterns:` is a plan problem, and so is `{url}` in a run with no source. Any other `{...}` in `run:` is the command's own (`cargo tree --format '{p}'`, `'{{.Name}}'`) and is passed as written.
 
-**Credentials.** `auth.env` names the environment variable holding the secret; the secret never appears in the file. `auth.header` sends it as that header, `auth.param` as that query parameter, with `auth.prefix` in front. An unset variable sends the request without it, and the plan warns. An `mcp` source names its variables as `env:NAME`: a remote's `token: env:NAME` (or `file:PATH`, relative to the mission's directory) is sent as `Authorization: Bearer`, and a stdio server's `env: {GITHUB_TOKEN: env:GITHUB_TOKEN}` gives it that variable, which it gets with `HOME`, `PATH`, `SHELL`, `TERM`, `USER` and `LOGNAME` and nothing else of recon's environment. A collector type sees only the variables the mission names this way.
+**Credentials.** A secret is never in the file. `auth.token` is `env:NAME` (a variable) or `file:PATH` (relative to the mission; refused, `config`, if its group or others can read it), sent as `auth.header` and/or `auth.param`, `auth.prefix` in front; or `auth.headers_helper`, a command printing JSON headers, run once a survey. An unset variable sends the request without it, and the plan warns. An `mcp` remote's `token:` (as `Authorization: Bearer`) and `headers_helper:` are the same; a stdio server's `env: {GITHUB_TOKEN: env:GITHUB_TOKEN}` gives it that variable, with `HOME`, `PATH`, `SHELL`, `TERM`, `USER` and `LOGNAME` and nothing else of recon's environment. A collector type sees only the variables the mission names this way.
 
 ## Collector types
 
@@ -196,13 +197,12 @@ A spec maps each output column to a path into the record, optionally piped throu
                                    status, records, seconds, error {kind, message, fix}
     telemetry.jsonl                the survey's recon.v1.event lines: a start and an end per
                                    span (survey, table, HTTP request); not a table
-    .incomplete                    present unless the survey finished with every table: a table
-                                   failed, the survey was stopped (Ctrl-C, SIGTERM) or
-                                   crashed, or meta.yaml could not be written
+    .incomplete                    present unless the survey finished with every table: one
+                                   failed, it was stopped or crashed, or meta.yaml failed
     captures.jsonl, raw/<sha256>   the capture log, with preserve_raw: true
 ```
 
-A table that collected nothing holds the one line `{"_empty": true}`; it is not a record, its view has no rows, and it counts as 0 records. When its collector has `normalize:`, the line keeps the spec's columns (`"_columns": [...]`) and the view has them, so a query of them runs on an empty table as it does on a full one; without `normalize:` the view has only `_empty`. `query` reads the latest archive unless `--archive <archive id>` names another (`recon status <mission>` lists the ids), and reports `state: incomplete` for an incomplete archive, whose rows may be partial, or `state: writing`: the table being written is not a view yet. SQL reads only files under the mission's `archive/` directory, so `read_json_auto('<that directory>/<archive id>/<table>.jsonl')` reaches an earlier archive for a diff; it loads no extension and reaches no network. The session is in UTC (`now()`, `current_date`, `date_trunc`). A query runs SELECT statements only (`WITH`, `FROM`, `DESCRIBE` and `SUMMARIZE` among them); `COPY`, `ATTACH`, `CREATE` and the rest exit 10.
+A table that collected nothing holds the one line `{"_empty": true}`; it is not a record, its view has no rows, and it counts as 0 records. When its collector has `normalize:`, the line keeps the spec's columns (`"_columns": [...]`) and the view has them, so a query of them runs on an empty table as it does on a full one; without `normalize:` the view has only `_empty`. `query` reads the latest archive unless `--archive <archive id>` names another (`recon status <mission>` lists the ids), and reports `state: incomplete` for an incomplete archive, whose rows may be partial, or `state: writing`: the table being written is not a view yet. SQL reads only files under the mission's `archive/` directory (an earlier archive's too; for what changed since, `changes:`), loads no extension and reaches no network. The session is in UTC (`now()`, `current_date`, `date_trunc`). A query runs SELECT statements only (`WITH`, `FROM`, `DESCRIBE` and `SUMMARIZE` among them); `COPY`, `ATTACH`, `CREATE` and the rest exit 10.
 
 To cite a row, cite its line in one archive's file: each record is one line. Take the archive's `path` from `recon status <name> --json` (`missions[0].latest.path`, or an older archive's in `missions[0].history`; a query's document names its own as `path`), then `SELECT ordinality AS line, title FROM read_json_auto('<path>/<table>.jsonl') WITH ORDINALITY` gives `<archive id>/<table>.jsonl` line `line` for each row. The number is the line in the file, counted before any `WHERE` or `ORDER BY`. Read one file, not a glob across archives (`archive/*/<table>.jsonl`): a glob numbers the lines of all its files as one, and archives surveyed with different `normalize:` specs (one raw, one normalized) have different columns. A table's view leaves the number out, so `SELECT *` shows only the record.
 
@@ -214,7 +214,7 @@ Every survey writes its event log, `telemetry.jsonl`, into its archive, a `recon
 
 ## Captures
 
-`preserve_raw: true` keeps every fetched body (an HTTP response, a command's stdout, an MCP tool's or resource's result) in the archive's capture log, content-addressed, with credential headers, the `auth.param` value and every credential an `mcp` source resolved redacted. A `capture` collector reads such logs back with a new `normalize:`, so an archive can be reshaped without fetching again.
+`preserve_raw: true` keeps every fetched body (an HTTP response, a command's stdout, an MCP tool's or resource's result) in the archive's capture log, content-addressed, with every credential recon sends or receives redacted. A `capture` collector reads such logs back with a new `normalize:`, so an archive can be reshaped without fetching again.
 
 Two ways to make an MCP server's answers a table. An `mcp` collector calls the server itself, the same way every survey (`recon init files -t mcp-server` shows one): use it for a stdio server, or a remote one that takes a token or a header. A server behind OAuth that signs in through a browser is reached the second way: the agent calls its tools, and a `PostToolUse` hook running `recon capture <mission>` captures the results; the hook and the mission: `recon --skill -r config-patterns`.
 
@@ -235,5 +235,7 @@ Each prints with `recon --skill -r <name>`:
 | `capture-format` | the `recon.v1.capture` line format and how a `capture` collector reads it |
 | `telemetry` | the event log, every span and attribute, exporting through OpenTelemetry |
 | `streaming` | stream keys, defaults, refusals; `tail`, `sse`; `--stream` |
+| `pagination` | `paginate:` keys, defaults, stops, refusals |
+| `changes` | `changes:` keys, defaults, ops, refusals |
 | `live-reading` | `recon watch` and `recon.read_since`: archive states, sealing, the cursor, every flag, default and refusal |
 | `schedules` | `schedule:`, `recon schedule`, ticks |

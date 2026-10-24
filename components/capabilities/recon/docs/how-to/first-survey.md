@@ -47,7 +47,7 @@ catalog:
     url: https://api.github.com
     auth:
       header: Authorization
-      env: GITHUB_TOKEN
+      token: env:GITHUB_TOKEN
       prefix: "Bearer "
     rate_limit: { rps: 1, burst: 2 }
     user_agent: "dep-releases (you@example.com)"   # optional; default: recon/<version>
@@ -166,7 +166,7 @@ catalog:
     url: https://api.github.com
     auth:
       header: Authorization
-      env: GITHUB_TOKEN
+      token: env:GITHUB_TOKEN
       prefix: "Bearer "
     rate_limit: { rps: 1, burst: 2 }
     user_agent: "dep-releases (you@example.com)"

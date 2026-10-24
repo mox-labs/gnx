@@ -17,11 +17,12 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol
 
 from recon.application.captures import record_hook_payload
+from recon.application.changes import MEMORY_KEYS, ChangeDetector
 from recon.application.collectors import confined_transforms, declared_env
 from recon.application.plan import Plan, PlannedStream, build_plan, fan_out, plugin_warning
 from recon.application.schedules import Schedules
 from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun
-from recon.application.survey import CollectorError, Survey
+from recon.application.survey import CollectorError, Survey, TablePages
 from recon.domain.archives import (
     ARCHIVE_ID_FORMAT,
     READ_MAX_BYTES,
@@ -74,6 +75,7 @@ if TYPE_CHECKING:
 
     from recon.application.collectors import SurveyCollectors
     from recon.domain.archives import ArchiveQuery, ArchiveState, ArchiveStore, Ended
+    from recon.domain.changes import KeyJoin
     from recon.domain.clock import Clock
     from recon.domain.collector import Collector, Plugins
     from recon.domain.documents import (
@@ -84,6 +86,7 @@ if TYPE_CHECKING:
     )
     from recon.domain.missions import ConfigFile, MissionStore
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
+    from recon.domain.paginate import PageLog
     from recon.domain.schedule import Platform, ScheduleHost, Scheduler, ScheduleStore
     from recon.domain.stream import GapLog, Stop, WindowSpec
     from recon.domain.telemetry import Channel, EventCallback, Telemetry
@@ -93,7 +96,8 @@ class CollectorFactory(Protocol):
     """Builds a collector for each installed type a mission uses, reporting through the
     survey's telemetry, with the types whose factory failed (which a survey reports and whose
     tables fail with a config error), and what to close when the survey ends; ``gaps`` is where
-    a stream's collector says when its source was not read."""
+    a stream's collector says when its source was not read, and ``pages`` where a paginated
+    table's collector says its pages."""
 
     def __call__(
         self,
@@ -104,6 +108,7 @@ class CollectorFactory(Protocol):
         /,
         *,
         gaps: GapLog | None = None,
+        pages: PageLog | None = None,
     ) -> SurveyCollectors: ...
 
 
@@ -150,6 +155,8 @@ class Recon:
         schedule_store: ScheduleStore | None = None,
         schedule_host: ScheduleHost | None = None,
         local: Callable[[datetime], datetime] | None = None,
+        key_join: KeyJoin | None = None,
+        memory_keys: int = MEMORY_KEYS,
     ) -> None:
         """``root_found_by`` is how the composition root found the project root:
         ``argument`` (the caller named it), ``repository`` (the nearest ancestor holding
@@ -159,7 +166,8 @@ class Recon:
         system's scheduler of a platform (None: the host's own), which ``schedule_*`` run
         through, with the ``schedule_store`` beside each mission, the ``schedule_host``'s
         recon command and PATH, and ``local``, the clock's time as the host's local time;
-        without them, the ``schedule_*`` operations are refused."""
+        without them, the ``schedule_*`` operations are refused. ``key_join`` joins a change
+        detection's comparisons of more than ``memory_keys`` keys (None: all in memory)."""
         self._missions = missions
         self._archives = archives
         self._query = query
@@ -184,6 +192,8 @@ class Recon:
                 prepare=lambda name: self._prepare(name, None, False)[:2],
             )
         )
+        self._key_join = key_join
+        self._memory_keys = memory_keys
 
     # --- init ---------------------------------------------------------------------------
 
@@ -427,8 +437,9 @@ class Recon:
                 on_event = emit = channel.callback(on_event)
             about = {"recon.mission": name, "recon.archive": archive.name}
             deadline = Deadline(self._clock)
+            pages = TablePages()
             with _ending(telemetry, channel), telemetry.span(SURVEY, about) as span:
-                built = self._build_collectors(mission, snapshot, telemetry, deadline)
+                built = self._build_collectors(mission, snapshot, telemetry, deadline, pages=pages)
                 try:
                     for broken in built.failed:
                         warnings.append(plugin_warning(broken))
@@ -451,7 +462,8 @@ class Recon:
                     }
                     survey = Survey(
                         self._archives, self._clock, self._version, telemetry, on_event,
-                        extracts=extracts, kinds=kinds, deadline=deadline,
+                        extracts=extracts, kinds=kinds, deadline=deadline, pages=pages,
+                        changes=self._changes(name, snapshot),
                     )  # fmt: skip
                     tables = survey.run(
                         plan.config,
@@ -489,8 +501,9 @@ class Recon:
         stream_windows: list[WindowOutcome] = []
         for stream in plan.streams:
             run, found = self._run_stream(
-                mission, plan.config, stream, sha256, windows=1, until=None, on_event=caller
-            )
+                mission, plan.config, stream, sha256, windows=1, until=None, on_event=caller,
+                name=name,
+            )  # fmt: skip
             warnings += found
             stream_windows += [run.last] if run.last is not None else []
         failed = failed_tables or any(w.table.status == "error" for w in stream_windows)
@@ -554,7 +567,7 @@ class Recon:
                 on_event = None
         run, found = self._run_stream(
             mission, plan.config, planned, sha256, windows=windows, until=until,
-            on_event=on_event, stop=stop,
+            on_event=on_event, stop=stop, name=name,
         )  # fmt: skip
         found = started + found
         return StreamDocument(
@@ -583,10 +596,11 @@ class Recon:
         until: datetime | None,
         on_event: EventCallback | None,
         stop: Stop | None = None,
+        name: str,
     ) -> tuple[StreamRun, list[Problem]]:
         """Run one stream of ``config`` through the window writer, over a collector built for
         it alone (its ``close()`` is what stops a source that would not); the run, and what it
-        found worth saying, one problem of each kind."""
+        found worth saying, one problem of each kind. ``name`` is the mission's."""
         entry = config.collectors[planned.index]
         ctype = self._plugins.collector_types[entry.type]
         catalog = {source.name: source for source in config.catalog}
@@ -618,6 +632,7 @@ class Recon:
             engine = Stream(
                 self._archives, self._clock, self._version,
                 telemetry=partial(self._window_telemetry, on_event=on_event, warnings=warnings),
+                changes=self._changes(name, subset),
             )  # fmt: skip
             plan = StreamPlan(
                 name=planned.name,
@@ -650,6 +665,15 @@ class Recon:
             telemetry.close()
         warnings += engine.warnings
         return run, _once_each(warnings)
+
+    def _changes(self, name: str, config: ReconConfig) -> ChangeDetector | None:
+        """The detector of what changed in the mission's tables, under its key, made on first
+        use; None when no entry of ``config`` asks for it, so such a mission has no key."""
+        if not any(entry.changes is not None for entry in config.collectors):
+            return None
+        mission = self._missions.mission_dir(name)
+        return ChangeDetector(self._archives, mission, self._missions.change_key(name),
+                              large=self._key_join, memory_keys=self._memory_keys)  # fmt: skip
 
     @contextlib.contextmanager
     def _window_telemetry(

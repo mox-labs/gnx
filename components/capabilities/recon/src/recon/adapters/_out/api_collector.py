@@ -9,24 +9,43 @@ the query parameters, sent as written; ``vars``, the values for the ``{placehold
 ``endpoint`` and in ``body``'s strings, which are sent nowhere else; ``method``, ``body`` and
 ``response_format``.
 
+With ``paginate:`` (the type declares ``paginates``) it reads its source page by page, each
+page a request through the Requester, so each draws a rate-limit token and each is captured,
+each with the entry's method and body. A ``link`` or ``header`` crawl asks for the URL the
+page named, resolved against the page's own and held to the source's origin (a link elsewhere
+fails the table: the source's credential would go with it), with the source's credential
+parameter and no other query; a ``cursor``, ``offset`` or ``page`` crawl sends ``params`` and
+the token as ``paginate.param`` (a ``page`` crawl its first page's number too). How it stops
+is :class:`~recon.domain.paginate.Crawl`'s. Each record carries ``_position``, ``{page, i}``;
+each page, with its token (a URL as recon reports one, its credential parameter redacted), and
+a crawl cut short are said through the page log (``CollectorContext.pages``).
+
 Registered as the built-in collector type ``api`` (entry-point group ``recon.collectors``).
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict
 
-from recon.adapters._out.http_source import auth_headers, auth_params, build_url
+from recon.adapters._out.credentials import Credentials
+from recon.adapters._out.http_source import (
+    auth_headers,
+    auth_params,
+    build_url,
+    described_credential,
+)
 from recon.adapters._out.parsing import parse_body
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.domain.capture import redact_query_params
 from recon.domain.collector import CollectorType
-from recon.domain.errors import Problem
-from recon.domain.http import REDACTED, reported_url
-from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, to_records
+from recon.domain.errors import CollectionError, Problem
+from recon.domain.http import reported_url
+from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, resolve_path, to_records
+from recon.domain.paginate import COUNTED, FIRST_PAGE, Crawl, NoPages, Stop, next_link, position
+from recon.domain.stream import POSITION_FIELD
 from recon.domain.substitution import find_unresolved, substitute
 
 if TYPE_CHECKING:
@@ -34,8 +53,9 @@ if TYPE_CHECKING:
 
     from recon.domain.capture import CaptureLog
     from recon.domain.collector import Transform
-    from recon.domain.http import Requester
+    from recon.domain.http import HttpResponse, Requester
     from recon.domain.models import CollectorEntry, SourceEntry
+    from recon.domain.paginate import PageLog, PaginateSpec
 
 
 class ApiSettings(BaseModel):
@@ -66,14 +86,17 @@ class ApiCollector:
     def __init__(
         self,
         requester: Requester,
-        env: Mapping[str, str],
+        credentials: Credentials,
         user_agent: str,
         transforms: Mapping[str, Transform] = BUILTIN_TRANSFORMS,
+        *,
+        pages: PageLog | None = None,
     ) -> None:
         self._requester = requester
-        self._env = env
+        self._credentials = credentials
         self._user_agent = user_agent
         self._transforms = transforms
+        self._pages = pages if pages is not None else NoPages()
 
     def collect(
         self,
@@ -87,12 +110,75 @@ class ApiCollector:
         assert source is not None and settings.endpoint is not None
         url = build_url(source.url, settings.endpoint, settings.vars)
         body = substitute(settings.body, settings.vars) if settings.body else None
+        if entry.paginate is not None:
+            yield from self._crawl(entry, source, settings, (url, body), captures)
+            return
+        data, _ = self._fetch(entry, source, settings, (url, _params(settings)), body, captures)
+        for record in to_records(data, entry.extract):
+            yield self._shaped(entry, record)
 
+    # --- Private ---
+
+    def _crawl(
+        self,
+        entry: CollectorEntry,
+        source: SourceEntry,
+        settings: ApiSettings,
+        first: tuple[str, dict[str, Any] | None],
+        captures: CaptureLog | None,
+    ) -> Iterator[dict[str, Any]]:
+        """Every page, until the crawl stops; each record with its ``_position``."""
+        spec = entry.paginate
+        assert spec is not None
+        url, body = first
+        linked = spec.type in ("link", "header")
+        crawl = Crawl(spec, first=url if linked else None)
+        token: Any = None
+        target = (url, _params(settings))
+        if spec.type == "page":
+            assert spec.param is not None  # PaginateSpec holds it for page
+            token = FIRST_PAGE
+            target = (url, {**_params(settings), spec.param: str(token)})
+        page = 0
+        while True:
+            data, resp = self._fetch(entry, source, settings, target, body, captures, page=page)
+            said = reported_url(token, source.auth.param) if linked and token else token
+            self._pages.page(page, said)
+            records = to_records(data, entry.extract)
+            for index, record in enumerate(records):
+                yield {**self._shaped(entry, record), POSITION_FIELD: position(page, index)}
+            step = crawl.after(len(records), _found(spec, data, resp))
+            if isinstance(step, Stop):
+                if step.truncated_by is not None:
+                    self._pages.truncated(step.truncated_by)
+                return
+            token, page = step.token, page + 1
+            if linked:
+                target = (_on_the_source(source, token), {})
+            else:
+                assert spec.param is not None  # PaginateSpec holds it for the others
+                target = (url, {**_params(settings), spec.param: str(token)})
+
+    def _fetch(
+        self,
+        entry: CollectorEntry,
+        source: SourceEntry,
+        settings: ApiSettings,
+        target: tuple[str, dict[str, str]],
+        body: dict[str, Any] | None,
+        captures: CaptureLog | None,
+        *,
+        page: int | None = None,
+    ) -> tuple[Any, HttpResponse]:
+        """One request, captured when the mission keeps captures, and its body parsed. A
+        page's capture names its ordinal (``page``), so a replay gives its records the same
+        ``_position``."""
+        url, params = target
         resp = self._requester.request(
             source,
             settings.method,
             url,
-            params={**_params(settings), **self._auth_params(source)},
+            params={**params, **self._auth_params(source)},
             headers=self._build_headers(source),
             json_body=body,
         )
@@ -106,6 +192,8 @@ class ApiCollector:
             }
             if body is not None:
                 request["body"] = body
+            if page is not None:
+                request["page"] = page
             captures.record(
                 collector=entry.name,
                 source=source.name,
@@ -117,21 +205,68 @@ class ApiCollector:
                 body=resp.body,
             )
 
-        data = parse_body(resp.text, settings.response_format, origin=resp.url)
-        for record in to_records(data, entry.extract):
-            yield (
-                apply_normalize(record, entry.normalize, self._transforms)
-                if entry.normalize
-                else record
-            )
+        return parse_body(resp.text, settings.response_format, origin=resp.url), resp
 
-    # --- Private ---
+    def _shaped(self, entry: CollectorEntry, record: dict[str, Any]) -> dict[str, Any]:
+        if not entry.normalize:
+            return record
+        return apply_normalize(record, entry.normalize, self._transforms)
 
     def _build_headers(self, source: SourceEntry) -> dict[str, str]:
-        return auth_headers(source, self._env, self._user_agent)
+        return auth_headers(source, self._credentials, self._user_agent)
 
     def _auth_params(self, source: SourceEntry) -> dict[str, str]:
-        return auth_params(source, self._env)
+        return auth_params(source, self._credentials)
+
+
+def _found(spec: PaginateSpec, data: Any, resp: HttpResponse) -> Any:
+    """The next page's token a page gave: the ``Link`` header's next URL, or what is at
+    ``paginate.next`` in its body; None when it gave none. A URL is resolved against the
+    page's own. A token that is not one (an object, a list) fails the table."""
+    if spec.type in COUNTED:
+        return None
+    found: Any
+    if spec.type == "header":
+        link = next((value for name, value in resp.headers.items() if name.lower() == "link"), "")
+        found = next_link(link)
+    else:
+        assert spec.next is not None  # PaginateSpec holds it for link and cursor
+        found = resolve_path(data, spec.next)
+    kinds: tuple[type, ...] = (str, int, float) if spec.type == "cursor" else (str,)
+    if found is not None and (isinstance(found, bool) or not isinstance(found, kinds)):
+        what = "cursor (a string or a number)" if spec.type == "cursor" else "URL"
+        raise CollectionError(
+            f"paginate.next ({spec.next}) holds a {type(found).__name__}, not a {what}",
+            kind="run_failed",
+            fix=f"point paginate.next at the next page's {what} in a page's body",
+        )
+    if isinstance(found, str) and found and spec.type != "cursor":
+        return urljoin(resp.url, found)
+    return found
+
+
+#: The port of each scheme a next page's URL may have, when it names none.
+_PORTS = {"http": 80, "https": 443}
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parts = urlsplit(url)
+    return parts.scheme, (parts.hostname or "").lower(), parts.port or _PORTS.get(parts.scheme)
+
+
+def _on_the_source(source: SourceEntry, link: str) -> str:
+    """``link``, when it is at the source's origin (its scheme, host and port), where the
+    source's credential may go; else the table fails."""
+    if _origin(link)[0] not in _PORTS or _origin(link) != _origin(source.url):
+        raise CollectionError(
+            f"the next page is at {reported_url(link, source.auth.param)}, off source "
+            f"{source.name!r}'s origin ({reported_url(source.url)}): its credential would go "
+            "with the request, so it is not followed",
+            kind="run_failed",
+            fix="check that the source's url: has the scheme, host and port the API links its "
+            "pages at; an API that pages on another host needs a source of its own",
+        )
+    return link
 
 
 # --- Registration ---
@@ -192,6 +327,18 @@ def _check(entry: CollectorEntry) -> list[Problem]:
                     got=value,
                 )
             )
+    spec = entry.paginate
+    if spec is not None and spec.param is not None and spec.param in settings.params:
+        problems.append(
+            Problem(
+                f"params.{spec.param}",
+                f"paginate.param sends {spec.param} with every page after the first, so the "
+                "mission does not send it too",
+                kind="name_taken",
+                fix=f"remove params.{spec.param}: the crawl sets it",
+                got=settings.params[spec.param],
+            )
+        )
     return problems
 
 
@@ -208,25 +355,27 @@ def _params(settings: ApiSettings) -> dict[str, str]:
 
 def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, Any]:
     """The request a run sends: its method, its URL with every query parameter, the headers
-    the mission decides, and its body. The credential is :data:`REDACTED` wherever it goes,
-    as in telemetry; it is sent only when its variable is set, which the plan warns about."""
+    the mission decides, and its body; with ``paginate:``, how it crawls. The credential is
+    :data:`REDACTED` wherever it goes, as in telemetry; it is sent only when its variable is
+    set, which the plan warns about."""
     settings = _settings(entry)
     if source is None or not settings.endpoint:
         return {}
-    params = _params(settings)
-    if source.auth.param and source.auth.env:
-        params[source.auth.param] = REDACTED
+    secret_params, secret_headers = described_credential(source)
+    params = _params(settings) | secret_params
     url = _with_query(build_url(source.url, settings.endpoint, settings.vars), params)
-    headers = {"User-Agent": source.user_agent or DEFAULT_USER_AGENT}
-    if source.auth.header and source.auth.env:
-        headers[source.auth.header] = REDACTED
+    headers = {"User-Agent": source.user_agent or DEFAULT_USER_AGENT} | secret_headers
     request: dict[str, Any] = {
         "method": settings.method,
         "url": reported_url(url, source.auth.param),
         "headers": headers,
     }
+    if source.auth.headers_helper is not None:
+        request["headers_helper"] = source.auth.headers_helper
     if settings.body:
         request["body"] = substitute(settings.body, settings.vars)
+    if entry.paginate is not None:
+        request["paginate"] = entry.paginate.model_dump(exclude_none=True)
     return request
 
 
@@ -239,7 +388,13 @@ def _with_query(url: str, params: Mapping[str, str]) -> str:
 
 
 collector_type = CollectorType(
-    create=lambda ctx: ApiCollector(ctx.requester, ctx.env, ctx.user_agent, ctx.transforms),
+    create=lambda ctx: ApiCollector(
+        ctx.requester,
+        Credentials(ctx.env, ctx.mission_dir, ctx.shell, ctx.deadline),
+        ctx.user_agent,
+        ctx.transforms,
+        pages=ctx.pages,
+    ),
     effects=frozenset({"network"}),
     summary="HTTP API request → JSON/XML → records",
     settings=ApiSettings,
@@ -248,6 +403,7 @@ collector_type = CollectorType(
     requires_source=True,
     normalizes=True,
     extracts=True,
+    paginates=True,
     check=_check,
     describe=_describe,
 )

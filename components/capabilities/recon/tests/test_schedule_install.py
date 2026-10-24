@@ -316,9 +316,9 @@ class TestNoSecretIsProjected:
         self, tmp_path: Path, host: Host, platform: Platform
     ) -> None:
         """S4: a tick's credentials come from what the mission names at run time (its
-        ``auth.env``, a ``file:``, a helper), never from the schedule's files, so neither the
-        environment ``install`` runs in nor the config's credential names put a secret in
-        any of them."""
+        ``auth.token: env:``, a ``file:``, a helper), never from the schedule's files, so
+        neither the environment ``install`` runs in nor the config's credential names put a
+        secret in any of them."""
         env = {
             "PATH": "/usr/bin:/bin",
             "MAIL_TOKEN": SENTINEL,
@@ -330,7 +330,7 @@ class TestNoSecretIsProjected:
         config = {
             "schedule": {"every": 600},
             "catalog": [{"name": "mail", "type": "api", "url": "https://mail.example.org",
-                         "auth": {"env": "MAIL_TOKEN", "header": "Authorization"}}],
+                         "auth": {"token": "env:MAIL_TOKEN", "header": "Authorization"}}],
             "collectors": [{"name": "new", "type": "api", "source": "mail", "endpoint": "/m"}],
         }  # fmt: skip
         (mission / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))

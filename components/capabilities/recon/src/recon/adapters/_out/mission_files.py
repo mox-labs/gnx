@@ -6,6 +6,8 @@
       config.yaml
       captures/captures.jsonl, captures/raw/    the external capture log (`recon capture`)
       archive/<archive id>/                     one per survey
+      changes.key                               the key change detection hashes with, mode
+                                                0600, made by the first survey that needs it
 
 The project root is the one the caller names, or else the nearest ancestor of the working
 directory holding ``.git`` (a directory, or a worktree's file); outside a repository it is
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import importlib.resources
 import os
+import secrets
 import stat
 import sys
 from pathlib import Path
@@ -25,13 +28,17 @@ from typing import TYPE_CHECKING
 import yaml
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog
-from recon.adapters._out.private_files import make_dirs, write_file
+from recon.adapters._out.private_files import make_dirs, open_file, write_file
 from recon.domain.capture import CAPTURE_LOG_NAME
 from recon.domain.errors import ConfigError, NotFoundError, Problem, UsageError
 from recon.domain.missions import MISSION_NAME, ConfigFile, Template
 
 if TYPE_CHECKING:
     from recon.domain.clock import Clock
+
+#: The mission's change-detection key (``MissionStore.change_key``), mode 0600, and its size.
+CHANGE_KEY = "changes.key"
+CHANGE_KEY_BYTES = 32
 
 
 def find_project(start: Path) -> tuple[Path, str]:
@@ -133,6 +140,30 @@ class MissionFiles:
                 if _reachable(here / entry):
                     return here / entry
         return None
+
+    def change_key(self, name: str) -> bytes:
+        path = self.mission_dir(name) / CHANGE_KEY
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            pass
+        make_dirs(path.parent)
+        # Made whole under another name and linked into place, which fails when another
+        # process linked its key first: the key is one, and never read half written.
+        made = path.with_name(f".{CHANGE_KEY}.{os.getpid()}")
+        descriptor = open_file(made, os.O_WRONLY | os.O_TRUNC)
+        try:
+            os.write(descriptor, secrets.token_bytes(CHANGE_KEY_BYTES))
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            os.link(made, path)
+        except FileExistsError:
+            pass
+        finally:
+            made.unlink(missing_ok=True)
+        return path.read_bytes()
 
     def is_directory(self, path: Path) -> bool:
         return path.is_dir()

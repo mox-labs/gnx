@@ -35,17 +35,20 @@ lets SQL write wherever it may read, so a query runs only SELECT statements (``W
 
 from __future__ import annotations
 
+import csv
 import re
+import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from recon.domain.archives import Rows, table_name
 from recon.domain.errors import NotFoundError, Problem, QueryError
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-    from pathlib import Path
+    from collections.abc import Iterable, Iterator, Sequence
 
     from recon.domain.archives import ArchiveStore, StoredTable
+    from recon.domain.changes import ChangeOp
 
 
 def _confine(conn: Any, readable: Path) -> None:
@@ -318,3 +321,156 @@ def _fix(exc: Exception, archive: Path, tables: list[str], sql: str) -> str:
             f"AS item FROM <table>) GROUP BY item ORDER BY n DESC; see {UNNEST_DOCS}"
         )
     return f"correct the SQL, which DuckDB refused ({message}); DuckDB's SQL: {SQL_DOCS}"
+
+
+# --- the join of a large told index (ruling C6) --------------------------------------------
+#
+# DuckdbJoin: the KeyJoin (``recon.domain.changes``) of a large told index, on a DuckDB
+# connection of its own that runs no SQL but this module's. The told index and the table's keys
+# are written, as they are read, to two CSV files in a temporary directory of the join's own,
+# which DuckDB reads; every answer is read back a batch at a time. So the process holds a batch,
+# and DuckDB at most ``memory_limit``, spilling the rest into the same directory, which
+# ``close`` removes. The connection is confined before it reads anything, as the query's is:
+# it reads and spills only under its directory, loads no extension and reaches no network.
+# Keys are compared as DuckDB compares text, byte by byte in UTF-8, which is the order of code
+# points the in-memory join sorts by.
+
+#: By default, the most memory the join's DuckDB holds before it spills to disk.
+MEMORY_LIMIT = "96MB"
+
+#: The rows read back from DuckDB at a time.
+_BATCH = 10_000
+
+#: The table's keys, grouped: each key's first ordinal, its content, and whether it has two
+#: (``amb``). A content (a hash of 16 bytes) is two 64-bit numbers, ``a`` and ``b``, and two
+#: contents differ when the least and the greatest of either half do: DuckDB aggregates numbers
+#: out of core, where text, or a count of distinct values, it holds in memory.
+_KEYS = """
+CREATE TABLE nk AS
+SELECT k, min(i) AS i, min(a) AS a, min(b) AS b, min(a) <> max(a) OR min(b) <> max(b) AS amb
+FROM new_keys GROUP BY k
+"""
+
+
+class DuckdbJoin:
+    """Joins on DuckDB within ``memory_limit`` and ``threads``."""
+
+    def __init__(self, *, memory_limit: str = MEMORY_LIMIT, threads: int = 1) -> None:
+        self._memory_limit = memory_limit
+        self._threads = threads
+
+    def join(
+        self, told: Iterable[tuple[str, str]], new: Iterable[tuple[int, str, str]]
+    ) -> _DuckdbJoined:
+        return _DuckdbJoined(told, new, self._memory_limit, self._threads)
+
+
+class _DuckdbJoined:
+    def __init__(
+        self,
+        told: Iterable[tuple[str, str]],
+        new: Iterable[tuple[int, str, str]],
+        memory_limit: str,
+        threads: int,
+    ) -> None:
+        import duckdb  # only a large comparison needs it
+
+        self._directory = tempfile.TemporaryDirectory(prefix="recon-join-")
+        home = Path(self._directory.name)
+        try:
+            _write_csv(home / "told.csv", ((k, *_halves(h)) for k, h in told))
+            _write_csv(home / "new.csv", ((i, k, *_halves(h)) for i, k, h in new))
+            # A database file of the join's own, so its tables page to disk as its memory fills.
+            self._conn: Any = duckdb.connect(str(home / "join.duckdb"))
+            _confine_join(self._conn, home, memory_limit, threads)
+            told_csv = _read_csv(home / "told.csv", "k", "a", "b")
+            new_csv = _read_csv(home / "new.csv", "i", "k", "a", "b")
+            self._conn.execute(f"CREATE TABLE told AS SELECT * FROM {told_csv}")
+            self._conn.execute(f"CREATE TABLE new_keys AS SELECT * FROM {new_csv}")
+            self._conn.execute(_KEYS)
+            self.ambiguous: int = self._count("SELECT count(*) FROM nk WHERE amb")
+        except BaseException:
+            self.close()
+            raise
+
+    def ops(self) -> Iterator[tuple[int, ChangeOp]]:
+        return self._rows(
+            "SELECT nk.i, CASE WHEN t.k IS NULL THEN 'insert' ELSE 'update' END "
+            "FROM nk LEFT JOIN told t ON t.k = nk.k "
+            "WHERE NOT nk.amb AND (t.k IS NULL OR t.a <> nk.a OR t.b <> nk.b) ORDER BY nk.i"
+        )
+
+    def gone(self) -> Iterator[str]:
+        return (
+            row[0] for row in self._rows("SELECT k FROM told ANTI JOIN nk USING (k) ORDER BY k")
+        )
+
+    def told(self, *, deletes: bool) -> Iterator[tuple[str, str]]:
+        rows = self._rows(f"SELECT k, a, b FROM ({self._folded(deletes)}) ORDER BY k")
+        return ((k, f"{a:016x}{b:016x}") for k, a, b in rows)
+
+    def told_count(self, *, deletes: bool) -> int:
+        return self._count(f"SELECT count(*) FROM ({self._folded(deletes)})")
+
+    def _count(self, sql: str) -> int:
+        row = self._conn.execute(sql).fetchone()
+        assert row is not None  # a count has a row
+        return int(row[0])
+
+    def close(self) -> None:
+        conn = getattr(self, "_conn", None)
+        if conn is not None:
+            conn.close()
+            self._conn = None
+        self._directory.cleanup()
+
+    def _folded(self, deletes: bool) -> str:
+        """The told index once this table is told: its unambiguous keys, and, without deletes
+        (told only of a table with no ambiguous key), every other key told before."""
+        kept = "SELECT k, a, b FROM nk WHERE NOT amb"
+        if deletes:
+            return kept
+        others = "SELECT k, a, b FROM told ANTI JOIN (SELECT k FROM nk WHERE NOT amb) USING (k)"
+        return f"{kept} UNION ALL {others}"
+
+    def _rows(self, sql: str) -> Iterator[Any]:
+        cursor = self._conn.execute(sql)
+        while rows := cursor.fetchmany(_BATCH):
+            yield from (tuple(row) for row in rows)
+
+
+def _halves(content: str) -> tuple[int, int]:
+    """A content, 32 hex digits, as two unsigned 64-bit numbers."""
+    return int(content[:16], 16), int(content[16:], 16)
+
+
+def _write_csv(path: Path, rows: Iterable[tuple[Any, ...]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f, quoting=csv.QUOTE_ALL, lineterminator="\n")
+        for row in rows:
+            writer.writerow(row)
+
+
+def _read_csv(path: Path, *columns: str) -> str:
+    types = {"i": "BIGINT", "k": "VARCHAR", "a": "UBIGINT", "b": "UBIGINT"}
+    named = ", ".join(f"'{column}': '{types[column]}'" for column in columns)
+    where = str(path).replace("'", "''")
+    return (
+        f"read_csv('{where}', columns={{{named}}}, header=false, delim=',', quote='\"', "
+        "escape='\"', auto_detect=false)"
+    )
+
+
+def _confine_join(conn: Any, home: Path, memory_limit: str, threads: int) -> None:
+    """Hold a fresh connection to reading and spilling under ``home``, within its memory and
+    threads, before it reads anything; no extension, no network, and its settings locked."""
+    root = str(home).replace("'", "''")
+    conn.execute(f"SET memory_limit='{memory_limit}'")
+    conn.execute(f"SET threads={int(threads)}")
+    conn.execute("SET preserve_insertion_order=false")
+    conn.execute(f"SET temp_directory='{root}/spill'")
+    conn.execute(f"SET allowed_directories=['{root}']")
+    conn.execute("SET autoinstall_known_extensions=false")
+    conn.execute("SET autoload_known_extensions=false")
+    conn.execute("SET enable_external_access=false")
+    conn.execute("SET lock_configuration=true")

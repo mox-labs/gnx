@@ -23,6 +23,10 @@ parsed like a cli collector's stdout) unless ``response_format`` is set explicit
 the collector fans out over a catalog, each run keeps only captures whose ``source`` is
 that catalog entry's name (unless ``match.source`` says otherwise).
 
+A capture of one page of a paginated table (its request names the ``page``) gives its
+records the ``_position`` the table gave them, ``{page, i}``, so a crawl kept with
+``preserve_raw`` replays to the same table.
+
 A run that gives no record says why when there is a why (``NoRecordsError``): it read
 captures and its filters kept none, or the ``extract`` fits none of the bodies it kept. A
 capture whose body the ``extract`` does not fit is skipped when others give records: a log
@@ -47,6 +51,8 @@ from recon.domain.capture import CAPTURE_LOG_NAME
 from recon.domain.collector import CollectorType
 from recon.domain.errors import CollectionError, NoRecordsError
 from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, to_records
+from recon.domain.paginate import position
+from recon.domain.stream import POSITION_FIELD
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -141,16 +147,18 @@ class CaptureCollector:
                 except NoRecordsError as nothing:
                     unfit = unfit or nothing
                     continue
-                for record in records:
+                page = _page(capture)
+                for index, record in enumerate(records):
                     given += 1
-                    if not entry.normalize:
-                        yield record
-                        continue
-                    # The capture line is addressable from the spec as `_capture.*` (the
-                    # tool, its input, when it ran); it reaches the output only as the
-                    # columns the spec names.
-                    scope = {**record, CAPTURE_SCOPE: capture}
-                    yield apply_normalize(scope, entry.normalize, self._transforms)
+                    if entry.normalize:
+                        # The capture line is addressable from the spec as `_capture.*` (the
+                        # tool, its input, when it ran); it reaches the output only as the
+                        # columns the spec names.
+                        scope = {**record, CAPTURE_SCOPE: capture}
+                        record = apply_normalize(scope, entry.normalize, self._transforms)
+                    if page is not None:
+                        record = {**record, POSITION_FIELD: position(page, index)}
+                    yield record
         if given == 0 and read and not kept:
             match = settings.match
             implied = source is not None and (match is None or match.source is None)
@@ -174,6 +182,14 @@ class CaptureCollector:
                 fix="point path: at an existing captures.jsonl, or capture first",
             )
         return logs
+
+
+def _page(capture: dict[str, Any]) -> int | None:
+    """The page of a paginated table a capture holds, as its request names it; None for a
+    capture of no page."""
+    request = capture.get("request")
+    page = request.get("page") if isinstance(request, dict) else None
+    return page if type(page) is int and page >= 0 else None
 
 
 def _wanted(settings: CaptureSettings, source: SourceEntry | None) -> dict[str, str]:

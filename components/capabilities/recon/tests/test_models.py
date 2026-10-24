@@ -20,14 +20,14 @@ class TestAuthConfig:
         auth = AuthConfig()
         assert auth.header == ""
         assert auth.param == ""
-        assert auth.env == ""
+        assert auth.token == "" and auth.headers_helper is None
 
     def test_header_auth(self) -> None:
-        auth = AuthConfig(header="x-api-key", env="S2_API_KEY")
+        auth = AuthConfig(header="x-api-key", token="env:S2_API_KEY")
         assert auth.header == "x-api-key"
 
     def test_param_auth(self) -> None:
-        auth = AuthConfig(param="api_key", env="OPENALEX_API_KEY")
+        auth = AuthConfig(param="api_key", token="env:OPENALEX_API_KEY")
         assert auth.param == "api_key"
 
 
@@ -49,7 +49,7 @@ class TestSourceEntry:
             name="s2",
             type="api",
             url="https://api.semanticscholar.org",
-            auth=AuthConfig(header="x-api-key", env="S2_API_KEY"),
+            auth=AuthConfig(header="x-api-key", token="env:S2_API_KEY"),
             rate_limit=RateLimitConfig(rps=0.33, burst=1),
             user_agent="test/1.0",
         )

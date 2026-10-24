@@ -21,6 +21,7 @@ import recon
 from recon.adapters._out.api_collector import ApiCollector
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.cli_collector import CliCollector
+from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.http_requester import HttpRequester
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
@@ -55,7 +56,7 @@ def _collectors() -> dict[str, Collector]:
     req = HttpRequester(RateLimiter(clock), clock)
     return {
         "cli": CliCollector(),
-        "api": ApiCollector(req, {}, DEFAULT_USER_AGENT),
+        "api": ApiCollector(req, Credentials({}), DEFAULT_USER_AGENT),
         "web": WebCollector(req, _NoOpConverter(), DEFAULT_USER_AGENT),
     }
 
@@ -1072,7 +1073,7 @@ class TestOneRecordHoldingTheRecords:
         archives = ArchiveFiles(clock)
         archive = archives.create(tmp_path, "a")
         survey = Survey(archives, clock, "0", Telemetry([], clock), extracts={"api"})
-        collectors = {"api": ApiCollector(requester, {}, DEFAULT_USER_AGENT)}
+        collectors = {"api": ApiCollector(requester, Credentials({}), DEFAULT_USER_AGENT)}
         tables = survey.run(config, collectors, archive, started=clock.now())
         return tables, survey.warnings
 
@@ -1123,7 +1124,7 @@ class TestNoPlausibleEmptyTable:
         archives = ArchiveFiles(clock)
         archive = archives.create(tmp_path, "a")
         survey = Survey(archives, clock, "0", Telemetry([], clock), events.append)
-        collectors = {"api": ApiCollector(requester, {}, DEFAULT_USER_AGENT)}
+        collectors = {"api": ApiCollector(requester, Credentials({}), DEFAULT_USER_AGENT)}
         tables = survey.run(config, collectors, archive, started=clock.now())
         return tables, survey.warnings, events, archive
 
@@ -1302,8 +1303,8 @@ class TestWhatASurveyResolved:
 
     CONFIG: ClassVar[dict[str, Any]] = {
         "catalog": [
-            {"name": "a", "url": "https://api.example.test", "auth": {"env": "A_KEY"}},
-            {"name": "b", "url": "https://api.example.test", "auth": {"env": "B_KEY"}},
+            {"name": "a", "url": "https://api.example.test", "auth": {"token": "env:A_KEY"}},
+            {"name": "b", "url": "https://api.example.test", "auth": {"token": "env:B_KEY"}},
         ],
         "collectors": [{"name": "q", "type": "api", "endpoint": "/q"}],
     }

@@ -98,7 +98,7 @@ EXIT_NEXT: dict[str, str] = {
     "not_found": "run the command the error's `fix` names",
     "transient": "if a table's error names a `deadline:` or `timeout:`, raise it (a retry "
     "fails too); else survey again later",
-    "auth": "set the variable the failing source's auth.env names to a valid key, then "
+    "auth": "give the failing source's auth.token (or headers_helper) a valid key, then "
     "survey again",
     "conflict": "add --replace to overwrite it, or choose another mission name",
     "run_failed": "read each failed table's error and fix its cause, then plan and survey again",
@@ -158,6 +158,15 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "retain_unset",
     # a query of a stream that read more windows than it is cheap to open
     "windows_many",
+    # a paginated table's crawl stopped short, so the table is truncated: at its cap of
+    # pages, at a token it had used already, or at empty pages in a row that still linked on
+    "page_cap",
+    "paginate_loop",
+    "paginate_empty",
+    # a deadline shorter than the least time a crawl takes at its source's rate limit
+    "deadline_short",
+    # a table's deletes asked for and not told: its crawl cut short, keyless or ambiguous records
+    "deletes_withheld",
     # a mission's config changed since its schedule was installed: its ticks are refused
     "config_changed",
     # a scheduler that cannot keep the schedule's missed: (cron runs no missed tick)

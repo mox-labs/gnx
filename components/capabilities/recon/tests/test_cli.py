@@ -856,9 +856,9 @@ class TestDryRunShowsTheRequest:
         config = {
             "catalog": [
                 {"name": "oa", "url": "https://api.openalex.org", "user_agent": "me@example.org",
-                 "auth": {"env": "OA_KEY", "param": "api_key"}},
+                 "auth": {"token": "env:OA_KEY", "param": "api_key"}},
                 {"name": "gh", "url": "https://user:pw@api.github.test",
-                 "auth": {"env": "TOKEN", "header": "Authorization", "prefix": "Bearer "}},
+                 "auth": {"token": "env:TOKEN", "header": "Authorization", "prefix": "Bearer "}},
             ],
             "collectors": [
                 {"name": "works", "type": "api", "source": "oa", "endpoint": "/works",
@@ -1196,7 +1196,7 @@ def test_a_plugin_reading_an_undeclared_variable_fails_its_table_with_a_fix(
     assert table["status"] == "error"
     assert table["error"]["kind"] == "config"
     assert "RECON_TEST_UNDECLARED" in table["error"]["message"]
-    assert "auth.env" in table["error"]["fix"]
+    assert "auth.token: env:" in table["error"]["fix"]
     [archive] = (mission / "archive").iterdir()
     assert not (archive / "g.jsonl").exists()
 

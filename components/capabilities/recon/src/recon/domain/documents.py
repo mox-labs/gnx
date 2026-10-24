@@ -31,7 +31,9 @@ from pydantic import BaseModel, ConfigDict, Field
 # Pydantic reads the field types when the models are built, so they are imported to run.
 from recon.domain.archives import ArchiveState, Ended  # noqa: TC001
 from recon.domain.capture import CAPTURE_SCHEMA, CaptureKind
+from recon.domain.changes import DeletesWithheld  # noqa: TC001
 from recon.domain.errors import ERROR_KINDS, ErrorKind, ReconError
+from recon.domain.paginate import TruncatedBy  # noqa: TC001
 from recon.domain.schedule import Missed, Platform, Skipped  # noqa: TC001
 from recon.domain.stream import ClosedBy  # noqa: TC001
 
@@ -152,8 +154,39 @@ class TableError(Document):
     fix: str | None = None
 
 
+class ChangeSummary(Document):
+    """What a table's change detection found (``changes:``, :mod:`recon.domain.changes`): its
+    change table (``table``, an output of the same archive, whose records are ``type_url``'s
+    and hold untrusted content in ``record``), the table compared before it, whose told index
+    it was compared with (``previous``: an archive's id, or a window's; None: nothing was told
+    before, so every key is an insert), the digest of the spec (``spec``: its key and volatile
+    fields) and of the ``normalize:`` its records were made with, the rows by op, the records
+    it could not compare, and why its deletes were withheld when they were asked for."""
+
+    table: str
+    type_url: str
+    previous: str | None
+    spec: str
+    normalize: str | None
+    rows: int
+    inserts: int = 0
+    updates: int = 0
+    deletes: int = 0
+    #: True: the previous table's records were made with another ``normalize:`` (or it does
+    #: not say), so the change table holds one ``rebaselined`` row and no other, and the told
+    #: index starts again from this table.
+    rebaselined: bool = False
+    keyless: int = 0
+    ambiguous: int = 0
+    deletes_withheld: DeletesWithheld | None = None
+
+
 class TableOutcome(Document):
-    """One table of a survey: what produced it and how it ended."""
+    """One table of a survey: what produced it and how it ended. ``truncated``: its crawl
+    stopped short of its source's end (``paginate:``), so it is sealed ``ok`` and is not a
+    whole snapshot of the source; ``truncated_by`` says what cut it: ``pages`` (its cap),
+    ``loop`` (a token it had used already) or ``empty`` (empty pages in a row that still
+    linked on)."""
 
     name: str
     file: str
@@ -165,6 +198,10 @@ class TableOutcome(Document):
     records: int = 0
     seconds: float = 0.0
     error: TableError | None = None
+    truncated: bool = False
+    truncated_by: TruncatedBy | None = None
+    #: What its change detection found, for an entry with ``changes:``; None otherwise.
+    changes: ChangeSummary | None = None
 
 
 class WindowOutcome(Document):
@@ -489,7 +526,8 @@ def failure_kind(tables: list[TableOutcome]) -> ErrorKind | None:
 
 
 _SURVEY_FAILURE_FIX = {
-    "auth": "check the credentials named by the failing sources' auth.env, then: recon survey {n}",
+    "auth": "check the credentials the failing sources' auth.token or headers_helper give, "
+    "then: recon survey {n}",
     "transient": "retry later: recon survey {n}",
     "run_failed": "read each failed table's error (meta.yaml, or --json), fix its cause, "
     "then: recon survey {n} --dry-run",
