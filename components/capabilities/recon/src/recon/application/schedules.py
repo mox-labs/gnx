@@ -11,21 +11,37 @@ a schedule as installed from one changed or gone since.
 from __future__ import annotations
 
 import hashlib
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from recon.domain.documents import ScheduleDocument, SchedulesDocument, ScheduleStatus
-from recon.domain.errors import ConfigError, NotFoundError, Problem, UsageError
-from recon.domain.schedule import ScheduledRun, due, project
+from pydantic import ValidationError
+
+from recon.domain.documents import (
+    ScheduleDocument,
+    SchedulesDocument,
+    ScheduleStatus,
+    TickDocument,
+    TickOutcome,
+    survey_failure,
+)
+from recon.domain.errors import (
+    EXIT_CODES,
+    ConfigError,
+    ConflictError,
+    NotFoundError,
+    Problem,
+    ReconError,
+    UsageError,
+)
+from recon.domain.schedule import MISSED_GRACE_S, OVERRUN_SKIPS, ScheduledRun, due, project
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from datetime import datetime
     from pathlib import Path
 
     from recon.application.plan import Plan
     from recon.domain.clock import Clock
-    from recon.domain.documents import ScheduleOutcome
+    from recon.domain.documents import ScheduleOutcome, SurveyDocument
     from recon.domain.missions import ConfigFile, MissionStore
     from recon.domain.schedule import (
         Platform,
@@ -33,6 +49,7 @@ if TYPE_CHECKING:
         Scheduler,
         ScheduleSpec,
         ScheduleStore,
+        Skipped,
     )
 
 
@@ -209,6 +226,10 @@ class Schedules:
             names = sorted(installed | {m for m in self._missions.missions() if self._declares(m)})
         schedules = [self._status(scheduler, name, prefix + name) for name in names]
         warnings = [_config_changed(s.mission).document() for s in schedules if s.config_changed]
+        for listed in schedules:
+            busy = _in_a_row(self._store.lines(self._missions.mission_dir(listed.mission)), "busy")
+            if busy >= OVERRUN_SKIPS:
+                warnings.append(_overrun(listed.mission, busy).document())
         return SchedulesDocument(
             root=str(self._missions.root),
             platform=scheduler.platform,
@@ -238,12 +259,15 @@ class Schedules:
         if record is not None and text is not None:
             changed = hashlib.sha256(text).hexdigest() != record.get("config_sha256")
         schedule = self._schedule_of(name)
-        next_at = None
+        lines = self._store.lines(self._missions.mission_dir(name))
+        last = _outcome(lines[-1]) if lines else None
+        next_at, late_s = None, None
         if schedule is not None:
             now = self._local(self._clock.now())
-            wall = now.replace(tzinfo=None)
-            last = due(schedule.every, offset_s(name, schedule.every), wall)
-            next_at = (last + timedelta(seconds=schedule.every)).replace(tzinfo=now.tzinfo)
+            slot = _due(schedule.every, offset_s(name, schedule.every), now)
+            next_at = slot + timedelta(seconds=schedule.every)
+            if installed and record is not None:
+                late_s = _late(slot, now, last, record.get("installed_at"))
         return ScheduleStatus(
             mission=name,
             label=label,
@@ -253,7 +277,100 @@ class Schedules:
             every=schedule.every if schedule is not None else None,
             missed=schedule.missed if schedule is not None else None,
             next_at=next_at.isoformat() if next_at is not None else None,
+            last_tick=last,
+            late_s=late_s,
+            skips=_in_a_row(lines),
         )
+
+    # --- the tick ------------------------------------------------------------------------
+
+    def tick(
+        self,
+        name: str,
+        config_sha256: str,
+        survey: Callable[[dict[str, Any]], SurveyDocument],
+    ) -> TickDocument:
+        """One tick of the mission's schedule, logged: refused (``conflict``) when the config
+        is not the one installed; skipped when ``missed: skip`` and it started more than
+        :data:`MISSED_GRACE_S` late; else ``survey`` run, given when the tick was due and how
+        late it started, for its archive. A survey refused ``busy`` is logged as a skip, and
+        the second skip in a row says the schedule overruns."""
+        mission = self._missions.mission_dir(name)
+        text = self._missions.config_text(name)
+        if text is None:
+            raise NotFoundError(
+                f"no mission {name!r} under {self._missions.root}",
+                fix=f"recon schedule remove {name}: its mission is gone",
+                details={"value": name},
+            )
+        started = self._local(self._clock.now())
+        record = self._store.recorded(mission) or {}
+        every, offset = record.get("every"), record.get("offset_s")
+        slot = None
+        if isinstance(every, int) and isinstance(offset, int):
+            slot = _due(every, offset, started)
+        if hashlib.sha256(text).hexdigest() != config_sha256:
+            self._log(mission, slot, started, "conflict", None, "config_changed")
+            raise ConflictError(
+                f"mission {name}'s config is not the one its schedule was installed for: a "
+                "tick runs only the config installed",
+                fix=f"read what changed in the config (it runs unattended), then: recon "
+                f"schedule install {name}",
+                details={"mission": name, "config_sha256": config_sha256},
+            )
+        _, plan = self._prepare(name)
+        schedule = plan.config.schedule if plan.config is not None else None
+        if schedule is not None:
+            slot = _due(schedule.every, offset_s(name, schedule.every), started)
+        late_s = (started - slot).total_seconds() if slot is not None else None
+        if schedule is not None and schedule.missed == "skip" and (late_s or 0) > MISSED_GRACE_S:
+            self._log(mission, slot, started, "ok", None, "missed")
+            return TickDocument(
+                mission=name, scheduled_at=_iso(slot), late_s=late_s, skipped_by="missed",
+                survey=None,
+            )  # fmt: skip
+        try:
+            document = survey({"scheduled_at": _iso(slot), "late_s": late_s})
+        except ReconError as error:
+            skipped: Skipped | None = "busy" if error.kind == "busy" else None
+            self._log(mission, slot, started, error.kind, None, skipped)
+            if skipped is not None:
+                raise _skipped(
+                    name, error, _in_a_row(self._store.lines(mission), "busy")
+                ) from error
+            raise
+        except KeyboardInterrupt:
+            self._log(mission, slot, started, "interrupted", None, None)
+            raise
+        failure = survey_failure(document)
+        kind = failure.kind if failure is not None else "ok"
+        self._log(mission, slot, started, kind, document.archive, None)
+        return TickDocument(
+            mission=name, scheduled_at=_iso(slot), late_s=late_s, skipped_by=None, survey=document
+        )
+
+    def _log(
+        self,
+        mission: Path,
+        slot: datetime | None,
+        started: datetime,
+        kind: str,
+        archive: str | None,
+        skipped: Skipped | None,
+    ) -> None:
+        """Log one tick: when it was due, started and ended, how it ended, and why it ran no
+        survey, if it ran none."""
+        line = TickOutcome(
+            scheduled=_iso(slot),
+            started=started.isoformat(),
+            ended=self._local(self._clock.now()).isoformat(),
+            exit=EXIT_CODES[kind],
+            kind=kind,
+            archive=archive,
+            skipped_by=skipped,
+            late_s=(started - slot).total_seconds() if slot is not None else None,
+        )
+        self._store.append(mission, line.document())
 
     def _schedule_of(self, name: str) -> ScheduleSpec | None:
         try:
@@ -261,6 +378,66 @@ class Schedules:
         except (ConfigError, NotFoundError):
             return None
         return plan.config.schedule if plan.config is not None else None
+
+
+def _due(every: int, offset: int, now: datetime) -> datetime:
+    """The tick due last at ``now`` (local, with its zone): the grid is wall-clock time."""
+    return due(every, offset, now.replace(tzinfo=None)).replace(tzinfo=now.tzinfo)
+
+
+def _iso(at: datetime | None) -> str | None:
+    return at.isoformat() if at is not None else None
+
+
+def _outcome(line: dict[str, Any]) -> TickOutcome | None:
+    """A line of the log as a tick, or None for one this recon cannot read as one."""
+    try:
+        return TickOutcome.model_validate(line)
+    except ValidationError:
+        return None
+
+
+def _in_a_row(lines: list[dict[str, Any]], why: str | None = None) -> int:
+    """The ticks skipped in a row at the log's end, each for ``why`` (None: any reason)."""
+    count = 0
+    for line in reversed(lines):
+        if line.get("skipped_by") is None or (why is not None and line["skipped_by"] != why):
+            break
+        count += 1
+    return count
+
+
+def _late(slot: datetime, now: datetime, last: TickOutcome | None, installed_at: Any) -> float:
+    """How late the schedule is at ``now``: the seconds since ``slot``, the tick due last,
+    when no tick of it is logged and it fell after the schedule was installed; else 0."""
+    scheduled = last.scheduled if last is not None else None
+    if scheduled is not None and datetime.fromisoformat(scheduled) >= slot:
+        return 0.0
+    if isinstance(installed_at, str) and datetime.fromisoformat(installed_at) > slot:
+        return 0.0
+    return (now - slot).total_seconds()
+
+
+def _skipped(name: str, busy: ReconError, skips: int) -> ReconError:
+    """A tick's ``busy``, counted in ``details``: the second in a row is an overrun."""
+    details = {**busy.details, "skips": skips}
+    if skips < OVERRUN_SKIPS:
+        return ReconError(f"tick skipped: {busy.message}", kind="busy", fix=busy.fix,
+                          details=details)  # fmt: skip
+    overrun = _overrun(name, skips)
+    return ReconError(f"tick skipped: {overrun.message}", kind="busy", fix=overrun.fix,
+                      details=details)  # fmt: skip
+
+
+def _overrun(name: str, skips: int) -> Problem:
+    return Problem(
+        "schedule.every",
+        f"the last {skips} ticks of mission {name} were skipped, each while a survey of it "
+        "still ran: its survey takes longer than its schedule's every",
+        kind="schedule_overrun",
+        fix="raise schedule.every above how long a survey of it takes, or lower its "
+        "deadline: (0.8 × every by default) so each ends before the next is due",
+    )
 
 
 def _platform_warnings(platform: Platform, schedule: ScheduleSpec) -> list[Problem]:

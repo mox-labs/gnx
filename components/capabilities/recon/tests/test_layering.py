@@ -317,11 +317,12 @@ class TestLibrarySurface:
                       "survey_failure", "error_document", "skill", "skill_references",
                       "configure_telemetry", "read_since", "watch", "stream",
                       "stream_failure", "schedule_install", "schedule_list",
-                      "schedule_remove", "schedule_status"}  # fmt: skip
+                      "schedule_remove", "schedule_status", "schedule_tick"}  # fmt: skip
         documents = {"MissionDocument", "PlanDocument", "SurveyDocument", "TableOutcome",
                      "StatusDocument", "QueryRows", "TemplatesDocument", "Capture",
                      "ErrorDocument", "RecordsSince", "StreamDocument",
-                     "WindowOutcome", "ScheduleDocument", "SchedulesDocument"}  # fmt: skip
+                     "WindowOutcome", "ScheduleDocument", "SchedulesDocument",
+                     "TickDocument"}  # fmt: skip
         errors = {"ReconError", "UsageError", "ConfigError", "ConflictError", "NotFoundError",
                   "QueryError", "CollectionError", "Problem"}  # fmt: skip
         tables = {"ERROR_KINDS", "EXIT_CODES", "EXIT_MEANINGS", "EXIT_NEXT", "PROBLEM_KINDS",
@@ -480,6 +481,6 @@ def test_the_public_names_are_the_ones_callers_use() -> None:
         "templates",
         "stream", "stream_failure", "StreamDocument", "WindowOutcome",
         "StreamStop",
-        "schedule_install", "schedule_list", "schedule_remove", "schedule_status",
-        "ScheduleDocument", "SchedulesDocument",
+        "schedule_install", "schedule_list", "schedule_remove", "schedule_status", "schedule_tick",
+        "ScheduleDocument", "SchedulesDocument", "TickDocument",
     }  # fmt: skip

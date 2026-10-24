@@ -74,7 +74,8 @@ EXIT_MEANINGS: dict[str, str] = {
     "transient": "every failed table failed transiently (HTTP 429, 5xx, network, a "
     "deadline); the archive is kept, marked incomplete",
     "auth": "a table failed on credentials (HTTP 401, 403); the archive is kept, marked incomplete",
-    "conflict": "init, or survey -c, would overwrite a different mission config",
+    "conflict": "init, or survey -c, would overwrite a different mission config, or a tick's "
+    "config changed",
     "run_failed": "a table failed, and not only on credentials or transiently; the archive is "
     "kept, marked incomplete",
     "store": "the survey could not finish its archive; it is kept, marked incomplete",
@@ -96,7 +97,8 @@ EXIT_NEXT: dict[str, str] = {
     "fails too); else survey again later",
     "auth": "set the variable the failing source's auth.env names to a valid key, then "
     "survey again",
-    "conflict": "add --replace to overwrite it, or choose another mission name",
+    "conflict": "add --replace to overwrite it, or choose another mission name; for a tick, "
+    "review the config, then install it again",
     "run_failed": "read each failed table's error and fix its cause, then plan and survey again",
     "store": "free space where the archive is, or make it writable, then survey again",
     "query": "correct the SQL as the error's `fix` says; for a missing table, it names the "
@@ -157,6 +159,8 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "config_changed",
     # a scheduler that cannot keep the schedule's missed: (cron runs no missed tick)
     "missed_ignored",
+    # ticks skipped in a row because the one before still ran: the survey outlasts every
+    "schedule_overrun",
 )
 
 

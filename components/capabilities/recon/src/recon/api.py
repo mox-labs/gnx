@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         StreamDocument,
         SurveyDocument,
         TemplatesDocument,
+        TickDocument,
     )
     from recon.domain.errors import Problem
     from recon.domain.schedule import Platform
@@ -287,5 +288,19 @@ def schedule_status(
 ) -> SchedulesDocument:
     """Each schedule of the project, or the mission's: whether it is installed, whether its
     config changed since (a ``config_changed`` warning: its ticks are refused until it is
-    installed again), and when its next tick is due. ``recon.v1.schedules``."""
+    installed again), when its next tick is due, its last tick, how late it is, and the ticks
+    skipped in a row (a ``schedule_overrun`` warning from the second). ``recon.v1.schedules``."""
     return _root(root).schedule_status(mission, platform=platform)
+
+
+def schedule_tick(name: str, *, config_sha256: str, root: Path | None = None) -> TickDocument:
+    """One tick of the mission's schedule: what an installed schedule runs. A survey under the
+    mission lock, logged as a line of ``<mission>/schedule.log``; its archive's ``meta.yaml``
+    says when the tick was due (``scheduled_at``) and how late it started (``late_s``).
+    ``recon.v1.tick``.
+
+    Raises ConflictError when the config's sha256 is not ``config_sha256``, the digest the
+    schedule was installed with, until it is installed again; ReconError (``busy``) when
+    another survey holds the mission, ``details.skips`` counting the ticks skipped so in a
+    row. A tick run late under ``missed: skip`` runs no survey (``skipped_by: missed``)."""
+    return _root(root).schedule_tick(name, config_sha256=config_sha256)

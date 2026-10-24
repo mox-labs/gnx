@@ -969,6 +969,46 @@ def schedule_status(mission: str | None, platform: str | None, as_json: bool) ->
         _print_schedules(document)
 
 
+@schedule.command(epilog=EXIT_CODES)
+@click.argument("name")
+@click.option(
+    "--project",
+    required=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="The project the mission is in; the tick runs there",
+)
+@click.option(
+    "--config-sha256",
+    "config_sha256",
+    required=True,
+    metavar="HEX",
+    help="The digest of the config the schedule was installed for; another is refused (7)",
+)
+@_json_option
+def tick(name: str, project: Path, config_sha256: str, as_json: bool) -> None:
+    """One tick: what an installed schedule runs. A survey of the mission, logged to its
+    schedule.log; run by hand, it is one tick.
+
+    It runs from --project, refuses a config whose sha256 is not --config-sha256 (exit 7:
+    install the schedule again once the change is read), is skipped and logged while another
+    survey holds the mission (exit 11; the second in a row says it overruns), and under
+    missed: skip runs no survey when it starts more than 60 s late. Its exit code is its
+    survey's otherwise.
+    """
+    os.chdir(project)
+    document = _operations().schedule_tick(name, config_sha256=config_sha256)
+    if as_json:
+        _emit(document.document())
+    elif document.survey is not None:
+        click.echo(document.survey.path)
+    else:
+        err.print(f"[dim]tick skipped ({document.skipped_by}): {escape(name)}[/]")
+    if document.survey is not None:
+        failure = recon.survey_failure(document.survey)
+        if failure is not None:
+            _fail(failure, as_json=as_json)
+
+
 # --- templates and capture ---------------------------------------------------------------
 
 

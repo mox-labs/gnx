@@ -17,7 +17,7 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, NoReturn
+from typing import TYPE_CHECKING, Any, ClassVar, NoReturn, get_args
 
 import pytest
 import yaml
@@ -130,7 +130,13 @@ class TestOneFieldNameOneShape:
         shapes: dict[str, set[str]] = {}
         for document in documents:
             for field, info in document.model_fields.items():
-                shown = str(info.annotation).replace(" | None", "").replace("Optional[", "")
+                # A value that may be missing (None) has the shape of the value: ``str | None``
+                # is a str, as ``<class 'str'>`` is (the schedule log's ``archive``, null when
+                # a tick wrote none).
+                given = [arg for arg in get_args(info.annotation) if arg is not type(None)]
+                optional = len(given) == 1 and type(None) in get_args(info.annotation)
+                shown = str(given[0] if optional else info.annotation)
+                shown = shown.replace(" | None", "").replace("Optional[", "")
                 shapes.setdefault(info.serialization_alias or field, set()).add(shown)
         return shapes
 

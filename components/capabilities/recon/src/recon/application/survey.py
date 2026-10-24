@@ -8,7 +8,9 @@ Determinism (the contract the tests in ``test_determinism.py`` hold):
     directories, a survey writes the same records, in the same order, to the same tables.
     The time enters only through the ``Clock`` port. With the clock fixed too, the whole
     archive is the same: its name, every table, and ``meta.yaml``. The one exception is the
-    capture log a mission with ``preserve_raw`` keeps: each capture has a unique ``id``.
+    capture log a mission with ``preserve_raw`` keeps: each capture has a unique ``id``. A
+    survey a scheduled tick runs also records when the tick was due, in the host's local time
+    (``scheduled_at``, ``late_s``): the same clock in the same time zone, the same values.
 
     A stream's window keeps the same contract, window by window (``stream.py``): given the
     same records arriving at the same stamps on the clock port, each window holds the same
@@ -138,13 +140,16 @@ class Survey:
         config_sha256: str | None = None,
         resolved: Mapping[str, Any] | None = None,
         streams: Collection[int] = (),
+        scheduled: Mapping[str, Any] | None = None,
     ) -> list[TableOutcome]:
         """Run every table into ``archive``, a new one :meth:`ArchiveStore.create` made at
         ``started``, and write its ``meta.yaml``. Returns the tables, which also land in
         ``meta.yaml`` under ``tables``. ``resolved`` says where what the survey resolved came
         from (how its project root was found, which declared variables were set), and is
         written as given. The entries at the positions in ``streams`` are streams, written
-        window by window into their own archives, so they are no table here."""
+        window by window into their own archives, so they are no table here. A survey a
+        scheduled tick runs is given ``scheduled`` (``scheduled_at``, ``late_s``), written into
+        ``meta.yaml`` as given; one run by hand has neither key."""
         captures = self._archives.capture_log(archive) if config.preserve_raw else None
         tables: list[TableOutcome] = []
         what = f"the survey's deadline ({config.deadline:g}s)" if config.deadline else ""
@@ -157,6 +162,7 @@ class Survey:
             "timestamp": None,  # when it ended: set by _meta, here so the key keeps its place
             "preserve_raw": config.preserve_raw,
             "resolved": dict(resolved or {}),
+            **dict(scheduled or {}),
         }
         try:
             with self._deadline.bound(config.deadline, what, fix):

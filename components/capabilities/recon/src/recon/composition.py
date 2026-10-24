@@ -180,6 +180,7 @@ def root(
     channel: ChannelFactory | None = None,
     schedulers: Callable[[Platform | None], Scheduler] | None = None,
     schedule_host: ScheduleHost | None = None,
+    local: Callable[[datetime], datetime] | None = None,
 ) -> Recon:
     """recon wired to this process: missions under ``project`` (default: the project root of
     the working directory), and the environment ``env`` (default: the process environment).
@@ -192,7 +193,8 @@ def root(
     the operating system's scheduler of each platform (``schedulers``: the user's own
     launchd, systemd or crontab, run by their commands), and what a scheduled tick runs
     (``schedule_host``: this installation's ``recon`` command, and the ``PATH`` of ``env``
-    kept to absolute directories no other user can write).
+    kept to absolute directories no other user can write), and ``local``, the clock's time as
+    the host's local time, which every scheduler keeps its calendar in.
     A test's root is this one with fakes given for the ports it stands in for."""
     clock = clock or SystemClock()
     process_env = os.environ if env is None else env
@@ -235,7 +237,7 @@ def root(
         schedulers=schedulers or partial(_scheduler, process_env),
         schedule_store=ScheduleFiles(),
         schedule_host=host,
-        local=_local,
+        local=local or _local,
     )
 
 

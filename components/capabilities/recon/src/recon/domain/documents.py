@@ -10,11 +10,13 @@ its id too), what ``--archive`` takes; ``path`` is the directory of what the rec
 about, and ``<what>_path`` another's. ``records`` and ``windows`` are counts, as they are in
 ``meta.yaml``; a list of them is named for what it holds (``table_records``,
 ``stream_windows``), and a range of windows is ``window_range``. ``first`` and ``last`` are
-the ends of a span, ids where they name windows (a whole window outcome is ``last_window``).
+the ends of a span, ids where they name windows (a whole window outcome is ``last_window``,
+a schedule's last tick ``last_tick``).
 ``source`` is a catalog source's name (a setting's provenance is its ``origin``), ``streams``
 the stream statuses (a plan's directories are ``stream_paths``), ``captures`` a count (whether
 a plan keeps captures is its ``preserve_raw``), ``skipped`` the sources a plan passed over (a
-read's retired windows are its ``retired_range``). ``status`` is an outcome: a survey's
+read's retired windows are its ``retired_range``, and why a tick ran no survey its
+``skipped_by``, as a window's close is its ``closed_by``). ``status`` is an outcome: a survey's
 ``complete`` or ``incomplete``, a table's ``ok`` or ``error``. The capture line
 (:class:`Capture`) is the format other tools write, versioned by its own schema, and keeps
 its own names: its ``status`` is the response's.
@@ -30,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from recon.domain.archives import ArchiveState, Ended  # noqa: TC001
 from recon.domain.capture import CAPTURE_SCHEMA, CaptureKind
 from recon.domain.errors import ERROR_KINDS, ErrorKind, ReconError
-from recon.domain.schedule import Missed, Platform  # noqa: TC001
+from recon.domain.schedule import Missed, Platform, Skipped  # noqa: TC001
 from recon.domain.stream import ClosedBy  # noqa: TC001
 
 #: Whether a survey's archive holds every table it was asked for: :data:`ArchiveState`
@@ -578,6 +580,38 @@ class ScheduleDocument(Document):
     warnings: list[dict[str, Any]]
 
 
+class TickOutcome(Document):
+    """One tick, as ``<mission>/schedule.log`` keeps it, a line each: when it was due
+    (``scheduled``: the latest tick of the grid at or before it started), when it started and
+    ended, its exit code and kind (``ok``, or the error kind the code maps to), the archive its
+    survey wrote, why it ran none (``skipped_by``), and how late it started."""
+
+    #: ISO 8601, local time; None when the schedule is not known (no record, no schedule:).
+    scheduled: str | None
+    started: str
+    ended: str
+    exit: int
+    kind: str
+    #: The survey's archive id; None when it wrote none.
+    archive: str | None
+    skipped_by: Skipped | None
+    late_s: float | None
+
+
+class TickDocument(Document):
+    """A tick that ran or was skipped as a schedule says: the ``survey`` it ran, or why it ran
+    none (``skipped_by: missed``, a tick run late under ``missed: skip``). A tick refused (a
+    changed config, the mission ``busy``) raises the error instead, after logging it."""
+
+    schema_: Literal["recon.v1.tick"] = Field(default="recon.v1.tick", alias="schema")
+    mission: str
+    scheduled_at: str | None
+    late_s: float | None
+    skipped_by: Skipped | None
+    survey: SurveyDocument | None
+    warnings: list[dict[str, Any]] = []
+
+
 class ScheduleStatus(Document):
     """One schedule of the project: whether it is ``installed`` (its files in place as
     ``install`` wrote them), whether the config has changed since (its ticks are then
@@ -593,6 +627,13 @@ class ScheduleStatus(Document):
     missed: Missed | None
     #: ISO 8601, local time: the next tick of the mission's ``schedule:``; None without one.
     next_at: str | None
+    #: The last tick the log holds; None before the first.
+    last_tick: TickOutcome | None = None
+    #: How late the schedule is now: the seconds since the tick due last, when it has not
+    #: run (0 when it has); None when not installed.
+    late_s: float | None = None
+    #: The ticks skipped in a row at the log's end.
+    skips: int = 0
 
 
 class SchedulesDocument(Document):

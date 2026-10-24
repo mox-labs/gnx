@@ -46,6 +46,19 @@ EVERY_ALLOWED: tuple[int, ...] = tuple(m * 60 for m in range(1, 1441) if 1440 % 
 #: ends before the next one is due, so two ticks do not overlap (ruling S2).
 DEADLINE_SHARE = 0.8
 
+#: How late a tick may start and still be the one that was due, in seconds: the grid's own
+#: grain. Under ``missed: skip`` a later one is the scheduler catching up after sleep, and is
+#: skipped.
+MISSED_GRACE_S = 60.0
+
+#: The skipped ticks in a row, each refused ``busy``, that make an overrun: the mission's
+#: survey takes longer than ``every``.
+OVERRUN_SKIPS = 2
+
+#: Why a tick ran no survey: another held the mission (``busy``), it was a missed tick under
+#: ``missed: skip``, or the config is not the one installed.
+Skipped = Literal["busy", "missed", "config_changed"]
+
 
 def nearest_every(every: int) -> tuple[int, ...]:
     """The allowed ``every`` nearest ``every``: the one below it and the one above, or the one
@@ -362,7 +375,8 @@ class Scheduler(Protocol):
 
 class ScheduleStore(Protocol):
     """What recon keeps of a mission's schedule beside the mission: what ``install`` put in
-    place, so ``status`` can tell an installed schedule from one changed or gone since."""
+    place, so ``status`` can tell an installed schedule from one changed or gone since, and
+    the log of its ticks."""
 
     def record(self, mission_dir: Path, installed: dict[str, Any] | None) -> None:
         """Keep ``installed`` as the mission's install record; None forgets it."""
@@ -370,6 +384,14 @@ class ScheduleStore(Protocol):
 
     def recorded(self, mission_dir: Path) -> dict[str, Any] | None:
         """The mission's install record; None when it has none."""
+        ...
+
+    def append(self, mission_dir: Path, tick: dict[str, Any]) -> None:
+        """Log one tick, whole, after those before it; the log is bounded (the oldest go)."""
+        ...
+
+    def lines(self, mission_dir: Path) -> list[dict[str, Any]]:
+        """The ticks the log still holds, oldest first."""
         ...
 
 

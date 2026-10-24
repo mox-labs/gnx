@@ -76,7 +76,12 @@ if TYPE_CHECKING:
     from recon.domain.archives import ArchiveQuery, ArchiveState, ArchiveStore, Ended
     from recon.domain.clock import Clock
     from recon.domain.collector import Collector, Plugins
-    from recon.domain.documents import Capture, ScheduleDocument, SchedulesDocument
+    from recon.domain.documents import (
+        Capture,
+        ScheduleDocument,
+        SchedulesDocument,
+        TickDocument,
+    )
     from recon.domain.missions import ConfigFile, MissionStore
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
     from recon.domain.schedule import Platform, ScheduleHost, Scheduler, ScheduleStore
@@ -373,6 +378,17 @@ class Recon:
         finally:
             self._archives.release_mission(mission)
 
+    def _scheduled_survey(self, name: str, scheduled: dict[str, Any]) -> SurveyDocument:
+        """:meth:`survey` as a tick runs it, its archive's ``meta.yaml`` saying when the tick
+        was due and how late it started (``scheduled``)."""
+        source, plan, _ = self._prepare(name, None, False)
+        mission = self._missions.mission_dir(name)
+        self._archives.hold_mission(mission)
+        try:
+            return self._survey(name, source, plan, None, None, scheduled=scheduled)
+        finally:
+            self._archives.release_mission(mission)
+
     def _survey(
         self,
         name: str,
@@ -380,6 +396,8 @@ class Recon:
         plan: Plan,
         copy_to: Path | None,
         on_event: EventCallback | None,
+        *,
+        scheduled: dict[str, Any] | None = None,
     ) -> SurveyDocument:
         """:meth:`survey`, the mission held and its plan valid."""
         assert plan.config is not None
@@ -443,6 +461,7 @@ class Recon:
                         config_sha256=sha256,
                         resolved=self._resolved(plan.config),
                         streams=streams,
+                        scheduled=scheduled,
                     )
                 finally:
                     # Whatever the survey opened (a collector's session, the requester's
@@ -721,8 +740,18 @@ class Recon:
         self, mission: str | None = None, *, platform: Platform | None = None
     ) -> SchedulesDocument:
         """Each schedule of the project, or the mission's: installed or not, its config
-        changed since or not, and when the next tick is due."""
+        changed since or not, when the next tick is due, the last tick, how late the schedule
+        is and the ticks skipped in a row."""
         return self._scheduling().status(mission, platform)
+
+    def schedule_tick(self, name: str, *, config_sha256: str) -> TickDocument:
+        """One tick of the mission's schedule, what the scheduler starts: a survey under the
+        mission lock, logged to ``<mission>/schedule.log``, unless the config is not the one
+        whose digest the schedule holds (``conflict``), another survey holds the mission
+        (``busy``, logged skipped), or it is a missed tick under ``missed: skip``."""
+        return self._scheduling().tick(
+            name, config_sha256, lambda scheduled: self._scheduled_survey(name, scheduled)
+        )
 
     # --- status, query, templates, capture ----------------------------------------------
 
