@@ -12,10 +12,12 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import itertools
+import json
 import random
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import matrix
@@ -43,16 +45,15 @@ from ix.composition import Root
 from ix.composition.settings import IxSettings
 from ix.domain import schema
 from ix.domain.report import report as build_report
-from ix.domain.run import HarnessError, Interaction, Target
+from ix.domain.run import HarnessError, Interaction, Reading, Target
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
-    from pathlib import Path
+    from collections.abc import AsyncIterator, Mapping, Sequence
 
     from ix.domain.kind import Kinds
     from ix.domain.ports import Environment, Probe
     from ix.domain.problem import Problem
-    from ix.domain.run import Reading, Trial
+    from ix.domain.run import Trial
 
 Write = Any
 
@@ -817,3 +818,128 @@ class TestSensing:
             assert build_report(shuffled).model_dump_json() == (
                 build_report(record).model_dump_json()
             )
+
+
+# --- the CI validation slice (X10): one at a time against several, on stand-ins ----------
+
+
+def _per_seq(readings: Sequence[Reading]) -> dict[tuple[int, str, str], Any]:
+    """What each trial read, by (seq, sensor, metric), without the session rows, whose
+    numbers follow the order sessions were recorded in: the equivalence check of the
+    slice."""
+    return {(r.seq, r.sensor, r.metric): r.model_dump(exclude={"sessions"}) for r in readings}
+
+
+def _seq(row: Mapping[str, Any]) -> int:
+    return int(row["seq"])
+
+
+def _tables(report: ix.Report, table: str) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in Path(report.tables[table]).read_text().splitlines()]
+
+
+class TestTheValidationSlice:
+    def test_four_in_flight_read_what_one_at_a_time_reads(self, tmp_path: Path) -> None:
+        """X10.1: on the mock runtime, a run at width 4 and one at width 1 give the same
+        readings for each trial and the same analysis."""
+        serial = _root().run(_canned(tmp_path / "one"), exploratory=True)
+        wide = _root().run(_canned(tmp_path / "four", trials_in_flight=4), exploratory=True)
+        assert (serial.trials_in_flight, wide.trials_in_flight) == (1, 4)
+        assert serial.trials.carried_out == wide.trials.carried_out == 10
+        one = [Reading.model_validate(r) for r in _tables(serial, schema.READING)]
+        four = [Reading.model_validate(r) for r in _tables(wide, schema.READING)]
+        assert _per_seq(one) == _per_seq(four)
+        assert serial.analysis.model_dump_json() == wide.analysis.model_dump_json()
+
+    def test_each_trial_in_flight_names_its_own_sessions_as_many_as_alone(
+        self, tmp_path: Path
+    ) -> None:
+        """X10.2 (I6) through a whole run: at width 4 each interaction names sessions no
+        other names, each the session of its own probe, and as many as at width 1."""
+        counts = []
+        for width in (1, 4):
+            report = _root().run(
+                _canned(tmp_path / str(width), trials_in_flight=width), exploratory=True
+            )
+            sessions = _tables(report, "matrix.v1.session")
+            interactions = _tables(report, schema.INTERACTION)
+            named = [row for i in interactions for row in i["sessions"]]
+            assert sorted(named) == list(range(len(sessions)))  # each once: disjoint, all
+            sent = {i["probe"]: {sessions[row]["sent"] for row in i["sessions"]}
+                    for i in interactions}  # fmt: skip
+            assert all(len(digests) == 1 for digests in sent.values())  # never a neighbour's
+            assert len(set.union(*sent.values())) == len(sent)
+            counts.append([len(i["sessions"]) for i in sorted(interactions, key=_seq)])
+        assert counts[0] == counts[1]
+
+    def test_the_overlap_the_rows_show_is_the_overlap_there_was(
+        self, write_experiment: Write
+    ) -> None:
+        """X10.4, checking the checker: the most trials whose recorded times overlap is the
+        most the stub subject counted held at once."""
+        run = _Dispatch(4)
+        setup, trials = run.setup(write_experiment)
+        kit = run.kit(_Probe(run.log, _seeds(trials)), NoEnvironment())
+        asyncio.run(
+            running.carry_out(
+                setup, kit, trials=trials, bindings={}, scope=run.scope, land=run.land
+            )
+        )
+        edges = sorted(
+            edge
+            for i in run.landed
+            for edge in ((i.started_ns, 1), (i.started_ns + i.duration_ns, -1))
+        )
+        overlap = max(itertools.accumulate(step for _, step in edges))
+        assert overlap == run.subject.most == 4
+
+    @pytest.mark.parametrize(("crowded", "detected"), [(True, True), (False, False)])
+    def test_a_reading_that_grows_with_overlap_is_caught(
+        self, crowded: bool, detected: bool, write_experiment: Write
+    ) -> None:
+        """X10.5, the negative control: a stub whose reading is the number of trials in
+        flight beside it reads differently at width 4, and the equivalence check says so;
+        one that reads a constant passes it (the check is not always false)."""
+        one, four = (_crowding(write_experiment, width, crowded) for width in (1, 4))
+        assert (one != four) is detected
+
+
+class _Crowded(_Probe):
+    """Leaves behind how many trials held a subject when it began (``beside``), or 1."""
+
+    def __init__(self, run: _Dispatch, seqs: Mapping[int, int], crowded: bool) -> None:
+        super().__init__(run.log, seqs)
+        self.run = run
+        self.crowded = crowded
+
+    async def apply(
+        self, options: Mapping[str, Any], target: Target, *, seed: int
+    ) -> Mapping[str, Mapping[str, Any]]:
+        beside = self.run.subject.holding
+        await super().apply(options, target, seed=seed)
+        return {"load": {"beside": beside if self.crowded else 1}}
+
+
+class _ReadsTheCrowd(FakeTiming):
+    """A contended reading: what the probe found beside it."""
+
+    async def sense(self, interaction: Any, *, truth: Any, options: Any) -> Mapping[str, Any]:
+        return {"latency": {"p50": float(interaction.observations["load"]["beside"])}}
+
+
+def _crowding(write: Write, width: int, crowded: bool) -> dict[tuple[int, str, str], Any]:
+    """Carry the fake experiment out at ``width`` and read it with the crowd's sensor."""
+    run = _Dispatch(width)
+    setup, trials = run.setup(write)
+    kit = dataclasses.replace(
+        run.kit(_Crowded(run, _seeds(trials), crowded), NoEnvironment()),
+        sensors={schema.url("sensor", "timing"): _ReadsTheCrowd()},
+    )
+
+    async def both() -> list[Reading]:
+        await running.carry_out(
+            setup, kit, trials=trials, bindings={}, scope=run.scope, land=run.land
+        )
+        return await running.sense(setup, kit, trials=trials, interactions=run.landed)
+
+    return _per_seq(asyncio.run(both()))
