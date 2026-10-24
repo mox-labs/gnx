@@ -60,6 +60,10 @@ COMMANDS: tuple[tuple[str, str], ...] = (
         "ix run <path> --exploratory --repeats N",
         "a pilot with N repeats, the file unchanged: no verdict",
     ),
+    (
+        "ix run <path> --exploratory --trials-in-flight N",
+        "N trials at once, the file unchanged: no verdict; refused where overlap confounds",
+    ),
     ("ix run <path>", "carry it out and print the report; the exit code is the verdict"),
     ("ix report <path>", "the latest run's report again; or give a run directory"),
     ("ix runs <path>", "each run: when, its commit, gated, exploratory or dry, verdict, trials"),
@@ -659,7 +663,8 @@ def _skill(genres: Genres, kinds: Kinds, version: str) -> str:
         "ix answers a question about a system with an experiment. One YAML file names the "
         "question, the subjects, the probes and the metric that decides. ix checks the file, "
         "shows the decision a run would inform and how many trials it takes, freezes the design "
-        "before anything runs, runs it one trial at a time, and reports a verdict: `holds`, "
+        "before anything runs, runs its trials (one at a time unless it says how many at "
+        "once), and reports a verdict: `holds`, "
         "`fails` or `inconclusive`. The system is a service (a program, an endpoint), an AI "
         "agent (a fresh session per trial on one of matrix's agent runtimes, graded by its "
         "tool calls, tests, graders or a judge) or a model (one call per trial on one of "
@@ -708,7 +713,8 @@ metrics: [<metric>]                 # further metrics to measure and report
 sensors:                            # only to give a sensor options, or to choose between two
   - {{kind: <sensor>, <option>: <value>}}
 repeats: <n>
-seed: <n>"""
+seed: <n>
+trials_in_flight: 1                 # trials carried out at once; 1 when left out"""
     shapes = "\n".join(
         f"  - `{shape}`: statistic {', '.join(STATISTICS[shape])}; "
         f"estimator {', '.join(ESTIMATORS[shape])}"
@@ -748,6 +754,23 @@ whether it came from the experiment, the genre or ix.
 - **A model-judged metric never decides.** Whether a metric is judged is declared by its
   sensor. A judged metric is refused as `primary` and as a guardrail in any genre with a
   verdict (`judged_gate`); it can still be reported under `metrics:`.
+- **Trials in flight.** `trials_in_flight: N` carries N trials out at once; left out it is
+  1, one at a time, and the plan says so (`Order:`, and `trials_in_flight` under the
+  provenance, from `ix` or the experiment). Use it to shorten a run of agent sessions or
+  model calls, whose trials do not disturb each other. Trials start in the plan's order,
+  at most N at once; each finishes when it finishes, and its rows carry its `seq`. The
+  trials and the verdict's arithmetic (the n it rests on) are the same at any width: what
+  changes is the load around each trial (a provider's rate limits, a timeout that a
+  slowed session now meets), which is why the width is part of the design, digested by
+  the plan and frozen by registration. Above 1 is refused (`trials_in_flight_refused`,
+  at `trials_in_flight`) where any kind in use is `overlap: forbidden` (a `process` or
+  `http` subject, `http-load`, `timing`, `memory`, a `process` or `compose` environment),
+  where a deciding metric (`primary`, a guardrail) is contended (a time, a throughput, a
+  memory peak, `usage`'s `duration`), or where the genre forbids overlap (`regress`).
+  Its `fix` names each and says `trials_in_flight: 1`. A contended metric
+  that is only reported is a warning (`trials_in_flight_contended`): its readings were
+  taken under that load. `ix run --trials-in-flight N` tries a width without editing the
+  file, with `--exploratory` or `--dry-run` only.
 - **Two reductions.** `statistic` reduces one trial's reading to a number; `estimator`
   combines the trials. By the shape of a reading:
 {shapes}
@@ -817,6 +840,8 @@ def _genre_section(genre: Genre) -> str:
     ]
     if design.calibration != "none":
         supplied.append(f"calibration {design.calibration} (the control against itself)")
+    if design.overlap == "forbidden":
+        supplied.append("overlap forbidden (its trials run one at a time)")
     if genre.default_comparison is not None:
         supplied.append(f"comparison {genre.default_comparison}")
     lines = [
@@ -892,14 +917,16 @@ def _kind_line(kind: Kind, runnable: bool) -> str:
     if kind.service_keys:
         keys = ", ".join(f"`{{<service>.{key}}}`" for key in kind.service_keys)
         facets.append(f"binds each service as {keys}")
-    if facets:
-        parts.append(f"  {'; '.join(facets)}")
+    facets.append(f"overlap {kind.overlap}")
+    parts.append(f"  {'; '.join(facets)}")
     for metric in kind.metrics:
         traits = [metric.shape, f"{metric.direction} is better"]
         if metric.unit:
             traits.insert(1, metric.unit)
         if metric.judged:
             traits.append("JUDGED by a model")
+        if metric.contended:
+            traits.append("CONTENDED by trials in flight")
         parts.append(f"  metric `{metric.name}` ({', '.join(traits)}): {metric.description}")
     return "\n".join(parts)
 
@@ -939,6 +966,12 @@ A `process` subject is up when its `ready` URL answers an HTTP GET with a status
 without `ready`, when its `url` accepts a connection; with neither, as soon as it starts. One
 that is not up within `startup_timeout` (30s) fails the trial as the subject's (`not_ready`).
 
+Each kind's `overlap` says whether two trials may use it at once: `allowed` when neither
+changes what the other measures (a fresh agent session each), `forbidden` when they would (a
+fixed port, a load tool, an environment brought up once for the run); a kind that does not
+say forbids it. A metric marked **CONTENDED** moves with whatever else runs beside the
+trial (a time, a throughput, a memory peak).
+
 {families}
 """
 
@@ -975,8 +1008,9 @@ reason.
 
 `ix run <path>` carries the experiment out: it brings the environment up once, then for
 each trial starts the subject, applies the probe, takes the measurements and stops the
-subject, one trial at a time in the order the plan fixed. It prints progress on stderr and
-then the report (`ix.v1.report`) on stdout.
+subject, starting the trials in the order the plan fixed, one at a time unless the
+experiment writes `trials_in_flight`. It prints progress on stderr and then the report
+(`ix.v1.report`) on stdout.
 
 - **Register first.** An unregistered experiment is refused (exit
   {EXIT_CODES["unregistered"]}). `--exploratory` runs it anyway; such a run gives **no
@@ -994,6 +1028,12 @@ then the report (`ix.v1.report`) on stdout.
   `Changed`; a run that gives a verdict refuses `--repeats` (exit {EXIT_CODES["usage"]}). A
   run too small for even every trial passing to show a pass rate's threshold says so under
   `Best case`, as the plan does under `Sensitivity`.
+- **A width to try.** `--exploratory --trials-in-flight N` (or `--dry-run`) carries N trials
+  out at once in place of the file's `trials_in_flight`, listed under `Changed`; a run that
+  gives a verdict refuses it (exit {EXIT_CODES["config"]}): write `trials_in_flight:` in the
+  file and register it. Where the kinds, a deciding metric or the genre forbid overlap it is
+  refused before anything starts, `trials_in_flight_refused`, whose `fix` names each and
+  says `trials_in_flight: 1`. The report's `Run` line says the width.
 - **A run of an experiment that changed since registration gives no gate result.** It
   runs, its report lists the deviations and gives what it found as an *indication*, and it
   exits {EXIT_CODES["deviations"]}, never {EXIT_CODES["ok"]}, until the registration is
@@ -1142,8 +1182,9 @@ probes and a metric. What makes it one is the kinds.
   `tokens_output`, `cost`, `turns`, `tool_calls`, `duration`, `rounds`, `hit_limit`
   (`usage`: what the runtime did not report is left out, so a model call has no `turns`),
   the judged `judged_score` and `judged_pass` (`judge`, option `rubric`), and
-  pydantic-evals' evaluators: `eval_passed`, `eval_score`, and the judged
-  `judged_eval_passed` and `judged_eval_score` (`evaluator`, below).
+  pydantic-evals' evaluators: `eval_passed`, `eval_score`, `eval_duration_held`
+  (`MaxDuration`'s, contended) and the judged `judged_eval_passed` and `judged_eval_score`
+  (`evaluator`, below).
 - **Validate checks that the sensors can see.** A setting that makes what a sensor reads
   impossible is `unobservable`, refused before any trial, whatever the runtime is called:
   a skill whose `tools` leave out the tool the runtime says fires one (claude-sdk's
@@ -1262,7 +1303,10 @@ are in the reading's detail. One `evaluator` entry per experiment: a second is
 {_yaml(AGENT_EXAMPLES["evaluator"])}
 
 - **Reading the reply**: `Equals`, `EqualsExpected` (the truth's `expected_output`),
-  `Contains`, `IsInstance`, `MaxDuration`.
+  `Contains`, `IsInstance`.
+- **Reading the time**: `MaxDuration` gives `eval_duration_held` (whether the probe took
+  no longer than `seconds`), never `eval_passed` (`metric_unprovided`, whose fix names
+  it). A time is contended, so it decides no run with `trials_in_flight` above 1.
 - **Reading the spans**: `ToolCorrectness`, `TrajectoryMatch` (an `eval_score`),
   `ArgumentCorrectness`, `MaxToolCalls`, `MaxModelRequests`, `HasMatchingSpan`, on matrix's
   `execute_tool` span of each tool call the runtime timed (`claude-sdk` does). They are

@@ -1,6 +1,7 @@
 schema: ix.v1.kind
 name: ix.v1.subject.model-call
 summary: "A model on a matrix model runtime; each trial is one call: no tools, turns or working directory, so sensors that read tool calls, and probes that collect files, do not apply."
+overlap: allowed
 options:
   runtime:
     type: string

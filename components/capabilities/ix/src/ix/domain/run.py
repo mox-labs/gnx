@@ -332,7 +332,8 @@ def schedule(experiment: Experiment, design: Design, probes: ProbeSet) -> tuple[
 
 def schedule_digest(trials: tuple[Trial, ...]) -> str:
     """The digest of a list of trials: equal exactly when two runs would do the same things
-    in the same order."""
+    in the same dispatch order. It digests intent: trials start in this order, and with
+    more than one in flight they may finish in another."""
     return schema.digest([trial.document() for trial in trials])
 
 

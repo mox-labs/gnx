@@ -1,6 +1,7 @@
 schema: ix.v1.kind
 name: ix.v1.sensor.activation
 summary: Whether the expected skill fired, or stayed quiet for a decoy; the report tabulates expected against fired.
+overlap: allowed
 options:
   tool: {type: string, description: "the tool whose calls are skill activations; when absent, the one the session's agent runtime says fires a skill (claude-sdk: Skill)"}
 needs: [response]

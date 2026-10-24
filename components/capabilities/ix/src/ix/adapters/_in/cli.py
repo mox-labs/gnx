@@ -566,7 +566,12 @@ def _print_outcome(report: ix.Report) -> None:
         _field("Why", report.analysis.reason)
     if report.best_case:
         _field("Best case", report.best_case)
-    _field("Run", f"{report.status}; {report.trials.text()}")
+    width = report.trials_in_flight
+    _field(
+        "Run",
+        f"{report.status}; {report.trials.text()}"
+        + (f"; {width} trials in flight" if width > 1 else ""),
+    )
     if report.overridden:
         _field("Changed", *report.overridden)
     if _stood_in(report) and not report.no_verdict.startswith("Dry run"):
@@ -855,8 +860,9 @@ _CODE = ix.EXIT_CODES
 _RUN_HELP = f"""Carry out an experiment and report what it found.
 
 Starts the subjects, applies the probes and takes the measurements the experiment
-declares, one trial at a time, and records each trial as it finishes under
-<experiment directory>/.ix/runs/<run id>/. Then prints the report (ix.v1.report).
+declares, one trial at a time unless it writes `trials_in_flight: N`, and records each
+trial as it finishes under <experiment directory>/.ix/runs/<run id>/. Then prints the report
+(ix.v1.report).
 
 The experiment must be registered first (`ix register`), or the run refused (exit
 {_CODE["unregistered"]}); `--exploratory` runs it anyway and gives no verdict, and so does a
@@ -866,7 +872,11 @@ stand-in (an agent session on the mock runtime, replying with each probe's mock_
 setting aside the options only the real runtime takes: it checks the harness, calls no
 model and gives no verdict. `--repeats N` pilots either with N repeats in place of the
 file's (never below the genre's minimum); a run that gives a verdict refuses it (exit
-{_CODE["usage"]}). PATH may be - for an experiment on standard input, which
+{_CODE["usage"]}). `--trials-in-flight N` carries N trials out at once in place of the
+file's width, with `--exploratory` or `--dry-run` only (a run that gives a verdict refuses
+it, exit {_CODE["config"]}), and only where every kind in use allows overlap, no deciding
+metric is contended and the genre allows it (`trials_in_flight_refused` names what blocks it).
+PATH may be - for an experiment on standard input, which
 runs only with `--exploratory` or `--dry-run` and keeps its runs under the current
 directory. The exit code
 is the verdict: {_CODE["ok"]} holds (or no verdict to give), {_CODE["fails"]} fails,
@@ -908,12 +918,32 @@ finish and {_CODE["simulated"]} for a registered run a stand-in answered; and
     help="A pilot: N repeats in place of the file's, with --exploratory or --dry-run only "
     "(a run that gives a verdict is held to its registered design)",
 )
+@click.option(
+    "--trials-in-flight",
+    type=click.IntRange(min=1),
+    metavar="N",
+    help="Carry N trials out at once in place of the file's trials_in_flight (1 when it "
+    "writes none), with --exploratory or --dry-run only; refused where a kind in use or "
+    "the genre forbids overlap, or a deciding metric is contended",
+)
 @_json_option
-def run(path: str, exploratory: bool, dry_run: bool, repeats: int | None, as_json: bool) -> None:
+def run(
+    path: str,
+    exploratory: bool,
+    dry_run: bool,
+    repeats: int | None,
+    trials_in_flight: int | None,
+    as_json: bool,
+) -> None:
     on_event, bar = _progress(as_json)
     try:
         report = ix.run(
-            path, exploratory=exploratory, dry_run=dry_run, repeats=repeats, on_event=on_event
+            path,
+            exploratory=exploratory,
+            dry_run=dry_run,
+            repeats=repeats,
+            trials_in_flight=trials_in_flight,
+            on_event=on_event,
         )
     except ix.IxError as error:
         if bar is not None:

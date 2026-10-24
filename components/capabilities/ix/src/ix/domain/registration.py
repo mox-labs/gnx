@@ -21,6 +21,7 @@ from pydantic import Field, field_validator
 
 from ix.domain import schema
 from ix.domain.errors import EXIT_CODES, ConfigError
+from ix.domain.kind import UNFROZEN_METRIC_FIELDS
 from ix.domain.problem import Problem
 from ix.domain.provenance import Content
 from ix.domain.schema import Record, Stored
@@ -148,7 +149,8 @@ def freeze(
     frozen = design.document()
     frozen.pop("provenance", None)
     for metric in frozen.get("metrics", []):
-        metric.pop("description", None)
+        for field in UNFROZEN_METRIC_FIELDS:
+            metric.pop(field, None)
     return Registration(
         experiment=experiment.name,
         experiment_digest=experiment.digest(),

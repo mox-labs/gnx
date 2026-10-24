@@ -747,6 +747,7 @@ class Root:
         exploratory: bool = False,
         dry_run: bool = False,
         repeats: int | None = None,
+        trials_in_flight: int | None = None,
         base: PathLike | None = None,
         registration: PathLike | None = None,
         on_event: Callable[[str, Mapping[str, Any]], None] | None = None,
@@ -756,7 +757,10 @@ class Root:
         Refuses before anything starts when the experiment is invalid, names a kind with no
         adapter, or is unregistered and the run is neither ``exploratory`` nor a
         ``dry_run``; and ``repeats`` on a run that is neither, since a gated run is held to
-        the design its registration froze. Once it has started, whatever happens is in the
+        the design its registration froze. ``trials_in_flight`` in place of the file's is
+        an override too, refused by a run that gives a verdict (:class:`ConfigError`) and
+        where the experiment's kinds, metrics or genre refuse overlap (its validation
+        problem). Once it has started, whatever happens is in the
         record: a run that was stopped or that failed still returns its report, which says
         so.
         """
@@ -768,6 +772,13 @@ class Root:
                 "change the repeats a verdict rests on, edit the file and "
                 '`ix register <path> --amend --reason "<why>"`',
                 details={"path": "--repeats", "value": repeats},
+            )
+        if trials_in_flight is not None and trials_in_flight < 1:
+            raise UsageError(
+                f"--trials-in-flight {trials_in_flight}: a run carries out at least one trial "
+                "at a time",
+                fix="--trials-in-flight 1, or leave it out for the experiment's own",
+                details={"path": "--trials-in-flight", "value": trials_in_flight},
             )
         opened = self._open(source, base=base, registration=registration)
         use_cases.require_valid(opened.examined, "run")
@@ -786,6 +797,19 @@ class Root:
             )
             use_cases.require_valid(examined, f"run with --repeats {repeats}")
             overridden = (f"repeats: {repeats} in place of {written} (--repeats: a pilot)",)
+        if trials_in_flight is not None:
+            checked = use_cases.valid(examined, "run")
+            written = checked.design.trials_in_flight
+            examined = self._examine(
+                checked.experiment.model_copy(update={"trials_in_flight": trials_in_flight}),
+                opened.vocabulary,
+                base=opened.base,
+                source=examined.source,
+            )
+            use_cases.require_valid(examined, f"run with --trials-in-flight {trials_in_flight}")
+            overridden += (
+                f"trials_in_flight: {trials_in_flight} in place of {written} (--trials-in-flight)",
+            )
         if dry_run:
             checked = use_cases.valid(examined, "dry run")
             stood, notes = running.stand_in(checked.experiment, checked.probes, self._built)

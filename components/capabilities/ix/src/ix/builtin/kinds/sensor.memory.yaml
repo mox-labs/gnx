@@ -1,8 +1,9 @@
 schema: ix.v1.kind
 name: ix.v1.sensor.memory
 summary: Peak resident memory of the subject's process group, sampled while the probe runs.
+overlap: forbidden
 options:
   interval: {type: duration, description: time between samples; 200ms when absent}
 needs: [pid]
 metrics:
-  - {name: memory_peak, unit: bytes, direction: lower, shape: scalar, description: the highest resident memory sampled during the trial}
+  - {name: memory_peak, unit: bytes, direction: lower, shape: scalar, contended: true, description: the highest resident memory sampled during the trial}

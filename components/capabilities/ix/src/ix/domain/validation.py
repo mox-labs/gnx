@@ -37,7 +37,7 @@ from ix.domain.kind import NOTE_PREFIX, binding_names, escapes, placeholders
 from ix.domain.problem import Problem, Validation, from_validation_error, problem
 
 if TYPE_CHECKING:
-    from ix.domain.design import Design, Instruments
+    from ix.domain.design import Design, Instruments, KindUse
     from ix.domain.experiment import Guardrail, Margin, MetricRef, ProbeSet, Threshold
     from ix.domain.genre import Genre, Genres
     from ix.domain.kind import Kinds, Metric
@@ -956,6 +956,84 @@ def _refused(experiment: Experiment, genres: Genres, kinds: Kinds) -> list[Probl
     return warnings
 
 
+def _in_flight(
+    experiment: Experiment,
+    genre: Genre | None,
+    uses: Sequence[KindUse],
+    instruments: Instruments,
+    kinds: Kinds,
+) -> tuple[list[Problem], list[Problem]]:
+    """Whether the trials may overlap at the width written: a problem naming every kind in
+    use whose ``overlap`` is ``forbidden``, every deciding metric that is ``contended`` and
+    a genre that forbids overlap; and a warning naming each contended metric only
+    reported."""
+    width = experiment.trials_in_flight
+    if width <= 1:
+        return [], []
+    used: dict[str, str] = {}
+    for use in uses:
+        used.setdefault(use.kind.name, use.path)
+    for selected in instruments.sensors:
+        used.setdefault(selected.kind, "sensors")
+    blocking = [
+        (
+            (
+                f"{declared.family} kind {declared.label} ({used[name]})"
+                if declared.family != "sensor"
+                else f"sensor {declared.label}"
+            )
+            + " forbids overlap",
+            declared.label,
+        )
+        for name in used
+        if (declared := kinds.kinds.get(name)) is not None and declared.overlap == "forbidden"
+    ]
+    deciding = [("primary", experiment.primary.metric)] if experiment.primary else []
+    deciding += [
+        (f"guardrails.{index}", guardrail.metric)
+        for index, guardrail in enumerate(experiment.guardrails)
+    ]
+    contended = [name for name, metric in instruments.metrics.items() if metric.contended]
+    blocking += [
+        (f"metric {name} ({path}) is contended", name)
+        for path, name in deciding
+        if name in contended
+    ]
+    if genre is not None and genre.design.overlap == "forbidden":
+        blocking.append((f"genre {genre.label} forbids overlap", genre.label))
+    problems = []
+    if blocking:
+        problems.append(
+            problem(
+                "trials_in_flight",
+                kind="trials_in_flight_refused",
+                message=f"trials_in_flight {width} would overlap trials where that changes "
+                "what is measured: " + "; ".join(said for said, _ in blocking),
+                fix="trials_in_flight: 1 (blocked by "
+                + ", ".join(dict.fromkeys(name for _, name in blocking))
+                + "); or use only kinds that allow overlap, decide on uncontended metrics, "
+                "in a genre that allows it (`ix kinds` gives each kind's overlap)",
+                got=width,
+            )
+        )
+    reported = [name for name in contended if name not in {name for _, name in deciding}]
+    warnings = []
+    if reported and not blocking:
+        warnings.append(
+            problem(
+                "trials_in_flight",
+                kind="trials_in_flight_contended",
+                message=f"at trials_in_flight {width}, the readings of "
+                f"{', '.join(reported)} move with the trials beside each one: report them "
+                "as read under that load",
+                fix="trials_in_flight: 1 to read them alone; they decide nothing here, so "
+                "the run may stay as it is",
+                got=width,
+            )
+        )
+    return problems, warnings
+
+
 def check(
     experiment: Experiment,
     genres: Genres,
@@ -977,11 +1055,13 @@ def check(
         problems += role_problems
         problems += _against_genre(experiment, genre)
 
-    _, kind_problems = kind_uses(experiment, kinds, probes)
+    uses, kind_problems = kind_uses(experiment, kinds, probes)
     problems += kind_problems
     problems += _fit(experiment, kinds, probes)
     instruments = select_sensors(experiment, kinds, probes)
     problems += instruments.problems
+    overlapping, contended = _in_flight(experiment, genre, uses, instruments, kinds)
+    problems += overlapping
     problems += _decision(experiment, genre, instruments, probes)
     unbound, unfilled = _placeholders(experiment, kinds, probes)
     problems += unbound
@@ -997,6 +1077,7 @@ def check(
     if not problems and design is not None and probes is not None and adapters is not None:
         warnings += _unrunnable(experiment, design, probes, adapters, kinds)
     warnings += unfilled
+    warnings += contended
     warnings += _refused(experiment, genres, kinds)
     return Checked(
         problems=tuple(problems),

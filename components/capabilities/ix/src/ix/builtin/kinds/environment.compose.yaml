@@ -1,6 +1,7 @@
 schema: ix.v1.kind
 name: ix.v1.environment.compose
 summary: A docker compose project brought up before the trials and down after them, each service bound with its published port.
+overlap: forbidden
 options:
   file: {type: path, required: true, description: "the compose file, relative to the experiment"}
   project: {type: string, description: "the project name; one named for the run when absent, so two runs never share one and a stack a killed run left is swept. A project named here that already has containers is refused"}

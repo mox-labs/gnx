@@ -108,6 +108,7 @@ def run(
     exploratory: bool = False,
     dry_run: bool = False,
     repeats: int | None = None,
+    trials_in_flight: int | None = None,
     base: PathLike | None = None,
     registration: PathLike | None = None,
     on_event: Callable[[str, Mapping[str, Any]], None] | None = None,
@@ -115,8 +116,8 @@ def run(
     """Run the experiment and return its report.
 
     A run starts the subjects, applies the probes and takes the measurements the experiment
-    declares, one trial at a time, and records everything under
-    ``<experiment directory>/.ix/runs/<run id>/``.
+    declares, one trial at a time unless the experiment writes ``trials_in_flight``, and
+    records everything under ``<experiment directory>/.ix/runs/<run id>/``.
 
     Raises before anything starts: :class:`InvalidExperimentError`; :class:`ConfigError`
     when a kind the experiment names has no adapter, or something it requires of this host
@@ -136,6 +137,11 @@ def run(
     ``Report.overridden``; only with ``exploratory`` or ``dry_run`` (else
     :class:`UsageError`: a run that gives a verdict is held to its registered design), and
     never below the genre's minimum (:class:`InvalidExperimentError`).
+    ``trials_in_flight`` carries that many trials out at once in place of the file's width,
+    noted in ``Report.overridden``; only with ``exploratory`` or ``dry_run`` (else
+    :class:`ConfigError`), at least 1 (else :class:`UsageError`), and refused where the
+    experiment's kinds, deciding metrics or genre forbid overlap
+    (:class:`InvalidExperimentError`, problem ``trials_in_flight_refused``).
     ``Report.best_case`` says when the run is too small for even every trial passing to
     show a pass rate's threshold.
 
@@ -152,6 +158,7 @@ def run(
         exploratory=exploratory,
         dry_run=dry_run,
         repeats=repeats,
+        trials_in_flight=trials_in_flight,
         base=base,
         registration=registration,
         on_event=on_event,

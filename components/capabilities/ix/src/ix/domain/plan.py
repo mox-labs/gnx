@@ -34,7 +34,7 @@ from ix.domain.design import (
 )
 from ix.domain.experiment import Level, cells
 from ix.domain.genre import Calibration, Order, VerdictForm
-from ix.domain.kind import fill, seconds
+from ix.domain.kind import UNFROZEN_METRIC_FIELDS, fill, seconds
 from ix.domain.problem import Problem
 from ix.domain.schema import Record, canonical
 
@@ -59,11 +59,14 @@ VERDICTS: dict[str, str] = {
 
 
 class OrderPlan(Record):
-    """How a run orders its trials. The seed fixes the order it produces."""
+    """How a run orders its trials, and how many it carries out at once. The seed fixes the
+    order it produces; trials start in that order, and at a width above one they finish in
+    whatever order they finish in."""
 
     scheme: Order
     seed: int
     description: str
+    trials_in_flight: int = 1
 
 
 class Required(Record):
@@ -333,7 +336,15 @@ def _order(design: Design, alternating: int) -> OrderPlan:
         )
     else:
         description = "one subject and no A/A pass: there is nothing to interleave"
-    return OrderPlan(scheme=design.order, seed=design.seed, description=description)
+    width = design.trials_in_flight
+    description += (
+        "; one at a time"
+        if width == 1
+        else f"; {width} trials in flight, each started in that order as another finishes"
+    )
+    return OrderPlan(
+        scheme=design.order, seed=design.seed, description=description, trials_in_flight=width
+    )
 
 
 def plan_digest(
@@ -347,7 +358,8 @@ def plan_digest(
     against."""
     resolved = canonical(design, exclude={"hypotheses", "provenance"})
     for metric in resolved.get("metrics", []):
-        metric.pop("description", None)
+        for field in UNFROZEN_METRIC_FIELDS:
+            metric.pop(field, None)
     return schema.digest(
         {
             "experiment": experiment.digest(operative=True),

@@ -1748,6 +1748,21 @@ class TestAVerdictTracesToTheModelThatAnswered:
             )
             assert by != answered
 
+    def test_each_rows_ledger_entry_names_the_sessions_the_row_names(self, tmp_path: Path) -> None:
+        """matrix's ledger says which sessions produced each row: an interaction's are its
+        subject's call, a reading's its judge's, and no row is credited with another's.
+        Regression: the readings were handed over together, and every reading's entry named
+        every judgement of the run."""
+        report = _judged_calls(tmp_path)
+        ledger = {
+            (entry["kind"], entry["row"]): entry["sessions"]
+            for entry in _rows(report, matrix.LEDGER)
+        }
+        for table in ("ix.v1.interaction", "ix.v1.reading"):
+            rows = _rows(report, table)
+            assert rows
+            assert [ledger[(table, at)] for at in range(len(rows))] == [r["sessions"] for r in rows]
+
     def test_an_agent_sessions_trial_names_the_sessions_its_rounds_ran(
         self, tmp_path: Path
     ) -> None:

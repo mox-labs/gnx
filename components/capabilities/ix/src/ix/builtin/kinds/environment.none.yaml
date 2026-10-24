@@ -1,3 +1,4 @@
 schema: ix.v1.kind
 name: ix.v1.environment.none
 summary: Nothing to bring up; the subjects are all a run needs.
+overlap: allowed

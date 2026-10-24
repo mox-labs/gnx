@@ -1,6 +1,7 @@
 schema: ix.v1.kind
 name: ix.v1.sensor.outcome
 summary: Grades the response with grader functions in a Python module the experiment owns, run in a separate process.
+overlap: allowed
 options:
   graders: {type: path, required: true, description: "the module, relative to the experiment: GRADERS maps a probe id (or a probe's truth grader) to a function of the response text, or of the text and the trial, returning a score from 0 to 1"}
   timeout: {type: duration, description: time allowed for one grading; 30s when absent}
