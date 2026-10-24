@@ -1,0 +1,208 @@
+"""A stream killed mid-window, then resumed (ruling B6; B10 #4), and a long stream's memory
+(B10 #11).
+
+The kill is a real SIGKILL of a ``recon stream`` process, at a line a seeded generator picks,
+while the file it follows ends mid-line. Afterwards the sealed windows are unchanged, the
+window being written reads ``incomplete`` and keeps every whole line it had, and the resumed
+stream goes on after the last of them: for a source with positions, the windows together hold
+every line exactly once. For a source without positions, the resumed window records the gap.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import random
+import signal
+import subprocess
+import sys
+import time
+import tracemalloc
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import yaml
+
+from recon.adapters._out.archive_files import ArchiveFiles
+from recon.adapters._out.system_clock import SystemClock
+from recon.application.stream import Stream
+from recon.composition import root
+from recon.domain.stream import BufferSpec, WindowSpec
+from tests.recon_fakes import VirtualClock
+from tests.test_streams import Script, _plan, _telemetry
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from recon.domain.documents import WindowOutcome
+
+CLI = "import sys; from recon.adapters._in.cli import main; sys.exit(main())"
+K = 7  # records a window
+
+
+def _project(tmp_path: Path, collector: dict[str, Any], catalog: list[dict[str, Any]]) -> Path:
+    (tmp_path / ".git").mkdir()
+    mission = tmp_path / ".recon" / "m"
+    mission.mkdir(parents=True)
+    config = {"catalog": catalog, "collectors": [collector]}
+    (mission / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+    return mission / "streams" / str(collector["name"])
+
+
+def _rows(window: Path, table: str) -> list[dict[str, Any]]:
+    """A window's whole records: its sealed table, or the one its dead writer left."""
+    sealed = window / f"{table}.jsonl"
+    path = sealed if sealed.exists() else window / f"{table}.jsonl.tmp"
+    if not path.exists():
+        return []
+    rows = [json.loads(line) for line in path.read_bytes().split(b"\n")[:-1]]
+    return [] if rows == [{"_empty": True}] else rows
+
+
+def _written(stream: Path, table: str) -> int:
+    windows = [w for w in sorted(stream.iterdir()) if w.is_dir() and not w.name.startswith(".")]
+    return sum(len(_rows(w, table)) for w in windows)
+
+
+def _digest(window: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(window.rglob("*")):
+        if path.is_file():
+            digest.update(path.name.encode() + path.read_bytes())
+    return digest.hexdigest()
+
+
+def _killed_at(stream: Path, table: str, lines: int, command: list[str], cwd: Path) -> None:
+    """Start ``recon stream``, and SIGKILL it once ``lines`` records are in its windows."""
+    process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)  # fmt: skip
+    try:
+        started = time.monotonic()
+        while not stream.is_dir() or _written(stream, table) < lines:
+            assert process.poll() is None, "the stream ended before it was killed"
+            assert time.monotonic() - started < 30, "the stream never wrote enough"
+            time.sleep(0.02)
+        os.kill(process.pid, signal.SIGKILL)
+        process.wait(10)
+    finally:
+        if process.poll() is None:
+            process.kill()
+
+
+class TestKilledThenResumed:
+    def test_a_positioned_source_resumes_exactly_once(self, tmp_path: Path) -> None:
+        seed = random.Random(20261024)
+        kill_at = seed.randint(20, 40)
+        kill_at += kill_at % K == 0  # mid-window, so a window is being written when killed
+        log = tmp_path / "app.log"
+        log.write_text("".join(json.dumps({"seq": n}) + "\n" for n in range(kill_at)))
+        with open(log, "a") as f:  # the source ends mid-line as the stream is killed
+            f.write(f'{{"seq": {kill_at}, "pad": "xx')
+        stream = _project(
+            tmp_path,
+            {"name": "log", "type": "tail", "source": "app", "start": "beginning",
+             "interval": 0.02, "window": {"records": K}, "retain": "all"},
+            [{"name": "app", "type": "file", "url": "app.log"}],
+        )  # fmt: skip
+        command = [sys.executable, "-c", CLI, "stream", "m", "--collector", "log", "--forever"]
+
+        _killed_at(stream, "log", kill_at, command, tmp_path)
+
+        store = ArchiveFiles(SystemClock())
+        windows = store.archives(tmp_path / ".recon" / "m", stream="log")
+        *sealed, dead = windows
+        assert all(store.state(w) == "complete" for w in sealed)
+        assert store.state(dead) == "incomplete", "the window being written when killed"
+        before = {w.name: _digest(w) for w in sealed}
+        # A write the kill cut short leaves a torn last line; make one, as the OS may.
+        with open(dead / "log.jsonl.tmp", "ab") as f:
+            f.write(b'{"seq": 9')
+        kept = sum(len(_rows(w, "log")) for w in windows)
+        assert kept == kill_at, "every whole line the source had was in a window"
+        # Finish the line the source was cut in, and write on to two windows' worth, so the
+        # resumed stream ends on a window's last record.
+        total = kill_at + 2 * K
+        with open(log, "a") as f:
+            f.write('"}\n' + "".join(json.dumps({"seq": n}) + "\n"
+                                     for n in range(kill_at + 1, total)))  # fmt: skip
+
+        document = root({}, project=tmp_path).stream("m", "log", windows=2)
+
+        after = store.archives(tmp_path / ".recon" / "m", stream="log")
+        assert {w.name: _digest(w) for w in after if w.name in before} == before
+        assert store.state(dead) == "incomplete", "a dead window is never changed"
+        assert (dead / "log.jsonl.tmp.torn").read_bytes() == b'{"seq": 9'
+        seqs = [row["seq"] for w in after for row in _rows(w, "log")]
+        assert seqs == list(range(total)), "every line once, in order"
+        assert document.last is not None
+        first_resumed = yaml.safe_load((after[len(windows)] / "meta.yaml").read_text())
+        assert first_resumed["stream"]["previous"] == dead.name
+        assert first_resumed["stream"]["sources"][0]["gaps"] == [], "nothing was missed"
+
+    def test_a_source_without_positions_records_the_gap(self, tmp_path: Path) -> None:
+        printer = (
+            "import itertools, json, time\n"
+            "for n in itertools.count():\n"
+            "    print(json.dumps({'seq': n}), flush=True)\n"
+            "    time.sleep(0.005)\n"
+        )
+        script = tmp_path / "counter.py"
+        script.write_text(printer)
+        stream = _project(
+            tmp_path,
+            {"name": "count", "type": "cli", "source": "here",
+             "run": f"{sys.executable} {script}", "window": {"records": K}, "retain": "all"},
+            [{"name": "here", "type": "local", "url": ".", "timeout": 3600}],
+        )  # fmt: skip
+        command = [sys.executable, "-c", CLI, "stream", "m", "--collector", "count", "--forever"]
+
+        _killed_at(stream, "count", 2 * K + 3, command, tmp_path)
+        store = ArchiveFiles(SystemClock())
+        last = store.archives(tmp_path / ".recon" / "m", stream="count")[-1]
+        sealed = store.read_meta(last).get("stream")
+        document = root({}, project=tmp_path).stream("m", "count", windows=1)
+
+        assert document.last is not None
+        meta = yaml.safe_load((Path(document.last.archive) / "meta.yaml").read_text())
+        [gap] = meta["stream"]["sources"][0]["gaps"]
+        assert gap["resumed"] is False, "the source could not go on from where it was"
+        # Since when is known when the last window was sealed (the kill came between two
+        # windows), and not when its writer died in it.
+        assert gap["from"] == (sealed["closed_at"] if sealed else None)
+        assert meta["stream"]["previous"] == last.name
+
+
+def test_memory_stays_flat_over_a_long_stream(tmp_path: Path) -> None:
+    """B10 #11: 60 windows of 500 records, at a modest rate on a virtual clock; what the
+    stream holds does not grow with the windows it has sealed."""
+    clock = VirtualClock()
+
+    class Long(Script):
+        def records(self, after: Any) -> Iterator[dict[str, Any]]:
+            for n in range(30_000):
+                self._clock.set(n * 0.01)
+                yield {"seq": n, "text": "x" * 100}
+
+    held: list[int] = []
+
+    def measure(outcome: WindowOutcome) -> None:
+        held.append(tracemalloc.get_traced_memory()[0])
+
+    tracemalloc.start()
+    try:
+        store = ArchiveFiles(clock)
+        plan = _plan(WindowSpec(records=500), buffer=BufferSpec(records=64))
+        events: list[dict[str, Any]] = []
+        stream = Stream(store, clock, "test", telemetry=_telemetry(store, events))
+        source = Long(clock, [])
+        run = stream.run(
+            tmp_path, plan, source.records, dict, close=source.close, on_window=measure
+        )
+    finally:
+        tracemalloc.stop()
+
+    assert run.windows == 60
+    early, late = max(held[5:15]), max(held[-10:])
+    assert late - early < 1_000_000, f"held {early:,} bytes early, {late:,} late"
+    assert len(events) == 60, "one event a window, and nothing kept of each but that"
