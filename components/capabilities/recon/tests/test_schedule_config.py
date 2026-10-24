@@ -213,3 +213,116 @@ class TestATickSeesNoShellVariable:
         from recon.domain.errors import PROBLEM_KINDS
 
         assert "env_unscheduled" in PROBLEM_KINDS
+
+
+def _unpinned(plan: Plan) -> dict[str, Any]:
+    return {w.path: w for w in plan.warnings if w.kind == "package_unpinned"}
+
+
+def _cli(plugins: Plugins, run: str, **top: Any) -> Plan:
+    return build_plan({"collectors": [{"name": "c", "type": "cli", "run": run}], **top},
+                      plugins, {})  # fmt: skip
+
+
+def _server(plugins: Plugins, command: str, args: list[str], **top: Any) -> Plan:
+    source = {"name": "srv", "type": "mcp", "command": command, "args": args}
+    collectors = [{"name": "tools", "type": "mcp", "tool": "t"},
+                  {"name": "more", "type": "mcp", "tool": "u"}]  # fmt: skip
+    return build_plan({"catalog": [source], "collectors": collectors, **top}, plugins, {})
+
+
+class TestATickRunsTheCodeItWasInstalledWith:
+    """``npx`` and ``uvx`` fetch a package they are not given a version of, every time they
+    run: a scheduled mission that starts one runs, every tick, whatever was published last.
+    The plan of a scheduled mission warns of each, with the pinned form as its fix."""
+
+    @pytest.mark.parametrize(
+        ("args", "got"),
+        [
+            (["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+             "@modelcontextprotocol/server-filesystem"),
+            (["--yes", "server-everything@latest"], "server-everything@latest"),
+            (["-y", "server-everything@^1.2.0"], "server-everything@^1.2.0"),
+            (["server-everything"], "server-everything"),
+            (["-y", "-p", "mcp-tools", "tools-server"], "mcp-tools"),
+        ],
+    )  # fmt: skip
+    def test_an_unpinned_npx_server_is_warned_once_with_the_pinned_form(
+        self, plugins: Plugins, args: list[str], got: str
+    ) -> None:
+        plan = _server(plugins, "npx", args, schedule={"every": 600})
+
+        assert plan.valid, plan.problems
+        [warning] = _unpinned(plan).values()
+        assert (warning.path, warning.got) == ("catalog.0", got)
+        assert "every tick" in warning.message and "npx" in warning.message
+        for named in ("@<version>", "exact", "recon schedule install"):
+            assert named in warning.fix, named
+
+    @pytest.mark.parametrize(
+        ("args", "got"),
+        [
+            (["mcp-server-fetch"], "mcp-server-fetch"),
+            (["--from", "mcp-server-git", "mcp-server-git", "--repository", "."],
+             "mcp-server-git"),
+            (["--python", "3.12", "mcp-server-time@latest"], "mcp-server-time@latest"),
+            (["mcp-server-fetch>=2025.1"], "mcp-server-fetch>=2025.1"),
+        ],
+    )  # fmt: skip
+    def test_an_unpinned_uvx_server_is_warned_with_the_pinned_form(
+        self, plugins: Plugins, args: list[str], got: str
+    ) -> None:
+        plan = _server(plugins, "/opt/homebrew/bin/uvx", args, schedule={"every": 600})
+
+        [warning] = _unpinned(plan).values()
+        assert warning.got == got
+        assert "==<version>" in warning.fix
+
+    @pytest.mark.parametrize(
+        ("command", "args"),
+        [
+            ("npx", ["-y", "@modelcontextprotocol/server-filesystem@2025.8.21", "/tmp"]),
+            ("npx", ["-y", "server-everything@1.2.3-beta.1"]),
+            ("npx", ["./tools/server.js"]),
+            ("uvx", ["mcp-server-fetch==2025.4.7"]),
+            ("uvx", ["mcp-server-time@2025.1.0"]),
+            ("uvx", ["--from", "mcp-server-git==2025.1.14", "mcp-server-git"]),
+            ("uvx", ["--from", "./servers/git", "mcp-server-git"]),
+            ("/usr/local/bin/my-server", ["--stdio"]),
+        ],
+    )
+    def test_a_pinned_package_a_local_path_or_another_command_is_not_warned(
+        self, plugins: Plugins, command: str, args: list[str]
+    ) -> None:
+        assert _unpinned(_server(plugins, command, args, schedule={"every": 600})) == {}
+
+    @pytest.mark.parametrize(
+        ("run", "got"),
+        [
+            ("npx -y some-tool --json | jq -c '.[]'", "some-tool"),
+            ("cd sub && uvx ruff check --output-format json .", "ruff"),
+            ("echo start; /usr/bin/env npx --yes some-tool@next", "some-tool@next"),
+        ],
+    )
+    def test_an_unpinned_package_a_cli_command_runs_is_warned(
+        self, plugins: Plugins, run: str, got: str
+    ) -> None:
+        plan = _cli(plugins, run, schedule={"every": 600})
+
+        [warning] = _unpinned(plan).values()
+        assert (warning.path, warning.got) == ("collectors.0", got)
+
+    def test_a_pinned_cli_command_is_not_warned(self, plugins: Plugins) -> None:
+        plan = _cli(plugins, "uvx ruff@0.6.9 check . && npx -y some-tool@1.0.0", schedule={
+            "every": 600})  # fmt: skip
+
+        assert _unpinned(plan) == {}
+
+    def test_an_unscheduled_mission_is_not_warned(self, plugins: Plugins) -> None:
+        assert _unpinned(_server(plugins, "npx", ["-y", "server-everything"])) == {}
+        assert _unpinned(_cli(plugins, "uvx ruff check .")) == {}
+
+    def test_the_kind_is_a_warning_kind_recon_publishes(self) -> None:
+        from recon.domain.errors import PROBLEM_KINDS
+
+        assert "package_unpinned" in PROBLEM_KINDS

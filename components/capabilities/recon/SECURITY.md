@@ -346,6 +346,11 @@ the config a persistence vector, and the scheduler's files a place a secret coul
   boundary 2), never a secret in the config.
 - **Two ticks never overlap**: each survey holds the mission's lock; a tick that finds it
   held is skipped and logged (`busy`).
+- **The code a tick runs**: the config is held to its digest, but `npx` and `uvx` fetch a
+  package anew each time unless it names an exact version, so a server or command written
+  without one runs whatever was last published, every tick, with nobody watching. The plan
+  of a scheduled mission warns `package_unpinned` for each, with the pinned form as its fix;
+  it does not refuse, and it judges only `npx` and `uvx`.
 
 What this does **not** do: anything about who may write the config before it is
 installed, or about the scheduler's own files being changed by hand afterwards (`recon

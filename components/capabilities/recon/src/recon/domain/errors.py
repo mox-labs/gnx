@@ -177,6 +177,8 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "mission_exposed",
     # a scheduled mission's credential named as env:NAME, which no tick's environment holds
     "env_unscheduled",
+    # a scheduled mission's npx or uvx package with no exact version: fetched anew every tick
+    "package_unpinned",
 )
 
 

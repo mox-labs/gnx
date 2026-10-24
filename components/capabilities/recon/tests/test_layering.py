@@ -52,7 +52,8 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "recon"
 #: names a location (a mission directory, an archive); touching the filesystem through it
 #: is caught separately. ``datetime`` is the type the clock port returns; reading the time
 #: through it is caught separately. ``inspect`` reads a transform's signature, and
-#: ``functools`` binds its keywords.
+#: ``functools`` binds its keywords. ``shlex`` splits a command line given as a string into
+#: words (a scheduled command's packages); it reads no file unless handed a stream.
 PURE_STDLIB = frozenset(
     {
         "__future__",
@@ -65,6 +66,7 @@ PURE_STDLIB = frozenset(
         "inspect",
         "pathlib",
         "re",
+        "shlex",
         "typing",
         "urllib",
     }

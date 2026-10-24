@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import html
 import re
+import shlex
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -72,6 +73,92 @@ def every_fix(every: int) -> str:
     """The fix for an ``every`` no scheduler keeps: the nearest that one does."""
     nearest = " or ".join(f"every: {e}" for e in nearest_every(every))
     return f"set {nearest}: whole minutes that divide a day (86400 s), in seconds"
+
+
+#: The commands that fetch the package they are given each time they run, unless it names an
+#: exact version: npm's ``npx`` (``--yes`` or not: it assumes yes without a terminal, as a
+#: tick has none) and uv's ``uvx``. A tick that starts one runs whatever was published last.
+FETCHERS = ("npx", "uvx")
+
+#: The options of each fetcher whose value is the next word: a package (``-p``, ``--from``,
+#: ``--with``), or something else to step over (a Python, an index).
+_PACKAGE_OPTIONS = {"npx": ("-p", "--package"), "uvx": ("--from", "--with")}
+_VALUE_OPTIONS = {
+    "npx": ("-c", "--call", "--registry", "--cache", "--prefix", "-w", "--workspace"),
+    "uvx": ("-p", "--python", "--index", "--index-url", "--extra-index-url",
+            "--default-index", "--with-editable", "--with-requirements", "-c", "--constraints",
+            "--overrides", "--cache-dir", "--directory", "--project", "--config-file"),
+}  # fmt: skip
+
+#: An exact version: npm's semver, and a Python version with no wildcard.
+_EXACT_NPM = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
+_EXACT_PYTHON = re.compile(r"^\d[0-9A-Za-z.+!-]*$")
+
+#: What separates one simple command from the next in a shell line.
+_SHELL_OPERATORS = frozenset({";", "&", "&&", "|", "||", "(", ")", "|&", ";;"})
+
+
+def unpinned(line: str | Sequence[str]) -> list[tuple[str, str]]:
+    """Each package a command ``line`` (a shell line, or an argument list) has a fetcher run
+    without an exact version, as ``(fetcher, package)``, in order: ``npx pkg``,
+    ``npx pkg@latest``, ``uvx pkg``, ``uvx --from 'pkg>=1' cmd``. ``pkg@1.2.3`` for npx, and
+    ``pkg==1.2.3`` or ``pkg@1.2.3`` for uvx, are pinned; a local path is not fetched. A shell
+    line that does not parse (an open quote) gives nothing: it would not run either."""
+    try:
+        words = list(line) if not isinstance(line, str) else _shell_words(line)
+    except ValueError:
+        return []
+    found: list[tuple[str, str]] = []
+    for at, word in enumerate(words):
+        fetcher = word.rsplit("/", 1)[-1]
+        if fetcher in FETCHERS:
+            found += [(fetcher, p) for p in _fetched(fetcher, words[at + 1 :]) if not
+                      _pinned(fetcher, p)]  # fmt: skip
+    return found
+
+
+def _shell_words(line: str) -> list[str]:
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+def _fetched(fetcher: str, words: Sequence[str]) -> list[str]:
+    """The packages ``fetcher`` is given by ``words``, its arguments: each a package option
+    names, else the first word that is no option (the command's own arguments follow it)."""
+    named: list[str] = []
+    expects: str | None = None
+    for word in words:
+        if word in _SHELL_OPERATORS:
+            break
+        if expects is not None:
+            if expects == "package":
+                named.append(word)
+            expects = None
+            continue
+        option, has_value, value = word.partition("=")
+        if option in _PACKAGE_OPTIONS[fetcher]:
+            named += [value] if has_value else []
+            expects = None if has_value else "package"
+        elif option in _VALUE_OPTIONS[fetcher]:
+            expects = None if has_value else "value"
+        elif not word.startswith("-"):
+            # Given packages by option, the first word is the command they provide.
+            return named or [word]
+    return named
+
+
+def _pinned(fetcher: str, package: str) -> bool:
+    if package.startswith((".", "/", "~", "file:")):
+        return True  # a local path: nothing is fetched
+    if fetcher == "npx":
+        name, at, version = package.rpartition("@")
+        return bool(at) and bool(name) and _EXACT_NPM.match(version) is not None
+    for pin in ("===", "==", "@"):
+        name, found, version = package.partition(pin)
+        if found:
+            return bool(name) and _EXACT_PYTHON.match(version) is not None
+    return False
 
 
 class ScheduleSpec(BaseModel):

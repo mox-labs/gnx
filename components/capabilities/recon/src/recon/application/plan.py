@@ -36,7 +36,7 @@ from recon.domain.errors import Problem
 from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
 from recon.domain.normalize import path_problem, spec_problems
 from recon.domain.paginate import COUNTED, crawl_floor_s
-from recon.domain.schedule import ScheduleSpec, every_fix
+from recon.domain.schedule import ScheduleSpec, every_fix, unpinned
 from recon.domain.stream import (
     DEFAULT_WINDOW_S,
     POSITION_FIELD,
@@ -303,6 +303,7 @@ def build_plan(
     warnings += _credential_warnings(sources, used_sources - refused, env, plugins)
     if schedule is not None:
         warnings += _unscheduled_env(sources, used_sources - refused, plugins)
+        warnings += _unpinned_packages(runs, entries, sources)
     config = None
     if not problems:
         deadline = raw.get("deadline")
@@ -1446,3 +1447,54 @@ def _unscheduled_env(
                 )
             )
     return warnings
+
+
+def _unpinned_packages(
+    runs: list[PlannedRun],
+    entries: list[tuple[int, CollectorEntry]],
+    sources: list[tuple[int, SourceEntry]],
+) -> list[Problem]:
+    """A scheduled mission's warning for each package a run's commands have ``npx`` or
+    ``uvx`` fetch without an exact version (``recon.domain.schedule.unpinned``), once a
+    path: every tick would run whatever was published last. The commands are what the run's
+    type describes (``CollectorType.describe``): a stdio server's command line as ``server``
+    (an ``mcp`` source's, at ``catalog.<i>``), shell lines as ``commands`` (a ``cli`` entry's,
+    at ``collectors.<i>``), so a type of a third party's that describes its commands so is
+    held to it too."""
+    entry_at = {entry.name: i for i, entry in entries}
+    source_at = {source.name: i for i, source in sources}
+    found: dict[tuple[str, str], tuple[str, str]] = {}
+    for run in runs:
+        server = run.detail.get("server")
+        if isinstance(server, str) and run.source in source_at:
+            # Joined from an argument list: split back on spaces, never as a shell would.
+            for fetcher, package in unpinned(server.split()):
+                found.setdefault((f"catalog.{source_at[run.source]}", package), (fetcher, server))
+        commands = run.detail.get("commands")
+        for line in commands if isinstance(commands, list) else []:
+            if isinstance(line, str) and run.collector in entry_at:
+                for fetcher, package in unpinned(line):
+                    path = f"collectors.{entry_at[run.collector]}"
+                    found.setdefault((path, package), (fetcher, line))
+    return [
+        Problem(
+            path,
+            f"{fetcher} fetches {package!r} without an exact version every time {line!r} "
+            "starts, so every tick of the schedule runs whatever was published last",
+            kind="package_unpinned",
+            fix=f"pin it to an exact version, {_pinned_form(fetcher, package)}, so each tick "
+            "runs the code you reviewed; then `recon schedule install` again",
+            got=package,
+        )
+        for (path, package), (fetcher, line) in found.items()
+    ]
+
+
+def _pinned_form(fetcher: str, package: str) -> str:
+    """How ``package`` is written pinned, for ``fetcher``."""
+    if fetcher == "npx":
+        name, at, _ = package.rpartition("@")
+        return f"`{name if at and name else package}@<version>` (npx -y)"
+    project = re.match(r"[A-Za-z0-9._-]+(?:\[[^\]]*\])?", package)
+    pinned = f"{project.group(0) if project else package}==<version>"
+    return f"`{pinned}` (uvx; `uvx --from '{pinned}' <command>` when its command is another name)"

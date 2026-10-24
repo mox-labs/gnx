@@ -220,7 +220,9 @@ class CollectorType:
       the catalog (a ``cli`` run's ``{url}`` with no source to fill it); paths are relative
       to the entry, as ``check``'s are. Pure: no I/O.
     - ``describe`` returns what a planned run would do (the URL, the command) for a
-      reviewer. Pure: no I/O, no network.
+      reviewer. Pure: no I/O, no network. A run that starts commands describes them as
+      ``commands`` (shell lines) or ``server`` (a server's command line): a scheduled
+      mission's plan reads those two for a package fetched unpinned every tick.
     - ``preflight`` says, in words, what a dry run does to check a run of the type (``starts
       each stdio server a run names``). Non-empty, a dry run builds the type's collector, asks
       its ``requirements(entry, source)`` for each run, says this in the plan, and closes it.

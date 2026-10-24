@@ -10,6 +10,7 @@ A mission that should run every ten minutes, unattended, declares `schedule:`. `
 - [What is projected](#what-is-projected)
 - [A tick](#a-tick)
 - [Credentials in a tick](#credentials-in-a-tick)
+- [What a tick runs](#what-a-tick-runs)
 - [The log, and status](#the-log-and-status)
 - [Refusals and warnings](#refusals-and-warnings)
 - [In a program](#in-a-program)
@@ -94,6 +95,10 @@ auth: {headers_helper: "/usr/bin/security find-generic-password -w -s mail-heade
 
 Never put a secret in the config, or in the scheduler's files, which recon never does.
 
+## What a tick runs
+
+A tick runs the config that was installed, and the commands in it run as they are written. `npx` and `uvx` fetch the package they are given each time they start unless it names an exact version, so a stdio server or a `cli` command written `npx -y @scope/server` or `uvx some-server` runs, every tick, whatever was published last. The plan of a scheduled mission warns `package_unpinned` for each, with `got` the package; pin it, `npx -y @scope/server@1.4.2` or `uvx some-server==2025.4.7` (`uvx --from 'some-server==2025.4.7' its-command` when the command has another name), and install again.
+
 ## The log, and status
 
 Each tick is one JSON line of `.recon/<mission>/schedule.log`, `0600`:
@@ -125,6 +130,7 @@ The log is bounded: at 1 MiB it becomes `schedule.log.1`, replacing the one befo
 | a tick while another survey holds the mission | `busy` (11), `details.skips` | let it run; from the second skip in a row, raise `every` or lower `deadline:` |
 | `missed: once` under cron | `missed_ignored` warning | install for launchd or systemd, or write `missed: skip` |
 | a credential named `env:NAME` in a scheduled mission | `env_unscheduled` warning in the plan, at the reference's path | name it as `file:PATH` (mode 0600), or `headers_helper` for a token, then install again |
+| an `npx` or `uvx` package with no exact version, in a stdio server or a `cli` command | `package_unpinned` warning in the plan, at `catalog.<i>` or `collectors.<i>` | pin it, `pkg@<version>` (npx) or `pkg==<version>` (uvx), then install again |
 | a config changed since install | `config_changed` warning in `status` | read it, then install again |
 | two or more busy skips in a row | `schedule_overrun` warning in `status` | raise `every`, or lower `deadline:` |
 
