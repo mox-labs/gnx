@@ -188,7 +188,11 @@ class ArchiveStore(Protocol):
         ...
 
     def retired(self, mission_dir: Path, stream: str) -> list[dict[str, Any]]:
-        """The tombstones of the stream's retired windows, oldest first."""
+        """The tombstones of the stream's retired windows, oldest first, one per window."""
+        ...
+
+    def retired_count(self, mission_dir: Path, stream: str) -> int:
+        """How many windows of the stream were retired, counted without reading each."""
         ...
 
     def last_record(self, archive: Path, output: str) -> dict[str, Any] | None:

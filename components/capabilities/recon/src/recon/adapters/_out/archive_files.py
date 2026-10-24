@@ -15,7 +15,7 @@
     <mission>/streams/<stream>/
       writer.lock             locked by the stream's one writer while it runs; kept
       <window id>/            each window, an archive as above, of one table
-      <window id>.retired     a window retain: removed: what it was and why it went
+      retired.jsonl           a line for each window retain: removed: what, and why
 
 **Writing, complete, incomplete.** The writer holds an ``flock`` on ``writer.lock`` from
 :meth:`ArchiveFiles.create` until :meth:`ArchiveFiles.release` or its death, as matrix's
@@ -106,9 +106,9 @@ STREAMS = "streams"
 #: Where a table's torn last line is moved: a write a dying writer cut short.
 TORN = ".torn"
 
-#: A retired window's tombstone, ``<window id>.retired`` beside the windows, and the suffix
-#: of a window being removed, out of every listing.
-RETIRED = ".retired"
+#: A stream's tombstones, one line a retired window, appended beside the windows; and the
+#: suffix of a window being removed, out of every listing.
+RETIRED = "retired.jsonl"
 RETIRING = ".retiring"
 
 #: The layout of an archive's tables this store writes and reads, named in ``meta.yaml``.
@@ -248,10 +248,16 @@ class ArchiveFiles:
         home = archive.parent
         for leftover in home.glob(f".*{RETIRING}"):  # a retirement a dead writer began
             shutil.rmtree(leftover, ignore_errors=True)
-        stone = home / f"{archive.name}{RETIRED}"
-        tmp = home / f".{stone.name}.tmp"
-        tmp.write_text(json.dumps(tombstone, default=str) + "\n")
-        os.replace(tmp, stone)
+        # The tombstone first, appended whole in one write (only the stream's writer retires):
+        # a writer that dies after it leaves the window listed, and the next retirement
+        # retires it again; a reader keeps the last tombstone of an id.
+        line = (json.dumps(tombstone, default=str) + "\n").encode()
+        descriptor = os.open(home / RETIRED, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(descriptor, line)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
         # Out of every listing at once, then removed: a writer that dies between leaves a
         # hidden directory the next retirement removes, never half a window.
         going = home / f".{archive.name}.{os.getpid()}{RETIRING}"
@@ -259,15 +265,19 @@ class ArchiveFiles:
         shutil.rmtree(going)
 
     def retired(self, mission_dir: Path, stream: str) -> list[dict[str, Any]]:
-        directory = _stream_dir(mission_dir, stream)
-        if not directory.is_dir():
+        path = _stream_dir(mission_dir, stream) / RETIRED
+        if not path.is_file():
             return []
-        stones = []
-        for path in directory.glob(f"*{RETIRED}"):
-            index = window_index(path.name.removesuffix(RETIRED))
-            if index is not None:
-                stones.append((index, json.loads(path.read_text())))
-        return [stone for _, stone in sorted(stones, key=lambda pair: pair[0])]
+        stones: dict[Any, dict[str, Any]] = {}
+        for line in path.read_bytes().split(b"\n"):
+            if line.strip():
+                stone = json.loads(line)
+                stones[stone.get("id")] = stone
+        return list(stones.values())
+
+    def retired_count(self, mission_dir: Path, stream: str) -> int:
+        path = _stream_dir(mission_dir, stream) / RETIRED
+        return path.read_bytes().count(b"\n") if path.is_file() else 0
 
     def last_record(self, archive: Path, output: str) -> dict[str, Any] | None:
         sealed = archive / f"{output}.jsonl"

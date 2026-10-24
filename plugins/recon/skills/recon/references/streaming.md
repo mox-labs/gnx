@@ -48,7 +48,7 @@ collectors:
 
 Refused by the plan, each with its path and a fix: a `window:` with no bound; `buffer:` or `retain:` on an entry that is no stream; a stream that would run against more than one source (pin one with `source:`); `deadline:` on a stream (a window ends by `window:`, as a success; a deadline would fail it); a `normalize:` column named `_position`; `max_record_bytes` above `buffer.bytes`; a `retain:` that is neither `all` nor a mapping of `windows`, `seconds`, `bytes`.
 
-`retain:` removes the oldest sealed windows its rules do not keep, after each window is sealed: `windows: N` keeps the newest N; `seconds: S` keeps those closed within S seconds of the newest's close; `bytes: B` keeps the newest whose sizes fit in B. With more than one rule, a window is kept only while every rule keeps it. The newest window is always kept, and a window never sealed (what a dead writer left) is never removed. Each removed window leaves a tombstone, `<window id>.retired` beside the windows, saying what it was and why it went, so a hole in the chain reads as retention, not loss.
+`retain:` removes the oldest sealed windows its rules do not keep, after each window is sealed: `windows: N` keeps the newest N; `seconds: S` keeps those closed within S seconds of the newest's close; `bytes: B` keeps the newest whose sizes fit in B. With more than one rule, a window is kept only while every rule keeps it. The newest window is always kept, and a window never sealed (what a dead writer left) is never removed. Each removed window leaves a tombstone, a line of `retired.jsonl` beside the windows saying what it was and why it went, so a hole in the chain reads as retention, not loss.
 
 ## The collector types
 

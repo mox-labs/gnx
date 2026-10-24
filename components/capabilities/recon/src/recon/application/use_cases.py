@@ -669,7 +669,7 @@ class Recon:
             windows=len(windows),
             first=windows[0].name if windows else None,
             latest=self._archive_status(windows[-1]) if windows else None,
-            retired=len(self._archives.retired(mission, stream)),
+            retired=self._archives.retired_count(mission, stream),
         )
 
     def _archive_status(self, archive: Path) -> ArchiveStatus:

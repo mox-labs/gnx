@@ -87,12 +87,18 @@ class TestRules:
 
 
 class TestTombstones:
-    def test_a_tombstone_is_a_file_beside_the_windows_and_no_window(self, tmp_path: Path) -> None:
+    def test_tombstones_are_lines_of_one_file_beside_the_windows(self, tmp_path: Path) -> None:
+        """Review item 10 (Knuth): one append-only ``retired.jsonl``, so listing a stream's
+        windows costs the windows kept, and counting the retired costs no parsing."""
         store, outcomes = _stream(tmp_path, RetainSpec(windows=1))
 
         stream = tmp_path / "streams" / "s"
-        tombstone = stream / f"{outcomes[0].id}.retired"
-        assert json.loads(tombstone.read_text())["id"] == outcomes[0].id
+        lines = (stream / "retired.jsonl").read_text().splitlines()
+        assert [json.loads(line)["id"] for line in lines] == [o.id for o in outcomes[:-1]]
+        assert sorted(p.name for p in stream.iterdir()) == sorted(
+            ["retired.jsonl", "writer.lock", outcomes[-1].id]
+        ), "no file per retired window"
+        assert store.retired_count(tmp_path, "s") == len(outcomes) - 1
         assert not (stream / outcomes[0].id).exists()
         newest = yaml_of(Path(outcomes[-1].archive))
         assert newest["stream"]["previous"] == outcomes[-2].id, "the chain still names it"
