@@ -27,7 +27,6 @@ from recon.domain.documents import (
 from recon.domain.errors import (
     EXIT_CODES,
     ConfigError,
-    ConflictError,
     NotFoundError,
     Problem,
     ReconError,
@@ -290,7 +289,7 @@ class Schedules:
         config_sha256: str,
         survey: Callable[[dict[str, Any]], SurveyDocument],
     ) -> TickDocument:
-        """One tick of the mission's schedule, logged: refused (``conflict``) when the config
+        """One tick of the mission's schedule, logged: refused (``stale``) when the config
         is not the one installed; skipped when ``missed: skip`` and it started more than
         :data:`MISSED_GRACE_S` late; else ``survey`` run, given when the tick was due and how
         late it started, for its archive. A survey refused ``busy`` is logged as a skip, and
@@ -310,10 +309,11 @@ class Schedules:
         if isinstance(every, int) and isinstance(offset, int):
             slot = _due(every, offset, started)
         if hashlib.sha256(text).hexdigest() != config_sha256:
-            self._log(mission, slot, started, "conflict", None, "config_changed")
-            raise ConflictError(
+            self._log(mission, slot, started, "stale", None, "config_changed")
+            raise ReconError(
                 f"mission {name}'s config is not the one its schedule was installed for: a "
                 "tick runs only the config installed",
+                kind="stale",
                 fix=f"read what changed in the config (it runs unattended), then: recon "
                 f"schedule install {name}",
                 details={"mission": name, "config_sha256": config_sha256},

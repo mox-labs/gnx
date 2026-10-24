@@ -747,7 +747,7 @@ class Recon:
     def schedule_tick(self, name: str, *, config_sha256: str) -> TickDocument:
         """One tick of the mission's schedule, what the scheduler starts: a survey under the
         mission lock, logged to ``<mission>/schedule.log``, unless the config is not the one
-        whose digest the schedule holds (``conflict``), another survey holds the mission
+        whose digest the schedule holds (``stale``), another survey holds the mission
         (``busy``, logged skipped), or it is a missed tick under ``missed: skip``."""
         return self._scheduling().tick(
             name, config_sha256, lambda scheduled: self._scheduled_survey(name, scheduled)

@@ -299,8 +299,9 @@ def schedule_tick(name: str, *, config_sha256: str, root: Path | None = None) ->
     says when the tick was due (``scheduled_at``) and how late it started (``late_s``).
     ``recon.v1.tick``.
 
-    Raises ConflictError when the config's sha256 is not ``config_sha256``, the digest the
-    schedule was installed with, until it is installed again; ReconError (``busy``) when
-    another survey holds the mission, ``details.skips`` counting the ticks skipped so in a
-    row. A tick run late under ``missed: skip`` runs no survey (``skipped_by: missed``)."""
+    Raises ReconError (``stale``, exit 12) when the config's sha256 is not
+    ``config_sha256``, the digest the schedule was installed with, until it is installed
+    again; ReconError (``busy``) when another survey holds the mission, ``details.skips``
+    counting the ticks skipped so in a row. A tick run late under ``missed: skip`` runs no
+    survey (``skipped_by: missed``)."""
     return _root(root).schedule_tick(name, config_sha256=config_sha256)

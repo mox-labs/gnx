@@ -982,14 +982,14 @@ def schedule_status(mission: str | None, platform: str | None, as_json: bool) ->
     "config_sha256",
     required=True,
     metavar="HEX",
-    help="The digest of the config the schedule was installed for; another is refused (7)",
+    help="The digest of the config the schedule was installed for; another is refused (12)",
 )
 @_json_option
 def tick(name: str, project: Path, config_sha256: str, as_json: bool) -> None:
     """One tick: what an installed schedule runs. A survey of the mission, logged to its
     schedule.log; run by hand, it is one tick.
 
-    It runs from --project, refuses a config whose sha256 is not --config-sha256 (exit 7:
+    It runs from --project, refuses a config whose sha256 is not --config-sha256 (exit 12, stale:
     install the schedule again once the change is read), is skipped and logged while another
     survey holds the mission (exit 11; the second in a row says it overruns), and under
     missed: skip runs no survey when it starts more than 60 s late. Its exit code is its

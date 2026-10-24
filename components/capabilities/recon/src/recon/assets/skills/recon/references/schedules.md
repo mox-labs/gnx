@@ -70,7 +70,7 @@ Each tick runs `recon schedule tick <mission> --project <project> --config-sha25
 
 `recon schedule tick` is what the scheduler starts; run by hand, it is one tick. In order:
 
-1. **The config is the one installed.** Its sha256 must be `--config-sha256`. Another is refused, `conflict` (exit 7), logged `skipped_by: config_changed`, and so is every tick after until `recon schedule install` runs again: a scheduled config runs its commands unattended, so a change to it is read before it runs.
+1. **The config is the one installed.** Its sha256 must be `--config-sha256`. Another is refused, `stale` (exit 12), logged `skipped_by: config_changed`, and so is every tick after until `recon schedule install` runs again: a scheduled config runs its commands unattended, so a change to it is read before it runs.
 2. **A late start under `missed: skip`.** A tick that starts more than 60 s after it was due (the grid's grain) runs no survey: `skipped_by: missed`, exit 0.
 3. **One survey at a time.** The tick surveys the mission under its lock. Another survey of the mission running (a slow tick, a survey by hand) refuses it `busy` (exit 11), logged `skipped_by: busy`; `details.skips` counts the busy skips in a row, and from the second the error is an overrun: the survey takes longer than `every`, and the fix is to raise `every` or lower `deadline:`. The default `deadline:` of 0.8 × `every` bounds each survey so the next tick finds the mission free.
 4. **The survey.** As `recon survey` runs it, plus two keys in its archive's `meta.yaml`: `scheduled_at`, when the tick was due (local time), and `late_s`, how late it started. Its exit code is the survey's. It prints `recon.v1.tick`: `mission`, `scheduled_at`, `late_s`, `skipped_by`, the `survey` document, `warnings`.
@@ -106,7 +106,7 @@ The log is bounded: at 1 MiB it becomes `schedule.log.1`, replacing the one befo
 | this recon is not installed as a command | `usage` (2) | install recon as a command, then install the schedule with it |
 | a path no scheduler file can hold (a line break; a `%` for cron) | `usage` (2) | move it, or choose another `--platform` |
 | the scheduler refuses (`launchctl`, `systemctl`, `crontab` exit non-zero) | `run_failed` (8), its message quoted | fix what it says; the files are in place, so `install` again loads them |
-| a tick's config is not the one installed | `conflict` (7) | read the change, then `recon schedule install <mission>` |
+| a tick's config is not the one installed | `stale` (12) | read the change, then `recon schedule install <mission>` |
 | a tick while another survey holds the mission | `busy` (11), `details.skips` | let it run; from the second skip in a row, raise `every` or lower `deadline:` |
 | `missed: once` under cron | `missed_ignored` warning | install for launchd or systemd, or write `missed: skip` |
 | a config changed since install | `config_changed` warning in `status` | read it, then install again |

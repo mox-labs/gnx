@@ -196,7 +196,7 @@ def test_the_schedules_page_is_the_skill_reference() -> None:
     taught = REFERENCES["schedules"]
     for said in ("every", "missed", "once", "skip", "0.8 × `every`", "provenance", "--platform",
                  "launchd", "systemd", "cron", "Persistent=true", "/dev/null", "0600",
-                 "--config-sha256", "conflict", "busy", "schedule_overrun", "config_changed",
+                 "--config-sha256", "stale", "busy", "schedule_overrun", "config_changed",
                  "missed_ignored", "schedule.log", "skipped_by", "late_s", "scheduled_at",
                  "installed", "unchanged", "replaced", "removed", "absent", "next_at",
                  "last_tick", "skips", "env_unset", "1 MiB"):  # fmt: skip
