@@ -247,6 +247,11 @@ class TestSurvey:
         assert "could not be finished" in error["message"]
         assert error["details"] == {"archive": doc["archive"], "failed": []}
         assert (Path(doc["archive"]) / ".incomplete").exists()
+        latest = _doc(_invoke("status", "--json"))["missions"][0]["latest"]
+        assert latest["ended"] == ("crashed" if step == "write_meta" else "finished"), (
+            "a survey that could not write meta.yaml left no record that it was stopped, so "
+            "it never reads stopped"
+        )
 
         human = _invoke("survey", "m", over=over)
         assert human.exit_code == 9
@@ -1349,6 +1354,8 @@ def test_a_terminated_survey_reads_incomplete_and_leaves_no_command_running(proj
     assert not alive, "the command of the table being collected outlived the survey"
     latest = _doc(_invoke("status", "--json"))["missions"][0]["latest"]
     assert latest["state"] == "incomplete"
+    assert latest["ended"] == "stopped", "stopped on request, and its meta.yaml says so"
+    assert [(t["name"], t["status"]) for t in latest["tables"]] == [("first", "ok")]
     query = _doc(_invoke("query", "m", "SELECT * FROM first", "--json"))
     assert query["state"] == "incomplete"
     [archive] = (project / ".recon" / "m" / "archive").iterdir()
@@ -1490,7 +1497,7 @@ def test_a_killed_survey_reads_incomplete(project: Path) -> None:
 
     latest = _doc(_invoke("status", "--json"))["missions"][0]["latest"]
     assert latest["state"] == "incomplete" and latest["format_version"] is None
-    assert latest["ended"] == "stopped", "killed before it finished, not a failed table"
+    assert latest["ended"] == "crashed", "it died: no meta.yaml, no writer, never stopped"
 
 
 def test_ctrl_c_under_json_prints_the_envelope_and_nothing_before_it(project: Path) -> None:

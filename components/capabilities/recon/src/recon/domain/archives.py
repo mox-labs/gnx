@@ -58,16 +58,20 @@ WATCH_INTERVAL_S = 1.0
 #: An archive's state, as the store and every document say it. ``writing``: a survey holds
 #: it and is writing it. ``complete``: its survey finished it with every table.
 #: ``incomplete``: no survey holds it and it was never completed (a table failed, or its
-#: survey was stopped or died; :data:`Ended` says which). A reader who sees ``writing`` and
-#: reads again later sees it change; the other two never change. A state, where a table's
-#: ``ok`` or ``error`` is an outcome.
+#: survey was stopped or crashed; :data:`Ended` says which). A reader who sees ``writing``
+#: and reads again later sees it change; the other two never change. A state, where a
+#: table's ``ok`` or ``error`` is an outcome.
 ArchiveState = Literal["writing", "complete", "incomplete"]
 
-#: Whether an archive's survey ran to its end. ``finished``: it did and wrote ``meta.yaml``,
-#: so an ``incomplete`` archive's tables failed, or it could not be marked complete.
-#: ``stopped``: it was stopped or died first (or could not write ``meta.yaml``). None while
-#: it is ``writing``.
-Ended = Literal["finished", "stopped"]
+#: How an archive's writer ended, once no writer holds it (None while it is ``writing``).
+#: ``finished``: it ran to its end and wrote ``meta.yaml`` saying so, so an ``incomplete``
+#: archive's tables failed, or it could not be marked complete. ``stopped``: it was stopped
+#: on request (Ctrl-C, SIGTERM, a stream's stop) and wrote ``meta.yaml`` saying so. Both are
+#: written by the writer, in ``meta.yaml``'s ``ended``. ``crashed``: it left no ``meta.yaml``,
+#: so it died (killed, or its host went down) or could not write one (a full disk; such a
+#: survey says so as it ends, ``archive_unfinished``): never written, read from that absence,
+#: since the record that would tell the two apart is the one that is missing.
+Ended = Literal["finished", "stopped", "crashed"]
 
 _NOT_IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]")
 

@@ -14,9 +14,10 @@ Three threads take part, and only the first writes anything:
 buffer's lock, and assigned to its window there (:class:`~recon.domain.stream.Windowing`), so
 which window a record falls in is a pure function of its order of arrival, its stamp and the
 window spec, whatever thread delivered it. A window ends at its time (half-open), on its
-``records`` or ``bytes``, at the stream's ``until``, when its source ends (``eof``) or when a
-signal stops the stream; it is then sealed ``ok`` with that reason. A source that fails seals
-its window ``error`` and **keeps its records**: what a source sent cannot be fetched again.
+``records`` or ``bytes``, at the stream's ``until``, when its source ends (``eof``) or when the
+stream is stopped on request (``stopped``); it is then sealed ``ok`` with that reason. A
+source that fails seals its window ``error`` and **keeps its records**: what a source sent
+cannot be fetched again.
 
 **Flow.** At most ``buffer.records`` records and ``buffer.bytes`` bytes wait (one record more
 may be admitted while fewer bytes wait, so a stream holds at most ``bytes`` +
@@ -184,8 +185,8 @@ class _Arrival:
 
 @dataclass(frozen=True)
 class _End:
-    """The stream's last event: its source ended (``eof``), a signal stopped it (``signal``),
-    or its source failed (``error``)."""
+    """The stream's last event: its source ended (``eof``), it was stopped on request
+    (``stopped``), or its source failed (``error``)."""
 
     reason: SealReason | None
     stamp: float
@@ -321,7 +322,7 @@ class Arrivals:
         with self._cond:
             if self._admitting:
                 self._admitting = False
-                self._events.append(_End("signal", self._clock.monotonic()))
+                self._events.append(_End("stopped", self._clock.monotonic()))
             self._cond.notify_all()
 
     def interrupt(self) -> bool:
@@ -360,7 +361,7 @@ class Arrivals:
                 discarded = sum(gone.admitted + gone.refused for gone in self._ledgers.values())
                 self._ledgers.clear()
             self._events.clear()
-            self._events.append(_End("signal", self._clock.monotonic()))
+            self._events.append(_End("stopped", self._clock.monotonic()))
             self._records = self._bytes = 0
             self._cond.notify_all()
             return discarded
@@ -579,7 +580,7 @@ class Stream:
         """Run the stream until it ends: after ``windows`` windows, at ``until``, when its
         source ends or fails, or when it is asked to stop (``stop``) or the caller's thread is
         interrupted (``KeyboardInterrupt``): the window being written is then sealed
-        ``signal`` once what waits is written; a second stop seals it at once, what waits
+        ``stopped`` once what waits is written; a second stop seals it at once, what waits
         dropped. An interrupt that lands in the store's write seals the window at once.
         ``collect(after)`` starts the source after the position ``after`` (None: from its
         start); ``normalize`` shapes each record; ``close`` ends the collector, which ends a
@@ -748,7 +749,7 @@ class Stream:
                     # Interrupted away from a wait (writing, shaping): what was written is
                     # sealed, and the stream ends here, what it held or still waits dropped.
                     self._halt(window, arrivals)
-                    window.end = window.end or _End("signal", self._clock.monotonic())
+                    window.end = window.end or _End("stopped", self._clock.monotonic())
                 except Exception as exc:  # the store failed: what was written is sealed
                     window.error = window.error or exc
                     self._halt(window, arrivals)
@@ -814,7 +815,7 @@ class Stream:
                 event = arrivals.peek()
             except KeyboardInterrupt:
                 if arrivals.interrupt():  # a second: seal now
-                    window.end = _End("signal", self._clock.monotonic())
+                    window.end = _End("stopped", self._clock.monotonic())
                     return
                 continue
             if not isinstance(event, _Arrival):
@@ -902,6 +903,8 @@ class Stream:
             "timestamp": closed_at,
             "preserve_raw": meta["preserve_raw"],
             "resolved": meta["resolved"],
+            # How the window's writer ended it: stopped on request, as a stopped survey says.
+            "ended": "stopped" if closed_by == "stopped" else "finished",
             "tables": [table.document()],
             "stream": {
                 "name": plan.name,

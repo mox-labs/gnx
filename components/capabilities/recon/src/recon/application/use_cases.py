@@ -454,7 +454,7 @@ class Recon:
         """Plan, then run the stream of the mission's collector ``collector``, window after
         window, until ``windows`` are sealed, ``until`` comes, its source ends or fails, or it
         is stopped: ``stop`` asked (as the command line's SIGINT and SIGTERM ask it), or the
-        caller's thread interrupted. The window being written is then sealed ``signal`` once
+        caller's thread interrupted. The window being written is then sealed ``stopped`` once
         what waits is written (a second stop seals it at once), and this returns. With none
         of ``windows``, ``until`` and ``forever``, it runs one window, so it always returns
         unless told otherwise. Raises UsageError for a bound it cannot keep, NotFoundError
@@ -1271,11 +1271,14 @@ def _meeting(windows: list[Path], since: datetime | None, until: datetime | None
 
 
 def _ended(state: ArchiveState, meta: Mapping[str, Any]) -> Ended | None:
-    """Whether the survey of an archive in ``state``, whose ``meta.yaml`` reads ``meta``, ran
-    to its end: it did when it wrote ``meta.yaml``. None while it is being written."""
+    """How the writer of an archive in ``state``, whose ``meta.yaml`` reads ``meta``, ended:
+    as its ``meta.yaml`` says (``finished`` when one an older recon wrote does not say), or
+    ``crashed`` when it wrote none. None while it is being written."""
     if state == "writing":
         return None
-    return "finished" if meta.get("format_version") is not None else "stopped"
+    if meta.get("format_version") is None:
+        return "crashed"
+    return "stopped" if meta.get("ended") == "stopped" else "finished"
 
 
 def _unique(columns: list[str]) -> list[str]:

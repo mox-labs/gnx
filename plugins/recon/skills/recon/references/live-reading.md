@@ -10,9 +10,17 @@ A survey's archive can be read while the survey writes it: `recon watch` on the 
 |---|---|---|
 | `writing` | a survey on this host is writing it now | yes, to `complete` or `incomplete` |
 | `complete` | its survey finished it, every table succeeded | never |
-| `incomplete` | no survey holds it, and it was never completed: a table failed, or the survey was stopped or died | never |
+| `incomplete` | no survey holds it, and it was never completed: a table failed, or the survey was stopped or crashed | never |
 
-A state, where a table's `ok` or `error` is an outcome. Beside it, `ended` says whether the survey ran to its end: `finished` (it wrote `meta.yaml`, so an `incomplete` archive's tables failed), `stopped` (it was stopped or died first, or could not write `meta.yaml`), or null while `writing`.
+A state, where a table's `ok` or `error` is an outcome. Beside it, `ended` says how its writer ended, or null while `writing`:
+
+| `ended` | Means | Written by |
+|---|---|---|
+| `finished` | it ran to its end and wrote `meta.yaml`, so an `incomplete` archive's tables failed (or it could not be marked complete) | the writer, in `meta.yaml` |
+| `stopped` | it was stopped on request (Ctrl-C, SIGTERM, a stream's stop) and wrote `meta.yaml` saying so, with the tables that ended before the stop | the writer, in `meta.yaml` |
+| `crashed` | it left no `meta.yaml`: it was killed (SIGKILL, its host went down), or could not write one (a full disk; that survey said so as it ended, with an `archive_unfinished` warning and exit 9). The two read alike because the record that would tell them apart is the one missing | no one: read from that absence |
+
+A survey stopped on request exits `interrupted` (130), the exit kind every gnx tool shares; its archive reads `ended: stopped`. A stream's stop is how its run ends, so `recon stream` exits 0 (`recon --skill -r streaming`).
 
 The survey holds an `flock` on `writer.lock` in the archive while it writes, and removes the file when it is done, so a survey that died reads `incomplete` at once, never `writing`. An archive is made whole, its lock and marker in place, under a hidden name (`.<archive id>.<pid>.making`) and renamed into place, so none is ever listed half made. A survey killed while making one leaves that hidden directory: `recon status` names each whose survey is gone in an `archive_abandoned` warning, with the command that removes it, and removes nothing itself. Whether a survey is alive is read from that lock, which a reader on the survey's own host sees reliably; on a shared filesystem read from another host, it may not be.
 
@@ -51,7 +59,7 @@ Refused, with exit 2 (`usage`) and a fix:
 |---|---|
 | `mission`, `archive`, `archive_id` | the archive read: its directory, and its id |
 | `state` | `writing`, `complete` or `incomplete`, read before the records |
-| `ended` | `finished`, `stopped`, or null while `writing` |
+| `ended` | `finished`, `stopped`, `crashed`, or null while `writing` |
 | `records` | `{"table", "record"}` each: the whole records written since the cursor, table by table in output-name order, each table's in the order written |
 | `count` | how many records |
 | `cursor` | opaque: pass it, unchanged, to the next read of the same archive |

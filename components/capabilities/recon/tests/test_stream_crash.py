@@ -307,8 +307,14 @@ def test_a_signal_seals_the_window_with_every_record_it_had(
     assert process.returncode == 0, err.decode()
     document = json.loads(out)
     assert (document["windows"], document["records"], document["dropped"]) == (1, lines, 0)
-    assert document["last"]["closed_by"] == "signal"
+    assert document["last"]["closed_by"] == "stopped"
     assert document["state"] == "complete"
+    meta = yaml.safe_load((Path(document["last"]["archive"]) / "meta.yaml").read_text())
+    assert (meta["stream"]["closed_by"], meta["ended"]) == ("stopped", "stopped")
+    [listed] = recon.status("m", root=tmp_path).missions[0].streams
+    assert listed.latest is not None and listed.latest.ended == "stopped", (
+        "stopped on request, the same word in the window's status"
+    )
 
 
 class TestTheCommandsHandlerAsksItNeverRaises:
@@ -358,7 +364,7 @@ class TestTheCommandsHandlerAsksItNeverRaises:
         )
 
         assert stop.heard == 1
-        assert (window.closed_by, window.table.records, window.dropped) == ("signal", 10, 0)
+        assert (window.closed_by, window.table.records, window.dropped) == ("stopped", 10, 0)
 
     def test_a_handler_that_raises_would_halt_the_window_instead(self, tmp_path: Path) -> None:
         """Check the checker: the assertions above fail under the handler they replaced."""
@@ -377,7 +383,7 @@ class TestTheCommandsHandlerAsksItNeverRaises:
         stop, [window] = self._signalled_while_writing(tmp_path, raising)
 
         assert stop.heard == 0
-        assert (window.closed_by, window.table.records, window.dropped) == ("signal", 0, 10)
+        assert (window.closed_by, window.table.records, window.dropped) == ("stopped", 0, 10)
 
 
 def test_a_stream_of_a_quiet_command_leaves_no_process_behind(tmp_path: Path) -> None:

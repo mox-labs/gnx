@@ -24,9 +24,12 @@ mission's ``deadline:`` bounds them all, and a collector's each of its tables
 (:mod:`recon.domain.deadline`): a table cut short fails as ``transient``, and so does each
 table not started when the survey's deadline has passed; the archive is still finished. The
 archive is created incomplete and marked complete only after ``meta.yaml`` is written with
-every table succeeded, so a survey that fails a table, is interrupted or is killed leaves an
-archive that reads incomplete. A survey that cannot write ``meta.yaml`` or mark the archive
-complete is not ``finished``, and says why in an ``archive_unfinished`` warning. Each table
+every table succeeded, so a survey that fails a table, is stopped or is killed leaves an
+archive that reads incomplete. ``meta.yaml`` says how the survey ended (``ended``):
+``finished``, or ``stopped`` when it was stopped on request (a ``KeyboardInterrupt``, which
+the command line raises for Ctrl-C and SIGTERM), the tables that ended before it recorded. A
+survey that cannot write ``meta.yaml`` or mark the archive complete is not ``finished``, and
+says why in an ``archive_unfinished`` warning. Each table
 is a ``recon.collect`` span, which says how many of its records are written, while it is
 written, at most once a second by the clock (``recon.collect.progress``).
 
@@ -45,7 +48,8 @@ nothing.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import contextlib
+from typing import TYPE_CHECKING, Any, Literal
 
 from recon.application.plan import fan_out
 from recon.domain.archives import META_FORMAT_VERSION
@@ -145,21 +149,29 @@ class Survey:
         tables: list[TableOutcome] = []
         what = f"the survey's deadline ({config.deadline:g}s)" if config.deadline else ""
         fix = "raise deadline: at the top of the mission, or survey fewer tables"
-        with self._deadline.bound(config.deadline, what, fix):
-            for index, entry in enumerate(config.collectors):
-                if index in streams:
-                    continue
-                tables += self._run_entry(index, entry, config, collectors, archive, captures)
-        meta = {
+        meta: dict[str, Any] = {
             "format_version": META_FORMAT_VERSION,
             "recon_version": self._recon_version,
             "config_sha256": config_sha256,
             "started_at": started.isoformat(),
-            "timestamp": self._clock.now().isoformat(),
+            "timestamp": None,  # when it ended: set by _meta, here so the key keeps its place
             "preserve_raw": config.preserve_raw,
             "resolved": dict(resolved or {}),
-            "tables": [table.document() for table in tables],
         }
+        try:
+            with self._deadline.bound(config.deadline, what, fix):
+                for index, entry in enumerate(config.collectors):
+                    if index in streams:
+                        continue
+                    tables += self._run_entry(index, entry, config, collectors, archive, captures)
+        except KeyboardInterrupt:
+            # Stopped on request (Ctrl-C, SIGTERM): the tables that ended are recorded, and
+            # that it was stopped, so it never reads as a survey that died. One that cannot
+            # write it reads crashed, as one that died does: it left no record of its end.
+            with contextlib.suppress(OSError):
+                self._archives.write_meta(archive, self._meta(meta, tables, "stopped"))
+            raise
+        meta = self._meta(meta, tables, "finished")
         try:
             self._archives.write_meta(archive, meta)
             if all(table.status == "ok" for table in tables):
@@ -175,6 +187,22 @@ class Survey:
             self.warnings.append(warning)
             self._emit({"kind": "archive_warning", "reason": warning.message, "fix": warning.fix})
         return tables
+
+    def _meta(
+        self,
+        head: dict[str, Any],
+        tables: list[TableOutcome],
+        ended: Literal["finished", "stopped"],
+    ) -> dict[str, Any]:
+        """The archive's ``meta.yaml``: ``head``, when the survey ended, how (``ended``, the
+        :data:`~recon.domain.archives.Ended` its writer can know: ``crashed`` is a reader's),
+        and its tables."""
+        return {
+            **head,
+            "timestamp": self._clock.now().isoformat(),
+            "ended": ended,
+            "tables": [table.document() for table in tables],
+        }
 
     def _run_entry(
         self,

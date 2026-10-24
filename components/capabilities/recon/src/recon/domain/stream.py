@@ -25,14 +25,14 @@ from recon.domain.archives import ARCHIVE_ID_FORMAT
 from recon.domain.clock import LONGEST_WAIT
 
 #: Why a window ended, when it ended well: the bound of ``window:`` it reached, named by its
-#: key (``seconds``, ``records``, ``bytes``), its source ended, the stream was stopped by a
-#: signal, or it reached the stream's ``until``.
-SealReason = Literal["seconds", "records", "bytes", "eof", "signal", "until"]
+#: key (``seconds``, ``records``, ``bytes``), its source ended, the stream was stopped on
+#: request (``stopped``: a signal, or a ``StreamStop`` asked), or it reached its ``until``.
+SealReason = Literal["seconds", "records", "bytes", "eof", "stopped", "until"]
 
 #: How a window was closed, as ``meta.yaml``'s ``stream.closed_by`` says it: a
 #: :data:`SealReason`, or ``error`` for a window its source's fatal error ended, which keeps
 #: the records it got.
-ClosedBy = Literal["seconds", "records", "bytes", "eof", "signal", "until", "error"]
+ClosedBy = Literal["seconds", "records", "bytes", "eof", "stopped", "until", "error"]
 
 #: What a full buffer does with one more record (:class:`BufferSpec`). There is no ``fail``:
 #: a burst would cost the whole stream.

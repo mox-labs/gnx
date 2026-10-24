@@ -571,7 +571,7 @@ class TestAStopAsked:
         writer.join(10)
         run, [window], _ = result[0]
 
-        assert (window.closed_by, window.table.records, window.dropped) == ("signal", 10, 0)
+        assert (window.closed_by, window.table.records, window.dropped) == ("stopped", 10, 0)
         assert run.records == 10
 
     def test_a_second_stop_seals_it_at_once_what_waits_counted_dropped(
@@ -588,7 +588,7 @@ class TestAStopAsked:
         writer.join(10)
         run, [window], _ = result[0]
 
-        assert (window.closed_by, window.table.records, window.dropped) == ("signal", 0, 10)
+        assert (window.closed_by, window.table.records, window.dropped) == ("stopped", 0, 10)
         assert run.records + run.dropped == 10
 
     def test_a_second_stop_between_windows_counts_the_next_ones_records_in_it(
@@ -613,7 +613,7 @@ class TestAStopAsked:
 
         assert [(o.closed_by, o.table.records, o.dropped) for o in outcomes] == [
             ("records", 5, 0),
-            ("signal", 0, 3),
+            ("stopped", 0, 3),
         ]
         assert run.records + run.dropped == 8
 
@@ -627,7 +627,7 @@ class TestAStopAsked:
 
         run, outcomes, _ = _run(tmp_path, clock, _plan(WindowSpec(seconds=60)), source, stop=stop)
 
-        assert [o.closed_by for o in outcomes] == ["signal"]
+        assert [o.closed_by for o in outcomes] == ["stopped"]
         assert run.records == 0
 
 

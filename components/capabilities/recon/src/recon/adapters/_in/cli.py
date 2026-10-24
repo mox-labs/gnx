@@ -148,7 +148,8 @@ class _Group(click.RichGroup):
             interrupted = recon.ReconError(
                 "interrupted before the command finished",
                 kind="interrupted",
-                fix="run the command again; an interrupted survey's archive is marked incomplete",
+                fix="run the command again; a survey stopped so leaves its archive incomplete, "
+                "ended: stopped",
             )
             _fail(interrupted, as_json=as_json)
         except recon.ReconError as error:

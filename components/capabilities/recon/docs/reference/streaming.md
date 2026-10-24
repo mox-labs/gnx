@@ -76,7 +76,7 @@ recon stream <mission> --stream <name> [--windows N | --until TIME | --forever] 
 | `-n`, `--dry-run` | off | print the plan and run nothing, refusing what the run would; `provenance` also says how long the run is and why (`stream.windows`, `stream.until`, `stream.forever`, `source` `command` or `recon`), and when it returns at the latest: `stream.returns`, seconds from its start (one 300 s window: 300), or null when only a stop or the source ends it |
 | `-c`, `--replace` | | as `recon survey`'s |
 
-It always returns unless told otherwise, and says when as it starts (stderr; `{"kind": "stream", "returns_s", "returns"}` to `on_event`): one window of the default 300 s holds the command up to five minutes, so set a shorter `window:` or run it in the background when that is too long to wait. Ctrl-C or SIGTERM is a stop, not a failure: the window being written is sealed `signal` once what waits in the buffer is written, however busy the writer is when it comes, and the command returns. A second one seals it at once: what waits, and what later windows had counted, is counted dropped in it. A third is an interrupt, as for any other command. One process runs one stream; a second writer of the same stream is refused with `busy` (exit 11). Run again, a stream goes on from its last window.
+It always returns unless told otherwise, and says when as it starts (stderr; `{"kind": "stream", "returns_s", "returns"}` to `on_event`): one window of the default 300 s holds the command up to five minutes, so set a shorter `window:` or run it in the background when that is too long to wait. Ctrl-C or SIGTERM is a stop, not a failure: the window being written is sealed `stopped` once what waits in the buffer is written, however busy the writer is when it comes, and the command returns, exit 0. A second one seals it at once: what waits, and what later windows had counted, is counted dropped in it. A third is an interrupt, as for any other command: exit 130 (`interrupted`). One process runs one stream; a second writer of the same stream is refused with `busy` (exit 11). Run again, a stream goes on from its last window.
 
 Refused with exit 2 (`usage`) and a fix: `--forever` with `--windows` or `--until`; `--windows` below 1; an `--until` that has passed. A collector that is no stream of the mission is `not_found` (exit 4), naming the mission's streams.
 
@@ -92,7 +92,7 @@ A window outcome (in `recon.v1.stream`'s `last` and `recon.v1.survey`'s `windows
 |---|---|---|
 | `seconds`, `records`, `bytes` | the window's own bound was reached, named by its key in `window:` | `ok` |
 | `eof` | the source ended | `ok` |
-| `signal` | the stream was stopped | `ok` |
+| `stopped` | the stream was stopped on request (Ctrl-C, SIGTERM, a `StreamStop` asked); its `meta.yaml` says `ended: stopped` | `ok` |
 | `until` | the stream reached `--until` | `ok` |
 | `error` | the source failed (or reconnects ran out): the window **keeps the records it got**, since a source that sends cannot be asked again, and reads `incomplete` | `error` |
 
@@ -104,7 +104,7 @@ The source is read on a thread of the stream's own into the buffer, and each win
 
 ## Stopping, crashing and resuming
 
-A stream killed mid-window (SIGKILL, a crash) leaves that window unsealed: it reads `incomplete` and keeps every whole line it had; it is never changed, but a torn last line (a write the kill cut short) is moved aside to `<table>.jsonl.tmp.torn`. The next run chains its first window to it (`previous`) and resumes the source after the position of the last whole record kept: exactly once for a source with positions (`tail`, and `sse` whose server honours `Last-Event-ID`). Every restart is recorded as a gap in the first window of the run, from the last window's close (unknown after a crash) to the restart: `resumed: true` when the source was asked to go on from a position, so a source that does not honour it shows where; `resumed: false` for a source without positions (`cli`), which cannot go on from where it was.
+A stream killed mid-window (SIGKILL, a crash) leaves that window unsealed: it reads `incomplete`, `ended: crashed`, and keeps every whole line it had; it is never changed, but a torn last line (a write the kill cut short) is moved aside to `<table>.jsonl.tmp.torn`. The next run chains its first window to it (`previous`) and resumes the source after the position of the last whole record kept: exactly once for a source with positions (`tail`, and `sse` whose server honours `Last-Event-ID`). Every restart is recorded as a gap in the first window of the run, from the last window's close (unknown after a crash) to the restart: `resumed: true` when the source was asked to go on from a position, so a source that does not honour it shows where; `resumed: false` for a source without positions (`cli`), which cannot go on from where it was.
 
 ## Reading a stream
 

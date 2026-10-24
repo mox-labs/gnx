@@ -83,7 +83,7 @@ Do these in order. Every command takes `--json`: it then prints one JSON documen
 4. **Normalize.** Write `normalize:` from the shape you saw, raise the limits, plan again (step 2), then survey.
 5. **Query.** `recon query <name> "<SQL>" --json`. Each table is a view named after its output, with every character but a letter, a digit or `_` turned into `_` (`oa-works` is `oa_works`, `v1.2` is `v1_2`); SQL matches the name without regard to case. Two outputs that would be one view (`a-b` and `a_b`, `Foo` and `foo`) are a plan problem, as is an output name holding `/`, `\` or `..`, or not starting with a letter, a digit or `_`. The document names the archive the rows came from, as `archive_id` and `archive` (its directory). Each row is an object keyed by column, so a name the SQL gives twice (`SELECT a.id, b.id`) is made unique in `columns` and in every row: `id`, `id_1`. The SQL is DuckDB's; a refused query exits 10 with DuckDB's message in the `fix`. To count the items of a list column, unnest it in a subquery and group outside it (DuckDB does not unnest beside `count(*)`): `SELECT author, count(*) AS n FROM (SELECT unnest(authors) AS author FROM papers) GROUP BY author ORDER BY n DESC`.
 
-A survey with failed tables still writes its archive, marked incomplete, and lists every table's status; its exit code says what to do about the failures. `recon status --json` lists missions, their latest archive, and the installed collector types and transforms; `recon status <name> --json` lists every archive of that mission, oldest first, as `missions[0].history`: each archive's `id`, `path`, `started_at`, `finished_at`, `state` and `tables`. `state`: `complete`, `incomplete` or `writing`; for an incomplete one, `ended` says whether its survey `finished` (a table failed) or `stopped`.
+A survey with failed tables still writes its archive, marked incomplete, and lists every table's status; its exit code says what to do about the failures. `recon status --json` lists missions, their latest archive, and the installed collector types and transforms; `recon status <name> --json` lists every archive of that mission, oldest first, as `missions[0].history`: each archive's `id`, `path`, `started_at`, `finished_at`, `state` and `tables`. `state`: `complete`, `incomplete` or `writing`; for an incomplete one, `ended` says whether its survey `finished` (a table failed), was `stopped` on request, or `crashed`.
 
 **Watch.** `recon watch <name> --json` follows an archive as a survey writes it, a `recon.v1.records-since` line per read, and returns when the survey ends; `--once` reads once. Records of a table later `retracted` are void. Flags, defaults, refusals, `state`, `ended` and the library calls: `recon --skill -r live-reading`.
 
@@ -107,7 +107,7 @@ Act on the exit code, then on the error's `fix`:
 | 9 | `store` | the survey could not finish its archive; it is kept, marked incomplete | free space where the archive is, or make it writable, then survey again |
 | 10 | `query` | the SQL failed, or reached outside the mission's archives | correct the SQL as the error's `fix` says; for a missing table, it names the tables there are |
 | 11 | `busy` | another recon is writing the stream; one writes a stream at a time | let that stream run, or stop it (`recon status` shows it writing), then stream again |
-| 130 | `interrupted` | the command was interrupted (Ctrl-C or SIGTERM) before it finished; a survey's archive is marked incomplete | run the command again |
+| 130 | `interrupted` | Ctrl-C or SIGTERM stopped the command; a survey's archive reads `ended: stopped` (a stopped `recon stream` exits 0) | run the command again |
 
 A survey whose tables failed exits 6 if any failed on credentials, 5 if every failure was transient, else 8 (`run_failed`). One whose archive could not be finished (a full disk) exits 9 (`store`) whatever its tables did, an `archive_unfinished` warning saying why. The error is this envelope, on one line:
 
@@ -195,8 +195,8 @@ A spec maps each output column to a path into the record, optionally piped throu
     telemetry.jsonl                the survey's recon.v1.event lines: a start and an end per
                                    span (survey, table, HTTP request); not a table
     .incomplete                    present unless the survey finished with every table: a table
-                                   failed, the survey was stopped (Ctrl-C, SIGTERM, killed),
-                                   or meta.yaml could not be written
+                                   failed, the survey was stopped (Ctrl-C, SIGTERM) or
+                                   crashed, or meta.yaml could not be written
     captures.jsonl, raw/<sha256>   the capture log, with preserve_raw: true
 ```
 
@@ -214,11 +214,7 @@ Every survey writes its event log, `telemetry.jsonl`, into its archive, a `recon
 
 `preserve_raw: true` keeps every fetched body (an HTTP response, a command's stdout, an MCP tool's or resource's result) in the archive's capture log, content-addressed, with credential headers, the `auth.param` value and every credential an `mcp` source resolved redacted. A `capture` collector reads such logs back with a new `normalize:`, so an archive can be reshaped without fetching again; in its spec, `_capture.*` reaches the capture line itself (`_capture.request.tool_input.query`).
 
-Two ways to make an MCP server's answers a table. An `mcp` collector calls the server itself, the same way every survey (`recon init files -t mcp-server` shows one): use it for a stdio server, or a remote one that takes a token or a header. A server behind OAuth that signs in through a browser is reached the second way: the agent calls its tools, and a hook captures the results. `recon capture <mission>` appends one Claude Code `PostToolUse` hook payload, read from stdin, to the mission's log. To make those results a table: `recon init mcp -t mcp-captures`, then add this hook to `.claude/settings.json`, and `recon survey mcp` normalizes what it captured (the `cd` makes recon find `.recon/` at the project root wherever the session's directory is):
-
-```json
-{"hooks": {"PostToolUse": [{"matcher": "mcp__.*", "hooks": [{"type": "command", "command": "cd \"$CLAUDE_PROJECT_DIR\" && recon capture mcp"}]}]}}
-```
+Two ways to make an MCP server's answers a table. An `mcp` collector calls the server itself, the same way every survey (`recon init files -t mcp-server` shows one): use it for a stdio server, or a remote one that takes a token or a header. A server behind OAuth that signs in through a browser is reached the second way: the agent calls its tools, and a `PostToolUse` hook running `recon capture <mission>` captures the results; the hook and the mission: `recon --skill -r config-patterns`.
 
 The line format, for a tool that writes captures itself: `recon --skill -r capture-format`.
 
@@ -233,7 +229,7 @@ Each prints with `recon --skill -r <name>`:
 | Name | What it holds |
 |---|---|
 | `normalize-spec` | paths, the pipe, every built-in transform, XML attributes, `extract` |
-| `config-patterns` | complete missions, by use |
+| `config-patterns` | complete missions, by use; MCP results captured by a hook |
 | `capture-format` | the `recon.v1.capture` line format and how a `capture` collector reads it |
 | `telemetry` | the event log, every span and attribute, exporting through OpenTelemetry |
 | `streaming` | stream keys, defaults, refusals; `tail`, `sse`; `--stream` |

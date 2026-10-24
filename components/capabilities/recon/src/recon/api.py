@@ -124,7 +124,7 @@ def stream(
     It stops after ``windows`` windows, at ``until`` (a time with its zone), when its source
     ends, or when it is stopped: ``stop.ask()`` (a :class:`StreamStop`, safe from any thread
     or a signal handler) or this thread interrupted (``KeyboardInterrupt``). The window being
-    written is then sealed ``signal`` once what waits is written, a second stop seals it at
+    written is then sealed ``stopped`` once what waits is written, a second stop seals it at
     once, and this returns; with none of ``windows``, ``until`` and
     ``forever``, after one window, so it returns unless told otherwise. A later call goes on
     from the last window, its source resumed after the last record kept. ``on_event``

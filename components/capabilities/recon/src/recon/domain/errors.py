@@ -80,8 +80,8 @@ EXIT_MEANINGS: dict[str, str] = {
     "store": "the survey could not finish its archive; it is kept, marked incomplete",
     "query": "the SQL failed, or reached outside the mission's archives",
     "busy": "another recon is writing the stream; one writes a stream at a time",
-    "interrupted": "the command was interrupted (Ctrl-C or SIGTERM) before it finished; a "
-    "survey's archive is marked incomplete",
+    "interrupted": "Ctrl-C or SIGTERM stopped the command; a survey's archive reads `ended: "
+    "stopped` (a stopped `recon stream` exits 0)",
 }
 
 #: What to do next on each kind in :data:`EXIT_CODES`.
