@@ -21,7 +21,7 @@ import ix
 from ix.adapters._in.cli import main
 from ix.application.experiments import Vocabulary, examine, make_plan
 from ix.domain.experiment import Experiment, cells
-from ix.domain.plan import Plan
+from ix.domain.plan import Plan, plan_digest
 from ix.domain.registration import Registration, deviations
 
 if TYPE_CHECKING:
@@ -737,6 +737,32 @@ class TestStoredRecordsTolerateChange:
         assert [d.field for d in ix.deviations(file).deviations] == [
             "design.margin.value", "experiment_digest",
         ]  # fmt: skip
+
+    def test_whether_a_metric_is_contended_is_neither_digested_nor_frozen(
+        self, compare_data: dict[str, Any], write_experiment: Write, vocabulary: Vocabulary
+    ) -> None:
+        """``contended`` is the sensor's word on what trials in flight do to a reading, held
+        at validation each time (record §27); like a metric's description, it is not what a
+        run would do. Regression: declaring it moved every latency experiment's plan digest,
+        so each registration showed a deviation and its next run was ungated."""
+        file: Path = write_experiment(compare_data)
+        ix.register(file)
+        stored = json.loads(_record(file).read_text())
+        assert all("contended" not in metric for metric in stored["design"]["metrics"])
+        checked = examine(compare_data, vocabulary)
+        assert checked.design and checked.probes and checked.experiment
+        design = checked.design
+        assert any(metric.contended for metric in design.metrics)
+        quiet = design.model_copy(
+            update={
+                "metrics": tuple(m.model_copy(update={"contended": False}) for m in design.metrics)
+            }
+        )
+        digests = {
+            plan_digest(checked.experiment, held, checked.probes, 30, "s")
+            for held in (design, quiet)
+        }
+        assert len(digests) == 1
 
     def test_a_record_of_another_schema_major_is_refused_with_what_this_ix_reads(
         self, compare_data: dict[str, Any], write_experiment: Write

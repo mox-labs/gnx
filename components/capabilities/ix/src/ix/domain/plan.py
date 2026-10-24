@@ -34,7 +34,7 @@ from ix.domain.design import (
 )
 from ix.domain.experiment import Level, cells
 from ix.domain.genre import Calibration, Order, VerdictForm
-from ix.domain.kind import fill, seconds
+from ix.domain.kind import UNFROZEN_METRIC_FIELDS, fill, seconds
 from ix.domain.problem import Problem
 from ix.domain.schema import Record, canonical
 
@@ -347,7 +347,8 @@ def plan_digest(
     against."""
     resolved = canonical(design, exclude={"hypotheses", "provenance"})
     for metric in resolved.get("metrics", []):
-        metric.pop("description", None)
+        for field in UNFROZEN_METRIC_FIELDS:
+            metric.pop(field, None)
     return schema.digest(
         {
             "experiment": experiment.digest(operative=True),

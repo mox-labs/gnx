@@ -892,14 +892,16 @@ def _kind_line(kind: Kind, runnable: bool) -> str:
     if kind.service_keys:
         keys = ", ".join(f"`{{<service>.{key}}}`" for key in kind.service_keys)
         facets.append(f"binds each service as {keys}")
-    if facets:
-        parts.append(f"  {'; '.join(facets)}")
+    facets.append(f"isolation {kind.isolation}")
+    parts.append(f"  {'; '.join(facets)}")
     for metric in kind.metrics:
         traits = [metric.shape, f"{metric.direction} is better"]
         if metric.unit:
             traits.insert(1, metric.unit)
         if metric.judged:
             traits.append("JUDGED by a model")
+        if metric.contended:
+            traits.append("CONTENDED by trials in flight")
         parts.append(f"  metric `{metric.name}` ({', '.join(traits)}): {metric.description}")
     return "\n".join(parts)
 
@@ -938,6 +940,12 @@ experiment can still be registered.
 A `process` subject is up when its `ready` URL answers an HTTP GET with a status below 500;
 without `ready`, when its `url` accepts a connection; with neither, as soon as it starts. One
 that is not up within `startup_timeout` (30s) fails the trial as the subject's (`not_ready`).
+
+Each kind's `isolation` says whether two trials may use it at once: `shared` when neither
+changes what the other measures (a fresh agent session each), `exclusive` when they would (a
+fixed port, a load tool, an environment brought up once for the run); a kind that does not
+say is `exclusive`. A metric marked **CONTENDED** moves with whatever else runs beside the
+trial (a time, a throughput, a memory peak).
 
 {families}
 """

@@ -200,6 +200,47 @@ class TestBuiltInKinds:
         session = builtin_kinds.get("subject", "agent-session")
         assert session is not None and "response" in session.options["loop"].binds
 
+    def test_each_kind_says_whether_two_uses_of_it_may_overlap(self, builtin_kinds: Kinds) -> None:
+        """Ruling X3 (record §27): a kind is ``shared`` when two trials may use it at once
+        without one changing what the other measures, ``exclusive`` otherwise; a kind that
+        does not say is exclusive. A port or a load generator is one machine's, and a run
+        brings its environment up once for every trial."""
+        shared = {
+            "subject": {"agent-session", "model-call"},
+            "probe": {"prompt", "inspect-task"},
+            "environment": {"none"},
+            "sensor": {"judge", "evaluator", "text-match", "tool-usage", "outcome",
+                       "activation", "usage", "function-test"},
+        }  # fmt: skip
+        exclusive = {
+            "subject": {"process", "http"},
+            "probe": {"http-load"},
+            "environment": {"process", "compose"},
+            "sensor": {"timing", "memory"},
+        }
+        for family in shared:
+            declared = {kind.label: kind.isolation for kind in builtin_kinds.of(family)}
+            assert declared == {
+                **dict.fromkeys(shared[family], "shared"),
+                **dict.fromkeys(exclusive[family], "exclusive"),
+            }
+        assert Kind.model_validate(_sensor("x")).isolation == "exclusive"
+
+    def test_a_reading_of_time_or_of_a_resource_is_contended(self, builtin_kinds: Kinds) -> None:
+        """Ruling X3: a metric is ``contended`` when what it reads (time, memory, a load
+        tool's throughput) moves with what else runs beside the trial. Every metric of
+        ``timing`` and ``memory`` is, and ``usage``'s ``duration``; no other built-in is."""
+        contended = {
+            (kind.label, metric.name)
+            for kind in builtin_kinds.of("sensor")
+            for metric in kind.metrics
+            if metric.contended
+        }
+        assert contended == {
+            ("timing", "latency"), ("timing", "ttfb"), ("timing", "throughput"),
+            ("timing", "error_rate"), ("memory", "memory_peak"), ("usage", "duration"),
+        }  # fmt: skip
+
     def test_a_declaration_is_data_and_holds_no_code(self) -> None:
         with pytest.raises(ValidationError, match="extra"):
             Kind.model_validate(_sensor("x", implementation="acme.sensors:Timing"))

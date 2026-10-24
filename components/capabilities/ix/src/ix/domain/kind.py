@@ -38,6 +38,10 @@ from ix.domain.schema import DeclarationFile, Record
 #: The families of kind, in the order a run uses them; closed (see the module docstring).
 KIND_FAMILIES: tuple[str, ...] = ("subject", "probe", "sensor", "environment")
 
+#: Whether two trials may overlap in a kind's use, or a genre's trials at all: ``shared``
+#: when they may, ``exclusive`` when they may not.
+Isolation = Literal["exclusive", "shared"]
+
 OptionType = Literal[
     "string",
     "integer",
@@ -222,6 +226,10 @@ class Metric(Record):
     any (a score from 0 to 1): a probe whose every reading sits at one of them cannot
     discriminate. ``flag`` makes a boolean a warning: the sentence a report prints when any
     trial reads true, and a metric with a flag is read whenever its sensor is in use.
+
+    ``contended`` is true when the reading moves with whatever else runs beside the trial
+    (a time, a throughput, a memory peak): trials in flight would confound it, so it never
+    decides a run that carries more than one out at once.
     """
 
     name: Name
@@ -229,6 +237,7 @@ class Metric(Record):
     direction: Direction
     shape: Shape
     judged: bool = False
+    contended: bool = False
     bounds: tuple[float, float] | None = None
     flag: str = ""
     description: str = ""
@@ -242,6 +251,12 @@ class Metric(Record):
         if self.flag and self.shape != "boolean":
             raise ValueError("only a boolean metric declares a flag")
         return self
+
+
+#: A metric's fields that are not what a run would do, so neither a plan's digest nor a
+#: registration holds them: its prose, and whether trials in flight contend for it, which
+#: validation holds each time it is asked.
+UNFROZEN_METRIC_FIELDS: frozenset[str] = frozenset({"description", "contended"})
 
 
 class Confusion(Record):
@@ -300,6 +315,11 @@ class Kind(Record):
     #: Environment kinds only: the keys each service it brings up is bound with (``host``,
     #: ``port``, ``url``), which a subject's or a probe's option names as ``{<service>.<key>}``.
     service_keys: tuple[str, ...] = ()
+    #: Whether two trials may use this kind at once: ``shared`` when neither changes what
+    #: the other measures (a fresh session each), ``exclusive`` when they would (a fixed
+    #: port, a load generator, an environment brought up once for every trial). A kind
+    #: that does not say is ``exclusive``.
+    isolation: Isolation = "exclusive"
 
     @model_validator(mode="after")
     def _coherent(self) -> Kind:

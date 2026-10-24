@@ -248,6 +248,14 @@ offers and needs, for a sensor the metrics it provides and whether a model judge
 and for an environment the keys each service it brings up is bound with (`service_keys:
 [host, port, url]`, named `{<service>.<key>}`). `ix kinds` lists them.
 
+Every kind also says whether two trials may use it at once (`isolation: shared`, or
+`exclusive`, which a kind that says nothing is), and each metric whether what it reads moves
+with whatever runs beside the trial (`contended: true`: a time, a throughput, a memory
+peak). Of the built-ins, `agent-session`, `model-call`, `prompt`, `inspect-task`, `none` and
+every sensor that reads what a trial stored are `shared`; `process` and `http` subjects,
+`http-load`, `timing`, `memory` and the `process` and `compose` environments are
+`exclusive`. Every metric of `timing` and `memory` is contended, and `usage`'s `duration`.
+
 | family | kinds |
 |---|---|
 | subject | `process`, `http`, `agent-session`, `model-call` |

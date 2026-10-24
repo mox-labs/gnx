@@ -1,6 +1,7 @@
 schema: ix.v1.kind
 name: ix.v1.sensor.usage
 summary: What a session or a call consumed and how it ended, as its runtime reported it; what the runtime did not report is left out.
+isolation: shared
 needs: [usage]
 metrics:
   - {name: tokens_total, unit: tokens, direction: lower, shape: scalar, description: input and output tokens of the session or call}
@@ -9,6 +10,6 @@ metrics:
   - {name: cost, unit: USD, direction: lower, shape: scalar, description: "what the session cost, where the runtime reports it (claude-sdk does; a model call does not)"}
   - {name: turns, unit: turns, direction: lower, shape: scalar, description: turns an agent session took}
   - {name: tool_calls, unit: calls, direction: lower, shape: scalar, description: tool calls an agent made}
-  - {name: duration, unit: ms, direction: lower, shape: scalar, description: "how long the session or call took, as the runtime timed it"}
+  - {name: duration, unit: ms, direction: lower, shape: scalar, contended: true, description: "how long the session or call took, as the runtime timed it"}
   - {name: rounds, unit: rounds, direction: neither, shape: scalar, description: "rounds an agent session took: 1, or more under a loop"}
   - {name: hit_limit, direction: lower, shape: boolean, description: "an agent session ended at a limit (max_turns, the SDK's max_budget_usd) rather than by finishing"}

@@ -12,6 +12,15 @@
   of `sessions()`, which named every row since the scope's last hand-over. A scope that
   implemented `sessions()` is no longer `Recorded`, and its trials name no sessions.
 
+### Added
+
+- **`isolation` on every kind, `contended` on every metric.** A kind says whether two trials
+  may use it at once (`isolation: shared | exclusive`; a kind that says nothing, a third
+  party's included, is `exclusive`), and a metric whether its reading moves with whatever
+  runs beside the trial (`contended: true`; false when unsaid). The built-in kinds and
+  metrics declare theirs; `--skill` shows both. Neither enters a plan's digest or a
+  registration: they are checked each time an experiment is.
+
 ### Fixed
 
 - **Each row's ledger entry names its own sessions.** The `sense` component handed its
