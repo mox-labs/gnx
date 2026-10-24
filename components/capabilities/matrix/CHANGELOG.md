@@ -2,6 +2,27 @@
 
 All notable changes to matrix. Versions follow semver; before 1.0 a minor may break.
 
+## Unreleased
+
+### Added
+
+- **Sessions attributed per task.** `RunContext.attributed()` opens a scope, `async with
+  ctx.attributed() as trial:`, whose `trial.sessions()` names exactly the rows of
+  `matrix.v1.session` recorded in that task, and in the tasks started inside it, while it is
+  open: work run side by side in one component (trials in flight) no longer claims its
+  neighbours' sessions. Scopes nest, and a scope that has been left names no more.
+  `Attribution` is the type it gives.
+- **`ctx.provide(kind, row, sessions=...)`** names exactly those sessions in the row's ledger
+  entry; the ones it does not name stay the component's (`ctx.sessions()`) for its next row.
+  Naming a session the component did not run is a `ContractError`, and the row is not
+  recorded. Without `sessions`, a row names every session not yet named, as before.
+
+### Changed
+
+- `RunContext.sessions()` is the component's sessions that no row it handed over has named
+  yet. For a component that never names its own, that is the set it was before: those since
+  its last hand-over.
+
 ## 0.7.0 — 2026-10-22
 
 ### Removed (breaking)

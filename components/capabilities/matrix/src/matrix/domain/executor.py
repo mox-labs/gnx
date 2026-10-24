@@ -70,7 +70,13 @@ from matrix.domain.observer import (
 )
 from matrix.domain.ports._out.construct_store import events_of
 from matrix.domain.problems import problem
-from matrix.domain.session import CURRENT_SESSIONS, SESSION, Session
+from matrix.domain.session import (
+    CURRENT_ATTRIBUTION,
+    CURRENT_SESSIONS,
+    SESSION,
+    Session,
+    attribute,
+)
 
 if TYPE_CHECKING:
     from matrix.domain.ports._out.construct_store import ConstructStore, RunWriter
@@ -591,9 +597,9 @@ class _Hooks:
             return scope.span
         return self._session.run_id
 
-    def provide(self, kind: str, row: Any) -> None:
+    def provide(self, kind: str, row: Any, sessions: tuple[int, ...] | None) -> None:
         if not self._late("provide"):
-            self._session.provide(self._name, kind, row)
+            self._session.provide(self._name, kind, row, sessions)
 
     def session(self, row: Session) -> int | None:
         """Record an agent session or model call the component ran; its row, or None after
@@ -603,7 +609,7 @@ class _Hooks:
         return self._session.record_session(self._name, row)
 
     def sessions(self) -> tuple[int, ...]:
-        """The session rows the component ran since its last hand-over."""
+        """The session rows the component ran that no row it handed over has named."""
         return self._session.since(self._name)
 
     def defer(self, release: Release) -> None:
@@ -688,8 +694,10 @@ class _Session:
     ) -> None:
         self._wiring = wiring
         self._trace = trace
-        #: The session rows each component ran since its previous hand-over.
+        #: The session rows each component ran that no row it handed over has named yet.
         self._sessions: dict[str, list[int]] = {}
+        #: Every session row each component's current attempt ran: those a row may name.
+        self._ran: dict[str, set[int]] = {}
         self._run = run
         self._limits = limits
         self._channel = channel
@@ -981,6 +989,7 @@ class _Session:
         """A fresh context for the next attempt of ``step``: the same component and span. The
         sessions the failed attempt ran produced none of the next attempt's rows."""
         self._sessions.pop(step.name, None)
+        self._ran.pop(step.name, None)
         hooks = _Hooks(self, step.name, step.cleanup_s)
         deadline = None if step.deadline_s is None else time.monotonic() + step.deadline_s
         fresh = replace(
@@ -1120,8 +1129,12 @@ class _Session:
             self._record(name, kind, row, checked=True, sessions=behind)
         self._sessions.pop(name, None)
 
-    def provide(self, name: str, kind: str, row: Any) -> None:
-        """One row handed over mid-run: checked, recorded and durable before this returns."""
+    def provide(
+        self, name: str, kind: str, row: Any, sessions: tuple[int, ...] | None = None
+    ) -> None:
+        """One row handed over mid-run: checked, recorded and durable before this returns.
+        Its entry names ``sessions``, or, when None, every session the component ran that no
+        row has named; either way those are named from then on."""
         step = self._steps[name]
         if kind not in step.provides:
             raise ContractError(
@@ -1130,17 +1143,38 @@ class _Session:
                 component=name,
                 declared=sorted(step.provides),
             )
+        behind = self.since(name) if sessions is None else self._own(name, kind, sessions)
         try:
-            self._record(name, kind, row, sessions=self.since(name))
+            self._record(name, kind, row, sessions=behind)
         except StoreError as e:
             step.progress.record_store_failure(e)
             self._halt("store failed", "run_failed")
             raise
-        self._sessions.pop(name, None)
+        if sessions is None:
+            self._sessions.pop(name, None)
+        else:
+            named = set(behind)
+            self._sessions[name] = [r for r in self._sessions.get(name, ()) if r not in named]
+
+    def _own(self, name: str, kind: str, sessions: tuple[int, ...]) -> tuple[int, ...]:
+        """``sessions``, once each is a session row component ``name`` ran; else a
+        ContractError: a row's ledger entry names only what could have produced it."""
+        ran = self._ran.get(name, set())
+        foreign = [r for r in sessions if r not in ran]
+        if foreign:
+            raise ContractError(
+                f"component {name!r} handed over a row of {kind!r} naming sessions {foreign}, "
+                f"which it did not run (it ran: {sorted(ran)})",
+                fix="name only sessions this component ran, as ctx.attributed() gives them, "
+                "or leave sessions out to name every one no row has named yet",
+                component=name,
+                table=kind,
+            )
+        return sessions
 
     def since(self, name: str) -> tuple[int, ...]:
-        """The session rows component ``name`` ran since its last hand-over: those the next
-        row it hands over names."""
+        """The session rows component ``name`` ran that no row it handed over has named:
+        those its next row names, unless it names its own."""
         return tuple(self._sessions.get(name, ()))
 
     def record_session(self, name: str, row: Session) -> int:
@@ -1156,6 +1190,8 @@ class _Session:
             self._halt("store failed", "run_failed")
             raise
         self._sessions.setdefault(name, []).append(entry.row)
+        self._ran.setdefault(name, set()).add(entry.row)
+        attribute(entry.row)  # to each scope open in the task that ran it
         return entry.row
 
     def _record(
@@ -1300,6 +1336,7 @@ async def _call(
 ) -> Any:
     CURRENT_SPAN.set(scope)  # this task's own context: an agent it calls reports as its child
     CURRENT_SESSIONS.set(sessions)  # and the sessions it runs are recorded as its own
+    CURRENT_ATTRIBUTION.set(None)  # in no scope of a run this one was started inside
     return await component.run(inputs, ctx)
 
 
