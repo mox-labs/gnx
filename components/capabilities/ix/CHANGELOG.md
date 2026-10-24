@@ -20,7 +20,13 @@
   digests as leaving it out. The plan's `order` states it (`OrderPlan.trials_in_flight`,
   and its description), and so does the report (`Report.trials_in_flight`, and its `Run`
   line). `ix run --trials-in-flight N` (`ix.run(trials_in_flight=N)`) overrides it for one
-  run, noted under `Changed`; like `--repeats`, only with `--exploratory` or `--dry-run`.
+  run, noted under `Changed`; like `--repeats`, only with `--exploratory` or `--dry-run`,
+  and a run that gives a verdict refuses either flag as `usage` (exit 2), its
+  `details.path` the flag.
+- **`ix plan --trials-in-flight N`** (`ix.plan(trials_in_flight=N)`): the plan of the run
+  `ix run --exploratory --trials-in-flight N` would carry out, at that width, with the
+  change in `Plan.overridden` (`Changed`), as the run's report words it, and the refusal or
+  warnings that run would meet. It runs nothing and writes nothing.
 - **The problems `trials_in_flight_refused` and `trials_in_flight_contended`.** A width
   above 1 is refused, never lowered on its own, where a kind in use or the genre forbids
   overlap, or a deciding metric (`primary`, a guardrail) is contended: the
@@ -47,8 +53,12 @@
   may use it at once (`overlap: allowed | forbidden`; a kind that says nothing, a third
   party's included, forbids it), and a metric whether its reading moves with whatever
   runs beside the trial (`contended: true`; false when unsaid). The built-in kinds and
-  metrics declare theirs; `--skill` shows both. Neither enters a plan's digest or a
-  registration: they are checked each time an experiment is.
+  metrics declare theirs; `--skill` shows both (`-r experiment` names each kind and genre
+  that forbids overlap and each contended metric, read from the declarations), and so does
+  `ix kinds`: an `overlap`
+  column in each kind table, and `judged` and `contended` columns in the metrics table,
+  which lists each sensor's metrics under it (`--json` gives both fields). Neither enters a
+  plan's digest or a registration: they are checked each time an experiment is.
 - **`examples/trials-in-flight/`**: the live validation slice, run by hand and never in CI.
   Ten deterministic probes (five that read a fixture with tools), screened by a pilot;
   ten S and ten P runs paired by run, probe and repeat (200 pairs, the n at which it can
@@ -63,11 +73,11 @@
 
 ### Changed (breaking)
 
-- **`MaxDuration` gives `eval_duration_held`, not `eval_passed`.** The evaluator sensor
+- **`MaxDuration` gives `eval_duration_passed`, not `eval_passed`.** The evaluator sensor
   reads how long the probe took into a metric of its own, declared contended, so a
   decision on it is refused with trials in flight. An experiment that decided `eval_passed`
   on a `MaxDuration` entry is refused (`metric_unprovided`, its fix naming
-  `eval_duration_held`): rename the metric and amend the registration.
+  `eval_duration_passed`): rename the metric and amend the registration.
 
 ### Fixed
 

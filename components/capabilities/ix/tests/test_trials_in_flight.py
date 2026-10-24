@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 import matrix
 import pytest
 import yaml
+from click.testing import CliRunner
 from ix_fakes import LOG, FakeSubject, FakeTiming, experiment, fake_registry
 from matrix import (
     TASK,
@@ -46,6 +47,7 @@ from matrix import (
 )
 
 import ix
+from ix.adapters._in.cli import main
 from ix.adapters._in.matrix_components import COMPOSITION, NEED
 from ix.adapters._out import matrix_runs
 from ix.adapters._out.agent_sensors import FunctionTestSensor, OutcomeSensor
@@ -246,13 +248,90 @@ class TestTheWidthIsAConditionOfTheRun:
         assert report.trials_in_flight == 3
         assert report.overridden == ("trials_in_flight: 3 in place of 1 (--trials-in-flight)",)
         ix.register(folder)
-        with pytest.raises(ix.ConfigError, match="changed for this run") as refused:
+        with pytest.raises(ix.UsageError, match="--trials-in-flight 3") as refused:
             _root().run(folder, trials_in_flight=3)
-        assert "exploratory" in (refused.value.fix or "")
+        assert "--exploratory --trials-in-flight N" in (refused.value.fix or "")
+        assert refused.value.details == {"path": "--trials-in-flight", "value": 3}
         assert _root().run(folder).trials_in_flight == 1
         with pytest.raises(ix.UsageError) as below:
             _root().run(folder, exploratory=True, trials_in_flight=0)
         assert below.value.details == {"path": "--trials-in-flight", "value": 0}
+
+    def test_a_verdict_refuses_every_override_as_one_kind(self, tmp_path: Path) -> None:
+        """Review (Ace 5): a run that gives a verdict refused ``--repeats`` as ``usage`` and
+        ``--trials-in-flight`` as ``config``, so an agent read two meanings into one
+        refusal. Each is ``usage``: the experiment is valid, the command is not
+        (EXIT_MEANINGS "a bad flag or argument"; next, "correct the command"); and so is
+        an override handed to ``prepare`` on a run that gives a verdict."""
+        folder = _canned(tmp_path)
+        ix.register(folder)
+        runner = CliRunner(env={"COLUMNS": "200"})
+        for flag in ("--repeats", "--trials-in-flight"):
+            refused = runner.invoke(main, ["run", str(folder), flag, "3", "--json"])
+            assert refused.exit_code == ix.EXIT_CODES["usage"], (flag, refused.output)
+            error = json.loads(refused.stderr)["error"]
+            assert (error["kind"], error["details"]["path"]) == ("usage", flag)
+        vocabulary = _root().vocabulary(folder)
+        examined = ix.application.experiments.examine(
+            yaml.safe_load((folder / "experiment.yaml").read_text()), vocabulary
+        )
+        with pytest.raises(ix.UsageError, match="changed for this run"):
+            running.prepare(
+                examined, vocabulary, None, run="r", base=str(folder), now="", version="",
+                overridden=("trials_in_flight: 3 in place of 1 (--trials-in-flight)",),
+            )  # fmt: skip
+
+
+class TestAWidthIsPlannedBeforeItIsTried:
+    """Review (Ace 11): ``ix run --trials-in-flight N`` could be tried only by running it.
+    ``ix plan --trials-in-flight N`` shows the plan that run would carry out, its refusal
+    and warnings included, and writes nothing."""
+
+    def test_the_plan_is_the_one_the_run_would_carry_out(self, tmp_path: Path) -> None:
+        folder = _canned(tmp_path)
+        written = (folder / "experiment.yaml").read_bytes()
+        planned = ix.plan(folder, trials_in_flight=3)
+        assert planned.order.trials_in_flight == 3
+        assert planned.overridden == ("trials_in_flight: 3 in place of 1 (--trials-in-flight)",)
+        assert planned.digest == ix.plan(_canned(tmp_path / "three", trials_in_flight=3)).digest
+        ran = _root().run(folder, exploratory=True, trials_in_flight=3)
+        assert (ran.plan_digest, ran.overridden) == (planned.digest, planned.overridden)
+        assert (folder / "experiment.yaml").read_bytes() == written
+        assert ix.plan(folder).overridden == ()
+
+    def test_it_refuses_and_warns_as_the_run_would(
+        self, tmp_path: Path, write_experiment: Write
+    ) -> None:
+        with pytest.raises(ix.InvalidExperimentError) as refused:
+            ix.plan(write_experiment(experiment()), trials_in_flight=2)
+        _refusal(ix.Validation(valid=False, problems=refused.value.problems))
+        timed = _canned(tmp_path, metrics=["duration"])
+        (warned,) = [p for p in ix.plan(timed, trials_in_flight=2).warnings]
+        assert warned.kind == "trials_in_flight_contended"
+        with pytest.raises(ix.UsageError) as below:
+            ix.plan(timed, trials_in_flight=0)
+        assert below.value.details == {"path": "--trials-in-flight", "value": 0}
+
+    def test_the_command_says_the_change_and_the_run_to_try_it(self, tmp_path: Path) -> None:
+        folder = _canned(tmp_path)
+        runner = CliRunner(env={"COLUMNS": "200"})
+        shown = runner.invoke(main, ["plan", str(folder), "--trials-in-flight", "3", "--json"])
+        assert shown.exit_code == 0, shown.output
+        document = json.loads(shown.stdout)
+        assert document["order"]["trials_in_flight"] == 3
+        assert document["overridden"] == ["trials_in_flight: 3 in place of 1 (--trials-in-flight)"]
+        printed = runner.invoke(main, ["plan", str(folder), "--trials-in-flight", "3"])
+        assert "Changed:      trials_in_flight: 3 in place of 1" in printed.stdout
+        assert f"Next: ix run {folder} --exploratory --trials-in-flight 3" in printed.stderr
+        refused = runner.invoke(
+            main, ["plan", str(_canned(tmp_path / "gate", genre="regress", subjects={
+                "baseline": {"kind": "agent-session", "runtime": "mock"},
+                "candidate": {"kind": "agent-session", "runtime": "mock", "max_turns": 2},
+            }, threshold=None, margin="10pp")), "--trials-in-flight", "2", "--json"],
+        )  # fmt: skip
+        assert refused.exit_code == ix.EXIT_CODES["config"], refused.output
+        (problem,) = json.loads(refused.stderr)["error"]["problems"]
+        assert problem["kind"] == "trials_in_flight_refused"
 
 
 def _refusal(found: ix.Validation) -> Problem:

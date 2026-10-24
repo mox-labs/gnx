@@ -38,7 +38,7 @@ from ix.application.experiments import standing, valid
 from ix.domain import schema
 from ix.domain.analysis import ANALYSES, analysis_unsupported
 from ix.domain.design import Design, kinds_in_use, missing_adapters
-from ix.domain.errors import ConfigError, UnregisteredError
+from ix.domain.errors import ConfigError, UnregisteredError, UsageError
 from ix.domain.experiment import Experiment, ProbeConfig, SubjectConfig
 from ix.domain.kind import fill_options, placed, placeholders
 from ix.domain.ports import Liveness, Recorded, Sensed, StandIn, Traced
@@ -187,12 +187,14 @@ def prepare(
 
     ``dry_run`` is given for an experiment :func:`stand_in` rewrote: the notes of what it
     set aside. Such a run is exploratory and held to no registration. ``overridden`` notes
-    what the caller changed from the experiment as written (a pilot's repeats), for an
-    exploratory run or a dry one only.
+    what the caller changed from the experiment as written (a pilot's repeats, a width to
+    try), for an exploratory run or a dry one only.
 
     Refuses, before anything starts: an invalid experiment; a kind in use that has no
-    adapter, or an analysis this ix does not have (:class:`ConfigError`); and an experiment
-    with no registration, unless the run is ``exploratory`` (:class:`UnregisteredError`).
+    adapter, or an analysis this ix does not have (:class:`ConfigError`); an override on a
+    run that gives a verdict (:class:`UsageError`, as the command's flags are); and an
+    experiment with no registration, unless the run is ``exploratory``
+    (:class:`UnregisteredError`).
 
     A registered experiment that has changed since is not refused, and is not held to its
     registration either: the run proceeds ungated, as an exploratory one does, the
@@ -224,7 +226,7 @@ def prepare(
     if dry_run is not None:
         stored, exploratory = None, True
     if overridden and not exploratory:
-        raise ConfigError(
+        raise UsageError(
             f"{examined.source} was changed for this run ({'; '.join(overridden)}), and a run "
             "that gives a verdict is held to the design as registered",
             fix="run it exploratory or dry, or change the file and amend its registration",

@@ -61,6 +61,10 @@ COMMANDS: tuple[tuple[str, str], ...] = (
         "a pilot with N repeats, the file unchanged: no verdict",
     ),
     (
+        "ix plan <path> --trials-in-flight N",
+        "the plan at N trials at once, its refusal or warnings included; runs nothing",
+    ),
+    (
         "ix run <path> --exploratory --trials-in-flight N",
         "N trials at once, the file unchanged: no verdict; refused where overlap confounds",
     ),
@@ -68,7 +72,10 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("ix report <path>", "the latest run's report again; or give a run directory"),
     ("ix runs <path>", "each run: when, its commit, gated, exploratory or dry, verdict, trials"),
     ("ix genres", "the genres installed, and any genre file ix refused"),
-    ("ix kinds", "the kinds installed, and which of them this ix can run"),
+    (
+        "ix kinds",
+        "the kinds installed, each kind's overlap, each metric's contended, and which run here",
+    ),
 )
 
 #: The line that sits under :data:`COMMANDS` in the skill: the way to a reference.
@@ -687,7 +694,33 @@ def _skill(genres: Genres, kinds: Kinds, version: str) -> str:
 # --- the references ------------------------------------------------------------------------
 
 
-def _experiment() -> str:
+def _overlap_forbidden(kinds: Kinds) -> str:
+    """The kinds that forbid overlap, family by family, as their declarations say."""
+    families = []
+    for family in KIND_FAMILIES:
+        names = [f"`{kind.label}`" for kind in kinds.of(family) if kind.overlap == "forbidden"]
+        if names:
+            families.append(f"{family} {', '.join(names)}")
+    return "; ".join(families) or "none installed"
+
+
+def _contended(kinds: Kinds) -> str:
+    """The contended metrics, sensor by sensor, as their declarations say."""
+    sensors = []
+    for kind in kinds.of("sensor"):
+        names = [f"`{metric.name}`" for metric in kind.metrics if metric.contended]
+        if names:
+            sensors.append(f"`{kind.label}`: {', '.join(names)}")
+    return "; ".join(sensors) or "none installed"
+
+
+def _genres_forbidding_overlap(genres: Genres) -> str:
+    """The genres that forbid overlap, as their declarations say."""
+    names = [f"`{g.label}`" for g in genres.genres.values() if g.design.overlap == "forbidden"]
+    return ", ".join(names) or "none installed"
+
+
+def _experiment(genres: Genres, kinds: Kinds) -> str:
     template = f"""\
 {SHAPE_MARK}
 schema: ix.v1.experiment       # optional; absent means ix.v1.experiment
@@ -763,14 +796,16 @@ whether it came from the experiment, the genre or ix.
   changes is the load around each trial (a provider's rate limits, a timeout that a
   slowed session now meets), which is why the width is part of the design, digested by
   the plan and frozen by registration. Above 1 is refused (`trials_in_flight_refused`,
-  at `trials_in_flight`) where any kind in use is `overlap: forbidden` (a `process` or
-  `http` subject, `http-load`, `timing`, `memory`, a `process` or `compose` environment),
-  where a deciding metric (`primary`, a guardrail) is contended (a time, a throughput, a
-  memory peak, `usage`'s `duration`), or where the genre forbids overlap (`regress`).
+  at `trials_in_flight`) where any kind in use is `overlap: forbidden`
+  ({_overlap_forbidden(kinds)}),
+  where a deciding metric (`primary`, a guardrail) is contended, as a time, a throughput or
+  a memory peak is ({_contended(kinds)}),
+  or where the genre forbids overlap ({_genres_forbidding_overlap(genres)}).
   Its `fix` names each and says `trials_in_flight: 1`. A contended metric
   that is only reported is a warning (`trials_in_flight_contended`): its readings were
   taken under that load. `ix run --trials-in-flight N` tries a width without editing the
-  file, with `--exploratory` or `--dry-run` only.
+  file, with `--exploratory` or `--dry-run` only; `ix plan --trials-in-flight N` shows that
+  run's plan first, its refusal or warnings included, and runs nothing.
 - **Two reductions.** `statistic` reduces one trial's reading to a number; `estimator`
   combines the trials. By the shape of a reading:
 {shapes}
@@ -1028,9 +1063,11 @@ experiment writes `trials_in_flight`. It prints progress on stderr and then the 
   `Changed`; a run that gives a verdict refuses `--repeats` (exit {EXIT_CODES["usage"]}). A
   run too small for even every trial passing to show a pass rate's threshold says so under
   `Best case`, as the plan does under `Sensitivity`.
-- **A width to try.** `--exploratory --trials-in-flight N` (or `--dry-run`) carries N trials
+- **A width to try.** `ix plan <path> --trials-in-flight N` shows the plan at that width,
+  and its refusal if overlap would confound, before anything runs; then
+  `--exploratory --trials-in-flight N` (or `--dry-run`) carries N trials
   out at once in place of the file's `trials_in_flight`, listed under `Changed`; a run that
-  gives a verdict refuses it (exit {EXIT_CODES["config"]}): write `trials_in_flight:` in the
+  gives a verdict refuses it (exit {EXIT_CODES["usage"]}): write `trials_in_flight:` in the
   file and register it. Where the kinds, a deciding metric or the genre forbid overlap it is
   refused before anything starts, `trials_in_flight_refused`, whose `fix` names each and
   says `trials_in_flight: 1`. The report's `Run` line says the width.
@@ -1182,7 +1219,7 @@ probes and a metric. What makes it one is the kinds.
   `tokens_output`, `cost`, `turns`, `tool_calls`, `duration`, `rounds`, `hit_limit`
   (`usage`: what the runtime did not report is left out, so a model call has no `turns`),
   the judged `judged_score` and `judged_pass` (`judge`, option `rubric`), and
-  pydantic-evals' evaluators: `eval_passed`, `eval_score`, `eval_duration_held`
+  pydantic-evals' evaluators: `eval_passed`, `eval_score`, `eval_duration_passed`
   (`MaxDuration`'s, contended) and the judged `judged_eval_passed` and `judged_eval_score`
   (`evaluator`, below).
 - **Validate checks that the sensors can see.** A setting that makes what a sensor reads
@@ -1304,7 +1341,7 @@ are in the reading's detail. One `evaluator` entry per experiment: a second is
 
 - **Reading the reply**: `Equals`, `EqualsExpected` (the truth's `expected_output`),
   `Contains`, `IsInstance`.
-- **Reading the time**: `MaxDuration` gives `eval_duration_held` (whether the probe took
+- **Reading the time**: `MaxDuration` gives `eval_duration_passed` (whether the probe took
   no longer than `seconds`), never `eval_passed` (`metric_unprovided`, whose fix names
   it). A time is contended, so it decides no run with `trials_in_flight` above 1.
 - **Reading the spans**: `ToolCorrectness`, `TrajectoryMatch` (an `eval_score`),
@@ -1388,7 +1425,7 @@ def render(
         )
     match reference:
         case "experiment":
-            body = _experiment()
+            body = _experiment(genres, kinds)
         case "genres":
             body = _genres(genres)
         case "kinds":

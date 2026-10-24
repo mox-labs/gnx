@@ -387,6 +387,59 @@ class TestTheReferencesTeachFromTheRecords:
         judged = [m for k in ix.kinds().kinds.values() for m in k.metrics if m.judged]
         assert text.count("JUDGED by a model") == len(judged) == 6  # judge 4, evaluator 2
 
+    def test_the_kinds_it_says_forbid_overlap_are_the_ones_declared(self) -> None:
+        """Review (Ace 7): the list was written by hand, and when ``probe.inspect-task``
+        came to forbid overlap the list did not say so. It is made from the declarations,
+        and it names each kind that forbids overlap and no other."""
+        text = " ".join(_reference("experiment").split())
+        said = text.split("where any kind in use is `overlap: forbidden` (", 1)[1]
+        said = said.split(")", 1)[0]
+        named = {
+            (family, name)
+            for part in said.split("; ")
+            for family, _, names in [part.partition(" ")]
+            for name in re.findall(r"`([^`]+)`", names)
+        }
+        declared = {
+            (kind.family, kind.label)
+            for kind in ix.kinds().kinds.values()
+            if kind.overlap == "forbidden"
+        }
+        assert ("probe", "inspect-task") in declared
+        assert named == declared
+
+    def test_the_metrics_it_says_are_contended_are_the_ones_declared(self) -> None:
+        """Review (coordinator, after Ace 7): the contended metrics in the same rule were a
+        hand-written sample. They are made from the metric declarations, sensor by sensor,
+        so ``eval_duration_passed`` and a third party's contended metric are named too."""
+        text = " ".join(_reference("experiment").split())
+        said = text.split("a throughput or a memory peak is (", 1)[1].split(")", 1)[0]
+        named = {
+            (sensor.strip("`"), name)
+            for part in said.split("; ")
+            for sensor, _, names in [part.partition(": ")]
+            for name in re.findall(r"`([^`]+)`", names)
+        }
+        declared = {
+            (kind.label, metric.name)
+            for kind in ix.kinds().kinds.values()
+            for metric in kind.metrics
+            if metric.contended
+        }
+        assert ("evaluator", "eval_duration_passed") in declared
+        assert named == declared
+
+    def test_the_genres_it_says_forbid_overlap_are_the_ones_declared(self) -> None:
+        text = " ".join(_reference("experiment").split())
+        said = text.split("where the genre forbids overlap (", 1)[1].split(")", 1)[0]
+        declared = {
+            genre.label
+            for genre in ix.genres().genres.values()
+            if genre.design.overlap == "forbidden"
+        }
+        assert declared == {"regress"}
+        assert set(re.findall(r"`([^`]+)`", said)) == declared
+
     def test_what_it_says_about_unknown_keys_is_true(
         self, compare_data: dict[str, Any], write_experiment: Write
     ) -> None:

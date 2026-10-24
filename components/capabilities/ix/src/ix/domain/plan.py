@@ -221,6 +221,11 @@ class Plan(Record):
     #: refuse it.
     unimplemented: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
+    #: What the caller changed from the experiment as written for this plan (``ix plan
+    #: --trials-in-flight N``), worded as the run that tries it reports it
+    #: (``Report.overridden``). Such a run is exploratory or dry: one that gives a verdict
+    #: refuses the change.
+    overridden: tuple[str, ...] = ()
     #: What ``validate`` warns of (subjects that differ in more than one thing, a kind with
     #: no adapter here, a refused genre or kind file): problems that do not stop the plan.
     warnings: tuple[Problem, ...] = ()

@@ -304,6 +304,8 @@ def _print_plan_work(plan: ix.Plan) -> None:
     _field("Trials", plan.trials.text())
     _field("Duration", plan.duration.text())
     _field("Order", f"{plan.order.scheme}, seed {plan.order.seed}", plan.order.description)
+    if plan.overridden:
+        _field("Changed", *plan.overridden)
     if plan.sensors:
         _field(
             "Sensors",
@@ -350,6 +352,8 @@ def _print_plan_design(plan: ix.Plan, path: str) -> None:
         "matches": f"ix run {path}",
         "deviations": f"ix deviations {path}",
     }[plan.registration.status]
+    if plan.overridden:  # a width to try: a run that gives a verdict refuses it
+        next_step = f"ix run {path} --exploratory --trials-in-flight {plan.order.trials_in_flight}"
     err.print(f"[dim]Next: {escape(next_step)}[/dim]", soft_wrap=True)
 
 
@@ -365,8 +369,16 @@ def _print_plan(plan: ix.Plan, path: str) -> None:
 
 @main.command(epilog=EXIT_CODES)
 @_path_argument
+@click.option(
+    "--trials-in-flight",
+    type=click.IntRange(min=1),
+    metavar="N",
+    help="Plan the run `ix run --exploratory --trials-in-flight N` would carry out: N trials "
+    "at once in place of the file's trials_in_flight (1 when it writes none), refused "
+    "where a kind in use or the genre forbids overlap, or a deciding metric is contended",
+)
 @_json_option
-def plan(path: str, as_json: bool) -> None:
+def plan(path: str, trials_in_flight: int | None, as_json: bool) -> None:
     """Show the decision a run would inform and how many trials it takes. Runs nothing.
 
     States the question, the hypothesis rendered from the genre, the guardrails and the form
@@ -375,11 +387,17 @@ def plan(path: str, as_json: bool) -> None:
     where the experiment stands against its registration. The plan's digest changes when a
     value a run would use changes.
 
+    `--trials-in-flight N` previews a width without editing the file: the plan at that width,
+    the change listed under `Changed` (`overridden`), and the refusal or warnings the run
+    would meet. A run that gives a verdict refuses the flag, so it is tried with
+    `ix run --exploratory` or `--dry-run`; to decide on a width, write `trials_in_flight:`
+    in the file and register it.
+
     PATH is the experiment file, a directory that holds experiment.yaml, or - for standard
     input (which has no registration).
     """
     try:
-        result = ix.plan(path)
+        result = ix.plan(path, trials_in_flight=trials_in_flight)
     except ix.IxError as error:
         _fail(error, as_json=as_json)
     if as_json:
@@ -874,7 +892,7 @@ model and gives no verdict. `--repeats N` pilots either with N repeats in place 
 file's (never below the genre's minimum); a run that gives a verdict refuses it (exit
 {_CODE["usage"]}). `--trials-in-flight N` carries N trials out at once in place of the
 file's width, with `--exploratory` or `--dry-run` only (a run that gives a verdict refuses
-it, exit {_CODE["config"]}), and only where every kind in use allows overlap, no deciding
+it, exit {_CODE["usage"]}), and only where every kind in use allows overlap, no deciding
 metric is contended and the genre allows it (`trials_in_flight_refused` names what blocks it).
 PATH may be - for an experiment on standard input, which
 runs only with `--exploratory` or `--dry-run` and keeps its runs under the current
@@ -1069,10 +1087,13 @@ def kinds(lab: str | None, as_json: bool) -> None:
     """List the subject kinds, probe kinds, sensors and environment kinds.
 
     Each kind declares its options (required ones marked *), the facets it needs and offers,
-    for a sensor the metrics it provides and, for an environment, the keys each service it
-    brings up is bound with (`service_keys`: `{<service>.url}`). `runs` says whether this ix
-    has an adapter for the kind: one without can be validated, planned and registered, not
-    run.
+    for an environment the keys each service it brings up is bound with (`service_keys`:
+    `{<service>.url}`), and its `overlap`: whether two trials in flight may use it at once
+    (`allowed` or `forbidden`). `runs` says whether this ix has an adapter for the kind: one
+    without can be validated, planned and registered, not run. The metrics are listed under
+    the sensor that provides each, with whether a model judges it (`judged`: it decides no
+    verdict) and whether what runs beside a trial moves it (`contended`: it decides no run
+    with trials_in_flight above 1).
     """
     try:
         found = ix.kinds(lab)
@@ -1081,21 +1102,24 @@ def kinds(lab: str | None, as_json: bool) -> None:
     if as_json:
         _emit(found.document())
         return
-    widest = max(
-        (len(name) + 1 for kind in found.kinds.values() for name in kind.options), default=1
-    )
     tables: dict[str, Table] = {}
     for family in ("subject", "probe", "sensor", "environment"):
+        # A table is as wide as its own longest option, so each still fits in 80 columns.
+        widest = max(
+            (len(name) + 1 for kind in found.of(family) for name in kind.options), default=1
+        )
         table = Table(title=f"{family.capitalize()} kinds", title_justify="left")
         table.add_column("kind", no_wrap=True)
-        table.add_column("options (* required)", overflow="fold", min_width=widest)
+        table.add_column("options", overflow="fold", min_width=widest)
         table.add_column("needs > offers")
         if family == "environment":
-            table.add_column("service keys")
+            table.add_column("service keys", no_wrap=True)
+        table.add_column("overlap", no_wrap=True)
         table.add_column("runs", no_wrap=True)
         tables[family] = table
+    # Each sensor heads its metrics: a column of its own would not leave 80 for the rest.
     metrics = Table(title="Metrics", title_justify="left")
-    for column in ("metric", "sensor", "unit", "shape", "better", "judged"):
+    for column in ("sensor / metric", "unit", "shape", "better", "judged", "contended"):
         metrics.add_column(column, no_wrap=column != "unit")
     for kind in found.kinds.values():
         label = kind.label
@@ -1110,23 +1134,30 @@ def kinds(lab: str | None, as_json: bool) -> None:
             escape(options or "-"),
             escape(facets),
             *keys,
+            kind.overlap,
             "yes" if kind.name in found.runnable else "no",
         )
-        for metric in kind.metrics:
+        if kind.metrics:
+            metrics.add_row(f"[bold]{escape(label)}[/bold]")
+        for index, metric in enumerate(kind.metrics, start=1):
             metrics.add_row(
-                escape(metric.name),
-                escape(label),
+                f"  {escape(metric.name)}",
                 escape(metric.unit or "-"),
                 metric.shape,
                 metric.direction,
                 "yes" if metric.judged else "no",
+                "yes" if metric.contended else "no",
+                end_section=index == len(kind.metrics),
             )
     for table in tables.values():
         out.print(table)
     out.print(metrics)
     err.print(
-        "[dim]runs: whether this ix has an adapter for the kind that builds here. One "
-        "without can be validated, planned and registered, and `ix run` refuses it.[/dim]"
+        "[dim]options: * marks a required one. overlap: whether two trials in flight may use "
+        "the kind at once. runs: whether this ix has an adapter for the kind that builds "
+        "here. One without can be validated, planned and registered, and `ix run` refuses "
+        "it. contended: the metric moves with what runs beside a trial, so it decides no run "
+        "with trials_in_flight above 1.[/dim]"
     )
     _print_rejected(found.rejected)
     for name, why in found.unbuildable.items():
