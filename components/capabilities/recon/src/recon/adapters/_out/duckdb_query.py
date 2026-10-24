@@ -93,7 +93,7 @@ class DuckdbQuery:
         import duckdb  # only a query needs it
 
         archive = archive.absolute()
-        tables = self._archives.tables(archive)
+        tables = _sealed(self._archives.tables(archive))
         if not tables:
             raise NotFoundError(f"no tables in archive {archive}")
         conn = duckdb.connect()
@@ -135,7 +135,7 @@ class DuckdbQuery:
     def unreadable(self, archive: Path) -> list[Problem]:
         import duckdb
 
-        tables = self._archives.tables(archive.absolute())
+        tables = _sealed(self._archives.tables(archive.absolute()))
         if not tables:
             return []
         conn = duckdb.connect()
@@ -146,6 +146,12 @@ class DuckdbQuery:
             ]
         finally:
             conn.close()
+
+
+def _sealed(tables: list[StoredTable]) -> list[StoredTable]:
+    """The tables SQL reads: a table not yet sealed holds provisional records, and its file
+    is not where the store says it will be."""
+    return [table for table in tables if table.sealed]
 
 
 def _views(conn: Any, tables: list[StoredTable]) -> dict[str, tuple[Path, str]]:

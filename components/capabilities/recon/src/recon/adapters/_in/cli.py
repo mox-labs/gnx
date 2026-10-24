@@ -501,6 +501,12 @@ def query(name: str, sql: str, archive: str | None, as_json: bool) -> None:
             "[yellow]warning: this archive is incomplete (a table failed or the survey was "
             "stopped), so rows may be missing; `recon status` shows which tables failed[/]"
         )
+    elif document.state == "writing":
+        err.print(
+            "[yellow]warning: a survey is writing this archive now, so only its tables "
+            "already sealed were queried; query it again once `recon status` no longer says "
+            "writing[/]"
+        )
     if not document.rows:
         err.print("[yellow]No rows.[/]")
         return

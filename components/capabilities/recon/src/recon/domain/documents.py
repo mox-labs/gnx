@@ -15,9 +15,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from recon.domain.capture import CAPTURE_SCHEMA, CaptureKind
 from recon.domain.errors import ErrorKind, ReconError
 
-#: Whether an archive holds every table it was asked for. ``incomplete``: a table failed,
-#: the survey was stopped, or ``meta.yaml`` could not be written.
-ArchiveState = Literal["ok", "incomplete"]
+#: Whether a survey's archive holds every table it was asked for. ``incomplete``: a table
+#: failed, the survey was stopped, or ``meta.yaml`` could not be written.
+SurveyStatus = Literal["ok", "incomplete"]
+
+#: Where an archive stands as ``status`` and ``query`` read it: ``ok`` and ``incomplete`` as
+#: for :data:`SurveyStatus`, or ``writing``: a survey is writing it now, so its tables not
+#: yet sealed are not queried, and reading it again later finds it ``ok`` or ``incomplete``.
+ArchiveState = Literal["ok", "incomplete", "writing"]
 
 #: What ``init`` did to the mission's config: wrote the first one, found this one already
 #: there byte for byte and left it, or overwrote a different one (``--replace``).
@@ -124,7 +129,7 @@ class SurveyDocument(Document):
     schema_: Literal["recon.v1.survey"] = Field(default="recon.v1.survey", alias="schema")
     mission: str
     archive: str
-    status: ArchiveState
+    status: SurveyStatus
     tables: list[TableOutcome]
     warnings: list[dict[str, Any]]
 

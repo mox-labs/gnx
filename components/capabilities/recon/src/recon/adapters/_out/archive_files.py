@@ -9,7 +9,19 @@
       telemetry.jsonl         the survey's recon.v1.event lines, as they happened
       .incomplete             written first; removed once meta.yaml is written and every
                               table succeeded
+      writer.lock             locked by the writing process from create to release, then
+                              removed; left unlocked by a writer that died
       captures.jsonl, raw/    the capture log, when the mission preserves raw
+
+**Writing, complete, incomplete.** The writer holds an ``flock`` on ``writer.lock`` from
+:meth:`ArchiveFiles.create` until :meth:`ArchiveFiles.release` or its death, as matrix's
+JSONL store does, so a pid reused by another process cannot make a dead survey read as one
+running. :meth:`ArchiveFiles.state` reads ``writing`` while the lock is held; else
+``incomplete`` while the marker is there; else ``complete`` once ``meta.yaml`` is. An archive
+with none of the three is being made (the lock is taken before the marker is written), and
+reads ``writing``; one with an unlocked ``writer.lock`` and neither of the others was left by
+a writer that died while making it, and reads ``incomplete``. Whether a writer is alive is
+known on its own host only.
 
 A table is written to ``<output>.jsonl.tmp`` and renamed to ``<output>.jsonl`` when it
 ends; a table that fails is retracted, its ``.tmp`` removed. While it is written, its lines
@@ -31,6 +43,7 @@ message}``).
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
 import threading
@@ -41,7 +54,7 @@ import yaml
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.event_log import EventLog
-from recon.domain.archives import ARCHIVE_ID_FORMAT, EVENT_LOG_NAME, StoredTable
+from recon.domain.archives import ARCHIVE_ID_FORMAT, EVENT_LOG_NAME, StoredTable, WriteState
 from recon.domain.capture import CAPTURE_LOG_NAME
 from recon.domain.errors import QueryError
 from recon.domain.type_url import DEFAULT_RECORDS_TYPE_URL
@@ -53,6 +66,9 @@ if TYPE_CHECKING:
     from recon.domain.clock import Clock
 
 INCOMPLETE_MARKER = ".incomplete"
+
+#: Locked by the writing process while it writes the archive.
+WRITER_LOCK = "writer.lock"
 
 #: The layout of an archive's tables this store writes and reads, named in ``meta.yaml``.
 TABLE_LAYOUT = 1
@@ -72,12 +88,34 @@ _WRITE_SECONDS = 0.25
 class ArchiveFiles:
     def __init__(self, clock: Clock) -> None:
         self._clock = clock
+        #: The lock held on each archive this store is writing, by archive.
+        self._held: dict[Path, int] = {}
 
     def create(self, mission_dir: Path, archive_id: str) -> Path:
         archive = mission_dir / "archive" / archive_id
         archive.mkdir(parents=True, exist_ok=True)
+        self._held[archive] = _hold(archive / WRITER_LOCK)
         (archive / INCOMPLETE_MARKER).write_text("")
         return archive
+
+    def release(self, archive: Path) -> None:
+        descriptor = self._held.pop(archive, None)
+        if descriptor is None:
+            return
+        # Removed while still locked, so no reader finds it unlocked beside a finished archive.
+        with contextlib.suppress(OSError):
+            (archive / WRITER_LOCK).unlink()
+        os.close(descriptor)  # closing releases the lock
+
+    def state(self, archive: Path) -> WriteState:
+        lock = archive / WRITER_LOCK
+        if _locked(lock):
+            return "writing"
+        if (archive / INCOMPLETE_MARKER).exists():
+            return "incomplete"
+        if (archive / "meta.yaml").exists():
+            return "complete"
+        return "incomplete" if lock.exists() else "writing"
 
     def write_table(
         self,
@@ -139,9 +177,6 @@ class ArchiveFiles:
             return []
         return sorted(d for d in archive.iterdir() if d.is_dir() and _is_archive_id(d.name))
 
-    def is_incomplete(self, archive: Path) -> bool:
-        return (archive / INCOMPLETE_MARKER).exists()
-
     def read_meta(self, archive: Path) -> dict[str, Any]:
         try:
             raw = yaml.safe_load((archive / "meta.yaml").read_text())
@@ -171,10 +206,13 @@ class ArchiveFiles:
                 details={"archive": str(archive), "table_layout": layout},
             )
         tables = []
-        for file in _table_files(archive):
+        for output, file in _table_files(archive):
+            if file.name.endswith(_LIVE):
+                tables.append(StoredTable(output, file.with_name(f"{output}.jsonl"), sealed=False))
+                continue
             columns = _empty_table_columns(file)
             empty = columns is not None
-            tables.append(StoredTable(file.stem, file, empty, tuple(columns or ())))
+            tables.append(StoredTable(output, file, empty, tuple(columns or ())))
         return tables
 
     def _table_layout(self, archive: Path) -> Any:
@@ -273,10 +311,48 @@ def _is_archive_id(name: str) -> bool:
     return True
 
 
-def _table_files(archive: Path) -> list[Path]:
-    """The archive's tables: every JSONL file but the capture log and the event log."""
+#: The suffix of a table being written, or left unfinished by a writer that died.
+_LIVE = ".jsonl.tmp"
+
+
+def _table_files(archive: Path) -> list[tuple[str, Path]]:
+    """The archive's tables by output name, each with its file: every JSONL file but the
+    capture log and the event log, and each table being written (its ``.jsonl.tmp``) that has
+    no sealed file yet."""
     logs = {CAPTURE_LOG_NAME, EVENT_LOG_NAME}
-    return [p for p in sorted(archive.glob("*.jsonl")) if p.name not in logs]
+    found: dict[str, Path] = {}
+    for path in archive.glob("*.jsonl*"):
+        if path.name.endswith(".jsonl") and path.name not in logs:
+            found[path.name.removesuffix(".jsonl")] = path
+        elif path.name.endswith(_LIVE):
+            found.setdefault(path.name.removesuffix(_LIVE), path)
+    return sorted(found.items())
+
+
+def _hold(path: Path) -> int:
+    """Hold an exclusive lock on ``path``, made if need be, until the descriptor is closed."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _locked(path: Path) -> bool:
+    """True while some process, this one included, holds the lock on ``path``."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(descriptor)  # closing releases a lock this call took
+    return False
 
 
 def _empty_table_columns(path: Path) -> list[str] | None:

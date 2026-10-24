@@ -5,6 +5,8 @@ import inspect
 import json
 import math
 import os
+import subprocess
+import sys
 import tempfile
 import time
 import types
@@ -774,6 +776,102 @@ class TestSinkClosesTheGenerator:
             ArchiveFiles(SystemClock()).write_table(tmp_path, "out", make())
         assert not out.exists()
         assert not out.with_suffix(out.suffix + ".tmp").exists(), "partial .tmp must be cleaned"
+
+
+class TestAnArchiveSaysWhetherItIsBeingWritten:
+    """A3: a writer holds a lock on its archive from ``create`` to ``release``, so a reader
+    tells an archive being written (``writing``) from one whose writer stopped without
+    finishing it (``incomplete``), and both from one finished (``complete``)."""
+
+    def test_writing_while_the_survey_runs_then_complete(self, tmp_path: Path) -> None:
+        seen: list[str] = []
+
+        class Looks:
+            def collect(
+                self,
+                entry: CollectorEntry,
+                source: SourceEntry | None,
+                *,
+                captures: CaptureLog | None = None,
+            ) -> Iterator[dict[str, Any]]:
+                [archive] = (tmp_path / ".recon" / "m" / "archive").iterdir()
+                seen.append(ArchiveFiles(SystemClock()).state(archive))
+                yield {"a": 1}
+
+        config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "x"}]})
+        archive, _ = run(config, tmp_path, plugins=plugins_with(x=Looks()))
+        assert seen == ["writing"]
+        assert ArchiveFiles(SystemClock()).state(archive) == "complete"
+
+    def test_a_survey_that_failed_a_table_is_incomplete_once_it_ends(self, tmp_path: Path) -> None:
+        config = ReconConfig.model_validate(
+            {"collectors": [{"name": "t", "type": "cli", "run": "exit 3"}]}
+        )
+        archive, _ = run(config, tmp_path)
+        assert ArchiveFiles(SystemClock()).state(archive) == "incomplete"
+
+    def test_an_archive_whose_writer_died_is_incomplete(self, tmp_path: Path) -> None:
+        """The writer's process ends without releasing the archive, as a kill leaves it."""
+        dies = (
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            "from recon.adapters._out.archive_files import ArchiveFiles\n"
+            "from recon.adapters._out.system_clock import SystemClock\n"
+            "ArchiveFiles(SystemClock()).create(Path(sys.argv[1]), sys.argv[2])\n"
+            "os._exit(9)\n"
+        )
+        id_ = "2026-01-02-030405-000001"
+        done = subprocess.run([sys.executable, "-c", dies, str(tmp_path), id_], check=False)
+        assert done.returncode == 9
+        assert ArchiveFiles(SystemClock()).state(tmp_path / "archive" / id_) == "incomplete"
+
+    def test_a_writer_in_this_process_is_writing_until_it_releases(self, tmp_path: Path) -> None:
+        store, reader = ArchiveFiles(SystemClock()), ArchiveFiles(SystemClock())
+        archive = store.create(tmp_path, "2026-01-02-030405-000001")
+        assert reader.state(archive) == "writing"
+        store.write_meta(archive, {"format_version": 2, "tables": []})
+        store.mark_complete(archive)
+        assert reader.state(archive) == "writing", "complete only once the writer lets go"
+        store.release(archive)
+        assert reader.state(archive) == "complete"
+        assert not (archive / "writer.lock").exists(), "a finished archive holds its data alone"
+
+    def test_an_archive_an_earlier_recon_wrote_reads_as_its_marker_says(
+        self, tmp_path: Path
+    ) -> None:
+        store = ArchiveFiles(SystemClock())
+        finished = tmp_path / "2026-01-02-030405-000001"
+        finished.mkdir()
+        (finished / "meta.yaml").write_text("format_version: 2\ntables: []\n")
+        killed = tmp_path / "2026-01-02-030405-000002"
+        killed.mkdir()
+        (killed / ".incomplete").write_text("")
+        assert (store.state(finished), store.state(killed)) == ("complete", "incomplete")
+
+    def test_a_table_being_written_is_listed_unsealed(self, tmp_path: Path) -> None:
+        listed: list[list[tuple[str, bool]]] = []
+
+        class Looks:
+            def collect(
+                self,
+                entry: CollectorEntry,
+                source: SourceEntry | None,
+                *,
+                captures: CaptureLog | None = None,
+            ) -> Iterator[dict[str, Any]]:
+                yield {"a": 1}
+                if entry.name == "second":
+                    [archive] = (tmp_path / ".recon" / "m" / "archive").iterdir()
+                    tables = ArchiveFiles(SystemClock()).tables(archive)
+                    listed.append([(t.output, t.sealed) for t in tables])
+
+        config = ReconConfig.model_validate(
+            {"collectors": [{"name": "first", "type": "x"}, {"name": "second", "type": "x"}]}
+        )
+        archive, _ = run(config, tmp_path, plugins=plugins_with(x=Looks()))
+        assert listed == [[("first", True), ("second", False)]]
+        tables = ArchiveFiles(SystemClock()).tables(archive)
+        assert [(t.output, t.sealed) for t in tables] == [("first", True), ("second", True)]
 
 
 class TestAnUnfinishedArchiveReadsIncomplete:

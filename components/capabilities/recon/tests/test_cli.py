@@ -1355,6 +1355,28 @@ def test_a_terminated_survey_reads_incomplete_and_leaves_no_command_running(proj
     assert not list(archive.glob("*.tmp")), "a half-written table was left behind"
 
 
+def test_a_running_survey_reads_writing_and_queries_only_its_sealed_tables(project: Path) -> None:
+    """A3, A7: while a survey runs, another process's status and query say ``writing``, and
+    a query reads the tables already sealed; the table being written is not a table yet."""
+    survey, command_group = _survey_process(project, f"recon-writing-{uuid.uuid4().hex}")
+    try:
+        latest = _doc(_invoke("status", "--json"))["missions"][0]["latest"]
+        query = _doc(_invoke("query", "m", "SELECT * FROM first", "--json"))
+        unsealed = _error(_invoke("query", "m", "SELECT * FROM slow", "--json"))
+        human = unstyle(_invoke("status").stdout)
+    finally:
+        survey.kill()
+        survey.communicate(timeout=10)
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(command_group, signal.SIGKILL)
+
+    assert latest["state"] == "writing"
+    assert query["state"] == "writing" and len(query["rows"]) == 2
+    assert unsealed["kind"] == "query" and "first" in unsealed["message"]
+    assert "writing" in human
+    assert _doc(_invoke("status", "--json"))["missions"][0]["latest"]["state"] == "incomplete"
+
+
 def test_a_killed_survey_reads_incomplete(project: Path) -> None:
     """SIGKILL runs no handler, so the archive is incomplete from the moment it is made."""
     survey, command_group = _survey_process(project, f"recon-sigkill-{uuid.uuid4().hex}")

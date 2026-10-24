@@ -117,10 +117,13 @@ A survey in which any table failed still writes its archive (marked `.incomplete
   .incomplete          written first, removed once meta.yaml is written and every table
                        succeeded: a failed table, Ctrl-C, SIGTERM, a kill or a meta.yaml
                        that could not be written leaves it
+  writer.lock          locked by the survey while it writes the archive, then removed
   captures.jsonl, raw/ the capture log, when preserve_raw: true
 ```
 
 A collector may declare `type_url:` (dotted grammar, default `recon.v1.records`) so a consumer can tell what a table holds without reading collector code. `status` and `query` still read archives written by recon 0.8 (`format_version: 1`), and read a `meta.yaml` from a newer recon for the fields they know. Only a directory named as a survey names its archive (`2026-04-01-143022-000000`) is an archive: another directory under `archive/` is left alone. An archive whose `table_layout` this recon does not know (a newer recon wrote it) is refused by `query` with that number, rather than misread.
+
+An archive's `state`, in `status` and `query`, is `ok`, `incomplete` or `writing`. The survey holds an `flock` on `writer.lock` while it writes, so `writing` is a survey running now, on this host, and `incomplete` is one that failed a table, was stopped or died. A table being written reaches its file a whole line at a time, at most 64 KiB or 250 ms after its collector gives each record; it is sealed when it ends, and a table that fails is retracted, its records with it. `query` reads only sealed tables, so a query of an archive being written sees the tables finished so far.
 
 ## Capture logs
 

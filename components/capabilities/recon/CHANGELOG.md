@@ -2,7 +2,14 @@
 
 ## Unreleased
 
+### Changed (breaking)
+
+- **An archive's `state` can be `writing`.** `status` (each archive's `state`) and `query` (the document's `state`) say `writing` while a survey writes the archive, where they said `incomplete`, so a consumer that matched on `ok` and `incomplete` alone meets a third value. The survey holds an `flock` on `writer.lock` in the archive while it writes and removes it when done, so `incomplete` now means the survey failed a table, was stopped or died, never that it is still running. A survey's own `status` stays `ok` or `incomplete`.
+- **The `ArchiveStore` port** (what `root(archives=...)` takes) has `state(archive)` (`writing`, `complete` or `incomplete`) and `release(archive)` in place of `is_incomplete(archive)`, and its `tables()` lists a table not yet sealed, with `StoredTable.sealed` false.
+
 ### Changed
+
+- **`query` reads only sealed tables.** A query of an archive being written sees the tables finished so far; the one being written is not a table yet, and the human output warns that the archive is being written.
 
 - **A table being written is readable as it goes.** Its records reach the table's file as whole lines at most 64 KiB or 250 ms after the collector gives them, never part of a line, where they were buffered and reached it every 1000 records. Flushing to the disk stays every 1000 records. `scripts/bench_table_write.py` measures the cost: 3.6-3.9% on a 200,000-line `cli` survey, against 84-89% for a write per line.
 

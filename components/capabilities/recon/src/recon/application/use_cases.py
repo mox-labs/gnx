@@ -46,10 +46,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from recon.application.collectors import SurveyCollectors
-    from recon.domain.archives import ArchiveQuery, ArchiveStore
+    from recon.domain.archives import ArchiveQuery, ArchiveStore, WriteState
     from recon.domain.clock import Clock
     from recon.domain.collector import Plugins
-    from recon.domain.documents import Capture
+    from recon.domain.documents import ArchiveState, Capture
     from recon.domain.missions import ConfigFile, MissionStore
     from recon.domain.models import ReconConfig
     from recon.domain.telemetry import Telemetry
@@ -255,68 +255,75 @@ class Recon:
         mission = self._missions.mission_dir(name)
         started = self._clock.now()
         archive = self._archives.create(mission, started.strftime(ARCHIVE_ID_FORMAT))
-        telemetry = self._telemetry(archive)
-        about = {"recon.mission": name, "recon.archive": archive.name}
-        deadline = Deadline(self._clock)
-        with telemetry.span(SURVEY, about) as span:
-            built = self._build_collectors(mission, plan.config, telemetry, deadline)
-            try:
-                for broken in built.failed:
-                    warnings.append(plugin_warning(broken))
-                    emit({"kind": "warning", "reason": str(warnings[-1]),
-                          "fix": warnings[-1].fix})  # fmt: skip
-                emit(
-                    {
-                        "kind": "start",
-                        "runs": len(plan.runs),
-                        "collectors": len(plan.config.collectors),
-                        "sources": len(plan.config.catalog),
+        # Held from here until released, so a reader of the archive sees it is being
+        # written, however the survey ends.
+        try:
+            telemetry = self._telemetry(archive)
+            about = {"recon.mission": name, "recon.archive": archive.name}
+            deadline = Deadline(self._clock)
+            with telemetry.span(SURVEY, about) as span:
+                built = self._build_collectors(mission, plan.config, telemetry, deadline)
+                try:
+                    for broken in built.failed:
+                        warnings.append(plugin_warning(broken))
+                        emit({"kind": "warning", "reason": str(warnings[-1]),
+                              "fix": warnings[-1].fix})  # fmt: skip
+                    emit(
+                        {
+                            "kind": "start",
+                            "runs": len(plan.runs),
+                            "collectors": len(plan.config.collectors),
+                            "sources": len(plan.config.catalog),
+                        }
+                    )
+                    types = self._plugins.collector_types
+                    extracts = {n for n, ct in types.items() if ct.extracts}
+                    kinds = {
+                        n: ct.accepts_kinds
+                        for n, ct in types.items()
+                        if ct.accepts_kinds is not None
                     }
-                )
-                types = self._plugins.collector_types
-                extracts = {n for n, ct in types.items() if ct.extracts}
-                kinds = {
-                    n: ct.accepts_kinds for n, ct in types.items() if ct.accepts_kinds is not None
-                }
-                survey = Survey(
-                    self._archives, self._clock, self._version, telemetry, on_event,
-                    extracts=extracts, kinds=kinds, deadline=deadline,
-                )  # fmt: skip
-                tables = survey.run(
-                    plan.config,
-                    built.collectors,
-                    archive,
-                    started=started,
-                    config_sha256=hashlib.sha256(source.text).hexdigest(),
-                    resolved=self._resolved(plan.config),
-                )
-            finally:
-                # Whatever the survey opened (a collector's session, the requester's
-                # connections) ends with it, however it ends.
-                for broken in built.close():
-                    warnings.append(plugin_warning(broken))
-                    emit({"kind": "warning", "reason": str(warnings[-1]),
-                          "fix": warnings[-1].fix})  # fmt: skip
-            failed_tables = [t for t in tables if t.status == "error"]
-            span.set("recon.tables", len(tables))
-            span.set("recon.tables.failed", len(failed_tables))
-            span.set("recon.records", sum(t.records for t in tables))
-            if not survey.finished:
-                span.fail("store", "the archive could not be finished")
-            elif (kind := failure_kind(tables)) is not None:
-                span.fail(kind, f"{len(failed_tables)} of {len(tables)} table(s) failed")
-            warnings += survey.warnings
-            for unreadable in self._query.unreadable(archive):
-                warnings.append(unreadable)
-                emit({"kind": "table_warning", "name": unreadable.got,
-                      "reason": str(unreadable), "fix": unreadable.fix})  # fmt: skip
-        return SurveyDocument(
-            mission=name,
-            archive=str(archive),
-            status="incomplete" if failed_tables or not survey.finished else "ok",
-            tables=tables,
-            warnings=[w.document() for w in warnings + _dropped(telemetry)],
-        )
+                    survey = Survey(
+                        self._archives, self._clock, self._version, telemetry, on_event,
+                        extracts=extracts, kinds=kinds, deadline=deadline,
+                    )  # fmt: skip
+                    tables = survey.run(
+                        plan.config,
+                        built.collectors,
+                        archive,
+                        started=started,
+                        config_sha256=hashlib.sha256(source.text).hexdigest(),
+                        resolved=self._resolved(plan.config),
+                    )
+                finally:
+                    # Whatever the survey opened (a collector's session, the requester's
+                    # connections) ends with it, however it ends.
+                    for broken in built.close():
+                        warnings.append(plugin_warning(broken))
+                        emit({"kind": "warning", "reason": str(warnings[-1]),
+                              "fix": warnings[-1].fix})  # fmt: skip
+                failed_tables = [t for t in tables if t.status == "error"]
+                span.set("recon.tables", len(tables))
+                span.set("recon.tables.failed", len(failed_tables))
+                span.set("recon.records", sum(t.records for t in tables))
+                if not survey.finished:
+                    span.fail("store", "the archive could not be finished")
+                elif (kind := failure_kind(tables)) is not None:
+                    span.fail(kind, f"{len(failed_tables)} of {len(tables)} table(s) failed")
+                warnings += survey.warnings
+                for unreadable in self._query.unreadable(archive):
+                    warnings.append(unreadable)
+                    emit({"kind": "table_warning", "name": unreadable.got,
+                          "reason": str(unreadable), "fix": unreadable.fix})  # fmt: skip
+            return SurveyDocument(
+                mission=name,
+                archive=str(archive),
+                status="incomplete" if failed_tables or not survey.finished else "ok",
+                tables=tables,
+                warnings=[w.document() for w in warnings + _dropped(telemetry)],
+            )
+        finally:
+            self._archives.release(archive)
 
     def _prepare(
         self, name: str, config: Path | None, replace: bool
@@ -395,7 +402,7 @@ class Recon:
         return ArchiveStatus(
             id=archive.name,
             path=str(archive),
-            state="incomplete" if self._archives.is_incomplete(archive) else "ok",
+            state=_STATES[self._archives.state(archive)],
             started_at=_text(meta.get("started_at")),
             finished_at=_text(meta.get("timestamp")),
             format_version=meta.get("format_version"),
@@ -439,7 +446,7 @@ class Recon:
             mission=name,
             archive=str(path),
             archive_id=path.name,
-            state="incomplete" if self._archives.is_incomplete(path) else "ok",
+            state=_STATES[self._archives.state(path)],
             columns=columns,
             rows=rows,
             count=len(rows),
@@ -482,6 +489,15 @@ class Recon:
             return record_hook_payload(self._missions.capture_log(name), payload)
         except ConfigError as exc:
             raise ConfigError(str(exc), fix="run recon capture from a PostToolUse hook") from exc
+
+
+#: An archive's state as the documents say it: the store's ``complete`` is ``ok``, the word
+#: every recon document has used for an archive with every table.
+_STATES: dict[WriteState, ArchiveState] = {
+    "writing": "writing",
+    "complete": "ok",
+    "incomplete": "incomplete",
+}
 
 
 def _unique(columns: list[str]) -> list[str]:

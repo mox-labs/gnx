@@ -4,7 +4,9 @@ An archive is one survey's output: a table per collector and source, a ``meta.ya
 survey's event log and, unless the survey finished with every table, an incomplete marker.
 The marker is written when the archive is created and removed only once the survey has
 finished, so a survey that dies at any point, however it was stopped, leaves an archive
-that reads incomplete.
+that reads incomplete. While a survey writes its archive it holds it, from :meth:`create`
+to :meth:`ArchiveStore.release`, so a reader tells an archive being written from one whose
+writer stopped without finishing it (:data:`WriteState`).
 How it is stored (a directory of JSONL files) is :class:`ArchiveStore`'s decision; what
 engine answers SQL over it, and the sandbox that engine runs in, is :class:`ArchiveQuery`'s.
 The engine reads the tables where the store says they are (:meth:`ArchiveStore.tables`), and
@@ -15,7 +17,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Sequence
@@ -35,6 +37,12 @@ ARCHIVE_ID_FORMAT = "%Y-%m-%d-%H%M%S-%f"
 #: The survey's ``recon.v1.event`` lines, beside ``meta.yaml``; never a table.
 EVENT_LOG_NAME = "telemetry.jsonl"
 
+#: Where the writing of an archive stands. ``writing``: a survey holds it and is writing it.
+#: ``complete``: its survey finished it with every table. ``incomplete``: no survey holds it
+#: and it was never completed (a table failed, or its survey was stopped or died). A reader
+#: who sees ``writing`` and reads again later sees it change; the other two never change.
+WriteState = Literal["writing", "complete", "incomplete"]
+
 _NOT_IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]")
 
 
@@ -53,18 +61,36 @@ class StoredTable:
     holds its records, one JSON object per line. ``empty`` says it collected none: then the
     file is not to be read as records, and ``columns`` are the ones it keeps, its collector's
     ``normalize:`` spec's when that was known.
+
+    ``sealed`` is false for a table still being written, or left unfinished by a survey that
+    died while writing it: its records are provisional, and ``file`` is where they will be
+    once it is sealed (until then, where they are is the store's to know). A sealed table
+    gains and loses no line. How it ended is the survey's to say (``meta.yaml``, and the
+    ``recon.collect`` end event), not the table's.
     """
 
     output: str
     file: Path
     empty: bool = False
     columns: tuple[str, ...] = ()
+    sealed: bool = True
 
 
 class ArchiveStore(Protocol):
     def create(self, mission_dir: Path, archive_id: str) -> Path:
         """A new archive of the mission, named ``archive_id``, holding only the incomplete
-        marker."""
+        marker, and held by this writer until :meth:`release`: its state is ``writing``."""
+        ...
+
+    def release(self, archive: Path) -> None:
+        """Let go of an archive :meth:`create` made, once the survey is done writing it,
+        however it ended: its state is then ``complete`` or ``incomplete``. An archive this
+        store does not hold is left as it is. A writer that dies lets go of it too."""
+        ...
+
+    def state(self, archive: Path) -> WriteState:
+        """Where the writing of ``archive`` stands, as any reader, in any process on this
+        host, sees it now."""
         ...
 
     def write_table(
@@ -113,11 +139,10 @@ class ArchiveStore(Protocol):
         ``format_version`` is None when it is missing or unreadable."""
         ...
 
-    def is_incomplete(self, archive: Path) -> bool: ...
-
     def tables(self, archive: Path) -> list[StoredTable]:
-        """The archive's tables, by output name. Raises QueryError when the archive's tables
-        are in a layout this store does not read (one a newer recon wrote)."""
+        """The archive's tables, by output name, those not yet sealed included. Raises
+        QueryError when the archive's tables are in a layout this store does not read (one a
+        newer recon wrote)."""
         ...
 
 
@@ -133,7 +158,8 @@ class Rows:
 
 class ArchiveQuery(Protocol):
     def execute(self, archive: Path, sql: str) -> Rows:
-        """Run ``sql`` against the archive's tables.
+        """Run ``sql`` against the archive's sealed tables: a table not yet sealed is not one
+        SQL knows.
 
         The SQL is not trusted: it reads nothing outside the mission's archives, loads no
         extension and reaches no network. A table that cannot be read as one does not stop
