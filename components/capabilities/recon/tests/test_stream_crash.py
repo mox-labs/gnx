@@ -1,11 +1,13 @@
 """A stream killed mid-window, then resumed (ruling B6; B10 #4), and a long stream's memory
 (B10 #11).
 
-The kill is a real SIGKILL of a ``recon stream`` process, at a line a seeded generator picks,
-while the file it follows ends mid-line. Afterwards the sealed windows are unchanged, the
-window being written reads ``incomplete`` and keeps every whole line it had, and the resumed
-stream goes on after the last of them: for a source with positions, the windows together hold
-every line exactly once. For a source without positions, the resumed window records the gap.
+The kill is a real SIGKILL of a ``recon stream`` process, once its windows hold a count of
+lines a seeded generator picks, while its source is still being written: a thread appends to
+the file it follows, and a command prints for ever. Afterwards the sealed windows are
+unchanged, the window being written reads ``incomplete`` and keeps every whole line it had,
+and the resumed stream goes on after the last of them: for a source with positions, the
+windows together hold every line exactly once. For a source without positions, the resumed
+window records the gap, from the last sealed window's close to its own open.
 """
 
 from __future__ import annotations
@@ -17,8 +19,10 @@ import random
 import signal
 import subprocess
 import sys
+import threading
 import time
 import tracemalloc
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -74,8 +78,9 @@ def _digest(window: Path) -> str:
     return digest.hexdigest()
 
 
-def _killed_at(stream: Path, table: str, lines: int, command: list[str], cwd: Path) -> None:
-    """Start ``recon stream``, and SIGKILL it once ``lines`` records are in its windows."""
+def _killed_at(stream: Path, table: str, lines: int, command: list[str], cwd: Path) -> datetime:
+    """Start ``recon stream``, and SIGKILL it once ``lines`` records are in its windows; when
+    it was killed."""
     process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL)  # fmt: skip
     try:
@@ -84,11 +89,43 @@ def _killed_at(stream: Path, table: str, lines: int, command: list[str], cwd: Pa
             assert process.poll() is None, "the stream ended before it was killed"
             assert time.monotonic() - started < 30, "the stream never wrote enough"
             time.sleep(0.02)
+        killed = datetime.now(UTC)
         os.kill(process.pid, signal.SIGKILL)
         process.wait(10)
     finally:
         if process.poll() is None:
             process.kill()
+    return killed
+
+
+class _Appender:
+    """A file written to as it is followed: a line ``{"seq": n}`` every few milliseconds, on
+    a thread, until stopped; stopped, it leaves the file ending mid-line."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._stopped = threading.Event()
+        self.lines = 0
+        self._thread = threading.Thread(target=self._append, daemon=True)
+
+    def _append(self) -> None:
+        with open(self._path, "a") as f:
+            while not self._stopped.is_set():
+                f.write(json.dumps({"seq": self.lines}) + "\n")
+                f.flush()
+                self.lines += 1
+                time.sleep(0.004)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> int:
+        """Stop appending, and begin one more line without ending it; the lines written whole."""
+        self._stopped.set()
+        self._thread.join(10)
+        with open(self._path, "a") as f:
+            f.write(f'{{"seq": {self.lines}, "pad": "xx')
+        return self.lines
 
 
 class TestKilledThenResumed:
@@ -144,6 +181,51 @@ class TestKilledThenResumed:
         [gap] = first_resumed["stream"]["sources"][0]["gaps"]
         assert (gap["from"], gap["resumed"]) == (None, True)
 
+    def test_a_source_still_being_written_when_killed_resumes_exactly_once(
+        self, tmp_path: Path
+    ) -> None:
+        """Review item 16 (Ixian): the kill comes while a thread still appends to the file,
+        once the windows hold a seeded count of lines, so it lands wherever the stream is:
+        in a window, sealing one, or between two. Wherever, the sealed windows are left as
+        they were and the resumed stream holds every line once, in order."""
+        kill_at = random.Random(20261026).randint(3 * K, 6 * K)
+        log = tmp_path / "app.log"
+        log.write_text("")
+        stream = _project(
+            tmp_path,
+            {"name": "log", "type": "tail", "source": "app", "start": "beginning",
+             "interval": 0.02, "window": {"records": K}, "retain": "all"},
+            [{"name": "app", "type": "file", "url": "app.log"}],
+        )  # fmt: skip
+        command = [sys.executable, "-c", CLI, "stream", "m", "--collector", "log", "--forever"]
+        appender = _Appender(log)
+        appender.start()
+        try:
+            _killed_at(stream, "log", kill_at, command, tmp_path)
+        finally:
+            whole = appender.stop()  # the source ends mid-line after the kill
+
+        store = ArchiveFiles(SystemClock())
+        windows = store.archives(tmp_path / ".recon" / "m", stream="log")
+        assert all(store.state(w) == "complete" for w in windows[:-1])
+        before = {w.name: _digest(w) for w in windows if store.state(w) == "complete"}
+        kept = sum(len(_rows(w, "log")) for w in windows)
+        assert kill_at <= kept <= whole, "the windows hold whole lines the source had"
+        # Finish the line the source was cut in, and write on to a whole number of windows'
+        # worth past what was kept, so the resumed stream ends on a window's last record.
+        resumed = -(-(whole + 1 - kept) // K)
+        total = kept + resumed * K
+        with open(log, "a") as f:
+            f.write('"}\n' + "".join(json.dumps({"seq": n}) + "\n"
+                                     for n in range(whole + 1, total)))  # fmt: skip
+
+        root({}, project=tmp_path).stream("m", "log", windows=resumed)
+
+        after = store.archives(tmp_path / ".recon" / "m", stream="log")
+        assert {w.name: _digest(w) for w in after if w.name in before} == before
+        seqs = [row["seq"] for w in after for row in _rows(w, "log")]
+        assert seqs == list(range(total)), "every line once, in order"
+
     def test_a_source_without_positions_records_the_gap(self, tmp_path: Path) -> None:
         printer = (
             "import itertools, json, time\n"
@@ -160,8 +242,9 @@ class TestKilledThenResumed:
             [{"name": "here", "type": "local", "url": ".", "timeout": 3600}],
         )  # fmt: skip
         command = [sys.executable, "-c", CLI, "stream", "m", "--collector", "count", "--forever"]
+        kill_at = random.Random(20261025).randint(2 * K, 5 * K)
 
-        _killed_at(stream, "count", 2 * K + 3, command, tmp_path)
+        killed = _killed_at(stream, "count", kill_at, command, tmp_path)
         store = ArchiveFiles(SystemClock())
         last = store.archives(tmp_path / ".recon" / "m", stream="count")[-1]
         sealed = store.read_meta(last).get("stream")
@@ -175,6 +258,12 @@ class TestKilledThenResumed:
         # windows), and not when its writer died in it.
         assert gap["from"] == (sealed["closed_at"] if sealed else None)
         assert meta["stream"]["previous"] == last.name
+        # Until when is the resumed run's start: after the kill, at its own window's open.
+        to, opened = _instant(gap["to"]), _instant(meta["stream"]["opened_at"])
+        assert to <= opened
+        assert killed < to, "no process read the source from the kill on"
+        if gap["from"] is not None:
+            assert _instant(gap["from"]) <= to
 
 
 @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
@@ -238,6 +327,11 @@ def test_a_stream_of_a_quiet_command_leaves_no_process_behind(tmp_path: Path) ->
     assert not [w for w in document.warnings if w["kind"] == "source_stuck"]
 
 
+def _instant(value: Any) -> datetime:
+    """A time from meta.yaml, which YAML may have read as a datetime already."""
+    return value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+
+
 def _running(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -247,8 +341,9 @@ def _running(pid: int) -> bool:
 
 
 def test_memory_stays_flat_over_a_long_stream(tmp_path: Path) -> None:
-    """B10 #11: 60 windows of 500 records, at a modest rate on a virtual clock; what the
-    stream holds does not grow with the windows it has sealed."""
+    """B10 #11: 60 windows of 500 records, at a modest rate on a virtual clock, each window
+    captured (``preserve_raw``, review item 17); what the stream holds does not grow with the
+    windows it has sealed, and nor do its threads."""
     clock = VirtualClock()
 
     class Long(Script):
@@ -258,9 +353,11 @@ def test_memory_stays_flat_over_a_long_stream(tmp_path: Path) -> None:
                 yield {"seq": n, "text": "x" * 100}
 
     held: list[int] = []
+    threads: list[int] = []
 
     def measure(outcome: WindowOutcome) -> None:
         held.append(tracemalloc.get_traced_memory()[0])
+        threads.append(threading.active_count())
 
     tracemalloc.start()
     try:
@@ -270,12 +367,20 @@ def test_memory_stays_flat_over_a_long_stream(tmp_path: Path) -> None:
         stream = Stream(store, clock, "test", telemetry=_telemetry(store, events))
         source = Long(clock, [])
         run = stream.run(
-            tmp_path, plan, source.records, dict, close=source.close, on_window=measure
-        )
+            tmp_path, plan, source.records, dict, close=source.close, on_window=measure,
+            preserve_raw=True,
+        )  # fmt: skip
     finally:
         tracemalloc.stop()
 
     assert run.windows == 60
+    assert all((Path(o) / "captures.jsonl").exists() for o in _windows(tmp_path)), "captured"
+    assert max(threads) == threads[0], f"threads by window: {threads}"
     early, late = max(held[5:15]), max(held[-10:])
     assert late - early < 1_000_000, f"held {early:,} bytes early, {late:,} late"
     assert len(events) == 60, "one event a window, and nothing kept of each but that"
+
+
+def _windows(project: Path) -> list[Path]:
+    home = project / "streams" / "s"
+    return [w for w in sorted(home.iterdir()) if w.is_dir() and not w.name.startswith(".")]
