@@ -12,6 +12,7 @@ window records the gap, from the last sealed window's close to its own open.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -29,16 +30,20 @@ from typing import TYPE_CHECKING, Any
 import pytest
 import yaml
 
+import recon
 from recon.adapters._out.archive_files import ArchiveFiles
+from recon.adapters._out.cli_collector import CliCollector, PopenRunner
 from recon.adapters._out.system_clock import SystemClock
 from recon.application.stream import Stream
 from recon.composition import root
+from recon.domain.errors import CollectionError
+from recon.domain.models import CollectorEntry, SourceEntry
 from recon.domain.stream import BufferSpec, WindowSpec
 from tests.recon_fakes import VirtualClock
 from tests.test_streams import Script, _plan, _telemetry
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator, Iterator
 
     from recon.domain.documents import WindowOutcome
 
@@ -330,6 +335,86 @@ def test_a_stream_of_a_quiet_command_leaves_no_process_behind(tmp_path: Path) ->
 def _instant(value: Any) -> datetime:
     """A time from meta.yaml, which YAML may have read as a datetime already."""
     return value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+
+
+class TestACommandStoppedBeforeItStarts:
+    """Erlang's re-check: a command's lines start it on their first read, so a stop that lands
+    after the collector looked for one but before the command was started found nothing to
+    kill, and the command then ran on, orphaned. Neither window leaves a process now."""
+
+    COMMAND = 'echo $$ > "{pid}"; exec sleep 600'
+
+    def test_a_command_killed_before_its_first_read_is_killed_as_it_starts(
+        self, tmp_path: Path
+    ) -> None:
+        pid = tmp_path / "pid"
+        lines = PopenRunner().run_lines(self.COMMAND.format(pid=pid), tmp_path, 3600)
+        lines.kill()  # type: ignore[attr-defined]
+
+        started = time.monotonic()
+        with contextlib.suppress(CollectionError, StopIteration):
+            next(lines)
+
+        assert time.monotonic() - started < 5, "the command ran on after its kill"
+        _not_left_running(pid)
+
+    def test_a_collector_closed_before_its_command_runs_leaves_no_process(
+        self, tmp_path: Path
+    ) -> None:
+        pid = tmp_path / "pid"
+        collector: CliCollector
+
+        class ClosedMeanwhile(PopenRunner):
+            """The stream stops between the collector's look for a stop and its command."""
+
+            def run_lines(self, *args: Any, **kwargs: Any) -> Generator[str, None, int]:
+                collector.close()
+                return super().run_lines(*args, **kwargs)
+
+        collector = CliCollector(ClosedMeanwhile())
+        entry = CollectorEntry.model_validate(
+            {"name": "quiet", "type": "cli", "source": "here",
+             "run": self.COMMAND.format(pid=pid)}
+        )  # fmt: skip
+        source = SourceEntry.model_validate(
+            {"name": "here", "type": "local", "url": str(tmp_path), "timeout": 3600}
+        )
+
+        started = time.monotonic()
+        with contextlib.suppress(CollectionError):
+            assert list(collector.collect(entry, source)) == []
+
+        assert time.monotonic() - started < 5
+        _not_left_running(pid)
+
+    def test_a_stream_stopped_before_it_starts_leaves_no_process(self, tmp_path: Path) -> None:
+        pid = tmp_path / "pid"
+        _project(
+            tmp_path,
+            {"name": "quiet", "type": "cli", "source": "here",
+             "run": self.COMMAND.format(pid=pid), "window": {"seconds": 60}, "retain": "all"},
+            [{"name": "here", "type": "local", "url": ".", "timeout": 3600}],
+        )  # fmt: skip
+        stop = recon.StreamStop()
+        stop.ask()
+
+        started = time.monotonic()
+        root({}, project=tmp_path).stream("m", "quiet", windows=1, stop=stop)
+
+        assert time.monotonic() - started < 10
+        _not_left_running(pid)
+
+
+def _not_left_running(pid_file: Path) -> None:
+    """The command whose shell wrote ``pid_file`` (if it got that far) is not running."""
+    time.sleep(0.2)  # a shell killed as it started may still be writing its pid
+    if not pid_file.exists() or not pid_file.read_text().strip():
+        return
+    pid = int(pid_file.read_text())
+    started = time.monotonic()
+    while _running(pid):
+        assert time.monotonic() - started < 5, "the command outlived its stop"
+        time.sleep(0.02)
 
 
 def _running(pid: int) -> bool:
