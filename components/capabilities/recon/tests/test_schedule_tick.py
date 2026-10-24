@@ -20,6 +20,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 import pytest
 import yaml
@@ -38,6 +39,8 @@ from tests.test_mission_lock import Slow
 from tests.test_schedule_install import FakeRunner, Host
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from recon.composition import Recon
     from recon.domain.clock import Clock
 
@@ -57,12 +60,18 @@ def _mission(project: Path, *, missed: str = "once", type_: str = "slow") -> Pat
     return mission
 
 
-def _root(project: Path, host: Host, clock: Clock, slow: Slow | None = None) -> Recon:
+def _root(
+    project: Path,
+    host: Host,
+    clock: Clock,
+    slow: Slow | None = None,
+    local: Callable[[datetime], datetime] = lambda at: at,
+) -> Recon:
     return root(
         {"PATH": "/usr/bin:/bin"}, project=project, clock=clock,
         plugins=plugins_with(slow=slow or _going()), schedulers=host.scheduler,
         schedule_host=ScheduleHost("/opt/recon/bin/recon", ("/usr/bin", "/bin")),
-        local=lambda at: at,
+        local=local,
     )  # fmt: skip
 
 
@@ -227,6 +236,100 @@ class TestStaleIsItsOwnKind:
         assert EXIT_MEANINGS["conflict"] == (
             "init, or survey -c, would overwrite a different mission config"
         )
+
+
+NEW_YORK = ZoneInfo("America/New_York")
+
+
+def _new_york(at: datetime) -> datetime:
+    return at.astimezone(NEW_YORK)
+
+
+class TestADaylightSavingChange:
+    """Lateness, and so the missed-tick grace, is the seconds that passed: UTC epoch time,
+    never the difference of two wall-clock readings. On 2026-11-01 New York's clocks fall
+    back from 02:00 EDT to 01:00 EST: a tick due at 00:MM EDT and started at 01:30 EST
+    started 2.5 h, not 1.5 h, after it was due."""
+
+    EVERY = 10800
+    #: When the clocks are back at 01:30, local time, a second time: 06:30 UTC.
+    NOW = datetime(2026, 11, 1, 6, 30, tzinfo=UTC)
+
+    def _mission(self, project: Path, missed: str) -> tuple[Path, int]:
+        """A mission with ``every: 10800``, and its offset, which this test needs under an
+        hour: the tick due at 00:MM EDT (04:MM UTC) is then the latest one at 01:30."""
+        _mission(project, missed=missed)
+        config = project / ".recon" / "m" / "config.yaml"
+        config.write_text(config.read_text().replace("every: 600", f"every: {self.EVERY}"))
+        offset = offset_s("m", self.EVERY)
+        assert offset < 3600, "a mission name whose ticks fall in the first hour"
+        return project / ".recon" / "m", offset
+
+    def _install(self, project: Path, host: Host) -> str:
+        clock = FixedClock(datetime(2026, 10, 31, 20, 0, tzinfo=UTC))
+        installed = _root(project, host, clock, local=_new_york).schedule_install(
+            "m", platform="launchd"
+        )
+        return installed.config_sha256 or ""
+
+    def test_a_tick_across_the_change_is_as_late_as_the_seconds_that_passed(
+        self, tmp_path: Path, host: Host
+    ) -> None:
+        _, offset = self._mission(tmp_path, "once")
+        digest = self._install(tmp_path, host)
+        clock = FixedClock(self.NOW)
+
+        tick = _root(tmp_path, host, clock, local=_new_york).schedule_tick(
+            "m", config_sha256=digest
+        )
+
+        due = datetime(2026, 11, 1, 4, 0, tzinfo=UTC) + timedelta(seconds=offset)
+        assert tick.late_s == (self.NOW - due).total_seconds() == 9000 - offset
+        assert tick.scheduled_at == due.astimezone(NEW_YORK).isoformat()
+        assert tick.scheduled_at is not None and tick.scheduled_at.endswith("-04:00")
+
+    def test_status_is_as_late_as_the_seconds_that_passed_and_the_next_tick_is_est(
+        self, tmp_path: Path, host: Host
+    ) -> None:
+        _, offset = self._mission(tmp_path, "once")
+        self._install(tmp_path, host)
+
+        status = _root(tmp_path, host, FixedClock(self.NOW), local=_new_york).schedule_status(
+            "m", platform="launchd"
+        )
+
+        [listed] = status.schedules
+        assert listed.late_s == 9000 - offset
+        after = datetime(2026, 11, 1, 8, 0, tzinfo=UTC) + timedelta(seconds=offset)
+        assert listed.next_at == after.astimezone(NEW_YORK).isoformat()
+        assert listed.next_at is not None and listed.next_at.endswith("-05:00")
+
+    def test_skip_judges_the_grace_by_the_seconds_that_passed(
+        self, tmp_path: Path, host: Host
+    ) -> None:
+        mission, offset = self._mission(tmp_path, "skip")
+        digest = self._install(tmp_path, host)
+
+        tick = _root(tmp_path, host, FixedClock(self.NOW), local=_new_york).schedule_tick(
+            "m", config_sha256=digest
+        )
+
+        assert tick.skipped_by == "missed" and tick.late_s == 9000 - offset
+        [line] = _log(mission)
+        assert line["late_s"] == 9000 - offset
+
+    def test_a_tick_on_time_after_the_change_is_on_time(self, tmp_path: Path, host: Host) -> None:
+        """The first tick after the change, 03:MM EST, started 20 s after it: on time, run."""
+        _, offset = self._mission(tmp_path, "skip")
+        digest = self._install(tmp_path, host)
+        due = datetime(2026, 11, 1, 8, 0, tzinfo=UTC) + timedelta(seconds=offset)
+        clock = FixedClock(due + timedelta(seconds=20))
+
+        tick = _root(tmp_path, host, clock, local=_new_york).schedule_tick(
+            "m", config_sha256=digest
+        )
+
+        assert tick.survey is not None and tick.late_s == 20.0
 
 
 class TestMissedTicks:

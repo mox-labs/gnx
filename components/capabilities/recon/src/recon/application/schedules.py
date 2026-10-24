@@ -11,7 +11,7 @@ a schedule as installed from one changed or gone since.
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
@@ -262,9 +262,12 @@ class Schedules:
         last = _outcome(lines[-1]) if lines else None
         next_at, late_s = None, None
         if schedule is not None:
-            now = self._local(self._clock.now())
-            slot = _due(schedule.every, offset_s(name, schedule.every), now)
-            next_at = slot + timedelta(seconds=schedule.every)
+            now = self._clock.now()
+            slot = self._slot(schedule.every, offset_s(name, schedule.every), now)
+            next_at = self._instant(
+                slot.replace(tzinfo=None) + timedelta(seconds=schedule.every),
+                slot + timedelta(seconds=schedule.every),
+            )
             if installed and record is not None:
                 late_s = _late(slot, now, last, record.get("installed_at"))
         return ScheduleStatus(
@@ -307,7 +310,7 @@ class Schedules:
         every, offset = record.get("every"), record.get("offset_s")
         slot = None
         if isinstance(every, int) and isinstance(offset, int):
-            slot = _due(every, offset, started)
+            slot = self._slot(every, offset, started)
         if hashlib.sha256(text).hexdigest() != config_sha256:
             self._log(mission, slot, started, "stale", None, "config_changed")
             raise ReconError(
@@ -321,8 +324,8 @@ class Schedules:
         _, plan = self._prepare(name)
         schedule = plan.config.schedule if plan.config is not None else None
         if schedule is not None:
-            slot = _due(schedule.every, offset_s(name, schedule.every), started)
-        late_s = (started - slot).total_seconds() if slot is not None else None
+            slot = self._slot(schedule.every, offset_s(name, schedule.every), started)
+        late_s = _seconds(started, slot) if slot is not None else None
         if schedule is not None and schedule.missed == "skip" and (late_s or 0) > MISSED_GRACE_S:
             self._log(mission, slot, started, "ok", None, "missed")
             return TickDocument(
@@ -368,9 +371,29 @@ class Schedules:
             kind=kind,
             archive=archive,
             skipped_by=skipped,
-            late_s=(started - slot).total_seconds() if slot is not None else None,
+            late_s=_seconds(started, slot) if slot is not None else None,
         )
         self._store.append(mission, line.document())
+
+    def _slot(self, every: int, offset: int, now: datetime) -> datetime:
+        """The tick due last at ``now``: the latest time of the schedule's grid at or before
+        it. The grid is the scheduler's, local wall-clock times; the slot is the instant that
+        time names, in local time with the offset it had then, so a daylight-saving change
+        between it and ``now`` counts as the hour that passed or did not."""
+        wall_now = self._local(now).replace(tzinfo=None)
+        wall = due(every, offset, wall_now)
+        return self._instant(wall, now - (wall_now - wall))
+
+    def _instant(self, wall: datetime, guess: datetime) -> datetime:
+        """The instant the local wall-clock time ``wall`` names, found from ``guess`` (within
+        an hour of it) by moving it until the local clock reads ``wall``."""
+        at = guess
+        for _ in range(3):
+            drift = self._local(at).replace(tzinfo=None) - wall
+            if not drift:
+                break
+            at -= drift
+        return self._local(at)
 
     def _schedule_of(self, name: str) -> ScheduleSpec | None:
         try:
@@ -380,9 +403,10 @@ class Schedules:
         return plan.config.schedule if plan.config is not None else None
 
 
-def _due(every: int, offset: int, now: datetime) -> datetime:
-    """The tick due last at ``now`` (local, with its zone): the grid is wall-clock time."""
-    return due(every, offset, now.replace(tzinfo=None)).replace(tzinfo=now.tzinfo)
+def _seconds(later: datetime, earlier: datetime) -> float:
+    """The seconds from ``earlier`` to ``later``, in UTC epoch time: never the difference of
+    two wall-clock readings, which a daylight-saving change between them would skew."""
+    return (later.astimezone(UTC) - earlier.astimezone(UTC)).total_seconds()
 
 
 def _iso(at: datetime | None) -> str | None:
@@ -411,11 +435,11 @@ def _late(slot: datetime, now: datetime, last: TickOutcome | None, installed_at:
     """How late the schedule is at ``now``: the seconds since ``slot``, the tick due last,
     when no tick of it is logged and it fell after the schedule was installed; else 0."""
     scheduled = last.scheduled if last is not None else None
-    if scheduled is not None and datetime.fromisoformat(scheduled) >= slot:
+    if scheduled is not None and _seconds(datetime.fromisoformat(scheduled), slot) >= 0:
         return 0.0
-    if isinstance(installed_at, str) and datetime.fromisoformat(installed_at) > slot:
+    if isinstance(installed_at, str) and _seconds(datetime.fromisoformat(installed_at), slot) > 0:
         return 0.0
-    return (now - slot).total_seconds()
+    return _seconds(now, slot)
 
 
 def _skipped(name: str, busy: ReconError, skips: int) -> ReconError:
