@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from recon.domain.archives import READ_LIMIT, READ_MAX_BYTES, WATCH_INTERVAL_S
+from recon.domain.archives import READ_MAX_BYTES, READ_MAX_RECORDS, WATCH_INTERVAL_S
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -175,14 +175,14 @@ def read_since(
     *,
     archive: str | None = None,
     stream: str | None = None,
-    limit: int = READ_LIMIT,
+    max_records: int = READ_MAX_RECORDS,
     max_bytes: int = READ_MAX_BYTES,
     root: Path | None = None,
 ) -> RecordsSince:
     """The records of the latest archive of ``name``, or the archive named, written since
     ``cursor``: every record from the first when there is none. ``recon.v1.records-since``.
 
-    Each read returns whole records only, at most ``limit`` of them and ``max_bytes`` of
+    Each read returns whole records only, at most ``max_records`` of them and ``max_bytes`` of
     their lines (1 MiB), at least one, from the tables sealed and the one being written
     alike, ``more`` when a bound cut it, and a ``cursor`` to pass to the next read of the
     same archive (name it with ``archive``: the read's ``archive``). The cursor is opaque.
@@ -190,13 +190,13 @@ def read_since(
     tables read to their end since (sealed, every record read: what was read of them
     stands) and ``retracted`` those that failed, their records void. Reads
     write nothing, so a reader changes no byte of the archive. Raises UsageError for a
-    cursor recon did not give for that archive, or a ``limit`` or ``max_bytes`` below 1.
+    cursor recon did not give for that archive, or a ``max_records`` or ``max_bytes`` below 1.
 
     With ``stream``, a read of that stream's latest window (or the window ``archive`` names,
     or where ``cursor`` left off): ``archive`` is the window read, and a read that ends a
     sealed window with a later one there returns that one's cursor and ``more``."""
-    return _root(root).read_since(name, cursor, archive=archive, stream=stream, limit=limit,
-                                  max_bytes=max_bytes)  # fmt: skip
+    return _root(root).read_since(name, cursor, archive=archive, stream=stream,
+                                  max_records=max_records, max_bytes=max_bytes)  # fmt: skip
 
 
 def watch(
@@ -206,7 +206,7 @@ def watch(
     archive: str | None = None,
     stream: str | None = None,
     interval_s: float = WATCH_INTERVAL_S,
-    limit: int = READ_LIMIT,
+    max_records: int = READ_MAX_RECORDS,
     max_bytes: int = READ_MAX_BYTES,
     root: Path | None = None,
 ) -> Iterator[RecordsSince]:
@@ -221,8 +221,8 @@ def watch(
     names) into every window after it; ends once nothing extends the stream and its last
     window is read to its end."""
     return _root(root).watch(
-        name, cursor, archive=archive, stream=stream, interval_s=interval_s, limit=limit,
-        max_bytes=max_bytes,
+        name, cursor, archive=archive, stream=stream, interval_s=interval_s,
+        max_records=max_records, max_bytes=max_bytes,
     )  # fmt: skip
 
 

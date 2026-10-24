@@ -45,7 +45,7 @@ EVENT_LOG_NAME = "telemetry.jsonl"
 #: The most records one read of an archive returns unless told otherwise
 #: (:meth:`ArchiveStore.read_since`): enough to keep up with a survey read once a second,
 #: few enough that a read of a large archive's start stays small.
-READ_LIMIT = 1000
+READ_MAX_RECORDS = 1000
 
 #: The most bytes of records one read of an archive returns unless told otherwise: it stops
 #: before the record that would pass it, and always returns at least one record.
@@ -278,13 +278,13 @@ class ArchiveStore(Protocol):
         ...
 
     def read_since(
-        self, archive: Path, cursor: str | None, *, limit: int, max_bytes: int
+        self, archive: Path, cursor: str | None, *, max_records: int, max_bytes: int
     ) -> NewRecords:
         """The records of ``archive`` written since ``cursor`` (None: from the start), at
-        most ``limit`` of them and ``max_bytes`` of their lines, whole records only and at
+        most ``max_records`` of them and ``max_bytes`` of their lines, whole records only and at
         least one, from its sealed tables and the ones being written alike, table by table
         in output-name order; ``more`` when a bound cut it. Raises UsageError for a cursor
-        this store did not give for this archive, and for a ``limit`` or ``max_bytes``
+        this store did not give for this archive, and for a ``max_records`` or ``max_bytes``
         below 1."""
         ...
 

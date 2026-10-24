@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import dataclasses
+import inspect
 import json
 import os
 import threading
@@ -139,7 +140,9 @@ class TestReadSince:
         ], "an empty table's sentinel line is not a record"
         assert (read.exhausted, read.state, read.count) == (["a", "b"], "complete", 2)
 
-    def test_limit_bounds_a_read_and_the_cursor_goes_on_from_there(self, tmp_path: Path) -> None:
+    def test_max_records_bounds_a_read_and_the_cursor_goes_on_from_there(
+        self, tmp_path: Path
+    ) -> None:
         lines = "".join(f'{{"n": {n}}}\\n' for n in range(5))
         run_survey({"collectors": [{"name": "t", "type": "cli", "run": f"printf '{lines}'"}]},
                    tmp_path)  # fmt: skip
@@ -147,7 +150,7 @@ class TestReadSince:
         exhausted: list[list[str]] = []
         cursor = None
         for _ in range(3):
-            read = recon.read_since("m", cursor, limit=2, root=tmp_path)
+            read = recon.read_since("m", cursor, max_records=2, root=tmp_path)
             seen.append([r["record"]["n"] for r in read.table_records])
             exhausted.append(read.exhausted)
             cursor = read.cursor
@@ -184,7 +187,7 @@ class TestAReadIsBoundedInBytes:
 
     def test_the_record_limit_cuts_a_read_too_and_says_so(self, tmp_path: Path) -> None:
         project = self._archive(tmp_path, [1, 1, 1])
-        read = recon.read_since("m", limit=2, root=project)
+        read = recon.read_since("m", max_records=2, root=project)
         assert (read.count, read.more) == (2, True)
 
     def test_a_bound_below_one_byte_is_refused(self, tmp_path: Path) -> None:
@@ -216,7 +219,7 @@ def test_watch_finds_its_archive_once_not_at_every_read(tmp_path: Path) -> None:
 
     clock = FixedClock()
     watching = root({}, project=tmp_path, clock=clock, archives=Counting(clock))
-    reads = list(watching.watch("m", limit=1))
+    reads = list(watching.watch("m", max_records=1))
     assert len(reads) == 3 and len(listed) == 1
 
 
@@ -229,10 +232,10 @@ class TestWholeLinesOnly:
         archive = store.create(tmp_path, "2026-01-02-030405-000001")
         live = archive / "t.jsonl.tmp"
         live.write_bytes(b'{"n": 0}\n{"n": ')
-        first = store.read_since(archive, None, limit=100, max_bytes=1 << 20)
+        first = store.read_since(archive, None, max_records=100, max_bytes=1 << 20)
         with live.open("ab") as f:
             f.write(b'1}\n{"n": 2}\n')
-        second = store.read_since(archive, first.cursor, limit=100, max_bytes=1 << 20)
+        second = store.read_since(archive, first.cursor, max_records=100, max_bytes=1 << 20)
         store.release(archive)
 
         assert [r.record for r in first.records] == [{"n": 0}]
@@ -257,19 +260,21 @@ class TestWholeLinesOnly:
         def short(descriptor: int, data: bytes) -> int:
             cut = data[: data.index(b"\n") + 3]  # a whole line, and part of the next
             written: int = os.write(descriptor, cut)
-            reads.append(store.read_since(archive, None, limit=100, max_bytes=1 << 20))
+            reads.append(store.read_since(archive, None, max_records=100, max_bytes=1 << 20))
             return written
 
         def truncate(descriptor: int, size: int) -> None:
             os.ftruncate(descriptor, size)
-            reads.append(store.read_since(archive, reads[0].cursor, limit=100, max_bytes=1 << 20))
+            reads.append(
+                store.read_since(archive, reads[0].cursor, max_records=100, max_bytes=1 << 20)
+            )
 
         stand_in.__dict__.update(write=short, ftruncate=truncate)
         monkeypatch.setattr("recon.adapters._out.archive_files.os", stand_in)
         with pytest.raises(OSError, match="wrote"):
             store.write_table(archive, "t", (r for r in [{"n": 0}, {"n": 1}]))
         monkeypatch.undo()
-        after = store.read_since(archive, reads[1].cursor, limit=100, max_bytes=1 << 20)
+        after = store.read_since(archive, reads[1].cursor, max_records=100, max_bytes=1 << 20)
         store.release(archive)
 
         assert [r.record for r in reads[0].records] == [{"n": 0}]
@@ -316,9 +321,20 @@ class TestACursorIsOpaque:
         again = recon.read_since("m", cursor, archive=first[0].id, root=surveyed)
         assert again.table_records == [] and again.archive == first[0].id
 
-    def test_a_limit_below_one_is_refused(self, surveyed: Path) -> None:
-        with pytest.raises(recon.UsageError):
-            recon.read_since("m", limit=0, root=surveyed)
+    def test_a_max_records_below_one_is_refused(self, surveyed: Path) -> None:
+        with pytest.raises(recon.UsageError, match="max_records"):
+            recon.read_since("m", max_records=0, root=surveyed)
+
+    def test_a_read_is_capped_by_max_records_beside_max_bytes(self) -> None:
+        """Polish R10 (Karman 6): a read's two caps are named alike, ``max_records`` beside
+        ``max_bytes``, where the first was ``limit``; no alias is kept."""
+        for call in (recon.read_since, recon.watch):
+            parameters = inspect.signature(call).parameters
+            assert {"max_records", "max_bytes"} <= set(parameters), call
+            assert "limit" not in parameters, call
+        assert {"max_records", "max_bytes"} <= set(
+            inspect.signature(ArchiveFiles.read_since).parameters
+        )
 
     def test_the_cursor_is_a_string_and_its_contents_are_not_published(
         self, surveyed: Path

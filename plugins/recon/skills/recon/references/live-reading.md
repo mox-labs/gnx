@@ -79,7 +79,7 @@ Refused, with exit 2 (`usage`) and a fix:
 | `cursor` | opaque: pass it, unchanged, to the next read of the same archive |
 | `exhausted` | the tables read to their end: sealed, and every record of them read along this chain of cursors, so none come after and what was read of them stands |
 | `retracted` | the tables that failed after records of theirs were read: void those records |
-| `more` | a bound (`limit`, `max_bytes`) cut this read before all that was written was read: read again at once |
+| `more` | a bound (`max_records`, `max_bytes`) cut this read before all that was written was read: read again at once |
 | `stream`, `skipped` | a read of a stream (`--stream`): its name, and the windows `retain:` retired before the cursor reached them, `{first, last, count}`, or null; see `streaming` |
 
 Along a chain of cursors each table is told exhausted, or retracted, once. `sealed` is a table's own state, that its writer renamed it into place; `exhausted` is a reader's, that it has read all of a sealed table. Because `state` is read before the records, a read that says the archive is no longer `writing` and has no `more` holds the archive's last records.
@@ -101,8 +101,8 @@ for read in recon.watch("my-scan", interval_s=0.5):  # returns when the survey e
         print(row["table"], row["record"])
 ```
 
-- `read_since(name, cursor=None, *, archive=None, limit=1000, max_bytes=1048576, root=None)`: one read of at most `limit` records and `max_bytes` bytes of them, cut at a whole record and never fewer than one. A `limit` or `max_bytes` below 1 is a `UsageError`, and so is a cursor recon did not give for that archive.
-- `watch(name, cursor=None, *, archive=None, interval_s=1.0, limit=1000, max_bytes=1048576, root=None)`: each read in turn, at once while a bound cuts them (`more`), and waiting `interval_s` whenever a read caught up while a survey still writes. An `interval_s` of 0 or less is a `UsageError`, raised when the first read is asked for.
+- `read_since(name, cursor=None, *, archive=None, max_records=1000, max_bytes=1048576, root=None)`: one read of at most `max_records` records and `max_bytes` bytes of them, cut at a whole record and never fewer than one. A `max_records` or `max_bytes` below 1 is a `UsageError`, and so is a cursor recon did not give for that archive.
+- `watch(name, cursor=None, *, archive=None, interval_s=1.0, max_records=1000, max_bytes=1048576, root=None)`: each read in turn, at once while a bound cuts them (`more`), and waiting `interval_s` whenever a read caught up while a survey still writes. An `interval_s` of 0 or less is a `UsageError`, raised when the first read is asked for.
 
 Reading writes nothing: an archive is byte for byte the same whether or not it was read while it was written.
 

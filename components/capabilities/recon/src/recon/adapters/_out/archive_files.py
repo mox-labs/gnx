@@ -434,12 +434,13 @@ class ArchiveFiles:
         return {**raw, "tables": [t for t in raw.get("tables") or [] if isinstance(t, dict)]}
 
     def read_since(
-        self, archive: Path, cursor: str | None, *, limit: int, max_bytes: int
+        self, archive: Path, cursor: str | None, *, max_records: int, max_bytes: int
     ) -> NewRecords:
-        if limit < 1:
+        if max_records < 1:
             raise UsageError(
-                f"a read's limit is the most records it returns, 1 or more; got {limit}",
-                fix="read with a limit of 1 or more, or leave it at its default",
+                f"a read's max_records is the most records it returns, 1 or more; got "
+                f"{max_records}",
+                fix="read with a max_records of 1 or more, or leave it at its default (1000)",
             )
         if max_bytes < 1:
             raise UsageError(
@@ -452,7 +453,7 @@ class ArchiveFiles:
         records: list[TableRecord] = []
         exhausted: list[str] = []
         retracted = [n for n, (_, told) in positions.items() if not told and n not in files]
-        budget = _Budget(limit, max_bytes)
+        budget = _Budget(max_records, max_bytes)
         for name, path in files.items():
             offset, told = positions.get(name, (0, False))
             if told:

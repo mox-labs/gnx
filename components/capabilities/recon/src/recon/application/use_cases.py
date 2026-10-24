@@ -23,8 +23,8 @@ from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun
 from recon.application.survey import CollectorError, Survey
 from recon.domain.archives import (
     ARCHIVE_ID_FORMAT,
-    READ_LIMIT,
     READ_MAX_BYTES,
+    READ_MAX_RECORDS,
     WATCH_INTERVAL_S,
 )
 from recon.domain.deadline import Deadline
@@ -904,11 +904,11 @@ class Recon:
         *,
         archive: str | None = None,
         stream: str | None = None,
-        limit: int = READ_LIMIT,
+        max_records: int = READ_MAX_RECORDS,
         max_bytes: int = READ_MAX_BYTES,
     ) -> RecordsSince:
         """The records of the mission's latest archive, or the one named, written since
-        ``cursor`` (None: from its first), at most ``limit`` and ``max_bytes`` of them. The
+        ``cursor`` (None: from its first), at most ``max_records`` and ``max_bytes`` of them. The
         archive's state is read before its records, so a read that finds it no longer
         ``writing`` and has no ``more`` holds its last records.
 
@@ -916,8 +916,8 @@ class Recon:
         names, or where ``cursor`` left off; a read that ends a window that is sealed, with a
         later one there, gives the cursor to that one and ``more``."""
         if stream is not None:
-            return self._read_stream(name, stream, cursor, archive, limit, max_bytes)[0]
-        return self._read(name, self._archive(name, archive), cursor, limit, max_bytes)
+            return self._read_stream(name, stream, cursor, archive, max_records, max_bytes)[0]
+        return self._read(name, self._archive(name, archive), cursor, max_records, max_bytes)
 
     def _read_stream(
         self,
@@ -925,7 +925,7 @@ class Recon:
         stream: str,
         cursor: str | None,
         archive: str | None,
-        limit: int,
+        max_records: int,
         max_bytes: int,
     ) -> tuple[RecordsSince, bool]:
         """One read of a stream, and whether it is the stream's last: no writer extends it,
@@ -950,7 +950,7 @@ class Recon:
             path = self._window(name, stream, windows, archive)
         else:
             path = windows[-1]
-        read = self._read(name, path, inner, limit, max_bytes)
+        read = self._read(name, path, inner, max_records, max_bytes)
         later = [w for w in windows if (window_index(w.name) or 0) > (window_index(path.name) or 0)]
         done = read.state != "writing" and not read.more
         if done and later:
@@ -973,11 +973,11 @@ class Recon:
         return WindowRange(first=since, last=str(last) if last else None, count=end - start)
 
     def _read(
-        self, name: str, path: Path, cursor: str | None, limit: int, max_bytes: int
+        self, name: str, path: Path, cursor: str | None, max_records: int, max_bytes: int
     ) -> RecordsSince:
         """One read of the archive at ``path``, its state read first."""
         state = self._archives.state(path)
-        read = self._archives.read_since(path, cursor, limit=limit, max_bytes=max_bytes)
+        read = self._archives.read_since(path, cursor, max_records=max_records, max_bytes=max_bytes)
         return RecordsSince(
             mission=name,
             archive=path.name,
@@ -1000,7 +1000,7 @@ class Recon:
         archive: str | None = None,
         stream: str | None = None,
         interval_s: float = WATCH_INTERVAL_S,
-        limit: int = READ_LIMIT,
+        max_records: int = READ_MAX_RECORDS,
         max_bytes: int = READ_MAX_BYTES,
     ) -> Iterator[RecordsSince]:
         """Follow the mission's latest archive, or the one named, from ``cursor``: each
@@ -1019,21 +1019,23 @@ class Recon:
                 fix="leave the interval at its default (1 second), or give a number above 0",
             )
         if stream is not None:
-            read, end = self._read_stream(name, stream, cursor, archive, limit, max_bytes)
+            read, end = self._read_stream(name, stream, cursor, archive, max_records, max_bytes)
             yield read
             while not end:
                 if not read.more:
                     self._clock.sleep(interval_s)
-                read, end = self._read_stream(name, stream, read.cursor, None, limit, max_bytes)
+                read, end = self._read_stream(
+                    name, stream, read.cursor, None, max_records, max_bytes
+                )
                 yield read
             return
         path = self._archive(name, archive)  # once: the archive followed does not change
-        read = self._read(name, path, cursor, limit, max_bytes)
+        read = self._read(name, path, cursor, max_records, max_bytes)
         yield read
         while read.state == "writing" or read.more:
             if not read.more:
                 self._clock.sleep(interval_s)
-            read = self._read(name, path, read.cursor, limit, max_bytes)
+            read = self._read(name, path, read.cursor, max_records, max_bytes)
             yield read
 
     def _ended(self, archive: Path, state: ArchiveState) -> Ended | None:

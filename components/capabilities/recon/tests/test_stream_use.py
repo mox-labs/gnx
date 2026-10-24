@@ -235,7 +235,7 @@ class TestWatchAcrossWindows:
         [mission] = recon_.status("m").missions
         first = mission.streams[0].first
 
-        reads = list(recon_.watch("m", stream="events", archive=first, limit=4))
+        reads = list(recon_.watch("m", stream="events", archive=first, max_records=4))
 
         seqs = [r["record"]["seq"] for read in reads for r in read.table_records]
         assert seqs == list(range(25))

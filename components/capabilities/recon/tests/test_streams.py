@@ -811,7 +811,7 @@ class TestSealedIsSealed:
 
         def look() -> None:
             [first] = store.archives(tmp_path, stream="s")[:1]
-            seen["while"] = store.read_since(first, None, limit=100, max_bytes=1 << 20)
+            seen["while"] = store.read_since(first, None, max_records=100, max_bytes=1 << 20)
             gate.set()
 
         class Watched(Script):
@@ -836,7 +836,7 @@ class TestSealedIsSealed:
         assert gate.is_set()
         assert seen["while"].exhausted == [], "a table being written is not read to its end"
         assert digests == [_digest(Path(outcomes[0].path))]
-        after = store.read_since(Path(outcomes[0].path), seen["while"].cursor, limit=100,
+        after = store.read_since(Path(outcomes[0].path), seen["while"].cursor, max_records=100,
                                  max_bytes=1 << 20)  # fmt: skip
         assert after.exhausted == ["s"]
 

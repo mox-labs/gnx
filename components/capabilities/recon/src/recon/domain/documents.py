@@ -367,7 +367,7 @@ class RecordsSince(Document):
     exhausted: list[str]
     #: Tables that failed after records of theirs were read: those records are void.
     retracted: list[str]
-    #: A bound (``limit`` records, ``max_bytes`` bytes) cut this read before all that was
+    #: A bound (``max_records`` records, ``max_bytes`` bytes) cut this read before all that was
     #: written by then was read: read again at once.
     more: bool
     #: A read of a stream: its name. ``archive`` and ``path`` are then the window read,
