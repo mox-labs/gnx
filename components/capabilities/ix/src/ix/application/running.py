@@ -693,7 +693,7 @@ async def carry_out(
 
     beside = [asyncio.ensure_future(_relay(scope.stopping, halt))]
     if checker.live:
-        beside.append(asyncio.ensure_future(checker.run()))
+        beside.append(checker.start())
     try:
         async with asyncio.TaskGroup() as group:
             for trial in trials:
@@ -717,7 +717,9 @@ async def carry_out(
     finally:
         for task in beside:
             task.cancel()
-            with suppress(asyncio.CancelledError):
+            # A checker that died on a defect said so as the loss it settled every trial
+            # with, which the run raises below.
+            with suppress(asyncio.CancelledError, Exception):
                 await task
     if checker.lost is not None:
         raise HarnessError("environment_lost", f"the environment went down: {checker.lost}")
@@ -748,6 +750,8 @@ class _Checker:
         self._timeout_s = timeout_s
         self._halt = halt
         self._waiting: list[asyncio.Future[str | None]] = []
+        #: The trials the check under way answers for.
+        self._asked: list[asyncio.Future[str | None]] = []
         self._wake = asyncio.Event()
         #: Why the environment is no longer up, once a check found it; None until then.
         self.lost: str | None = None
@@ -768,16 +772,36 @@ class _Checker:
             self._wake.set()
         return settled
 
+    def start(self) -> asyncio.Task[None]:
+        """The checker as a task of its own. Should it end on a defect of its own, every trial
+        waiting on it, and every one that asks after, is settled as lost: none waits for a
+        check that will never come."""
+        task = asyncio.ensure_future(self.run())
+        task.add_done_callback(self._ended)
+        return task
+
+    def _ended(self, task: asyncio.Task[None]) -> None:
+        if task.cancelled() or (error := task.exception()) is None:
+            return
+        if self.lost is None:
+            self.lost = f"the check of whether it is up failed: {type(error).__name__}: {error}"
+        self._halt.set()
+        waiting, self._asked, self._waiting = [*self._asked, *self._waiting], [], []
+        for settled in waiting:
+            if not settled.done():
+                settled.set_result(self.lost)
+
     async def run(self) -> None:
         while self.lost is None:
             await self._wake.wait()
             self._wake.clear()
-            asked, self._waiting = self._waiting, []
+            self._asked, self._waiting = self._waiting, []
             found = await self._ask()
             if found is not None:
                 self.lost = found
                 self._halt.set()
-                asked, self._waiting = [*asked, *self._waiting], []
+                self._asked, self._waiting = [*self._asked, *self._waiting], []
+            asked, self._asked = self._asked, []
             for settled in asked:
                 if not settled.done():  # its trial may have been cancelled meanwhile
                     settled.set_result(found)

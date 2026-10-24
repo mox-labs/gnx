@@ -653,6 +653,34 @@ class TestDispatch:
             i.failure is not None and i.failure.reason == "environment_lost" for i in run.landed
         )
 
+    def test_a_checker_that_dies_settles_every_trial_waiting_on_it(
+        self, write_experiment: Write, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review (erlang): a defect that ends the checker itself left every finished trial
+        waiting for a check that would never come. Its end settles them as lost, and the
+        run fails rather than hangs."""
+
+        async def broken(self: Any) -> str | None:
+            raise RuntimeError("a defect in the checker")
+
+        monkeypatch.setattr(running._Checker, "_ask", broken)
+        run = _Dispatch(3)
+        setup, trials = run.setup(write_experiment)
+        kit = run.kit(_Probe(run.log, _seeds(trials)), _Live(run.log))
+
+        async def bounded() -> int:
+            carried = running.carry_out(
+                setup, kit, trials=trials, bindings={}, scope=run.scope, land=run.land
+            )
+            return await asyncio.wait_for(carried, timeout=5)
+
+        with pytest.raises(HarnessError, match="a defect in the checker"):
+            asyncio.run(bounded())
+        assert run.landed and all(
+            i.failure is not None and i.failure.reason == "environment_lost" for i in run.landed
+        )
+        assert sorted(i.seq for i in run.landed) == run.started()
+
     def test_a_stop_starts_nothing_more_and_every_trial_in_flight_lands(
         self, write_experiment: Write
     ) -> None:
