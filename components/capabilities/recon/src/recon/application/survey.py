@@ -37,7 +37,6 @@ nothing.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Generator, Mapping
 from typing import TYPE_CHECKING, Any
 
 from recon.application.plan import fan_out
@@ -46,9 +45,10 @@ from recon.domain.deadline import Deadline, DeadlineExceededError
 from recon.domain.documents import TableError, TableOutcome
 from recon.domain.errors import CollectionError, ErrorKind, NoRecordsError, Problem, ReconError
 from recon.domain.normalize import nested_records
-from recon.domain.telemetry import COLLECT
+from recon.domain.telemetry import COLLECT, EventCallback
 
 if TYPE_CHECKING:
+    from collections.abc import Collection, Generator, Mapping
     from datetime import datetime
     from pathlib import Path
 
@@ -61,10 +61,6 @@ if TYPE_CHECKING:
 
 #: By default, the least seconds between two ``recon.collect.progress`` events of a table.
 PROGRESS_S = 1.0
-
-#: Receives each table's outcome as it lands: ``{"kind": "ok" | "error" | "table_warning" |
-#: "archive_warning", ...}``. The survey prints nothing itself.
-EventCallback = Callable[[dict[str, Any]], None]
 
 
 class CollectorError(CollectionError):

@@ -7,19 +7,21 @@ import base64
 import json
 import threading
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
+import yaml
 
 import recon
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.system_clock import SystemClock
+from recon.composition import root
 from recon.domain.models import ReconConfig
 from tests.recon_fakes import FixedClock, plugins_with, run_survey
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
-    from pathlib import Path
 
     from recon.domain.capture import CaptureLog
     from recon.domain.models import CollectorEntry, SourceEntry
@@ -249,3 +251,115 @@ def test_a_reader_attached_changes_no_byte_of_the_archive(tmp_path: Path) -> Non
         }
 
     assert survey(tmp_path / "read", True) == survey(tmp_path / "alone", False)
+
+
+class TestNoReceiverSlowsTheWrite:
+    """A6: OpenTelemetry and ``on_event`` receive through a bounded queue a thread drains,
+    so a slow receiver neither slows the archive's writing nor changes its bytes; what the
+    queue could not hold, or the survey's end could not wait for, is counted."""
+
+    @staticmethod
+    def _survey(
+        project: Path, on_event: Callable[[dict[str, Any]], None] | None
+    ) -> tuple[recon.SurveyDocument, dict[str, bytes], float]:
+        from recon.adapters._out.event_channel import ThreadChannel
+
+        written: list[float] = []
+
+        class Timed(ArchiveFiles):
+            def create(self, mission_dir: Path, archive_id: str) -> Path:
+                written.append(time.monotonic())
+                return super().create(mission_dir, archive_id)
+
+            def write_meta(self, archive: Path, meta: dict[str, Any]) -> None:
+                super().write_meta(archive, meta)
+                written.append(time.monotonic())
+
+        class Slow:
+            def collect(
+                self,
+                entry: CollectorEntry,
+                source: SourceEntry | None,
+                *,
+                captures: CaptureLog | None = None,
+            ) -> Iterator[dict[str, Any]]:
+                time.sleep(0.2)
+                yield {"table": entry.name}
+
+        clock = FixedClock()
+        config = {"collectors": [{"name": f"t{n}", "type": "x"} for n in range(5)]}
+        mission = project / ".recon" / "m"
+        mission.mkdir(parents=True)
+        (mission / "config.yaml").write_text(yaml.safe_dump(config))
+        surveyed = root(
+            {},
+            project=project,
+            clock=clock,
+            plugins=plugins_with(x=Slow()),
+            archives=Timed(clock),
+            channel=lambda: ThreadChannel(queue=2, drain_s=0.2),
+        ).survey("m", on_event=on_event)
+        archive = Path(surveyed.archive)
+        files = {p.name: p.read_bytes() for p in sorted(archive.iterdir()) if p.is_file()}
+        return surveyed, files, written[1] - written[0]
+
+    def test_a_slow_receiver_changes_no_byte_and_no_time_and_its_losses_are_counted(
+        self, tmp_path: Path
+    ) -> None:
+        def slow(event: dict[str, Any]) -> None:
+            time.sleep(1.0)
+
+        alone, alone_files, alone_s = self._survey(tmp_path / "alone", None)
+        slowed, slowed_files, slowed_s = self._survey(tmp_path / "slowed", slow)
+
+        assert slowed_files == alone_files, "the archive is the same, byte for byte"
+        assert slowed_s <= alone_s * 1.05, (slowed_s, alone_s)
+        [dropped] = [w for w in slowed.warnings if w["kind"] == "events_dropped"]
+        assert dropped["got"] > 0 and "dropped" in dropped["message"]
+        assert dropped["fix"]
+        assert not [w for w in alone.warnings if w["kind"] == "events_dropped"]
+
+    def test_a_receiver_that_raises_is_reported_and_the_survey_goes_on(
+        self, tmp_path: Path
+    ) -> None:
+        def broken(event: dict[str, Any]) -> None:
+            raise RuntimeError("the terminal went away")
+
+        surveyed, _, _ = self._survey(tmp_path, broken)
+        assert surveyed.status == "ok"
+        [failed] = [w for w in surveyed.warnings if w["kind"] == "telemetry_failed"]
+        assert "the terminal went away" in failed["message"]
+
+
+def test_opentelemetry_spans_nest_while_the_queue_is_behind() -> None:
+    """``around`` and ``trace_headers`` are answered at once, not through the queue, so a
+    span is current for the work inside it however far behind the queue's thread is."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from recon.adapters._out.event_channel import ThreadChannel
+    from recon.adapters._out.otel_telemetry import OtelEvents
+    from recon.domain.telemetry import Telemetry
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    channel = ThreadChannel()
+    busy = channel.callback(lambda event: time.sleep(0.3))
+    busy({})  # the queue's thread is held while the spans begin
+    telemetry = Telemetry([channel.sink(OtelEvents("9.9", tracer_provider=provider))],
+                          FixedClock())  # fmt: skip
+    library = provider.get_tracer("some.library")
+    with telemetry.span("recon.collect") as span:
+        headers = telemetry.trace_headers(span)
+        with library.start_as_current_span("library.call"):
+            pass
+    channel.close()
+    telemetry.close()
+
+    spans = {s.name: s for s in exporter.get_finished_spans()}
+    parent = spans["library.call"].parent
+    assert parent is not None and parent.span_id == spans["recon.collect"].context.span_id
+    assert headers.get("traceparent", "").count("-") == 3
+    assert channel.dropped == 0

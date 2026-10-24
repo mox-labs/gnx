@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from recon.application.captures import record_hook_payload
 from recon.application.collectors import declared_env
 from recon.application.plan import Plan, build_plan, fan_out, plugin_warning
-from recon.application.survey import EventCallback, Survey
+from recon.application.survey import Survey
 from recon.domain.archives import ARCHIVE_ID_FORMAT, READ_LIMIT
 from recon.domain.deadline import Deadline
 from recon.domain.documents import (
@@ -44,7 +44,7 @@ from recon.domain.errors import ConfigError, ConflictError, NotFoundError, Probl
 from recon.domain.telemetry import QUERY, SURVEY
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterator, Mapping
     from pathlib import Path
 
     from recon.application.collectors import SurveyCollectors
@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from recon.domain.documents import ArchiveState, Capture
     from recon.domain.missions import ConfigFile, MissionStore
     from recon.domain.models import ReconConfig
-    from recon.domain.telemetry import Telemetry
+    from recon.domain.telemetry import Channel, EventCallback, Telemetry
 
 #: Builds a collector for each installed type a mission uses, reporting through the survey's
 #: telemetry, with the types whose factory failed (which a survey reports and whose tables
@@ -62,8 +62,12 @@ if TYPE_CHECKING:
 CollectorFactory = Callable[["Path", "ReconConfig", "Telemetry", "Deadline"], "SurveyCollectors"]
 
 #: The telemetry for one operation: a survey passes the archive it writes, whose event log
-#: is one of the sinks; an operation that writes no archive passes None.
-TelemetryFactory = Callable[["Path | None"], "Telemetry"]
+#: is one of the sinks, and its channel, through which every other sink receives; an
+#: operation that writes no archive passes None for both, and its sinks receive at once.
+TelemetryFactory = Callable[["Path | None", "Channel | None"], "Telemetry"]
+
+#: Makes a survey's channel (``recon.domain.telemetry.Channel``).
+ChannelFactory = Callable[[], "Channel"]
 
 DEFAULT_TEMPLATE = "code-forensics"
 
@@ -84,10 +88,13 @@ class Recon:
         env: Mapping[str, str],
         version: str,
         root_found_by: str = "argument",
+        channel: ChannelFactory | None = None,
     ) -> None:
         """``root_found_by`` is how the composition root found the project root:
         ``argument`` (the caller named it), ``repository`` (the nearest ancestor holding
-        ``.git``) or ``working_directory``. Each survey records it."""
+        ``.git``) or ``working_directory``. Each survey records it. ``channel`` makes each
+        survey's channel, through which OpenTelemetry and ``on_event`` receive; without
+        one they receive at once, on the survey's thread."""
         self._missions = missions
         self._archives = archives
         self._query = query
@@ -98,6 +105,7 @@ class Recon:
         self._env = env
         self._version = version
         self._root_found_by = root_found_by
+        self._channel = channel
 
     # --- init ---------------------------------------------------------------------------
 
@@ -205,7 +213,7 @@ class Recon:
         ]
         subset = config.model_copy(update={"collectors": entries})
         built = self._build_collectors(
-            mission, subset, self._telemetry(None), Deadline(self._clock)
+            mission, subset, self._telemetry(None, None), Deadline(self._clock)
         )
         warnings = [plugin_warning(broken) for broken in built.failed]
         merged: dict[tuple[str, bool, str, str], list[str]] = {}
@@ -260,11 +268,13 @@ class Recon:
         # Held from here until released, so a reader of the archive sees it is being
         # written, however the survey ends.
         try:
-            telemetry = self._telemetry(archive)
+            channel = self._channel() if self._channel is not None else None
+            telemetry = self._telemetry(archive, channel)
+            if channel is not None and on_event is not None:
+                on_event = emit = channel.callback(on_event)
             about = {"recon.mission": name, "recon.archive": archive.name}
             deadline = Deadline(self._clock)
-            # The operation's telemetry ends with its span: the event log's file is closed.
-            with contextlib.closing(telemetry), telemetry.span(SURVEY, about) as span:
+            with _ending(telemetry, channel), telemetry.span(SURVEY, about) as span:
                 built = self._build_collectors(mission, plan.config, telemetry, deadline)
                 try:
                     for broken in built.failed:
@@ -323,7 +333,9 @@ class Recon:
                 archive=str(archive),
                 status="incomplete" if failed_tables or not survey.finished else "ok",
                 tables=tables,
-                warnings=[w.document() for w in warnings + _dropped(telemetry)],
+                warnings=[
+                    w.document() for w in warnings + _dropped(telemetry) + _undelivered(channel)
+                ],
             )
         finally:
             self._archives.release(archive)
@@ -439,7 +451,7 @@ class Recon:
         with the suffix DuckDB gives it in a subquery (``a``, ``a_1``, then ``a_1_1`` on a
         further clash)."""
         path = self._archive(name, archive)
-        telemetry = self._telemetry(None)
+        telemetry = self._telemetry(None, None)
         with telemetry.span(QUERY, {"recon.mission": name, "recon.archive": path.name}) as span:
             result = self._query.execute(path, sql)
             span.set("recon.rows", len(result.rows))
@@ -560,6 +572,46 @@ def _text(value: Any) -> str | None:
     if value is None:
         return None
     return value.isoformat() if isinstance(value, date) else str(value)
+
+
+@contextlib.contextmanager
+def _ending(telemetry: Telemetry, channel: Channel | None) -> Iterator[None]:
+    """End the operation's telemetry when the block ends: the channel first, so its receivers
+    get what is queued (or it is counted as dropped), then each sink is closed."""
+    try:
+        yield
+    finally:
+        if channel is not None:
+            channel.close()
+        telemetry.close()
+
+
+def _undelivered(channel: Channel | None) -> list[Problem]:
+    """What the survey's channel did not deliver, and each callback that raised."""
+    if channel is None:
+        return []
+    problems = [
+        Problem(
+            "",
+            f"telemetry stopped going to a receiver that failed: {failure}",
+            kind="telemetry_failed",
+            fix="the collected data is unaffected; fix the on_event callback",
+        )
+        for failure in channel.failed
+    ]
+    if channel.dropped:
+        problems.append(
+            Problem(
+                "",
+                f"{channel.dropped} event(s) for OpenTelemetry or on_event were dropped: a "
+                "receiver was slower than the survey, which never waits for one",
+                kind="events_dropped",
+                fix="the archive and its telemetry.jsonl are whole; make the on_event callback "
+                "or the OpenTelemetry exporter faster (a batching span processor) to lose none",
+                got=channel.dropped,
+            )
+        )
+    return problems
 
 
 def _dropped(telemetry: Telemetry) -> list[Problem]:

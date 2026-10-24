@@ -11,6 +11,12 @@ are OpenTelemetry attribute names, the semantic conventions' where one exists
 on unchanged. Metrics are derived from the events, never measured separately, so an event
 log replays into the numbers an exporter saw.
 
+**No receiver slows the work.** A survey hands OpenTelemetry's sink and its caller's
+``on_event`` their events through a :class:`Channel`, a bounded queue drained by a thread,
+so a slow receiver neither slows the archive's writing nor changes it: what the queue
+cannot hold is dropped and counted. The archive's event log is not behind it: it is archive
+data, written as each event happens.
+
 **Telemetry is not data.** Nothing a survey writes depends on an event being delivered. A
 sink that raises is dropped for the rest of the operation and named in ``failed``, which
 the operation reports as a warning. Span ids count up from 1 and every time comes from the
@@ -37,6 +43,7 @@ with ``on_event`` alone is never asked for them:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -102,6 +109,35 @@ class EventSink(Protocol):
     described above."""
 
     def on_event(self, event: Event) -> None: ...
+
+
+#: Receives each of a survey's table outcomes as it lands: ``{"kind": "ok" | "error" |
+#: "table_warning" | "archive_warning", ...}``. The survey prints nothing itself.
+EventCallback = Callable[[dict[str, Any]], None]
+
+
+class Channel(Protocol):
+    """Where a survey's events go on to receivers that may be slow, without the survey
+    waiting for them: a bounded queue a thread drains. ``dropped`` counts the events a
+    receiver never got (the queue was full, or the survey's end could not wait for them);
+    ``failed`` names each callback that raised, which gets nothing more."""
+
+    dropped: int
+    failed: list[str]
+
+    def sink(self, sink: EventSink) -> EventSink:
+        """``sink``, its events delivered through the channel; its ``around`` and
+        ``trace_headers`` answered at once."""
+        ...
+
+    def callback(self, callback: EventCallback) -> EventCallback:
+        """``callback``, called through the channel."""
+        ...
+
+    def close(self) -> None:
+        """Give the receivers a bounded time to get what is queued, then stop: what they
+        did not get is dropped."""
+        ...
 
 
 class Span:
