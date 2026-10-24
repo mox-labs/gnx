@@ -95,6 +95,10 @@ values, never as paths or commands. Output filenames come from the collector ent
 `name` in the config, not from response content. Capture bodies are named by their own
 sha256, never by anything in the response.
 
+What recon writes is private to the user running it: each directory it makes for a mission
+(`.recon/` and everything under it) is `0700` and each file `0600`, set as the path is made, so
+the umask cannot widen it. A directory that was already there keeps its own mode.
+
 `$markitdown` is the one built-in transform that opens a file, and the path it opens is
 a collected value. It reads only under the mission directory and the catalog's `local`
 sources (after resolving symlinks and `..`), and it never fetches a URL; either refusal

@@ -12,6 +12,8 @@ import json
 import os
 from typing import TYPE_CHECKING
 
+from recon.adapters._out.private_files import open_file
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -26,7 +28,7 @@ class EventLog:
     def on_event(self, event: Event) -> None:
         line = (json.dumps(event.document(), default=str) + "\n").encode()
         if self._descriptor is None:
-            self._descriptor = os.open(self._path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+            self._descriptor = open_file(self._path, os.O_WRONLY | os.O_APPEND)
         written = os.write(self._descriptor, line)
         if written != len(line):
             raise OSError(f"wrote {written} of {len(line)} bytes of an event")

@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog
+from recon.adapters._out.private_files import make_dirs, write_file
 from recon.domain.capture import CAPTURE_LOG_NAME
 from recon.domain.errors import ConfigError, NotFoundError, Problem, UsageError
 from recon.domain.missions import ConfigFile, Template
@@ -102,8 +103,8 @@ class MissionFiles:
 
     def write_config(self, name: str, text: bytes) -> Path:
         path = self.config_path(name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(text)
+        make_dirs(path.parent)
+        write_file(path, text)
         return path
 
     def missions(self) -> list[str]:

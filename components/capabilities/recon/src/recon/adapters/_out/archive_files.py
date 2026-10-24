@@ -76,6 +76,7 @@ import yaml
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.event_log import EventLog
+from recon.adapters._out.private_files import DIR_MODE, make_dirs, open_file, write_file
 from recon.domain.archives import (
     ARCHIVE_ID_FORMAT,
     EVENT_LOG_NAME,
@@ -148,14 +149,14 @@ class ArchiveFiles:
     def create(self, mission_dir: Path, archive_id: str, *, stream: str | None = None) -> Path:
         home = mission_dir / "archive" if stream is None else _stream_dir(mission_dir, stream)
         archive = home / archive_id
-        archive.parent.mkdir(parents=True, exist_ok=True)
+        make_dirs(archive.parent)
         # Made whole under a name no reader lists, then renamed into place: an archive is
         # never seen without its lock and marker, whenever its writer dies.
         making = archive.with_name(f".{archive_id}.{os.getpid()}.making")
-        making.mkdir()
+        making.mkdir(mode=DIR_MODE)
         descriptor = _hold(making / WRITER_LOCK)
         try:
-            (making / INCOMPLETE_MARKER).write_text("")
+            write_file(making / INCOMPLETE_MARKER, b"")
             taken = ReconError(
                 f"archive {archive_id} already exists in {archive.parent}; an archive is "
                 "never written twice",
@@ -191,7 +192,7 @@ class ArchiveFiles:
 
     def hold_stream(self, mission_dir: Path, stream: str) -> None:
         directory = _stream_dir(mission_dir, stream)
-        directory.mkdir(parents=True, exist_ok=True)
+        make_dirs(directory)
         if directory in self._streams:
             return
         try:
@@ -267,7 +268,7 @@ class ArchiveFiles:
         # a writer that dies after it leaves the window listed, and the next retirement
         # retires it again; a reader keeps the last tombstone of an id.
         line = (json.dumps(tombstone, default=str) + "\n").encode()
-        descriptor = os.open(home / RETIRED, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        descriptor = open_file(home / RETIRED, os.O_WRONLY | os.O_APPEND)
         try:
             os.write(descriptor, line)
             os.fsync(descriptor)
@@ -373,7 +374,8 @@ class ArchiveFiles:
         tmp = path.with_suffix(".yaml.tmp")
         stamped = {**meta, "table_layout": TABLE_LAYOUT}
         try:
-            tmp.write_text(yaml.safe_dump(stamped, default_flow_style=False, sort_keys=False))
+            text = yaml.safe_dump(stamped, default_flow_style=False, sort_keys=False)
+            write_file(tmp, text.encode())
             tmp.replace(path)
         except OSError:
             with contextlib.suppress(OSError):
@@ -526,7 +528,7 @@ class _Lines:
     one; adding a line takes no lock, which a lock per line cost on short lines."""
 
     def __init__(self, path: Path, flush_bytes: int, flush_s: float) -> None:
-        self._descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        self._descriptor = open_file(path, os.O_WRONLY | os.O_TRUNC)
         self._flush_bytes = flush_bytes
         self._flush_s = flush_s
         self._size = 0
@@ -606,7 +608,7 @@ def _move_torn_tail(path: Path) -> None:
         if whole == size:
             return
         f.seek(whole)
-        path.with_name(path.name + TORN).write_bytes(f.read())
+        write_file(path.with_name(path.name + TORN), f.read())
         f.truncate(whole)
 
 
@@ -810,7 +812,7 @@ def _is_empty_sentinel(line: bytes) -> bool:
 def _hold(path: Path) -> int:
     """Hold an exclusive lock on ``path``, made if need be, until the descriptor is closed.
     It is made in an archive no reader lists yet, so none can test it as it is taken."""
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
+    descriptor = open_file(path, os.O_WRONLY)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:

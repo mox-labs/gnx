@@ -1,5 +1,11 @@
 # Changelog — recon
 
+## Unreleased
+
+### Changed: schedules and the mission lock (round 4, S and A2)
+
+- **What recon writes for a mission is private** (ruling A2): each directory it makes under `.recon/` is `0700` and each file `0600` (the config, tables, `meta.yaml`, the event and capture logs, capture bodies, locks, tombstones), set as each is made, whatever the umask. They were `0755` and `0644` under the usual umask. A directory made before keeps its mode.
+
 ## 0.13.0 — 2026-10-24
 
 ### Changed (breaking)
