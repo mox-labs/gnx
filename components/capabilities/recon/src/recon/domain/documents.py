@@ -355,6 +355,10 @@ class RecordsSince(Document):
     #: ``state`` that window's, and ``cursor`` carries the window, so the next read goes on
     #: into the next window once this one is read to its end.
     stream: str | None = None
+    #: A read of a stream whose cursor's window was retired since: the windows it jumped,
+    #: from the cursor's to the one before ``archive_id`` (``last`` is None when no
+    #: tombstone names it). Their records, and the rest of the cursor's window, are gone.
+    skipped: WindowRange | None = None
 
 
 class TemplateInfo(Document):

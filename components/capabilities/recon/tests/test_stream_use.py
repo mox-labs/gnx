@@ -220,6 +220,11 @@ class TestWatchAcrossWindows:
 
         assert after.archive_id != read.archive_id
         assert [r["record"]["seq"] for r in after.records][:1] == [18], "window 2's first"
+        stones = [stone["id"] for stone in _retired(tmp_path)]
+        assert after.skipped is not None, "a read that jumps windows says which it jumped"
+        assert (after.skipped.first, after.skipped.count) == (read.archive_id, 2)
+        assert after.skipped.last == stones[-1]
+        assert recon_.read_since("m", after.cursor, stream="events").skipped is None
 
     def test_a_watcher_attached_changes_no_byte_of_the_stream(self, tmp_path: Path) -> None:
         """B10 #9: the same stream, with and without a reader following it as it is written."""
@@ -422,6 +427,12 @@ def _follow(project: Path, go: threading.Event, states: list[str]) -> None:
             return
         except recon.NotFoundError:
             time.sleep(0.01)
+
+
+def _retired(project: Path) -> list[dict[str, Any]]:
+    """The tombstones of the mission's stream, in the order its windows were retired."""
+    lines = (project / ".recon" / "m" / "streams" / "events" / "retired.jsonl").read_text()
+    return [json.loads(line) for line in lines.splitlines()]
 
 
 def _tree(directory: Path) -> dict[str, bytes]:

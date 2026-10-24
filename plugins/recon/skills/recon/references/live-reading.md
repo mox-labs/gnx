@@ -58,6 +58,7 @@ Refused, with exit 2 (`usage`) and a fix:
 | `sealed` | the tables whose last record is now read |
 | `retracted` | the tables that failed after records of theirs were read: void those records |
 | `more` | a bound (`limit`, `max_bytes`) cut this read before all that was written was read: read again at once |
+| `stream`, `skipped` | a read of a stream (`--stream`): its name, and the windows `retain:` retired before the cursor reached them, `{first, last, count}`, or null; see `streaming` |
 
 Along a chain of cursors each table is told sealed, or retracted, once. Because `state` is read before the records, a read that says the archive is no longer `writing` and has no `more` holds the archive's last records.
 

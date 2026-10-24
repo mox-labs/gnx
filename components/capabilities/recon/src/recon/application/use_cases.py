@@ -899,6 +899,7 @@ class Recon:
         writing = self._archives.stream_state(mission, stream) == "writing"
         windows = self._windows(name, stream)
         inner: str | None = None
+        skipped: WindowRange | None = None
         if cursor is not None:
             window_id, inner = _stream_cursor_read(cursor, stream)
             index = window_index(window_id) or 0
@@ -907,6 +908,7 @@ class Recon:
                 path = later[0]
             elif later:  # its window was retired since: go on from the next one kept
                 path, inner = later[0], None
+                skipped = self._skipped(mission, stream, window_id, path.name)
             else:
                 path = self._window(name, stream, windows, window_id)
         elif archive is not None:
@@ -918,9 +920,22 @@ class Recon:
         done = read.state != "writing" and not read.more
         if done and later:
             on = _stream_cursor(stream, later[0].name, None)
-            return read.model_copy(update={"cursor": on, "more": True, "stream": stream}), False
+            update = {"cursor": on, "more": True, "stream": stream, "skipped": skipped}
+            return read.model_copy(update=update), False
         on = _stream_cursor(stream, path.name, read.cursor)
-        return read.model_copy(update={"cursor": on, "stream": stream}), done and not writing
+        update = {"cursor": on, "stream": stream, "skipped": skipped}
+        return read.model_copy(update=update), done and not writing
+
+    def _skipped(self, mission: Path, stream: str, since: str, kept: str) -> WindowRange:
+        """The windows a read jumps, from ``since`` (its cursor's, retired) to the one before
+        ``kept``: counted from their indexes, the last named by its tombstone."""
+        start, end = window_index(since) or 0, window_index(kept) or 0
+        names = {
+            window_index(str(stone.get("id"))): stone.get("id")
+            for stone in self._archives.retired(mission, stream)
+        }
+        last = names.get(end - 1)
+        return WindowRange(first=since, last=str(last) if last else None, count=end - start)
 
     def _read(
         self, name: str, path: Path, cursor: str | None, limit: int, max_bytes: int

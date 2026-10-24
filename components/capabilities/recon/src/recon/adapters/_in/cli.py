@@ -780,6 +780,10 @@ def watch(
 
 
 def _print_read(read: recon.RecordsSince) -> None:
+    if read.skipped is not None:
+        jumped = read.skipped
+        err.print(f"[yellow]  {jumped.count} window(s) from {escape(str(jumped.first))} were "
+                  f"retired before they were read: going on from {read.archive_id}[/]")  # fmt: skip
     for record in read.records:
         click.echo(json.dumps(record, default=str))
     for table in read.sealed:
