@@ -16,23 +16,22 @@ are the YAML files of the ``recon.configs`` package.
 from __future__ import annotations
 
 import importlib.resources
-import re
+import os
+import stat
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog
+from recon.adapters._out.private_files import make_dirs, write_file
 from recon.domain.capture import CAPTURE_LOG_NAME
 from recon.domain.errors import ConfigError, NotFoundError, Problem, UsageError
-from recon.domain.missions import ConfigFile, Template
+from recon.domain.missions import MISSION_NAME, ConfigFile, Template
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from recon.domain.clock import Clock
-
-_MISSION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def find_project(start: Path) -> tuple[Path, str]:
@@ -63,7 +62,7 @@ class MissionFiles:
         return self._root
 
     def mission_dir(self, name: str) -> Path:
-        if not _MISSION_NAME.match(name):
+        if not MISSION_NAME.match(name):
             raise UsageError(
                 f"{name!r} is not a mission name",
                 fix="name a mission with letters, digits, '.', '_' and '-', starting with a "
@@ -102,8 +101,8 @@ class MissionFiles:
 
     def write_config(self, name: str, text: bytes) -> Path:
         path = self.config_path(name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(text)
+        make_dirs(path.parent)
+        write_file(path, text)
         return path
 
     def missions(self) -> list[str]:
@@ -123,6 +122,18 @@ class MissionFiles:
         except OSError:
             return 0
 
+    def exposed(self, name: str) -> Path | None:
+        top = self.mission_dir(name)
+        if _reachable(top):
+            return top
+        for directory, subdirectories, files in os.walk(top):
+            subdirectories.sort()
+            here = Path(directory)
+            for entry in subdirectories + sorted(files):
+                if _reachable(here / entry):
+                    return here / entry
+        return None
+
     def is_directory(self, path: Path) -> bool:
         return path.is_dir()
 
@@ -134,6 +145,16 @@ class MissionFiles:
                 text = file.read_text(encoding="utf-8")
                 found.append(Template(file.name.removesuffix(".yaml"), _description(text), text))
         return sorted(found, key=lambda t: t.name)
+
+
+def _reachable(path: Path) -> bool:
+    """Whether a user other than the owner has any permission on ``path``; a link is not
+    followed (its own bits mean nothing)."""
+    try:
+        mode = path.lstat().st_mode
+    except OSError:
+        return False
+    return not stat.S_ISLNK(mode) and bool(mode & (stat.S_IRWXG | stat.S_IRWXO))
 
 
 def _description(text: str) -> str:

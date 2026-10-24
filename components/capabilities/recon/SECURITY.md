@@ -95,6 +95,10 @@ values, never as paths or commands. Output filenames come from the collector ent
 `name` in the config, not from response content. Capture bodies are named by their own
 sha256, never by anything in the response.
 
+What recon writes is private to the user running it: each directory it makes for a mission
+(`.recon/` and everything under it) is `0700` and each file `0600`, set as the path is made, so
+the umask cannot widen it. A directory or file that was already there keeps its own mode: `recon status` warns (`mission_exposed`) of the first one in a mission open to other users, and names the `chmod -R go-rwx` that closes the mission; it changes nothing.
+
 `$markitdown` is the one built-in transform that opens a file, and the path it opens is
 a collected value. It reads only under the mission directory and the catalog's `local`
 sources (after resolving symlinks and `..`), and it never fetches a URL; either refusal
@@ -303,6 +307,35 @@ A stream runs for as long as it is told to, so what it reaches, it reaches for t
   directories in the stream's own directory, by the names the store listed.
 - **One writer a stream**: a second `recon stream` of the same stream is refused
   (`busy`) by an `flock` held for the run, so two processes never write one window id.
+
+### 11. A schedule → the operating system's scheduler (`recon schedule`)
+
+A schedule runs a mission's config with nobody watching, every tick, for as long as it is
+installed: the config's commands (boundary 1) and servers (boundary 8) included. That makes
+the config a persistence vector, and the scheduler's files a place a secret could be left.
+
+- **The config a tick runs is the one installed.** `install` records the config's sha256
+  in the scheduler's file, as the tick's `--config-sha256`; a tick whose config has another
+  refuses to run (`stale`, exit 12, logged) until `recon schedule install` runs again. A change to
+  a scheduled config, by hand, by an agent or by a merge, is read before it runs.
+- **What the files hold**: recon by the absolute path of the installation that installed
+  it, as an argument list (cron alone hands its line to `/bin/sh`: each argument is quoted
+  whole), the mission's name (checked as every mission name is), the absolute project, and
+  an explicit `PATH`: the installer's, kept to absolute directories that exist and that no
+  other user can write. Nothing else of the environment: no secret, no
+  `OTEL_EXPORTER_OTLP_HEADERS`. launchd's and cron's output go to `/dev/null`.
+- **Where they go**: the user's own domain alone (`~/Library/LaunchAgents`, the user's
+  systemd units, the user's crontab, in recon's marked block, every other line kept), each
+  file `0600`. No LaunchDaemon, system unit, `/etc/cron.d` or sudo.
+- **Credentials**: a tick has the scheduler's environment, not your shell's, so a
+  variable `auth.env` names is unset in it. Give it a form a tick resolves itself (an `mcp`
+  source's `token: file:PATH`, a `headers_helper`), never a secret in the config.
+- **Two ticks never overlap**: each survey holds the mission's lock; a tick that finds it
+  held is skipped and logged (`busy`).
+
+What this does **not** do: anything about who may write the config before it is
+installed, or about the scheduler's own files being changed by hand afterwards (`recon
+schedule status` reads such a schedule `installed: false`).
 
 ## Findings
 

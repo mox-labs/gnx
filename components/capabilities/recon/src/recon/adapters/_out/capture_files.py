@@ -22,6 +22,7 @@ import re
 import uuid
 from typing import TYPE_CHECKING, Any, BinaryIO
 
+from recon.adapters._out.private_files import make_dirs, open_file, write_file
 from recon.domain.capture import CAPTURE_LOG_NAME, CAPTURE_SCHEMA, CaptureKind, redact_headers
 from recon.domain.documents import Capture
 from recon.domain.errors import CollectionError
@@ -73,7 +74,7 @@ class FilesystemCaptureLog:
         body_path = self._raw_dir() / sha
         if not body_path.exists():
             tmp = body_path.with_name(f".{sha}.{uuid.uuid4().hex}.tmp")
-            tmp.write_bytes(body)
+            write_file(tmp, body)
             os.replace(tmp, body_path)
         return self._append(
             collector=collector,
@@ -97,7 +98,8 @@ class FilesystemCaptureLog:
     def tee(self, collector: str, data: bytes) -> None:
         tee = self._tees.get(collector)
         if tee is None:
-            tee = self._tees[collector] = open(self.stream_path(collector), "ab")  # noqa: SIM115 - closed by finalize_stream
+            descriptor = open_file(self.stream_path(collector), os.O_WRONLY | os.O_APPEND)
+            tee = self._tees[collector] = os.fdopen(descriptor, "ab")
         tee.write(data)
 
     def finalize_stream(
@@ -117,7 +119,7 @@ class FilesystemCaptureLog:
         if path is None:
             return None
         if not path.exists():
-            path.write_bytes(b"")  # the command printed nothing: that is still evidence
+            write_file(path, b"")  # the command printed nothing: that is still evidence
         digest = hashlib.sha256()
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -143,7 +145,7 @@ class FilesystemCaptureLog:
 
     def _raw_dir(self) -> Path:
         raw = self.root / "raw"
-        raw.mkdir(parents=True, exist_ok=True)
+        make_dirs(raw)
         return raw
 
     def _append(
@@ -174,8 +176,8 @@ class FilesystemCaptureLog:
             captured_at=self._clock.now().isoformat(),
         )
         data = (json.dumps(line.document(), default=str, ensure_ascii=False) + "\n").encode()
-        self.root.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self.log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        make_dirs(self.root)
+        fd = open_file(self.log_path, os.O_WRONLY | os.O_APPEND)
         try:
             _lock(fd)
             os.write(fd, data)

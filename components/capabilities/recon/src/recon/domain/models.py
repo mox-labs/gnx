@@ -21,6 +21,7 @@ from recon.domain.clock import LONGEST_WAIT
 from recon.domain.ratelimit import wait_for_token
 
 # Pydantic reads the field types when the models are built, so they are imported to run.
+from recon.domain.schedule import ScheduleSpec  # noqa: TC001
 from recon.domain.stream import BufferSpec, Retain, WindowSpec  # noqa: TC001
 from recon.domain.type_url import DEFAULT_RECORDS_TYPE_URL, type_url_problem
 
@@ -194,6 +195,10 @@ class ReconConfig(BaseModel):
 
     `deadline` is the seconds the whole survey may take; a table it cuts, and every table
     not started by then, fails as ``transient``.
+
+    `schedule` runs the mission by the operating system's scheduler (:mod:`recon.domain.
+    schedule`); a scheduled mission's `deadline`, unless it sets one, is the plan's
+    0.8 × `every`. None, the default: the mission runs when it is told to.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -202,3 +207,4 @@ class ReconConfig(BaseModel):
     collectors: list[CollectorEntry]
     preserve_raw: bool = False
     deadline: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    schedule: ScheduleSpec | None = None

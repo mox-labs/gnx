@@ -4,7 +4,9 @@ An archive is one survey's output: a table per collector and source, a ``meta.ya
 survey's event log and, unless the survey finished with every table, an incomplete marker. A
 stream's window (:mod:`recon.domain.stream`) is an archive too, of one table, kept with the
 other windows of its stream rather than with the survey's archives; one writer at a time
-extends a stream, from :meth:`ArchiveStore.hold_stream` to :meth:`ArchiveStore.release_stream`.
+extends a stream, from :meth:`ArchiveStore.hold_stream` to :meth:`ArchiveStore.release_stream`,
+and one survey at a time writes a mission's archives, from :meth:`ArchiveStore.hold_mission` to
+:meth:`ArchiveStore.release_mission`.
 The marker is written when the archive is created and removed only once the survey has
 finished, so a survey that dies at any point, however it was stopped, leaves an archive
 that reads incomplete. While a survey writes its archive it holds it, from :meth:`create`
@@ -166,6 +168,18 @@ class ArchiveStore(Protocol):
     def release_stream(self, mission_dir: Path, stream: str) -> None:
         """Let go of a stream :meth:`hold_stream` held; one this writer does not hold is left
         as it is."""
+        ...
+
+    def hold_mission(self, mission_dir: Path) -> None:
+        """Hold the mission for one survey until :meth:`release_mission` or its death: no
+        other survey, in this process or another on this host, can hold it meanwhile, so two
+        surveys of a mission never overlap. Raises ReconError (``busy``), naming the holder's
+        pid in ``details`` when it is known, while another holds it."""
+        ...
+
+    def release_mission(self, mission_dir: Path) -> None:
+        """Let go of a mission :meth:`hold_mission` held; one this store does not hold is
+        left as it is."""
         ...
 
     def stream_state(self, mission_dir: Path, stream: str) -> ArchiveState | None:

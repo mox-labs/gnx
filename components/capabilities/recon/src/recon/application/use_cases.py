@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from recon.application.captures import record_hook_payload
 from recon.application.collectors import confined_transforms, declared_env
 from recon.application.plan import Plan, PlannedStream, build_plan, fan_out, plugin_warning
+from recon.application.schedules import Schedules
 from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun
 from recon.application.survey import CollectorError, Survey
 from recon.domain.archives import (
@@ -75,9 +76,15 @@ if TYPE_CHECKING:
     from recon.domain.archives import ArchiveQuery, ArchiveState, ArchiveStore, Ended
     from recon.domain.clock import Clock
     from recon.domain.collector import Collector, Plugins
-    from recon.domain.documents import Capture
+    from recon.domain.documents import (
+        Capture,
+        ScheduleDocument,
+        SchedulesDocument,
+        TickDocument,
+    )
     from recon.domain.missions import ConfigFile, MissionStore
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
+    from recon.domain.schedule import Platform, ScheduleHost, Scheduler, ScheduleStore
     from recon.domain.stream import GapLog, Stop, WindowSpec
     from recon.domain.telemetry import Channel, EventCallback, Telemetry
 
@@ -139,12 +146,20 @@ class Recon:
         version: str,
         root_found_by: str = "argument",
         channel: ChannelFactory | None = None,
+        schedulers: Callable[[Platform | None], Scheduler] | None = None,
+        schedule_store: ScheduleStore | None = None,
+        schedule_host: ScheduleHost | None = None,
+        local: Callable[[datetime], datetime] | None = None,
     ) -> None:
         """``root_found_by`` is how the composition root found the project root:
         ``argument`` (the caller named it), ``repository`` (the nearest ancestor holding
         ``.git``) or ``working_directory``. Each survey records it. ``channel`` makes each
         survey's channel, through which OpenTelemetry and ``on_event`` receive; without
-        one they receive at once, on the survey's thread."""
+        one they receive at once, on the survey's thread. ``schedulers`` makes the operating
+        system's scheduler of a platform (None: the host's own), which ``schedule_*`` run
+        through, with the ``schedule_store`` beside each mission, the ``schedule_host``'s
+        recon command and PATH, and ``local``, the clock's time as the host's local time;
+        without them, the ``schedule_*`` operations are refused."""
         self._missions = missions
         self._archives = archives
         self._query = query
@@ -156,6 +171,19 @@ class Recon:
         self._version = version
         self._root_found_by = root_found_by
         self._channel = channel
+        self._schedules = (
+            None
+            if schedulers is None or schedule_store is None or schedule_host is None
+            else Schedules(
+                missions=missions,
+                store=schedule_store,
+                schedulers=schedulers,
+                host=schedule_host,
+                clock=clock,
+                local=local or (lambda at: at),
+                prepare=lambda name: self._prepare(name, None, False)[:2],
+            )
+        )
 
     # --- init ---------------------------------------------------------------------------
 
@@ -338,9 +366,41 @@ class Recon:
         Each table written that SQL cannot read is a ``table_unreadable`` warning, so it is
         found here rather than by the first query. An entry that is a stream runs one window,
         sealed when it ends (``windows``), after the snapshot tables, in config order: the
-        dirt road of a stream, a survey run from cron."""
+        dirt road of a stream, a survey run from cron. The mission is held while it runs, so
+        a second survey of it is refused ``busy`` before it writes anything."""
         source, plan, copy_to = self._prepare(name, config, replace)
         assert plan.config is not None  # _prepare raises on an invalid plan
+        mission = self._missions.mission_dir(name)
+        # One survey a mission at a time, from before it writes anything until it returns.
+        self._archives.hold_mission(mission)
+        try:
+            return self._survey(name, source, plan, copy_to, on_event)
+        finally:
+            self._archives.release_mission(mission)
+
+    def _scheduled_survey(self, name: str, scheduled: dict[str, Any]) -> SurveyDocument:
+        """:meth:`survey` as a tick runs it, its archive's ``meta.yaml`` saying when the tick
+        was due and how late it started (``scheduled``)."""
+        source, plan, _ = self._prepare(name, None, False)
+        mission = self._missions.mission_dir(name)
+        self._archives.hold_mission(mission)
+        try:
+            return self._survey(name, source, plan, None, None, scheduled=scheduled)
+        finally:
+            self._archives.release_mission(mission)
+
+    def _survey(
+        self,
+        name: str,
+        source: ConfigFile,
+        plan: Plan,
+        copy_to: Path | None,
+        on_event: EventCallback | None,
+        *,
+        scheduled: dict[str, Any] | None = None,
+    ) -> SurveyDocument:
+        """:meth:`survey`, the mission held and its plan valid."""
+        assert plan.config is not None
         caller = on_event
         emit = on_event or (lambda event: None)
         streams = {stream.index for stream in plan.streams}
@@ -401,6 +461,7 @@ class Recon:
                         config_sha256=sha256,
                         resolved=self._resolved(plan.config),
                         streams=streams,
+                        scheduled=scheduled,
                     )
                 finally:
                     # Whatever the survey opened (a collector's session, the requester's
@@ -650,6 +711,48 @@ class Recon:
             )
         return source, plan, mission_config
 
+    # --- schedules ---------------------------------------------------------------------
+
+    def _scheduling(self) -> Schedules:
+        if self._schedules is None:
+            raise UsageError(
+                "this recon was built with no scheduler",
+                fix="build it with recon.composition.root(), which gives it the host's",
+            )
+        return self._schedules
+
+    def schedule_install(self, name: str, *, platform: Platform | None = None) -> ScheduleDocument:
+        """Project the mission's ``schedule:`` onto the scheduler (the host's, or
+        ``platform``'s) and have it load the files; again with the same config it changes
+        nothing (``unchanged``). Raises ConfigError for a mission with no ``schedule:``."""
+        return self._scheduling().install(name, platform)
+
+    def schedule_remove(self, name: str, *, platform: Platform | None = None) -> ScheduleDocument:
+        """Unload and remove the mission's schedule (``removed``), or say there was none
+        (``absent``)."""
+        return self._scheduling().remove(name, platform)
+
+    def schedule_list(self, *, platform: Platform | None = None) -> SchedulesDocument:
+        """The schedules installed for this project's missions."""
+        return self._scheduling().list(platform)
+
+    def schedule_status(
+        self, mission: str | None = None, *, platform: Platform | None = None
+    ) -> SchedulesDocument:
+        """Each schedule of the project, or the mission's: installed or not, its config
+        changed since or not, when the next tick is due, the last tick, how late the schedule
+        is and the ticks skipped in a row."""
+        return self._scheduling().status(mission, platform)
+
+    def schedule_tick(self, name: str, *, config_sha256: str) -> TickDocument:
+        """One tick of the mission's schedule, what the scheduler starts: a survey under the
+        mission lock, logged to ``<mission>/schedule.log``, unless the config is not the one
+        whose digest the schedule holds (``stale``), another survey holds the mission
+        (``busy``, logged skipped), or it is a missed tick under ``missed: skip``."""
+        return self._scheduling().tick(
+            name, config_sha256, lambda scheduled: self._scheduled_survey(name, scheduled)
+        )
+
     # --- status, query, templates, capture ----------------------------------------------
 
     def status(self, mission: str | None = None) -> StatusDocument:
@@ -671,8 +774,28 @@ class Recon:
             root=str(self._missions.root),
             missions=[self._mission_status(name, history=mission is not None) for name in names],
             plugins=_installed(self._plugins),
-            warnings=[w.document() for name in names for w in self._abandoned(name)],
+            warnings=[
+                w.document() for name in names for w in self._abandoned(name) + self._exposed(name)
+            ],
         )
+
+    def _exposed(self, name: str) -> list[Problem]:
+        """A ``mission_exposed`` warning when a path of the mission (one an older recon made,
+        or one changed since) is open to other users; recon changes no mode it did not set."""
+        path = self._missions.exposed(name)
+        if path is None:
+            return []
+        mission = self._missions.mission_dir(name)
+        return [
+            Problem(
+                "",
+                f"mission {name}: {path} can be reached by users other than its owner, and "
+                "what a mission collects is its owner's alone",
+                kind="mission_exposed",
+                fix=f"chmod -R go-rwx '{mission}'",
+                got=str(path),
+            )
+        ]
 
     def _abandoned(self, name: str) -> list[Problem]:
         return [

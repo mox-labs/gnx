@@ -76,6 +76,11 @@ recon watch <mission> [--archive <id>] [--cursor <c>] [--interval <s>]
                                                        follow an archive as a survey writes it
 recon templates                                        list built-in templates
 recon capture <mission>                                append a hook payload (stdin) as a capture
+recon schedule install|remove <mission> [--platform <p>]
+                                                       run a mission by the OS scheduler,
+                                                       as its schedule: says; or stop it
+recon schedule list|status [<mission>]                what is installed; each schedule's
+                                                       last tick, lateness and skips
 recon --skill [-r <reference>]                         print the skill (for Claude)
 ```
 
@@ -102,6 +107,8 @@ The codes up to 9 are the ones every gnx capability CLI agrees on; recon's own k
 | 8 | `run_failed`: a table failed, not only on credentials or transiently; the archive is kept (a table's own unclassified error carries the same kind) |
 | 9 | `store`: the survey could not finish its archive (`meta.yaml` or the completion marker could not be written); the archive is kept |
 | 10 | `query`: the SQL failed or reached outside the mission's archives |
+| 11 | `busy`: another recon is writing the stream, or surveying the mission (one survey a mission at a time, so two never overlap); the error's `details` name the other's `pid` |
+| 12 | `stale`: a tick's config changed since its schedule was installed; read the change, then `recon schedule install <mission>`, and its ticks run again |
 | 130 | `interrupted`: Ctrl-C or SIGTERM stopped the command (`interrupted` is the exit kind every gnx tool shares; the archive of a survey stopped so reads `ended: stopped`). `recon stream` is the exception: a stop is how its run ends, so it seals the window `stopped` and exits 0 |
 
 A survey in which any table failed still writes its archive (marked `.incomplete`) and still reports every table's status, then exits **6** if any table failed on credentials, **5** if every failure was transient, and **8** otherwise. A survey whose `meta.yaml` or completion marker could not be written (a full disk) reports `status: incomplete` with an `archive_unfinished` warning, and exits **9** (`store`) whatever its tables did. Every failure, a usage error and Ctrl-C included, prints one envelope on stderr (one JSON line under `--json`), the shape the capability CLIs agree on: `{"schema": "recon.v1.error", "error": {"kind", "message", "fix", "complete", "problems", "details"}}`. Each problem is `{path, kind, message, fix, allowed, got, source}`, its `path` dotted from the top of the config (`collectors.0.type`) and its `kind` from the shared vocabulary (`unknown_key`, `missing_key`, `invalid_value`, `name_unknown`, ...). `complete` is false when part of the config could not be checked, so more problems may follow the fixes. Warnings travel inside the `--json` document, as problem records in its `warnings` list: among them `extract_missing` (a survey's table of a collector without `extract:` got one record holding a list of objects, the path to set as `extract:` named), `table_unreadable` (a survey wrote, or a query's archive has, a table SQL cannot read) `archive_unfinished` (the survey could not write `meta.yaml` or mark its archive complete), and `extract_unresolved`, `records_not_objects`, `captures_unmatched` and `result_empty`, each for a table kept empty because recon could not find or keep its records (an `extract:` that resolves to nothing in a response that is not empty, items that are not objects, captures no filter kept, an MCP tool or resource that answered with no content), so an empty table never reads as a source that had nothing.
@@ -125,6 +132,8 @@ A survey in which any table failed still writes its archive (marked `.incomplete
   writer.lock          locked by the survey while it writes the archive, then removed
   captures.jsonl, raw/ the capture log, when preserve_raw: true
 ```
+
+Everything recon writes for a mission is its owner's alone: each directory it makes under `.recon/` (the mission's, its archives', streams' and captures') is `0700` and each file (the config, tables, `meta.yaml`, logs, captures, locks) `0600`, whatever the umask would allow. A mission's tables hold what its sources answered, a mailbox as readily as a public feed. A directory or file that was there before keeps its mode: `recon status` warns (`mission_exposed`) when a mission's is open to other users, with the `chmod -R go-rwx` that closes it, and changes nothing itself.
 
 A collector may declare `type_url:` (dotted grammar, default `recon.v1.records`) so a consumer can tell what a table holds without reading collector code. `status` and `query` still read archives written by recon 0.8 (`format_version: 1`), and read a `meta.yaml` from a newer recon for the fields they know. Only a directory named as a survey names its archive (`2026-04-01-143022-000000`) is an archive: another directory under `archive/` is left alone. An archive whose `table_layout` this recon does not know (a newer recon wrote it) is refused by `query` with that number, rather than misread.
 
@@ -161,6 +170,7 @@ A span that failed has `status: error`, a `message` in recon's own words that qu
 - **Not an agent.** Recon doesn't use an LLM during execution. It runs the config you wrote. Intelligence lives outside the tool.
 - **Not a research autopilot.** Recon produces structured data; synthesis stays with Claude and with the human.
 - **Not a message bus.** A survey asks each source what its mission says, writes the answers into one timestamped archive, and ends. A source that does not end is collected as a stream, into windows each sealed as an archive (`recon stream`), and a stream runs one window unless told otherwise. What either writes can be read while it is written (`recon watch`, `recon watch --stream`, `recon.read_since`), as the archives' own files; recon pushes nothing to subscribers.
+- **Not a scheduler.** A mission's `schedule:` is kept by the operating system's own scheduler (launchd, systemd's user timers, or cron), onto which `recon schedule install` projects it; there is no recon daemon. Each tick is one survey, held to the config that was installed (`recon --skill -r schedules`).
 
 ## Design
 
@@ -190,9 +200,10 @@ The tests run offline, except the live integration tests against OpenAlex, arXiv
 - [docs/reference/telemetry.md](docs/reference/telemetry.md) — the event log, the spans and attributes, exporting through OpenTelemetry, and its warnings
 - [docs/reference/live-reading.md](docs/reference/live-reading.md) — `recon watch`, `read_since` and archive states: the contract, the defaults, the refusals
 - [docs/reference/streaming.md](docs/reference/streaming.md) — streams: `window:`, `buffer:`, `retain:`, the `tail` and `sse` types, `recon stream`, `--stream`; every default and refusal
+- [docs/reference/schedules.md](docs/reference/schedules.md) — schedules: `schedule:`, `recon schedule install`, `list`, `remove`, `status` and `tick`, what is projected onto launchd, systemd and cron, the tick's log; every default and refusal
 - [docs/design/2026-10-19-record.md](docs/design/2026-10-19-record.md) — the design judgments behind 0.11.0 and 0.12.0, and recon's claims
 - [CHANGELOG.md](CHANGELOG.md)
-- `recon --skill` — the skill Claude uses to author missions; `-r normalize-spec`, `-r config-patterns`, `-r capture-format`, `-r live-reading`, `-r streaming`, `-r telemetry` for the references. The plugin's copy is generated from it (`just recon-skill`).
+- `recon --skill` — the skill Claude uses to author missions; `-r normalize-spec`, `-r config-patterns`, `-r capture-format`, `-r live-reading`, `-r streaming`, `-r schedules`, `-r telemetry` for the references. The plugin's copy is generated from it (`just recon-skill`).
 
 ## License
 

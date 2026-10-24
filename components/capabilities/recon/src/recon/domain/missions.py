@@ -8,6 +8,7 @@ parsed config.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -15,6 +16,11 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from recon.domain.capture import CaptureLog
+
+
+#: A mission's name: letters, digits, ``.``, ``_`` and ``-``, starting with a letter or a digit,
+#: so it is one safe path component, and one word in every file a schedule projects.
+MISSION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 @dataclass(frozen=True)
@@ -73,6 +79,12 @@ class MissionStore(Protocol):
         ...
 
     def capture_count(self, name: str) -> int: ...
+
+    def exposed(self, name: str) -> Path | None:
+        """The first path of the mission's own (its directory, or one under it) that a user
+        other than its owner can reach: group or world permission bits set. None when every
+        one is the owner's alone. Changes nothing."""
+        ...
 
     def is_directory(self, path: Path) -> bool:
         """Whether ``path`` is a directory: a ``local`` source must name one."""

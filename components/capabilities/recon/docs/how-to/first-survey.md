@@ -257,13 +257,21 @@ This is the shape of every recon mission, regardless of domain. Fetch a sample, 
 
 ## Running this on a schedule
 
-Recon is mechanical, so it runs without Claude present. A cron entry:
+Recon is mechanical, so it runs without Claude present. Add a schedule to the mission, in seconds:
 
-```cron
-0 * * * * cd /path/to/project && recon survey dep-releases
+```yaml
+schedule:
+  every: 3600
 ```
 
-Every hour, a fresh timestamped archive lands under `.recon/dep-releases/archive/`. The next time Claude looks, it can diff the latest archive against the previous one to find releases that are new — without needing to have been awake when they shipped.
+then install it onto the machine's own scheduler (launchd on macOS, systemd's user timers on Linux, cron elsewhere):
+
+```
+recon schedule install dep-releases --json
+recon schedule status dep-releases --json
+```
+
+Every hour, a fresh timestamped archive lands under `.recon/dep-releases/archive/`, and each tick is a line of `.recon/dep-releases/schedule.log`. A tick runs the config that was installed and no other: after editing the mission, read the change and run `recon schedule install` again. A tick does not see your shell's environment, so a token an `auth.env` names is unset there (`recon --skill -r schedules` says how a tick gets its credentials). The next time Claude looks, it can diff the latest archive against the previous one to find releases that are new — without needing to have been awake when they shipped.
 
 If a table fails (GitHub down, token expired), the archive is still written and marked incomplete, and the exit code says what kind of failure it was: 5 when every failure was transient (retry later), 6 when any failed on credentials (replace the token), 8 otherwise. `recon status` shows which archives are incomplete, and the archive's `telemetry.jsonl` shows what happened to each table and each request: every `recon.collect` and `recon.http.request` span that ended with `status: error` names its `error.type` (`503`, `auth`, `httpx2.ConnectTimeout`).
 

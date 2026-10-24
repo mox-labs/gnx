@@ -17,7 +17,7 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, NoReturn
+from typing import TYPE_CHECKING, Any, ClassVar, NoReturn, get_args
 
 import pytest
 import yaml
@@ -130,7 +130,13 @@ class TestOneFieldNameOneShape:
         shapes: dict[str, set[str]] = {}
         for document in documents:
             for field, info in document.model_fields.items():
-                shown = str(info.annotation).replace(" | None", "").replace("Optional[", "")
+                # A value that may be missing (None) has the shape of the value: ``str | None``
+                # is a str, as ``<class 'str'>`` is (the schedule log's ``archive``, null when
+                # a tick wrote none).
+                given = [arg for arg in get_args(info.annotation) if arg is not type(None)]
+                optional = len(given) == 1 and type(None) in get_args(info.annotation)
+                shown = str(given[0] if optional else info.annotation)
+                shown = shown.replace(" | None", "").replace("Optional[", "")
                 shapes.setdefault(info.serialization_alias or field, set()).add(shown)
         return shapes
 
@@ -1233,7 +1239,9 @@ def test_the_agreed_kinds_keep_their_agreed_codes() -> None:
     assert shared == set(agreed), "every agreed kind, store among them (owner ruling 2026-10-22)"
     assert {kind: recon.EXIT_CODES[kind] for kind in shared} == {k: agreed[k] for k in shared}
     own = set(recon.EXIT_CODES) - shared
-    assert own == {"query", "busy"} and all(recon.EXIT_CODES[kind] >= 10 for kind in own)
+    # Changed (round 4, the coordinator's ruling on S4): a tick's changed config is `stale`.
+    assert own == {"query", "busy", "stale"}
+    assert all(recon.EXIT_CODES[kind] >= 10 for kind in own)
     codes = list(recon.EXIT_CODES.values())
     assert len(codes) == len(set(codes)), "one kind per code"
     tables = (recon.EXIT_MEANINGS, recon.EXIT_NEXT)
@@ -1538,7 +1546,8 @@ def test_status_reports_an_archive_a_dead_survey_left_half_made(project: Path) -
     document = _doc(_invoke("status", "m", "--json"))
     human = unstyle(_invoke("status").stderr)
 
-    [warning] = document["warnings"]
+    # The test made the mission with the umask's modes, so it is also mission_exposed.
+    [warning] = [w for w in document["warnings"] if w["kind"] != "mission_exposed"]
     assert warning["kind"] == "archive_abandoned" and str(dead) in warning["message"]
     assert str(dead) in warning["fix"]
     assert str(dead) in human

@@ -33,6 +33,7 @@ from recon.domain.documents import SourcedValue
 from recon.domain.errors import Problem
 from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
 from recon.domain.normalize import path_problem, spec_problems
+from recon.domain.schedule import ScheduleSpec, every_fix
 from recon.domain.stream import (
     DEFAULT_WINDOW_S,
     POSITION_FIELD,
@@ -218,6 +219,8 @@ def build_plan(
 
     raw = {k: v for k, v in raw.items() if not _ignored(k)}
     problems = _top_level_problems(raw)
+    schedule, scheduling = _schedule(raw)
+    problems += scheduling
     sources, sources_whole = _validate_items(raw.get("catalog"), "catalog", SourceEntry, problems)
     entries, entries_whole = _validate_items(
         raw.get("collectors"), "collectors", CollectorEntry, problems
@@ -278,11 +281,16 @@ def build_plan(
     warnings += _credential_warnings(sources, used_sources - refused, env, plugins)
     config = None
     if not problems:
+        deadline = raw.get("deadline")
+        if schedule is not None:
+            provenance += _scheduled(schedule, raw)
+            deadline = schedule.deadline if deadline is None else deadline
         config = ReconConfig(
             catalog=[src for _, src in sources],
             collectors=[entry for _, entry in entries],
             preserve_raw=raw.get("preserve_raw", False),
-            deadline=raw.get("deadline"),
+            deadline=deadline,
+            schedule=schedule,
         )
     return Plan(
         config=config,
@@ -460,6 +468,49 @@ def _not_a_stream(i: int, entry: CollectorEntry) -> list[Problem]:
         for key, value in (("buffer", entry.buffer), ("retain", entry.retain))
         if value is not None
     ]
+
+
+def _schedule(raw: dict[Any, Any]) -> tuple[ScheduleSpec | None, list[Problem]]:
+    """The mission's ``schedule:``, None when it has none or it does not validate; and the
+    problems with it, an ``every`` no scheduler keeps fixed by the nearest one that does."""
+    if raw.get("schedule") is None:
+        return None, []
+    try:
+        return ScheduleSpec.model_validate(raw["schedule"]), []
+    except ValidationError as exc:
+        problems = _from_pydantic("schedule", ScheduleSpec, exc)
+    return None, [
+        replace(p, fix=every_fix(p.got))
+        if p.path == "schedule.every" and p.kind == "invalid_value" and isinstance(p.got, int)
+        else p
+        for p in problems
+    ]
+
+
+def _scheduled(schedule: ScheduleSpec, raw: dict[Any, Any]) -> list[SourcedValue]:
+    """Where a scheduled mission's settings came from: its ``schedule:`` and its ``deadline``,
+    which defaults to a share of ``every``."""
+    given = raw["schedule"]
+    values = [
+        SourcedValue(path="schedule.every", value=schedule.every, origin="mission"),
+        SourcedValue(
+            path="schedule.missed",
+            value=schedule.missed,
+            origin="mission" if "missed" in given else "recon",
+            note=""
+            if "missed" in given
+            else "ticks missed while the host was away run once, coalesced, when it is back",
+        ),
+    ]
+    if raw.get("deadline") is None:
+        note = (f"a scheduled mission's: 0.8 × schedule.every ({schedule.every} s), so a tick "
+                "ends before the next is due")  # fmt: skip
+        values.append(
+            SourcedValue(path="deadline", value=schedule.deadline, origin="recon", note=note)
+        )
+    else:
+        values.append(SourcedValue(path="deadline", value=raw["deadline"], origin="mission"))
+    return values
 
 
 def _ignored(key: Any) -> bool:

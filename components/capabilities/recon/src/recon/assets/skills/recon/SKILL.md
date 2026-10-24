@@ -106,16 +106,17 @@ Act on the exit code, then on the error's `fix`:
 | 8 | `run_failed` | a table failed, and not only on credentials or transiently; the archive is kept, marked incomplete | read each failed table's error and fix its cause, then plan and survey again |
 | 9 | `store` | the survey could not finish its archive; it is kept, marked incomplete | free space where the archive is, or make it writable, then survey again |
 | 10 | `query` | the SQL failed, or reached outside the mission's archives | correct the SQL as the error's `fix` says; for a missing table, it names the tables there are |
-| 11 | `busy` | another recon is writing the stream; one writes a stream at a time | let that stream run, or stop its writer as the `fix` says (`kill -TERM <pid>`, the pid in `details`, seals its window), then stream again |
+| 11 | `busy` | another recon is writing the stream, or surveying the mission | let it run, or stop it as the `fix` says (`kill -TERM <pid>`, the pid in `details`), then run the command again |
+| 12 | `stale` | the config changed since its schedule was installed; ticks are refused | read what changed, then `recon schedule install <mission>` |
 | 130 | `interrupted` | Ctrl-C or SIGTERM stopped the command; a survey's archive reads `ended: stopped` (a stopped `recon stream` exits 0) | run the command again |
 
-A survey whose tables failed exits 6 if any failed on credentials, 5 if every failure was transient, else 8 (`run_failed`). One whose archive could not be finished (a full disk) exits 9 (`store`) whatever its tables did, an `archive_unfinished` warning saying why. The error is this envelope, on one line:
+A survey whose archive could not be finished (a full disk) exits 9 (`store`) whatever its tables did, an `archive_unfinished` warning saying why. The error is this envelope, on one line:
 
 ```json
 {"schema": "recon.v1.error", "error": {"kind": "config", "message": "<file>: 1 problem(s)", "fix": "fix each problem, then: recon survey m --dry-run", "complete": true, "problems": [{"path": "collectors.0.type", "kind": "name_unknown", "message": "unknown collector type 'ftp'; installed: api, capture, cli, mcp, sse, tail, web", "fix": "use one of: api, capture, cli, mcp, sse, tail, web", "allowed": ["api", "capture", "cli", "mcp", "sse", "tail", "web"], "got": "ftp", "source": ""}], "details": {}}}
 ```
 
-A problem's `path` is dotted from the top of the file, list positions included (`collectors.0.type`); `allowed` lists the legal values where the set is closed; `got` is the value written, when there is one. `details` carries structured values: a failed survey's `archive` and `failed` tables, a wrong `value` and the `allowed` ones. A problem's `kind` is one of `yaml_syntax`, `wrong_shape`, `unknown_key`, `missing_key`, `invalid_value`, `name_unknown`, `name_taken`, `unresolved`, `env_unset`, `plugin_broken`, `otel_unavailable`, `telemetry_failed`, `extract_missing`, `table_unreadable`, `archive_unfinished`, `extract_unresolved`, `records_not_objects`, `captures_unmatched`, `result_empty`, `events_dropped`, `telemetry_stuck`, `archive_abandoned`, `records_dropped`, `source_stuck`, `retain_unset`, `windows_many`; the last eighteen are warnings. `error.kind` is one of `unknown`, `usage`, `config`, `not_found`, `transient`, `auth`, `conflict`, `run_failed`, `store`, `query`, `busy`, `interrupted`. A warning is a problem record in the document's `warnings` list (`recon.v1.plan`, `recon.v1.survey`, `recon.v1.query-rows`): it does not stop the command.
+A problem's `path` is dotted from the top of the file (`collectors.0.type`); `allowed` lists the legal values where the set is closed; `got` is the value written, when there is one. `details` carries structured values: a failed survey's `archive` and `failed` tables. A problem's `kind` is one of `yaml_syntax`, `wrong_shape`, `unknown_key`, `missing_key`, `invalid_value`, `name_unknown`, `name_taken`, `unresolved`, `env_unset`, `plugin_broken`, `otel_unavailable`, `telemetry_failed`, `extract_missing`, `table_unreadable`, `archive_unfinished`, `extract_unresolved`, `records_not_objects`, `captures_unmatched`, `result_empty`, `events_dropped`, `telemetry_stuck`, `archive_abandoned`, `records_dropped`, `source_stuck`, `retain_unset`, `windows_many`, `config_changed`, `missed_ignored`, `schedule_overrun`, `mission_exposed`; the last twenty-two are warnings. `error.kind` is one of `unknown`, `usage`, `config`, `not_found`, `transient`, `auth`, `conflict`, `run_failed`, `store`, `query`, `busy`, `stale`, `interrupted`. A warning is a problem record in the document's `warnings` list (`recon.v1.plan`, `recon.v1.survey`, `recon.v1.query-rows`): it does not stop the command.
 
 Documents name their shape in `schema`: `recon.v1.plan`, `recon.v1.survey`, `recon.v1.status`, `recon.v1.query-rows`, `recon.v1.templates`, `recon.v1.mission`, `recon.v1.capture`, `recon.v1.records-since`, `recon.v1.error`, and `recon.v1.event` for the lines of an archive's event log. A reader ignores a field it does not know, and handles an error or problem kind it does not know by the exit code; both sets grow. A document whose schema has another major version (`recon.v2.*`) is not a `recon.v1` document.
 
@@ -125,6 +126,7 @@ Documents name their shape in `schema`: `recon.v1.plan`, `recon.v1.survey`, `rec
 # Every key a mission file can hold, with its default; | separates the values allowed.
 preserve_raw: false            # true: keep every fetched body in the archive's capture log
 deadline: 600                  # optional: seconds the whole survey may take (> 0)
+schedule: {every: 600, missed: once}   # optional: the OS scheduler runs it
 catalog:                       # where to look; optional
   - name: <source>             # required, unique
     type: api                  # api | web | local | mcp, or a kind an installed type adds
@@ -154,7 +156,7 @@ collectors:                    # what to ask; required, at least one
     #          result (structured | text)
 ```
 
-These are all the keys there are: an unknown key at the top level, in a source, a collector, `auth`, `rate_limit` or `match` is a plan problem with its path, so a typo like `normalise:` never passes silently. A collector's keys beyond the shared ones are its type's own, checked by that type (`run:` is unknown on an `api` collector), and an installed plugin type may take keys of its own; its source kinds, too. The one exception is a top-level key beginning with `_`, which recon ignores, for notes or a YAML anchor several collectors alias. `params:` values are strings: quote a number (`limit: "20"`).
+These are all the keys there are: an unknown key at the top level, in a source, a collector, `auth`, `rate_limit` or `match` is a plan problem with its path, so a typo like `normalise:` never passes silently. A collector's keys beyond the shared ones are its type's own, checked by that type (`run:` is unknown on an `api` collector), and an installed plugin type may take keys of its own; its source kinds, too. A top-level key beginning with `_` is ignored: a note, or a YAML anchor collectors alias. `params:` values are strings: quote a number (`limit: "20"`).
 
 **Fan-out.** A collector with `source:` runs once and writes the table `<name>`. Without `source:` it runs against every catalog source of a kind its type uses (`cli`: `local`; `api`, `web`: `api` or `web`; `mcp`: `mcp`; `capture`: any) and writes `<name>-<source>` for each; with no catalog it runs once. The plan's `skipped` names each source it passed over, with its kind; a catalog with none it can use is a plan problem, and so is a pinned source of another kind.
 
@@ -220,7 +222,7 @@ The line format, for a tool that writes captures itself: `recon --skill -r captu
 
 ## Effects and safety
 
-A plan names each run's effects: `network`, `subprocess`, `filesystem`, or `unknown` for a plugin type that declared none. A `cli` collector runs its command through a shell with the user's permissions, and an `mcp` source's `command` (with `npx -y`, a package it downloads) runs with them too, at the dry run as well as the survey: write missions yourself, and never copy a `run:`, a `command:` or a mission file from untrusted input. What an MCP tool returns may be private (a repository, a mailbox); it lands in the archive. Nothing prompts; `init -c <file>` and `survey -c <file>` refuse to overwrite a different mission config unless given `--replace`.
+A plan names each run's effects: `network`, `subprocess`, `filesystem`, or `unknown` for a plugin type that declared none. A `cli` collector runs its command through a shell with the user's permissions, and an `mcp` source's `command` (with `npx -y`, a package it downloads) runs with them too, at the dry run as well as the survey: write missions yourself, and never copy a `run:`, a `command:` or a mission file from untrusted input. What an MCP tool returns may be private (a repository, a mailbox); it lands in the archive. Nothing prompts.
 
 ## References
 
@@ -234,3 +236,4 @@ Each prints with `recon --skill -r <name>`:
 | `telemetry` | the event log, every span and attribute, exporting through OpenTelemetry |
 | `streaming` | stream keys, defaults, refusals; `tail`, `sse`; `--stream` |
 | `live-reading` | `recon watch` and `recon.read_since`: archive states, sealing, the cursor, every flag, default and refusal |
+| `schedules` | `schedule:`, `recon schedule`, ticks |

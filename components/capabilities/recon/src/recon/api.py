@@ -28,12 +28,16 @@ if TYPE_CHECKING:
         PlanDocument,
         QueryRows,
         RecordsSince,
+        ScheduleDocument,
+        SchedulesDocument,
         StatusDocument,
         StreamDocument,
         SurveyDocument,
         TemplatesDocument,
+        TickDocument,
     )
     from recon.domain.errors import Problem
+    from recon.domain.schedule import Platform
     from recon.domain.stream import Stop
 
 
@@ -248,3 +252,56 @@ def capture(name: str, payload: Any, *, root: Path | None = None) -> Capture:
     """Append a Claude Code ``PostToolUse`` hook payload to the mission's capture log.
     ``recon.v1.capture``: the line as written."""
     return _root(root).capture(name, payload)
+
+
+def schedule_install(
+    name: str, *, platform: Platform | None = None, root: Path | None = None
+) -> ScheduleDocument:
+    """Run the mission ``name`` by the operating system's scheduler: project its
+    ``schedule:`` onto the host's (launchd, systemd's user timers, or cron), or onto
+    ``platform``'s, and have it load the files. ``recon.v1.schedule``.
+
+    Idempotent: again with the same config it changes nothing (``outcome: unchanged``); with
+    another it replaces the schedule (``replaced``), and each tick holds the config to the
+    digest installed. Raises ConfigError for a mission with no ``schedule:``, NotFoundError for
+    no mission, ReconError (``run_failed``) when the scheduler refuses."""
+    return _root(root).schedule_install(name, platform=platform)
+
+
+def schedule_remove(
+    name: str, *, platform: Platform | None = None, root: Path | None = None
+) -> ScheduleDocument:
+    """Unload and remove the mission's schedule: ``removed``, or ``absent`` when there was
+    none. ``recon.v1.schedule``."""
+    return _root(root).schedule_remove(name, platform=platform)
+
+
+def schedule_list(
+    *, platform: Platform | None = None, root: Path | None = None
+) -> SchedulesDocument:
+    """The schedules installed for the project's missions. ``recon.v1.schedules``."""
+    return _root(root).schedule_list(platform=platform)
+
+
+def schedule_status(
+    mission: str | None = None, *, platform: Platform | None = None, root: Path | None = None
+) -> SchedulesDocument:
+    """Each schedule of the project, or the mission's: whether it is installed, whether its
+    config changed since (a ``config_changed`` warning: its ticks are refused until it is
+    installed again), when its next tick is due, its last tick, how late it is, and the ticks
+    skipped in a row (a ``schedule_overrun`` warning from the second). ``recon.v1.schedules``."""
+    return _root(root).schedule_status(mission, platform=platform)
+
+
+def schedule_tick(name: str, *, config_sha256: str, root: Path | None = None) -> TickDocument:
+    """One tick of the mission's schedule: what an installed schedule runs. A survey under the
+    mission lock, logged as a line of ``<mission>/schedule.log``; its archive's ``meta.yaml``
+    says when the tick was due (``scheduled_at``) and how late it started (``late_s``).
+    ``recon.v1.tick``.
+
+    Raises ReconError (``stale``, exit 12) when the config's sha256 is not
+    ``config_sha256``, the digest the schedule was installed with, until it is installed
+    again; ReconError (``busy``) when another survey holds the mission, ``details.skips``
+    counting the ticks skipped so in a row. A tick run late under ``missed: skip`` runs no
+    survey (``skipped_by: missed``)."""
+    return _root(root).schedule_tick(name, config_sha256=config_sha256)
