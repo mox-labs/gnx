@@ -377,6 +377,84 @@ async def test_a_scope_does_not_take_the_sessions_of_a_run_started_inside_it() -
     assert seen == [(0,)] and _labels(run, (0,)) == ["outer"]
 
 
+async def test_a_trial_cancelled_mid_session_names_its_own_sessions_the_cancelled_one_too() -> None:
+    """A trial cancelled while its agent session is in flight, with other trials' scopes
+    open beside it: the cancelled session's row is recorded while the cancellation unwinds,
+    inside the trial's scope, so that scope names it, and no other scope does."""
+    started, after = asyncio.Event(), asyncio.Event()
+
+    class _Holds:
+        def check(self, _: Any) -> None:
+            return None
+
+        async def run(self, definition: Any, task: str) -> Any:
+            started.set()
+            await asyncio.Event().wait()
+
+    agent = BoundAgent(AgentDefinition(name="held"), _Holds())
+    scopes: dict[str, Any] = {}
+
+    class _Trials:
+        requires = frozenset({TASK})
+        provides = frozenset({OUT})
+
+        async def run(self, inputs: Any, ctx: RunContext) -> None:
+            async def held() -> None:
+                async with ctx.attributed() as scopes["held"]:
+                    _fake("held0")
+                    await agent.run("wait")
+
+            async def other(me: str, last: asyncio.Event) -> None:
+                async with ctx.attributed() as scopes[me]:
+                    _fake(f"{me}0")
+                    await started.wait()
+                    _fake(f"{me}1")
+                    await last.wait()  # still open while the held trial is cancelled
+                    _fake(f"{me}2")
+
+            trials = [asyncio.create_task(other(me, after)) for me in ("a", "b")]
+            holding = asyncio.create_task(held())
+            await started.wait()
+            holding.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await holding
+            after.set()
+            await asyncio.gather(*trials)
+
+    run = await Executor().run(wire({"trials": _Trials()}, inputs=[TASK]), {TASK: "go"})
+    held = scopes["held"].sessions()
+    assert _labels(run, held) == ["held0", "held"]
+    assert run.rows(SESSION)[held[-1]].status == "cancelled"
+    assert _labels(run, scopes["a"].sessions()) == ["a0", "a1", "a2"]
+    assert _labels(run, scopes["b"].sessions()) == ["b0", "b1", "b2"]
+
+
+async def test_a_scope_left_by_an_exception_is_final_and_names_only_its_own() -> None:
+    """A trial that raises inside its scope leaves it as surely as one that returns: what it
+    names then is its own sessions, and stays so whatever the component records next."""
+    seen: list[tuple[int, ...]] = []
+
+    class _Raises:
+        requires = frozenset({TASK})
+        provides = frozenset({OUT})
+
+        async def run(self, inputs: Any, ctx: RunContext) -> None:
+            _fake("before")
+            try:
+                async with ctx.attributed() as trial:
+                    _fake("mine")
+                    raise RuntimeError("the trial broke")
+            except RuntimeError:
+                seen.append(trial.sessions())
+            _fake("after")
+            async with ctx.attributed():
+                _fake("next")
+            seen.append(trial.sessions())
+
+    run = await Executor().run(wire({"raises": _Raises()}, inputs=[TASK]), {TASK: "go"})
+    assert seen == [(1,), (1,)] and _labels(run, (1,)) == ["mine"]
+
+
 async def test_outside_a_run_a_scope_names_nothing() -> None:
     async with RunContext("r", "alone").attributed() as scope:
         assert _fake("unrecorded") is None
