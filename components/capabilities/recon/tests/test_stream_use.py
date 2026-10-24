@@ -203,6 +203,20 @@ class TestWatchAcrossWindows:
         assert len({read.archive_id for read in reads}) == 3
         assert all(read.stream == "events" for read in reads)
 
+    def test_a_cursor_into_a_retired_window_goes_on_from_the_next_one(self, tmp_path: Path) -> None:
+        clock = VirtualClock()
+        _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
+        recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 100))
+        recon_.stream("m", "events", windows=1)
+        read = recon_.read_since("m", stream="events")
+        _mission(tmp_path, {"window": {"seconds": 10}, "retain": {"windows": 1}})
+        recon_.stream("m", "events", windows=2)  # the window the cursor is in is retired
+
+        after = recon_.read_since("m", read.cursor, stream="events")
+
+        assert after.archive_id != read.archive_id
+        assert [r["record"]["seq"] for r in after.records][:1] == [18], "window 2's first"
+
     def test_a_watcher_attached_changes_no_byte_of_the_stream(self, tmp_path: Path) -> None:
         """B10 #9: the same stream, with and without a reader following it as it is written."""
         trees = []

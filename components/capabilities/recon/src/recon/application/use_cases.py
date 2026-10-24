@@ -870,7 +870,14 @@ class Recon:
         inner: str | None = None
         if cursor is not None:
             window_id, inner = _stream_cursor_read(cursor, stream)
-            path = self._window(name, stream, windows, window_id)
+            index = window_index(window_id) or 0
+            later = [w for w in windows if (window_index(w.name) or 0) >= index]
+            if later and later[0].name == window_id:
+                path = later[0]
+            elif later:  # its window was retired since: go on from the next one kept
+                path, inner = later[0], None
+            else:
+                path = self._window(name, stream, windows, window_id)
         elif archive is not None:
             path = self._window(name, stream, windows, archive)
         else:
