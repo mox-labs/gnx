@@ -38,7 +38,7 @@ from matrix.domain.errors import CompilationError, invalid
 from matrix.domain.ids import versioned_problem
 from matrix.domain.observer import check_event_name, check_measure
 from matrix.domain.problems import problem
-from matrix.domain.session import SESSION
+from matrix.domain.session import SESSION, Attribution, attributed
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -59,7 +59,7 @@ class ContextHooks(Protocol):
 
     def defer(self, release: Release) -> None: ...
 
-    def provide(self, kind: str, row: Any) -> None: ...
+    def provide(self, kind: str, row: Any, sessions: tuple[int, ...] | None) -> None: ...
 
     def emit(self, name: str, fields: dict[str, Any]) -> None: ...
 
@@ -79,7 +79,7 @@ class _Detached:
     def defer(self, release: Release) -> None:
         return None
 
-    def provide(self, kind: str, row: Any) -> None:
+    def provide(self, kind: str, row: Any, sessions: tuple[int, ...] | None) -> None:
         return None
 
     def emit(self, name: str, fields: dict[str, Any]) -> None:
@@ -115,8 +115,11 @@ class RunContext:
     ``defer(release)`` hands the run something to undo. Every deferred release is called once
     when the run ends, in reverse order, whether the run completed, failed or was cancelled.
 
-    ``sessions()`` names the rows of ``matrix.v1.session`` the component has run since it
-    last handed a row over: the ones its next row's ledger entry will name.
+    ``sessions()`` names the rows of ``matrix.v1.session`` the component has run that no row
+    it handed over has named yet: the ones its next row's ledger entry will name.
+    ``attributed()`` opens a scope that names only the sessions one block made, in its own
+    task and the tasks it starts: work done concurrently in one component (trials in flight)
+    hands each row over with its own sessions, ``provide(kind, row, sessions=...)``.
 
     ``emit``, ``measure`` and ``span`` are the component's telemetry: events on the run's
     channel, under a name the component namespaces with its own root (``acme.probe.sample``;
@@ -143,9 +146,14 @@ class RunContext:
         self.stopping = asyncio.Event()
         self._hooks: ContextHooks = hooks if hooks is not None else _Detached()
 
-    def provide(self, kind: str, row: Any, /) -> None:
-        """Hand over one row of ``kind`` now. Recorded and durable when this returns."""
-        self._hooks.provide(kind, row)
+    def provide(self, kind: str, row: Any, /, *, sessions: Iterable[int] | None = None) -> None:
+        """Hand over one row of ``kind`` now. Recorded and durable when this returns.
+
+        Its ledger entry names ``sessions``, rows of ``matrix.v1.session`` this component
+        ran (an :class:`Attribution`'s); by default, every one no row has named yet
+        (:meth:`sessions`). Naming a session this component did not run is a
+        :class:`ContractError`."""
+        self._hooks.provide(kind, row, None if sessions is None else tuple(sessions))
 
     def defer(self, release: Release) -> None:
         """Register ``release`` (sync or async, no arguments) to run when the run ends."""
@@ -178,10 +186,20 @@ class RunContext:
         return self._hooks.span(name, fields)
 
     def sessions(self) -> tuple[int, ...]:
-        """The rows of ``matrix.v1.session`` this component has run since it last handed a
-        row over, failed ones included: the sessions the ledger entry of its next row will
-        name. A component that wants a row to name its sessions itself reads them here."""
+        """The rows of ``matrix.v1.session`` this component has run that no row it handed
+        over has named yet, failed ones included: the sessions the ledger entry of its next
+        row will name unless it names its own. Without :meth:`attributed`, those it ran since
+        it last handed a row over. A component that wants a row to name its sessions itself
+        reads them here."""
         return self._hooks.sessions()
+
+    def attributed(self) -> AbstractAsyncContextManager[Attribution]:
+        """``async with ctx.attributed() as trial:`` names in ``trial.sessions()`` exactly
+        the sessions made in this task, and in the tasks started inside the block, while it
+        is open; none that a concurrent task of this component made. Scopes nest: an outer
+        one names the inner one's sessions too. Every session is still the component's
+        (:meth:`sessions`) until a row names it. Outside a run it names none."""
+        return attributed()
 
     def __repr__(self) -> str:
         return f"RunContext(run_id={self.run_id!r}, component={self.component!r})"

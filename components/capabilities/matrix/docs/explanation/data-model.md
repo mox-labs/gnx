@@ -51,7 +51,7 @@ other table has exactly one entry in it:
 | `row` | `int` | the row's 0-based position in that table |
 | `component` | `str` | the component that handed it over, or `$input` for a run input |
 | `time` | `datetime` | UTC |
-| `sessions` | `tuple[int, ...]` | the rows of `matrix.v1.session` behind it: the sessions its component ran since its previous hand-over; empty for a run input, a reused row, a session row, and a row no session produced |
+| `sessions` | `tuple[int, ...]` | the rows of `matrix.v1.session` behind it: the sessions its component ran since its previous hand-over, or those the component named when it handed the row over (`ctx.attributed()`); empty for a run input, a reused row, a session row, and a row no session produced |
 
 `construct.rows("matrix.v1.ledger")` is the same thing as `construct.ledger`. No component
 may provide or require the ledger's kind.

@@ -40,6 +40,7 @@ from matrix import (
     compose,
     default_registry,
     digest,
+    record_session,
     wire,
 )
 from matrix.adapters._out.runtime.mock import MockAgentRuntime, MockAgentRuntimeConfig
@@ -187,6 +188,199 @@ async def test_a_component_can_ask_which_sessions_its_next_row_will_name() -> No
     assert seen == [(0, 1), (), (2,)]
     assert [e.sessions for e in run.construct.provenance("acme.v1.out")] == [(0, 1), (2,)]
     assert RunContext("r", "alone").sessions() == ()  # outside a run, none
+
+
+OUT = "acme.v1.out"
+
+
+def _fake(label: str) -> int | None:
+    """Record a session as a runtime would, labelled by its agent."""
+    return record_session(Session(port="agent-runtime", agent=label, sent=digest(label)))
+
+
+def _labels(run: Any, rows: tuple[int, ...]) -> list[str]:
+    return [run.rows(SESSION)[row].agent for row in rows]
+
+
+async def test_concurrent_tasks_under_one_component_each_see_exactly_their_own_sessions() -> None:
+    """Two trials in flight in one component, their sessions interleaved: the scope each
+    opens (``ctx.attributed()``) names exactly the sessions made in its own task, and so does
+    the ledger entry of the row each hands over with them. Neither claims the other's."""
+    seen: dict[str, tuple[int, ...]] = {}
+    left: list[tuple[int, ...]] = []
+
+    class _Trials:
+        requires = frozenset({TASK})
+        provides = frozenset({OUT})
+
+        async def run(self, inputs: Any, ctx: RunContext) -> None:
+            turn = {"a": asyncio.Event(), "b": asyncio.Event()}
+
+            async def trial(me: str, other: str) -> None:
+                async with ctx.attributed() as attribution:
+                    for step in range(3):
+                        await turn[me].wait()
+                        turn[me].clear()
+                        _fake(f"{me}{step}")
+                        turn[other].set()
+                    seen[me] = attribution.sessions()
+                    ctx.provide(OUT, me, sessions=attribution.sessions())
+
+            turn["a"].set()
+            async with asyncio.TaskGroup() as group:
+                group.create_task(trial("a", "b"))
+                group.create_task(trial("b", "a"))
+            left.append(ctx.sessions())
+
+    run = await Executor().run(wire({"trials": _Trials()}, inputs=[TASK]), {TASK: "go"})
+    assert _labels(run, tuple(range(6))) == ["a0", "b0", "a1", "b1", "a2", "b2"]
+    assert seen == {"a": (0, 2, 4), "b": (1, 3, 5)}
+    named = {run.rows(OUT)[e.row]: e.sessions for e in run.construct.provenance(OUT)}
+    assert named == seen
+    assert left == [()]  # every session was named by the row of its own trial
+
+
+async def test_a_scope_holds_its_task_s_sessions_and_its_child_tasks_and_nests() -> None:
+    """A scope names the sessions made in its task and in every task started inside it, an
+    inner scope's among them. It names none from a task started before it opened, and none
+    made after it closed, so what it names is fixed once the block is left."""
+    scopes: dict[str, Any] = {}
+
+    class _Nests:
+        requires = frozenset({TASK})
+        provides = frozenset({OUT})
+
+        async def run(self, inputs: Any, ctx: RunContext) -> None:
+            go, late = asyncio.Event(), asyncio.Event()
+
+            async def sibling() -> None:
+                await go.wait()
+                _fake("sibling")
+
+            async def grandchild() -> None:
+                _fake("grandchild")
+
+            async def child() -> None:
+                _fake("child")
+                await asyncio.create_task(grandchild())
+
+            async def lingers() -> None:
+                await late.wait()
+                _fake("late")
+
+            before = asyncio.create_task(sibling())
+            async with ctx.attributed() as outer:
+                _fake("outer")
+                async with ctx.attributed() as inner:
+                    _fake("inner")
+                    await asyncio.create_task(child())
+                go.set()
+                await before
+                lingering = asyncio.create_task(lingers())
+            late.set()
+            await lingering
+            scopes.update(outer=outer, inner=inner)
+            ctx.provide(OUT, "all")
+
+    run = await Executor().run(wire({"nests": _Nests()}, inputs=[TASK]), {TASK: "go"})
+    outer, inner = scopes["outer"].sessions(), scopes["inner"].sessions()
+    assert _labels(run, outer) == ["outer", "inner", "child", "grandchild"]
+    assert _labels(run, inner) == ["inner", "child", "grandchild"]
+    assert _labels(run, (4, 5)) == ["sibling", "late"]
+    # Every one ran in the component: its next plain hand-over names them all.
+    assert [e.sessions for e in run.construct.provenance(OUT)] == [(0, 1, 2, 3, 4, 5)]
+
+
+async def test_a_row_handed_over_with_its_sessions_leaves_the_rest_to_the_next_row() -> None:
+    """``provide(kind, row, sessions=...)`` names exactly those sessions. The ones it did
+    not name are still the component's unnamed sessions (``ctx.sessions()``), and its next
+    plain hand-over names them, as it would have without a scope."""
+    seen: list[tuple[int, ...]] = []
+
+    class _Mixed:
+        requires = frozenset({TASK})
+        provides = frozenset({OUT})
+
+        async def run(self, inputs: Any, ctx: RunContext) -> None:
+            _fake("loose")
+            async with ctx.attributed() as trial:
+                _fake("trial")
+            seen.append(ctx.sessions())
+            ctx.provide(OUT, "trial", sessions=trial.sessions())
+            seen.append(ctx.sessions())
+            ctx.provide(OUT, "rest")
+            ctx.provide(OUT, "none", sessions=())
+
+    run = await Executor().run(wire({"mixed": _Mixed()}, inputs=[TASK]), {TASK: "go"})
+    assert seen == [(0, 1), (0,)]
+    assert [e.sessions for e in run.construct.provenance(OUT)] == [(1,), (0,), ()]
+
+
+async def test_a_row_may_name_only_sessions_its_own_component_ran() -> None:
+    """The ledger is the record of what produced a row: naming a session another component
+    ran, or one that does not exist, is refused as a contract error, and nothing is
+    recorded for that row."""
+
+    class _Runs:
+        requires = frozenset({TASK})
+        provides = frozenset({"acme.v1.first"})
+
+        async def run(self, inputs: Any, ctx: RunContext) -> Any:
+            _fake("theirs")
+            return {"acme.v1.first": "done"}
+
+    class _Claims:
+        requires = frozenset({"acme.v1.first"})
+        provides = frozenset({OUT})
+
+        def __init__(self, claimed: tuple[int, ...]) -> None:
+            self._claimed = claimed
+
+        async def run(self, inputs: Any, ctx: RunContext) -> None:
+            _fake("mine")
+            ctx.provide(OUT, "claimed", sessions=self._claimed)
+
+    for claimed in [(0,), (1, 7)]:
+        wiring = wire({"runs": _Runs(), "claims": _Claims(claimed)}, inputs=[TASK])
+        with pytest.raises(RunError) as e:
+            await Executor().run(wiring, {TASK: "go"})
+        failure = e.value.run.failures[0]
+        assert (failure.component, failure.kind) == ("claims", "contract")
+        assert e.value.fix is not None and "ctx.attributed()" in e.value.fix
+        assert e.value.run.rows(OUT) == ()
+
+
+async def test_a_scope_does_not_take_the_sessions_of_a_run_started_inside_it() -> None:
+    """A run started inside a scope has its own session table; its rows are not this run's,
+    so the scope names none of them."""
+
+    class _Inner:
+        requires = frozenset({TASK})
+        provides = frozenset({OUT})
+
+        async def run(self, inputs: Any, ctx: RunContext) -> None:
+            _fake("inner")
+
+    seen: list[tuple[int, ...]] = []
+
+    class _Outer:
+        requires = frozenset({TASK})
+        provides = frozenset({"acme.v1.first"})
+
+        async def run(self, inputs: Any, ctx: RunContext) -> None:
+            async with ctx.attributed() as scope:
+                await Executor().run(wire({"inner": _Inner()}, inputs=[TASK]), {TASK: "x"})
+                _fake("outer")
+            seen.append(scope.sessions())
+
+    run = await Executor().run(wire({"outer": _Outer()}, inputs=[TASK]), {TASK: "go"})
+    assert seen == [(0,)] and _labels(run, (0,)) == ["outer"]
+
+
+async def test_outside_a_run_a_scope_names_nothing() -> None:
+    async with RunContext("r", "alone").attributed() as scope:
+        assert _fake("unrecorded") is None
+    assert scope.sessions() == ()
 
 
 async def test_a_call_whose_reply_is_refused_is_still_on_the_record() -> None:
