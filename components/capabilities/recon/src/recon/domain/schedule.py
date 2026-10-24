@@ -486,7 +486,7 @@ class ScheduleStore(Protocol):
 class ScheduleHost:
     """What the host gives every tick: the absolute ``recon`` command it runs (None when this
     recon is not installed as one), and the ``path`` it runs with: absolute directories no
-    other user can write."""
+    other user can write, none inside the project."""
 
     recon: str | None
     path: tuple[str, ...]

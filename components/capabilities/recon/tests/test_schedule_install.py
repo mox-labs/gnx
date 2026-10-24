@@ -361,3 +361,40 @@ class TestThePathATickRunsWith:
                                 str(tmp_path / "missing"), str(good)])  # fmt: skip
 
         assert safe_path(path) == (str(good),)
+
+    def test_only_directories_the_user_or_root_owns(self, tmp_path: Path) -> None:
+        """Vector S3: a directory another user owns can be written by that user whatever its
+        mode, so it is left out; root's (``/usr/bin``) and the user's own are kept."""
+        mine = tmp_path / "mine"
+        mine.mkdir()
+        path = os.pathsep.join([str(mine), "/usr/bin"])
+
+        assert safe_path(path) == (str(mine), "/usr/bin")
+        assert safe_path(path, uid=os.getuid() + 4242) == ("/usr/bin",), "as another user"
+
+    def test_no_directory_inside_the_project(self, tmp_path: Path) -> None:
+        """S3: a directory under the project (direnv's ``bin``, ``node_modules/.bin``) holds
+        what a checkout or a dependency put there, which the config's digest does not cover:
+        a tick never finds a command in it."""
+        project = tmp_path / "project"
+        inside = [project / "bin", project / "node_modules" / ".bin"]
+        outside = tmp_path / "tools"
+        for directory in [*inside, outside]:
+            directory.mkdir(parents=True)
+            directory.chmod(0o755)
+        project.chmod(0o755)
+        (project / "node_modules").chmod(0o755)
+        linked = tmp_path / "linked"
+        linked.symlink_to(project / "bin")
+        path = os.pathsep.join([*map(str, inside), str(linked), str(outside)])
+
+        assert safe_path(path, project=project) == (str(outside),)
+
+    def test_the_root_gives_the_tick_a_path_without_the_project(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin").chmod(0o755)
+        recon = root({"PATH": f"{tmp_path / 'bin'}:/usr/bin"}, project=tmp_path)
+        assert recon._schedules is not None
+        assert recon._schedules._host.path == ("/usr/bin",)

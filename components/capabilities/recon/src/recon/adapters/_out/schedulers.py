@@ -72,21 +72,32 @@ def run_command(argv: Sequence[str], stdin: str | None = None) -> Ran:
     return Ran(done.returncode, done.stdout, done.stderr)
 
 
-def safe_path(path: str) -> tuple[str, ...]:
-    """The directories of a ``PATH`` a tick may run with: absolute ones that are there and
-    that no other user can write (neither group- nor world-writable), each once, in order.
-    ``.``, an empty entry and a relative one would resolve in whatever directory a command
-    is started from."""
+def safe_path(path: str, *, project: Path | None = None, uid: int | None = None) -> tuple[str, ...]:
+    """The directories of a ``PATH`` a tick may run with, each once, in order: absolute ones
+    that are there, that no other user can write (neither group- nor world-writable, and
+    owned by root or by ``uid``, the user's own by default: an owner may change a mode), and
+    that are not inside ``project`` (a checkout's ``bin``, ``node_modules/.bin``: what a
+    dependency or a pull put there, which the config's digest does not cover), however they
+    are reached. ``.``, an empty entry and a relative one would resolve in whatever directory
+    a command is started from."""
+    owners = {0, os.getuid() if uid is None else uid}
+    inside = os.path.realpath(project) if project is not None else None
     kept: list[str] = []
     for entry in path.split(os.pathsep):
         if not entry.startswith("/") or entry in kept:
             continue
         try:
-            mode = os.stat(entry).st_mode
+            found = os.stat(entry)
         except OSError:
             continue
-        if stat.S_ISDIR(mode) and not mode & (stat.S_IWGRP | stat.S_IWOTH):
-            kept.append(entry)
+        if not stat.S_ISDIR(found.st_mode) or found.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            continue
+        if found.st_uid not in owners:
+            continue
+        real = os.path.realpath(entry)
+        if inside is not None and (real == inside or real.startswith(inside + os.sep)):
+            continue
+        kept.append(entry)
     return tuple(kept)
 
 

@@ -225,7 +225,9 @@ def root(
 
     found, found_by = (project.resolve(), "argument") if project else find_project(Path.cwd())
     missions = MissionFiles(found, clock)
-    host = schedule_host or ScheduleHost(this_recon(), safe_path(process_env.get("PATH", "")))
+    host = schedule_host or ScheduleHost(
+        this_recon(), safe_path(process_env.get("PATH", ""), project=found)
+    )
     return Recon(
         missions=missions,
         archives=archives,

@@ -336,9 +336,17 @@ the config a persistence vector, and the scheduler's files a place a secret coul
 - **What the files hold**: recon by the absolute path of the installation that installed
   it, as an argument list (cron alone hands its line to `/bin/sh`: each argument is quoted
   whole), the mission's name (checked as every mission name is), the absolute project, and
-  an explicit `PATH`: the installer's, kept to absolute directories that exist and that no
-  other user can write. Nothing else of the environment: no secret, no
-  `OTEL_EXPORTER_OTLP_HEADERS`. launchd's and cron's output go to `/dev/null`.
+  an explicit `PATH`: the installer's, kept to absolute directories that exist, that no
+  other user can write (owned by the user or by root, and neither group- nor world-writable:
+  an owner can change a mode) and that are not inside the project (a checkout's `bin/`,
+  `node_modules/.bin`: what a pull or a dependency put there). Nothing else of the
+  environment: no secret, no `OTEL_EXPORTER_OTLP_HEADERS`. launchd's and cron's output go to
+  `/dev/null`.
+- **What the digest does not cover**: the config's bytes are held to the digest installed,
+  not what they name. A script a `cli` collector's `run:` calls, a `headers_helper` command,
+  a stdio server's program, and a package `npx` or `uvx` fetches can each change between
+  ticks without the config changing (the plan warns `package_unpinned` for the last). Keep
+  what a scheduled config runs where only you can write it, and name it by absolute path.
 - **Where they go**: the user's own domain alone (`~/Library/LaunchAgents`, the user's
   systemd units, the user's crontab, in recon's marked block, every other line kept), each
   file `0600`. No LaunchDaemon, system unit, `/etc/cron.d` or sudo.
