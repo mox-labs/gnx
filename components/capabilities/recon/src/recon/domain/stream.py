@@ -91,6 +91,30 @@ class BufferSpec(BaseModel):
     overflow: Overflow | None = None
 
 
+class RetainSpec(BaseModel):
+    """``retain:`` on a stream's entry, when it is not ``all``: which sealed windows to keep.
+    ``windows``: the newest this many; ``seconds`` (a number of seconds): those closed within
+    this long of now; ``bytes``: the newest whose sizes add up to no more than this. With more
+    than one, a window is kept only while every rule keeps it. At least one."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    windows: int | None = Field(default=None, ge=1)
+    seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    bytes: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _one_rule(self) -> RetainSpec:
+        if self.windows is None and self.seconds is None and self.bytes is None:
+            raise ValueError("retain needs at least one of windows, seconds, bytes (or: all)")
+        return self
+
+
+#: ``retain:``: ``all`` keeps every window, which is the default, so nothing is removed unless
+#: the mission says so; a :class:`RetainSpec` keeps the windows its rules keep.
+Retain = Literal["all"] | RetainSpec
+
+
 def default_overflow(paced_by: PacedBy) -> Overflow:
     """A full buffer's default: ``block`` for a source recon paces, which waits without loss;
     ``drop_newest`` for a source that paces itself, whose sender does not wait, so a block

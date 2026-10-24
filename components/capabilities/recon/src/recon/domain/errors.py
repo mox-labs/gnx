@@ -142,6 +142,8 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "stream_overflow",
     # a stream's source had not returned its next record when the stream stopped
     "source_stuck",
+    # a stream that keeps every window because its entry sets no retain:
+    "retain_unset",
 )
 
 

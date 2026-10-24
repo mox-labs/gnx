@@ -22,12 +22,15 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from recon.domain.stream import NoGaps
+
 if TYPE_CHECKING:
     from pathlib import Path
 
     from pydantic import BaseModel
 
     from recon.domain.capture import CaptureLog
+    from recon.domain.clock import Clock
     from recon.domain.converters import DocumentConverter
     from recon.domain.deadline import Deadline
     from recon.domain.errors import Problem
@@ -35,6 +38,7 @@ if TYPE_CHECKING:
     from recon.domain.models import CollectorEntry, SourceEntry
     from recon.domain.ratelimit import RateLimiter
     from recon.domain.shell import ShellRunner
+    from recon.domain.stream import GapLog, PacedBy
     from recon.domain.telemetry import Telemetry
 
 #: What running a collector can touch. Reported by ``survey --dry-run`` for every planned
@@ -63,6 +67,18 @@ class Collector(Protocol):
     ``requirements(entry, source) -> Sequence[Requirement]``: what the run needs of this host
     or of what it reaches (a server that starts, a tool it lists, arguments its schema
     accepts), each checked now. A dry run builds the collector to ask it, then closes it.
+
+    **A stream** (an entry with ``window:``, or of a type that declares ``unbounded``) calls
+    ``collect`` once and reads its records for as long as the stream runs, on a thread of the
+    stream's own, so its iterator may never end. A record whose place in its source can be
+    named carries it as ``_position`` (``recon.domain.stream.POSITION_FIELD``): any JSON
+    value from which the source can go on (a file's inode and offset, a server-sent event's
+    id). A type whose records carry one takes a keyword ``after`` too: a stream resumed after
+    a stop calls ``collect(entry, source, captures=None, after=<the last position kept>)``,
+    and the collector yields the records after it, so nothing is collected twice. Its
+    ``close()`` ends a read in progress, from another thread, so a stream stops promptly. It
+    reports a stretch when its source was not read through ``CollectorContext.gaps``, and
+    opens no telemetry span (the stream's telemetry is its writer's thread's).
     """
 
     def collect(
@@ -104,7 +120,11 @@ class CollectorContext:
     config. ``project_dir`` is the project root, against which a ``local`` source's relative
     url resolves, and where a process the mission starts without naming a directory runs;
     ``None`` in a context recon did not build, for the working directory.
-    ``user_agent`` is what an HTTP collector sends when its source sets none.
+    ``user_agent`` is what an HTTP collector sends when its source sets none. ``clock`` is the
+    survey's clock port, which a type that waits between reads (a file followed as it grows)
+    or before reconnecting waits on, so a test's clock decides it. ``gaps`` is where a
+    stream's collector says when its source was not read (:class:`~recon.domain.stream.Gap`);
+    a snapshot survey's keeps none.
 
     ``env`` is not the process environment. It holds only the variables the mission
     declares for this type: the ``auth.env`` names of the catalog sources its collectors
@@ -123,6 +143,8 @@ class CollectorContext:
     env: Mapping[str, str]
     user_agent: str
     project_dir: Path | None = None
+    clock: Clock | None = None
+    gaps: GapLog = field(default_factory=NoGaps)
 
 
 def _no_problems(entry: CollectorEntry) -> list[Problem]:
@@ -197,6 +219,14 @@ class CollectorType:
       each stdio server a run names``). Non-empty, a dry run builds the type's collector, asks
       its ``requirements(entry, source)`` for each run, says this in the plan, and closes it.
       Empty, a dry run never builds the type.
+    - ``unbounded`` says the type's records do not end (a file followed as it grows, a server
+      that sends events): an entry of it is a stream, collected into windows, and one with no
+      ``window:`` gets the default (``window: {seconds: 300}``), which the plan says it
+      filled in. An entry of any type with ``window:`` is a stream too.
+    - ``paced_by`` says who sets the pace the type's records arrive at: ``recon``, which reads
+      the next when it is ready (a file, a command, a polled API), or ``source``, which sends
+      whether recon is ready or not (server-sent events). It decides a stream's default
+      overflow (``recon.domain.stream.default_overflow``): ``block`` or ``drop_newest``.
     """
 
     create: Callable[[CollectorContext], Collector]
@@ -219,6 +249,8 @@ class CollectorType:
     check_source: Callable[[SourceEntry], list[Problem]] = field(default=_no_source_problems)
     source_env: Callable[[SourceEntry], dict[str, str]] = field(default=_no_source_env)
     preflight: str = ""
+    unbounded: bool = False
+    paced_by: PacedBy = "recon"
 
 
 @dataclass(frozen=True)

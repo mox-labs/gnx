@@ -194,6 +194,7 @@ class Recon:
                 config=str(copy_to) if copy_to else None,
                 archive=str(mission / "archive" / "<archive id>"),
                 captures=bool(plan.config and plan.config.preserve_raw),
+                streams=[str(mission / "streams" / stream.name) for stream in plan.streams],
             ),
             problems=[p.document() for p in plan.problems],
             warnings=[w.document() for w in plan.warnings + broken],
@@ -201,6 +202,7 @@ class Recon:
             requirements=requirements,
             runnable=all(required.holds for required in requirements),
             preflight=said,
+            provenance=plan.provenance,
         )
 
     def _preflight(

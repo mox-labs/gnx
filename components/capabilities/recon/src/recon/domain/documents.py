@@ -57,6 +57,23 @@ class PlanWrites(Document):
     config: str | None
     archive: str
     captures: bool
+    #: The directory of each stream the mission has, where its windows are written.
+    streams: list[str] = []
+
+
+#: Where an effective setting came from: the mission's config, its collector type's
+#: declaration (a stream's overflow, from the type's ``paced_by``), or recon's default.
+Origin = Literal["mission", "type", "recon"]
+
+
+class SourcedValue(Document):
+    """One effective setting the plan resolved, by its path in the config, and where it came
+    from. ``note`` says why, when it is not the config's own."""
+
+    path: str
+    value: Any
+    source: Origin
+    note: str = ""
 
 
 class Required(Document):
@@ -97,6 +114,9 @@ class PlanDocument(Document):
     #: What this dry run did to check the requirements, by collector type (``mcp: started
     #: each stdio server a run names ...``); empty when it ran, fetched and wrote nothing.
     preflight: list[str] = []
+    #: Each setting of a stream the survey would use, with where it came from: what the
+    #: mission wrote, and every default recon filled in (a window, a buffer, retain).
+    provenance: list[SourcedValue] = []
 
 
 # --- survey ---------------------------------------------------------------------------------
