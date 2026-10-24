@@ -96,7 +96,8 @@ class TestReadSince:
             [],
         ]
         assert {r["table"] for read in reads for r in read.records} == {"t"}
-        assert [read.state for read in reads] == ["writing", "writing", "ok"]
+        assert [read.state for read in reads] == ["writing", "writing", "complete"]
+        assert [read.ended for read in reads] == [None, None, "finished"]
         assert [read.sealed for read in reads] == [[], [], ["t"]]
         assert reads[-1].retracted == []
         again = recon.read_since("m", reads[-1].cursor, root=tmp_path)
@@ -107,7 +108,9 @@ class TestReadSince:
 
         assert [r["record"] for r in reads[0].records] == [{"n": 0}, {"n": 1}]
         assert (reads[-1].retracted, reads[-1].sealed) == (["t"], [])
-        assert reads[-1].state == "incomplete"
+        assert (reads[-1].state, reads[-1].ended) == ("incomplete", "finished"), (
+            "the survey ran to its end; a table failed"
+        )
 
     def test_a_reader_with_no_cursor_reads_a_finished_archive_whole(self, tmp_path: Path) -> None:
         config = {
@@ -122,7 +125,7 @@ class TestReadSince:
             {"table": "a", "record": {"n": 1}},
             {"table": "a", "record": {"n": 2}},
         ], "an empty table's sentinel line is not a record"
-        assert (read.sealed, read.state, read.count) == (["a", "b"], "ok", 2)
+        assert (read.sealed, read.state, read.count) == (["a", "b"], "complete", 2)
 
     def test_limit_bounds_a_read_and_the_cursor_goes_on_from_there(self, tmp_path: Path) -> None:
         lines = "".join(f'{{"n": {n}}}\\n' for n in range(5))
@@ -397,7 +400,7 @@ class TestNoReceiverSlowsTheWrite:
         finally:
             released.set()
         kinds = {w["kind"]: w for w in done[0].warnings}
-        assert done[0].status == "ok"
+        assert done[0].status == "complete"
         assert "events_dropped" in kinds
         assert "Hangs" in kinds["telemetry_stuck"]["message"] and kinds["telemetry_stuck"]["fix"]
 
@@ -408,7 +411,7 @@ class TestNoReceiverSlowsTheWrite:
             raise RuntimeError("the terminal went away")
 
         surveyed, _, _ = self._survey(tmp_path, broken)
-        assert surveyed.status == "ok"
+        assert surveyed.status == "complete"
         [failed] = [w for w in surveyed.warnings if w["kind"] == "telemetry_failed"]
         assert "the terminal went away" in failed["message"]
 

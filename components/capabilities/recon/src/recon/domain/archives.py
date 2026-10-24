@@ -6,7 +6,7 @@ The marker is written when the archive is created and removed only once the surv
 finished, so a survey that dies at any point, however it was stopped, leaves an archive
 that reads incomplete. While a survey writes its archive it holds it, from :meth:`create`
 to :meth:`ArchiveStore.release`, so a reader tells an archive being written from one whose
-writer stopped without finishing it (:data:`WriteState`).
+writer stopped without finishing it (:data:`ArchiveState`).
 How it is stored (a directory of JSONL files) is :class:`ArchiveStore`'s decision; what
 engine answers SQL over it, and the sandbox that engine runs in, is :class:`ArchiveQuery`'s.
 The engine reads the tables where the store says they are (:meth:`ArchiveStore.tables`), and
@@ -48,11 +48,19 @@ READ_LIMIT = 1000
 #: once it has read all there is so far (``progress_s``, the survey's own cadence, is 1.0).
 WATCH_INTERVAL_S = 1.0
 
-#: Where the writing of an archive stands. ``writing``: a survey holds it and is writing it.
-#: ``complete``: its survey finished it with every table. ``incomplete``: no survey holds it
-#: and it was never completed (a table failed, or its survey was stopped or died). A reader
-#: who sees ``writing`` and reads again later sees it change; the other two never change.
-WriteState = Literal["writing", "complete", "incomplete"]
+#: An archive's state, as the store and every document say it. ``writing``: a survey holds
+#: it and is writing it. ``complete``: its survey finished it with every table.
+#: ``incomplete``: no survey holds it and it was never completed (a table failed, or its
+#: survey was stopped or died; :data:`Ended` says which). A reader who sees ``writing`` and
+#: reads again later sees it change; the other two never change. A state, where a table's
+#: ``ok`` or ``error`` is an outcome.
+ArchiveState = Literal["writing", "complete", "incomplete"]
+
+#: Whether an archive's survey ran to its end. ``finished``: it did and wrote ``meta.yaml``,
+#: so an ``incomplete`` archive's tables failed, or it could not be marked complete.
+#: ``stopped``: it was stopped or died first (or could not write ``meta.yaml``). None while
+#: it is ``writing``.
+Ended = Literal["finished", "stopped"]
 
 _NOT_IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]")
 
@@ -73,8 +81,9 @@ class StoredTable:
     file is not to be read as records, and ``columns`` are the ones it keeps, its collector's
     ``normalize:`` spec's when that was known.
 
-    ``sealed`` is false for a table still being written, or left unfinished by a survey that
-    died while writing it: its records are provisional, and ``file`` is where they will be
+    ``sealed``: its writer renamed it into place as it ended. It is false for a table still
+    being written, and stays false for one a survey that died was writing: its records are
+    provisional, and ``file`` is where they will be
     once it is sealed (until then, where they are is the store's to know). A sealed table
     gains and loses no line. How it ended is the survey's to say (``meta.yaml``, and the
     ``recon.collect`` end event), not the table's.
@@ -124,7 +133,7 @@ class ArchiveStore(Protocol):
         store does not hold is left as it is. A writer that dies lets go of it too."""
         ...
 
-    def state(self, archive: Path) -> WriteState:
+    def state(self, archive: Path) -> ArchiveState:
         """Where the writing of ``archive`` stands, as any reader, in any process on this
         host, sees it now."""
         ...

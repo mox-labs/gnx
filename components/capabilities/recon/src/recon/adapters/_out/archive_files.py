@@ -66,10 +66,10 @@ from recon.adapters._out.event_log import EventLog
 from recon.domain.archives import (
     ARCHIVE_ID_FORMAT,
     EVENT_LOG_NAME,
+    ArchiveState,
     NewRecords,
     StoredTable,
     TableRecord,
-    WriteState,
 )
 from recon.domain.capture import CAPTURE_LOG_NAME
 from recon.domain.errors import QueryError, ReconError, UsageError
@@ -156,7 +156,7 @@ class ArchiveFiles:
             (archive / WRITER_LOCK).unlink()
         os.close(descriptor)  # closing releases the lock
 
-    def state(self, archive: Path) -> WriteState:
+    def state(self, archive: Path) -> ArchiveState:
         lock = archive / WRITER_LOCK
         if _locked(lock):
             return "writing"

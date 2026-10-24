@@ -48,10 +48,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from recon.application.collectors import SurveyCollectors
-    from recon.domain.archives import ArchiveQuery, ArchiveStore, WriteState
+    from recon.domain.archives import ArchiveQuery, ArchiveState, ArchiveStore, Ended
     from recon.domain.clock import Clock
     from recon.domain.collector import Plugins
-    from recon.domain.documents import ArchiveState, Capture
+    from recon.domain.documents import Capture
     from recon.domain.missions import ConfigFile, MissionStore
     from recon.domain.models import ReconConfig
     from recon.domain.telemetry import Channel, EventCallback, Telemetry
@@ -331,7 +331,7 @@ class Recon:
             return SurveyDocument(
                 mission=name,
                 archive=str(archive),
-                status="incomplete" if failed_tables or not survey.finished else "ok",
+                status="incomplete" if failed_tables or not survey.finished else "complete",
                 tables=tables,
                 warnings=[
                     w.document() for w in warnings + _dropped(telemetry) + _undelivered(channel)
@@ -414,10 +414,12 @@ class Recon:
 
     def _archive_status(self, archive: Path) -> ArchiveStatus:
         meta = self._archives.read_meta(archive)
+        state = self._archives.state(archive)
         return ArchiveStatus(
             id=archive.name,
             path=str(archive),
-            state=_STATES[self._archives.state(archive)],
+            state=state,
+            ended=_ended(state, meta),
             started_at=_text(meta.get("started_at")),
             finished_at=_text(meta.get("timestamp")),
             format_version=meta.get("format_version"),
@@ -461,7 +463,8 @@ class Recon:
             mission=name,
             archive=str(path),
             archive_id=path.name,
-            state=_STATES[self._archives.state(path)],
+            state=(state := self._archives.state(path)),
+            ended=self._ended(path, state),
             columns=columns,
             rows=rows,
             count=len(rows),
@@ -487,7 +490,8 @@ class Recon:
             mission=name,
             archive=str(path),
             archive_id=path.name,
-            state=_STATES[state],
+            state=state,
+            ended=self._ended(path, state),
             records=[{"table": r.table, "record": r.record} for r in read.records],
             count=len(read.records),
             cursor=read.cursor,
@@ -521,6 +525,9 @@ class Recon:
                 self._clock.sleep(interval_s)
             read = self.read_since(name, read.cursor, archive=read.archive_id, limit=limit)
             yield read
+
+    def _ended(self, archive: Path, state: ArchiveState) -> Ended | None:
+        return None if state == "writing" else _ended(state, self._archives.read_meta(archive))
 
     def _archive(self, name: str, archive_id: str | None) -> Path:
         archives = self._archives.archives(self._missions.mission_dir(name))
@@ -560,13 +567,12 @@ class Recon:
             raise ConfigError(str(exc), fix="run recon capture from a PostToolUse hook") from exc
 
 
-#: An archive's state as the documents say it: the store's ``complete`` is ``ok``, the word
-#: every recon document has used for an archive with every table.
-_STATES: dict[WriteState, ArchiveState] = {
-    "writing": "writing",
-    "complete": "ok",
-    "incomplete": "incomplete",
-}
+def _ended(state: ArchiveState, meta: Mapping[str, Any]) -> Ended | None:
+    """Whether the survey of an archive in ``state``, whose ``meta.yaml`` reads ``meta``, ran
+    to its end: it did when it wrote ``meta.yaml``. None while it is being written."""
+    if state == "writing":
+        return None
+    return "finished" if meta.get("format_version") is not None else "stopped"
 
 
 def _unique(columns: list[str]) -> list[str]:

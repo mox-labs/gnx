@@ -595,7 +595,7 @@ def test_the_library_installs_no_provider_whatever_otel_says(
     recon.init("m", config=cfg)
     assert recon.plan("m").warnings == []
     survey = recon.survey("m")
-    assert survey.status == "ok" and survey.warnings == []
+    assert survey.status == "complete" and survey.warnings == []
     assert recon.query("m", "SELECT 1 AS one").warnings == []
     assert installed == []
     assert recon.configure_telemetry() == [] and installed == ["OTEL_EXPORTER_OTLP_ENDPOINT"]

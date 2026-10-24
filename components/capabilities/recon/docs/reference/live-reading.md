@@ -8,16 +8,18 @@ A survey's archive can be read while the survey writes it: `recon watch` on the 
 
 | `state` | Means | Changes? |
 |---|---|---|
-| `writing` | a survey on this host is writing it now | yes, to `ok` or `incomplete` |
-| `ok` | its survey finished it, every table succeeded | never |
-| `incomplete` | no survey holds it, and it was never finished: a table failed, or the survey was stopped or died | never |
+| `writing` | a survey on this host is writing it now | yes, to `complete` or `incomplete` |
+| `complete` | its survey finished it, every table succeeded | never |
+| `incomplete` | no survey holds it, and it was never completed: a table failed, or the survey was stopped or died | never |
+
+A state, where a table's `ok` or `error` is an outcome. Beside it, `ended` says whether the survey ran to its end: `finished` (it wrote `meta.yaml`, so an `incomplete` archive's tables failed), `stopped` (it was stopped or died first, or could not write `meta.yaml`), or null while `writing`.
 
 The survey holds an `flock` on `writer.lock` in the archive while it writes, and removes the file when it is done, so a survey that died reads `incomplete` at once, never `writing`. Whether a survey is alive is read from that lock, which a reader on the survey's own host sees reliably; on a shared filesystem read from another host, it may not be.
 
 ## A table while it is written
 
 - A table's records reach its file as whole lines, at most 64 KiB or 250 ms after the collector gives them. A reader never sees part of a record.
-- A table is **sealed** when it ends: it gains and loses no line after that.
+- A table is **sealed** when its writer renames it into place as it ends: it gains and loses no line after that. A table a survey that died was writing is never sealed: it stays unsealed, and `query` never reads it.
 - A table that **fails** is **retracted**: its file is removed, and the records read from it while it was written are void. The table's error is in `meta.yaml`.
 - `recon query` reads sealed tables only. On an archive being written it sees the tables finished so far, and the table being written is not a view yet.
 
@@ -47,7 +49,8 @@ Refused, with exit 2 (`usage`) and a fix:
 | Field | Holds |
 |---|---|
 | `mission`, `archive`, `archive_id` | the archive read: its directory, and its id |
-| `state` | `writing`, `ok` or `incomplete`, read before the records |
+| `state` | `writing`, `complete` or `incomplete`, read before the records |
+| `ended` | `finished`, `stopped`, or null while `writing` |
 | `records` | `{"table", "record"}` each: the whole records written since the cursor, table by table in output-name order, each table's in the order written |
 | `count` | how many records |
 | `cursor` | opaque: pass it, unchanged, to the next read of the same archive |

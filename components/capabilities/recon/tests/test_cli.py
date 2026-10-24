@@ -118,7 +118,7 @@ class TestSurvey:
         assert result.exit_code == 0, result.stderr
         doc = _doc(result)
         assert doc["schema"] == "recon.v1.survey"
-        assert doc["status"] == "ok"
+        assert doc["status"] == "complete"
         assert [(t["name"], t["status"], t["records"]) for t in doc["tables"]] == [
             ("hello", "ok", 2)
         ]
@@ -451,7 +451,7 @@ class TestStatus:
         assert doc["schema"] == "recon.v1.status"
         [mission] = doc["missions"]
         assert mission["name"] == "m" and mission["archives"] == 1
-        assert mission["latest"]["state"] == "ok"
+        assert mission["latest"]["state"] == "complete"
         assert mission["latest"]["format_version"] == 2
         assert mission["latest"]["tables"][0]["type_url"] == "recon.v1.records"
         types = {c["type"] for c in doc["plugins"]["collectors"]}
@@ -749,7 +749,7 @@ class TestArchiveHistory:
         assert mission["name"] == "m" and mission["archives"] == 2
         first, second = mission["history"]
         assert first["id"] < second["id"] == mission["latest"]["id"]
-        assert (first["state"], second["state"]) == ("incomplete", "ok")
+        assert (first["state"], second["state"]) == ("incomplete", "complete")
         assert first["started_at"] and first["finished_at"]
         assert [t["status"] for t in first["tables"]] == ["ok", "error"]
         rows = _doc(_invoke("query", "m", "SELECT * FROM ok", "--archive", first["id"], "--json"))
@@ -1277,7 +1277,7 @@ def test_a_query_on_an_incomplete_archive_says_so_in_its_document(project: Path)
     assert document["state"] == "incomplete" and document["rows"] == [{"a": 1}]
     _mission(project, "n", OK_CONFIG)
     _invoke("survey", "n")
-    assert _doc(_invoke("query", "n", "SELECT a FROM hello", "--json"))["state"] == "ok"
+    assert _doc(_invoke("query", "n", "SELECT a FROM hello", "--json"))["state"] == "complete"
 
 
 def test_a_plan_problem_carries_its_kind_fix_and_the_value_written(project: Path) -> None:
@@ -1370,7 +1370,7 @@ def test_a_running_survey_reads_writing_and_queries_only_its_sealed_tables(proje
         with contextlib.suppress(ProcessLookupError):
             os.killpg(command_group, signal.SIGKILL)
 
-    assert latest["state"] == "writing"
+    assert (latest["state"], latest["ended"]) == ("writing", None)
     assert query["state"] == "writing" and len(query["rows"]) == 2
     assert unsealed["kind"] == "query" and "first" in unsealed["message"]
     assert "writing" in human
@@ -1395,7 +1395,11 @@ class TestWatch:
         ]
         assert "hello sealed" in unstyle(human.stderr)
         assert [r["schema"] for r in reads] == ["recon.v1.records-since"]
-        assert (reads[0]["state"], reads[0]["count"], reads[0]["sealed"]) == ("ok", 2, ["hello"])
+        assert (reads[0]["state"], reads[0]["count"], reads[0]["sealed"]) == (
+            "complete",
+            2,
+            ["hello"],
+        )
 
     def test_a_running_survey_is_followed_until_it_ends(self, project: Path) -> None:
         _mission(project, "m", {"collectors": [
@@ -1418,7 +1422,7 @@ class TestWatch:
 
         reads = [json.loads(line) for line in result.stdout.splitlines()]
         assert result.exit_code == 0
-        assert reads[0]["state"] == "writing" and reads[-1]["state"] == "ok"
+        assert reads[0]["state"] == "writing" and reads[-1]["state"] == "complete"
         assert [r["record"]["n"] for read in reads for r in read["records"]] == [1, 2, 3]
         assert len([read for read in reads if read["records"]]) > 1, "seen as it was written"
         assert [t for read in reads for t in read["sealed"]] == ["slow"]
@@ -1451,6 +1455,7 @@ def test_a_killed_survey_reads_incomplete(project: Path) -> None:
 
     latest = _doc(_invoke("status", "--json"))["missions"][0]["latest"]
     assert latest["state"] == "incomplete" and latest["format_version"] is None
+    assert latest["ended"] == "stopped", "killed before it finished, not a failed table"
 
 
 def test_ctrl_c_under_json_prints_the_envelope_and_nothing_before_it(project: Path) -> None:
@@ -1573,7 +1578,7 @@ class TestTheDirectoryACommandRunsIn:
         human = unstyle(_invoke("survey", "m", "-n").stdout)
         assert f"pwd (in {project / 'src'})" in human
         rows = _doc(_invoke("survey", "m", "--json"))
-        assert rows["status"] == "ok"
+        assert rows["status"] == "complete"
         lines = recon.query("m", 'SELECT line FROM "where"', root=project).rows
         assert [Path(row["line"]).resolve() for row in lines] == [(project / "src").resolve()]
 
@@ -1612,7 +1617,7 @@ def test_the_library_works_on_a_project_without_changing_directory(
     plan = recon.plan("m", root=root)
     assert plan.runs[0]["cwd"] == str(root)
     survey = recon.survey("m", root=root)
-    assert survey.status == "ok"
+    assert survey.status == "complete"
     rows = recon.query("m", "SELECT line FROM files", root=root).rows
     assert {"line": "only-here.txt"} in rows
     assert [m.name for m in recon.status(root=root).missions] == ["m"]

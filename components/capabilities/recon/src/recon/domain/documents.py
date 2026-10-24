@@ -12,17 +12,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Pydantic reads the field types when the models are built, so they are imported to run.
+from recon.domain.archives import ArchiveState, Ended  # noqa: TC001
 from recon.domain.capture import CAPTURE_SCHEMA, CaptureKind
 from recon.domain.errors import ErrorKind, ReconError
 
-#: Whether a survey's archive holds every table it was asked for. ``incomplete``: a table
-#: failed, the survey was stopped, or ``meta.yaml`` could not be written.
-SurveyStatus = Literal["ok", "incomplete"]
-
-#: Where an archive stands as ``status`` and ``query`` read it: ``ok`` and ``incomplete`` as
-#: for :data:`SurveyStatus`, or ``writing``: a survey is writing it now, so its tables not
-#: yet sealed are not queried, and reading it again later finds it ``ok`` or ``incomplete``.
-ArchiveState = Literal["ok", "incomplete", "writing"]
+#: Whether a survey's archive holds every table it was asked for: :data:`ArchiveState`
+#: once the survey has ended, so never ``writing``. ``incomplete``: a table failed, the
+#: survey was stopped, or ``meta.yaml`` could not be written.
+SurveyStatus = Literal["complete", "incomplete"]
 
 #: What ``init`` did to the mission's config: wrote the first one, found this one already
 #: there byte for byte and left it, or overwrote a different one (``--replace``).
@@ -153,6 +151,8 @@ class ArchiveStatus(Document):
     id: str
     path: str
     state: ArchiveState
+    #: Whether its survey ran to its end; None while ``writing``.
+    ended: Ended | None
     #: ISO 8601, from ``meta.yaml``; None when it is missing or does not say (format 1 has
     #: only the finish). ``finished_at`` None: the survey did not finish.
     started_at: str | None
@@ -209,6 +209,7 @@ class QueryRows(Document):
     archive: str
     archive_id: str
     state: ArchiveState
+    ended: Ended | None
     columns: list[str]
     rows: list[dict[str, Any]]
     count: int
@@ -231,6 +232,7 @@ class RecordsSince(Document):
     archive: str
     archive_id: str
     state: ArchiveState
+    ended: Ended | None
     #: ``{"table", "record"}`` each, table by table in output-name order, each table's in the
     #: order written. A table not yet ``sealed`` may still be retracted.
     records: list[dict[str, Any]]
