@@ -14,11 +14,11 @@ page a request through the Requester, so each draws a rate-limit token and each 
 each with the entry's method and body. A ``link`` or ``header`` crawl asks for the URL the
 page named, resolved against the page's own and held to the source's origin (a link elsewhere
 fails the table: the source's credential would go with it), with the source's credential
-parameter and no other query; a ``cursor`` or ``offset`` crawl sends ``params`` and the token
-as ``paginate.param``. How it stops is :class:`~recon.domain.paginate.Crawl`'s. Each record
-carries ``_position``, ``{page, i}``; each page, with its token (a URL as recon reports one,
-its credential parameter redacted), and a crawl cut short are said through the page log
-(``CollectorContext.pages``).
+parameter and no other query; a ``cursor``, ``offset`` or ``page`` crawl sends ``params`` and
+the token as ``paginate.param`` (a ``page`` crawl its first page's number too). How it stops
+is :class:`~recon.domain.paginate.Crawl`'s. Each record carries ``_position``, ``{page, i}``;
+each page, with its token (a URL as recon reports one, its credential parameter redacted), and
+a crawl cut short are said through the page log (``CollectorContext.pages``).
 
 Registered as the built-in collector type ``api`` (entry-point group ``recon.collectors``).
 """
@@ -44,7 +44,7 @@ from recon.domain.collector import CollectorType
 from recon.domain.errors import CollectionError, Problem
 from recon.domain.http import reported_url
 from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, resolve_path, to_records
-from recon.domain.paginate import Crawl, NoPages, Stop, next_link, position
+from recon.domain.paginate import COUNTED, FIRST_PAGE, Crawl, NoPages, Stop, next_link, position
 from recon.domain.stream import POSITION_FIELD
 from recon.domain.substitution import find_unresolved, substitute
 
@@ -133,8 +133,12 @@ class ApiCollector:
         url, body = first
         linked = spec.type in ("link", "header")
         crawl = Crawl(spec, first=url if linked else None)
-        target = (url, _params(settings))
         token: Any = None
+        target = (url, _params(settings))
+        if spec.type == "page":
+            assert spec.param is not None  # PaginateSpec holds it for page
+            token = FIRST_PAGE
+            target = (url, {**_params(settings), spec.param: str(token)})
         page = 0
         while True:
             data, resp = self._fetch(entry, source, settings, target, body, captures, page=page)
@@ -152,7 +156,7 @@ class ApiCollector:
             if linked:
                 target = (_on_the_source(source, token), {})
             else:
-                assert spec.param is not None  # PaginateSpec holds it for cursor and offset
+                assert spec.param is not None  # PaginateSpec holds it for the others
                 target = (url, {**_params(settings), spec.param: str(token)})
 
     def _fetch(
@@ -219,7 +223,7 @@ def _found(spec: PaginateSpec, data: Any, resp: HttpResponse) -> Any:
     """The next page's token a page gave: the ``Link`` header's next URL, or what is at
     ``paginate.next`` in its body; None when it gave none. A URL is resolved against the
     page's own. A token that is not one (an object, a list) fails the table."""
-    if spec.type == "offset":
+    if spec.type in COUNTED:
         return None
     found: Any
     if spec.type == "header":

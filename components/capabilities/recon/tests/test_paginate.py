@@ -47,6 +47,8 @@ class TestTheSpec:
             ({"type": "cursor", "param": "cursor"}, "next"),
             ({"type": "cursor", "next": "meta.next"}, "param"),
             ({"type": "offset"}, "param"),
+            ({"type": "page"}, "param"),
+            ({"type": "page", "param": "p", "next": "a"}, "next"),
             ({"type": "header", "next": "a"}, "next"),
             ({"type": "header", "param": "p"}, "param"),
             ({"type": "link", "next": "a", "param": "p"}, "param"),
@@ -61,7 +63,7 @@ class TestTheSpec:
 
     def test_an_unknown_type_or_key_is_refused(self) -> None:
         with pytest.raises(ValidationError):
-            PaginateSpec(type="page")  # type: ignore[arg-type]
+            PaginateSpec(type="numbered")  # type: ignore[arg-type]
         with pytest.raises(ValidationError):
             PaginateSpec(type="header", size=10)  # type: ignore[call-arg]
 
@@ -113,6 +115,18 @@ class TestStopping:
         steps = _run(spec, [(3, None), (3, None), (0, None)])
 
         assert steps == [Next(3), Next(6), Stop(None)], "the offset is the records read so far"
+
+    def test_a_page_crawl_numbers_its_pages_from_1_and_ends_at_its_first_empty_page(
+        self,
+    ) -> None:
+        spec = PaginateSpec(type="page", param="page")
+        steps = _run(spec, [(3, None), (3, None), (0, None)])
+
+        assert steps == [Next(2), Next(3), Stop(None)], "page 1 is the first, asked for as 1"
+
+    def test_a_page_crawl_reaching_its_cap_truncates(self) -> None:
+        spec = PaginateSpec(type="page", param="page", pages=2)
+        assert _run(spec, [(3, None), (3, None)]) == [Next(2), Stop("pages")]
 
     def test_a_linked_crawl_reads_past_empty_pages_that_still_link_on(self) -> None:
         spec = PaginateSpec(type="link", next="next")

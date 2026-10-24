@@ -67,6 +67,8 @@ class PagedApi:
             token: Any = query.get("page")
         elif self.kind == "cursor":
             token = params.get("cursor")
+        elif self.kind == "page":
+            token = params.get("page")
         else:
             token = params.get("offset")
         self.asked.append(token)
@@ -95,6 +97,9 @@ class PagedApi:
         if self.kind == "offset":
             start = int(token or 0)
             return self.data[start : start + self.size], None
+        if self.kind == "page":  # numbered from 1
+            start = (int(token) - 1) * self.size
+            return self.data[start : start + self.size], None
         page = int(token or 0)
         rows = self.data[page * self.size : (page + 1) * self.size]
         more = (page + 1) * self.size < len(self.data)
@@ -111,6 +116,7 @@ PAGINATE = {
     "header": {"type": "header"},
     "cursor": {"type": "cursor", "next": "meta.next", "param": "cursor"},
     "offset": {"type": "offset", "param": "offset"},
+    "page": {"type": "page", "param": "page"},
 }
 
 
@@ -149,7 +155,7 @@ class TestEveryPageOnceInOrder:
     """Ixian P1: the table equals the dataset, in order, with no duplicate, at a page of one
     record and with a last page that is not full."""
 
-    @pytest.mark.parametrize("kind", ["link", "header", "cursor", "offset"])
+    @pytest.mark.parametrize("kind", ["link", "header", "cursor", "offset", "page"])
     @pytest.mark.parametrize(("records", "size"), [(7, 1), (7, 3), (6, 3)])
     def test_the_table_is_the_dataset(
         self, tmp_path: Path, kind: str, records: int, size: int
@@ -159,7 +165,7 @@ class TestEveryPageOnceInOrder:
 
         rows = _lines(archive / "items.jsonl")
         assert [row["id"] for row in rows] == list(range(records))
-        pages = -(-records // size) + (1 if kind == "offset" else 0)
+        pages = -(-records // size) + (1 if kind in ("offset", "page") else 0)
         assert len(api.asked) == pages, "each page once, and an offset crawl's empty last"
         assert [row["_position"] for row in rows] == [
             {"page": n // size, "i": n % size} for n in range(records)
@@ -199,6 +205,19 @@ class TestEveryPageOnceInOrder:
         logged = _lines(archive / "items.pages.jsonl")
         assert logged[1]["token"] == f"{BASE}/items?page=1"
         assert "s3cret" not in (archive / "items.pages.jsonl").read_text()
+
+    def test_a_page_number_goes_from_1_with_the_query_the_mission_wrote(
+        self, tmp_path: Path
+    ) -> None:
+        api = PagedApi("page", 3, 2)
+        archive, _ = _survey(tmp_path, api, _mission(PAGINATE["page"], params={"per": "2"}))
+
+        assert [s["params"] for s in api.sent] == [
+            {"per": "2", "page": "1"},
+            {"per": "2", "page": "2"},
+            {"per": "2", "page": "3"},
+        ], "the first page is asked for by its number too, and an empty one ends the crawl"
+        assert [line["token"] for line in _lines(archive / "items.pages.jsonl")] == [1, 2, 3]
 
     def test_a_cursor_or_an_offset_goes_with_the_query_the_mission_wrote(
         self, tmp_path: Path

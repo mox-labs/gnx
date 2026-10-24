@@ -35,7 +35,7 @@ from recon.domain.documents import SourcedValue
 from recon.domain.errors import Problem
 from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
 from recon.domain.normalize import path_problem, spec_problems
-from recon.domain.paginate import crawl_floor_s
+from recon.domain.paginate import COUNTED, crawl_floor_s
 from recon.domain.stream import (
     DEFAULT_WINDOW_S,
     POSITION_FIELD,
@@ -275,9 +275,9 @@ def build_plan(
                 warnings += short
         if entry.changes is not None:
             problems.extend(_changes_problems(i, entry, is_stream))
-            values, unsafe = _changes(i, entry)
+            values, shifting = _changes(i, entry)
             provenance += values
-            warnings += unsafe
+            problems += shifting
         for source, output in targets:
             problems.extend(_output_problems(i, output, produced_by))
             for key in _table_keys(output):
@@ -1223,9 +1223,9 @@ def _changes_problems(i: int, entry: CollectorEntry, is_stream: bool) -> list[Pr
 
 
 def _changes(i: int, entry: CollectorEntry) -> tuple[list[SourcedValue], list[Problem]]:
-    """``changes:``'s effective volatile fields and deletes, with where each came from; and a
-    warning when deletes are told of a table an offset crawl reads, whose records shift
-    under it when the source changes during the crawl."""
+    """``changes:``'s effective key, volatile fields and deletes, with where each came from;
+    and a problem when deletes are asked of a table an ``offset`` or ``page`` crawl reads,
+    whose records shift under it when the source loses one during the crawl."""
     spec = entry.changes
     assert spec is not None
     at = f"collectors.{i}.changes"
@@ -1234,19 +1234,20 @@ def _changes(i: int, entry: CollectorEntry) -> tuple[list[SourcedValue], list[Pr
                      origin="mission" if key in spec.model_fields_set else "recon")
         for key in ("key", "volatile", "deletes")
     ]  # fmt: skip
-    warnings = []
-    if spec.deletes and entry.paginate is not None and entry.paginate.type == "offset":
-        warnings.append(
+    problems = []
+    if spec.deletes and entry.paginate is not None and entry.paginate.type in COUNTED:
+        problems.append(
             Problem(
                 f"{at}.deletes",
-                "an offset crawl of a source that loses a record while it is read skips the "
-                "record after it, which then reads as deleted",
-                kind="deletes_unsafe",
-                fix="page by cursor, link or header if the API offers one; or deletes: false",
+                f"a {entry.paginate.type} crawl of a source that loses a record while it is read "
+                "shifts the next record onto a page already read, so it is skipped, and would "
+                "be told as deleted",
+                fix="use link, cursor or header pagination if the API offers one, or set "
+                "deletes: false",
                 got=True,
             )
         )
-    return values, warnings
+    return values, problems
 
 
 def plugin_warning(broken: BrokenPlugin) -> Problem:

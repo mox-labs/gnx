@@ -4,7 +4,8 @@ crawl stops is always recorded.
 ``paginate: {type, pages, next, param}`` (:class:`PaginateSpec`) names how the next page is
 asked for: ``link``, a URL at the body path ``next``; ``header``, the ``Link`` header's
 ``rel="next"`` URL; ``cursor``, a token at the body path ``next``, sent as the query parameter
-``param``; ``offset``, the records read so far, sent as ``param``. Paths are ``extract:``'s.
+``param``; ``offset``, the records read so far, sent as ``param``; ``page``, the page's number
+from 1, sent as ``param`` (the first page's too). Paths are ``extract:``'s.
 
 A crawl stops (:class:`Crawl`, pure) at the first of:
 
@@ -12,9 +13,9 @@ A crawl stops (:class:`Crawl`, pure) at the first of:
 - **``pages`` pages read** with a next token still given: ``truncated``, by ``pages``;
 - **a token already used**, any earlier one and not only the last: ``truncated``, by
   ``loop``; the page it names is not asked for again;
-- **empty pages**: for ``offset``, one empty page is the end; for the others, which name their
-  next page themselves, :data:`EMPTY_PAGES` empty pages in a row that still link on stop it,
-  ``truncated``, by ``empty``.
+- **empty pages**: for ``offset`` and ``page``, one empty page is the end; for the others, which
+  name their next page themselves, :data:`EMPTY_PAGES` empty pages in a row that still link on
+  stop it, ``truncated``, by ``empty``.
 
 A truncated table is sealed ``ok`` and says it is truncated: it is not a whole snapshot of
 its source. Each record of a paginated table carries ``_position``, ``{page, i}``: its page's
@@ -31,7 +32,7 @@ from typing import Any, Final, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 #: How the next page is asked for (:class:`PaginateSpec`).
-PaginateType = Literal["link", "header", "cursor", "offset"]
+PaginateType = Literal["link", "header", "cursor", "offset", "page"]
 
 #: What cut a crawl short: its cap of ``pages``, a token it had used already, or empty pages
 #: in a row that still linked on. Named by the key or the rule, as a window's ``closed_by`` is.
@@ -51,7 +52,15 @@ _KEYS: Final[dict[str, frozenset[str]]] = {
     "header": frozenset(),
     "cursor": frozenset({"next", "param"}),
     "offset": frozenset({"param"}),
+    "page": frozenset({"param"}),
 }
+
+#: The types whose next page is a count (records, or pages): a source that loses a record
+#: while it is read shifts the next onto a page already read, so it is skipped.
+COUNTED: Final = frozenset({"offset", "page"})
+
+#: The number of a ``page`` crawl's first page.
+FIRST_PAGE: Final = 1
 
 
 class PaginateSpec(BaseModel):
@@ -60,9 +69,10 @@ class PaginateSpec(BaseModel):
     ``type`` says how the next page is asked for; ``pages`` is the most pages read, 100 by
     default. ``next`` is the path, in ``extract:``'s syntax, of the next page's URL (``link``)
     or its cursor (``cursor``) in a page's body. ``param`` is the query parameter the cursor
-    (``cursor``) or the offset (``offset``) is sent as. Each type takes the keys it reads and
-    needs each of them: where an API puts its next page is the API's, so recon guesses no
-    default, and a wrong guess would end the crawl at its first page as if it were the end."""
+    (``cursor``), the offset (``offset``) or the page's number (``page``) is sent as. Each type
+    takes the keys it reads and needs each of them: where an API puts its next page is the
+    API's, so recon guesses no default, and a wrong guess would end the crawl at its first page
+    as if it were the end."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -114,11 +124,11 @@ class Crawl:
     def after(self, records: int, found: Any = None) -> Next | Stop:
         """What follows a page of ``records`` records that named ``found`` as the next."""
         self.pages += 1
-        if self._spec.type == "offset":
+        if self._spec.type in COUNTED:
             if records == 0:
                 return Stop(None)
             self.offset += records
-            token: Any = self.offset
+            token: Any = self.offset if self._spec.type == "offset" else self.pages + FIRST_PAGE
         else:
             self._empty = 0 if records else self._empty + 1
             if found is None or found == "":

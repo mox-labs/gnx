@@ -396,7 +396,7 @@ class TestOffsetCrawls:
 
         api = Shifting("offset")
         paginate = {"type": "offset", "param": "offset"}
-        _mission(tmp_path, {"key": ["id"], "deletes": True}, paginate=paginate)
+        _mission(tmp_path, {"key": ["id"]}, paginate=paginate)
         surveys = Surveys(tmp_path, api)
         surveys.survey()
         api.shift = True
@@ -407,16 +407,31 @@ class TestOffsetCrawls:
         assert held.count("m1") == 2, "m1 shifted onto the second page and was read twice"
         assert _ops(shifted) == [], "nothing that did not happen is told"
 
-    def test_the_plan_warns_that_an_offset_crawl_s_deletes_can_be_false(self) -> None:
+    @pytest.mark.parametrize("kind", ["offset", "page"])
+    def test_the_plan_refuses_deletes_of_a_crawl_whose_records_can_shift(self, kind: str) -> None:
+        """A source that loses a record while it is read shifts the next onto a page already
+        read: skipped, it would read as deleted. The owner's ruling: refused, with a fix."""
         mission = {
             "catalog": [{"name": "mail", "url": "https://mail.test"}],
             "collectors": [{"name": "inbox", "type": "api", "source": "mail", "endpoint": "/m",
-                            "paginate": {"type": "offset", "param": "offset"},
+                            "paginate": {"type": kind, "param": kind},
                             "changes": {"key": ["id"], "deletes": True}}],
         }  # fmt: skip
-        [warning] = [w for w in build_plan(mission, load_plugins(), {}).warnings
-                     if w.kind == "deletes_unsafe"]  # fmt: skip
-        assert warning.path == "collectors.0.changes.deletes" and warning.fix
+        plan = build_plan(mission, load_plugins(), {})
+        [problem] = plan.problems
+        assert (problem.path, problem.got) == ("collectors.0.changes.deletes", True)
+        assert "link" in problem.fix and "deletes: false" in problem.fix
+        assert not [w for w in plan.warnings if "deletes" in w.kind]
+
+    @pytest.mark.parametrize("kind", ["link", "cursor"])
+    def test_deletes_of_a_crawl_that_names_its_next_page_are_planned(self, kind: str) -> None:
+        paginate = {"type": kind, "next": "next"} | ({"param": "c"} if kind == "cursor" else {})
+        mission = {
+            "catalog": [{"name": "mail", "url": "https://mail.test"}],
+            "collectors": [{"name": "inbox", "type": "api", "source": "mail", "endpoint": "/m",
+                            "paginate": paginate, "changes": {"key": ["id"], "deletes": True}}],
+        }  # fmt: skip
+        assert build_plan(mission, load_plugins(), {}).valid
 
 
 @pytest.fixture(scope="module")

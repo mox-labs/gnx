@@ -195,7 +195,7 @@ def test_the_changes_page_is_the_skill_reference() -> None:
     assert "`changes`" in SKILL
     for taught in ("`key`", "`volatile`", "`deletes`", "`false`", "`insert`", "`update`",
                    "`delete`", "`rebaselined`", "ambiguous", "keyless", "untrusted",
-                   "deletes_withheld", "deletes_unsafe", "changes.key", "0600", ".keys.jsonl",
+                   "deletes_withheld", "`page` crawl", "changes.key", "0600", ".keys.jsonl",
                    "_changes", "baseline", "provenance", "never tells a delete",
                    "retain:"):  # fmt: skip
         assert taught in REFERENCES["changes"], taught
@@ -210,8 +210,9 @@ def test_the_pagination_page_is_the_skill_reference() -> None:
         pytest.skip("not run from the repository")
     assert page.read_text(encoding="utf-8") == REFERENCES["pagination"]
     assert "recon --skill -r pagination" in SKILL or "`pagination`" in SKILL
-    for taught in ("`link`", "`header`", "`cursor`", "`offset`", "`pages`", "`100`", "`next`",
-                   "`param`", "truncated_by", "page_cap", "paginate_loop", "paginate_empty",
+    for taught in ("`link`", "`header`", "`cursor`", "`offset`", "`page`", "`pages`", "`100`",
+                   "`next`", "`param`", "truncated_by", "page_cap", "paginate_loop",
+                   "paginate_empty",
                    "_position", ".pages.jsonl", "floor_s", "deadline_short", "provenance",
                    "rate_limit", "origin", "preserve_raw", "crashed"):  # fmt: skip
         assert taught in REFERENCES["pagination"], taught
