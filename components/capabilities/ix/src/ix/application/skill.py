@@ -68,7 +68,10 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("ix report <path>", "the latest run's report again; or give a run directory"),
     ("ix runs <path>", "each run: when, its commit, gated, exploratory or dry, verdict, trials"),
     ("ix genres", "the genres installed, and any genre file ix refused"),
-    ("ix kinds", "the kinds installed, and which of them this ix can run"),
+    (
+        "ix kinds",
+        "the kinds installed, each kind's overlap, each metric's contended, and which run here",
+    ),
 )
 
 #: The line that sits under :data:`COMMANDS` in the skill: the way to a reference.

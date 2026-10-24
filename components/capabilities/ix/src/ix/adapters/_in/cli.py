@@ -1069,10 +1069,13 @@ def kinds(lab: str | None, as_json: bool) -> None:
     """List the subject kinds, probe kinds, sensors and environment kinds.
 
     Each kind declares its options (required ones marked *), the facets it needs and offers,
-    for a sensor the metrics it provides and, for an environment, the keys each service it
-    brings up is bound with (`service_keys`: `{<service>.url}`). `runs` says whether this ix
-    has an adapter for the kind: one without can be validated, planned and registered, not
-    run.
+    for an environment the keys each service it brings up is bound with (`service_keys`:
+    `{<service>.url}`), and its `overlap`: whether two trials in flight may use it at once
+    (`allowed` or `forbidden`). `runs` says whether this ix has an adapter for the kind: one
+    without can be validated, planned and registered, not run. The metrics are listed under
+    the sensor that provides each, with whether a model judges it (`judged`: it decides no
+    verdict) and whether what runs beside a trial moves it (`contended`: it decides no run
+    with trials_in_flight above 1).
     """
     try:
         found = ix.kinds(lab)
@@ -1081,21 +1084,24 @@ def kinds(lab: str | None, as_json: bool) -> None:
     if as_json:
         _emit(found.document())
         return
-    widest = max(
-        (len(name) + 1 for kind in found.kinds.values() for name in kind.options), default=1
-    )
     tables: dict[str, Table] = {}
     for family in ("subject", "probe", "sensor", "environment"):
+        # A table is as wide as its own longest option, so each still fits in 80 columns.
+        widest = max(
+            (len(name) + 1 for kind in found.of(family) for name in kind.options), default=1
+        )
         table = Table(title=f"{family.capitalize()} kinds", title_justify="left")
         table.add_column("kind", no_wrap=True)
-        table.add_column("options (* required)", overflow="fold", min_width=widest)
+        table.add_column("options", overflow="fold", min_width=widest)
         table.add_column("needs > offers")
         if family == "environment":
-            table.add_column("service keys")
+            table.add_column("service keys", no_wrap=True)
+        table.add_column("overlap", no_wrap=True)
         table.add_column("runs", no_wrap=True)
         tables[family] = table
+    # Each sensor heads its metrics: a column of its own would not leave 80 for the rest.
     metrics = Table(title="Metrics", title_justify="left")
-    for column in ("metric", "sensor", "unit", "shape", "better", "judged"):
+    for column in ("sensor / metric", "unit", "shape", "better", "judged", "contended"):
         metrics.add_column(column, no_wrap=column != "unit")
     for kind in found.kinds.values():
         label = kind.label
@@ -1110,23 +1116,30 @@ def kinds(lab: str | None, as_json: bool) -> None:
             escape(options or "-"),
             escape(facets),
             *keys,
+            kind.overlap,
             "yes" if kind.name in found.runnable else "no",
         )
-        for metric in kind.metrics:
+        if kind.metrics:
+            metrics.add_row(f"[bold]{escape(label)}[/bold]")
+        for index, metric in enumerate(kind.metrics, start=1):
             metrics.add_row(
-                escape(metric.name),
-                escape(label),
+                f"  {escape(metric.name)}",
                 escape(metric.unit or "-"),
                 metric.shape,
                 metric.direction,
                 "yes" if metric.judged else "no",
+                "yes" if metric.contended else "no",
+                end_section=index == len(kind.metrics),
             )
     for table in tables.values():
         out.print(table)
     out.print(metrics)
     err.print(
-        "[dim]runs: whether this ix has an adapter for the kind that builds here. One "
-        "without can be validated, planned and registered, and `ix run` refuses it.[/dim]"
+        "[dim]options: * marks a required one. overlap: whether two trials in flight may use "
+        "the kind at once. runs: whether this ix has an adapter for the kind that builds "
+        "here. One without can be validated, planned and registered, and `ix run` refuses "
+        "it. contended: the metric moves with what runs beside a trial, so it decides no run "
+        "with trials_in_flight above 1.[/dim]"
     )
     _print_rejected(found.rejected)
     for name, why in found.unbuildable.items():

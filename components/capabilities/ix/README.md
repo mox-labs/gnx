@@ -259,7 +259,8 @@ that reads what a trial stored allow overlap; `process` and `http` subjects, `ht
 `inspect-task` (an Inspect task may bring up sandboxes its samples share), `timing`,
 `memory` and the `process` and `compose` environments forbid it.
 Every metric of `timing` and `memory` is contended, and `usage`'s `duration` and the
-evaluator's `eval_duration_passed`.
+evaluator's `eval_duration_passed`. `ix kinds` shows both: each kind's `overlap`, and each
+metric's `judged` and `contended`.
 
 | family | kinds |
 |---|---|

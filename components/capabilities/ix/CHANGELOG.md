@@ -49,8 +49,10 @@
   may use it at once (`overlap: allowed | forbidden`; a kind that says nothing, a third
   party's included, forbids it), and a metric whether its reading moves with whatever
   runs beside the trial (`contended: true`; false when unsaid). The built-in kinds and
-  metrics declare theirs; `--skill` shows both. Neither enters a plan's digest or a
-  registration: they are checked each time an experiment is.
+  metrics declare theirs; `--skill` shows both, and so does `ix kinds`: an `overlap`
+  column in each kind table, and `judged` and `contended` columns in the metrics table,
+  which lists each sensor's metrics under it (`--json` gives both fields). Neither enters a
+  plan's digest or a registration: they are checked each time an experiment is.
 - **`examples/trials-in-flight/`**: the live validation slice, run by hand and never in CI.
   Ten deterministic probes (five that read a fixture with tools), screened by a pilot;
   ten S and ten P runs paired by run, probe and repeat (200 pairs, the n at which it can
