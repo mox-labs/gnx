@@ -313,6 +313,46 @@ class TestWhatWasTold:
         assert document.tables[0].changes.previous == first.name
 
 
+class _Counting:
+    """A KeyJoin that counts its joins and makes them on DuckDB."""
+
+    def __init__(self) -> None:
+        self.joins = 0
+
+    def join(self, told: Any, new: Any) -> Any:
+        from recon.adapters._out.duckdb_query import DuckdbJoin
+
+        self.joins += 1
+        return DuckdbJoin().join(told, new)
+
+
+class TestALargeComparison:
+    """C6: a comparison of more than ``memory_keys`` keys joins on the large join (DuckDB, by
+    default), with the same rows as in memory."""
+
+    def _surveys(self, tmp_path: Path, large: _Counting, memory_keys: int) -> Surveys:
+        _mission(tmp_path, {"key": ["id"], "deletes": True})
+        surveys = Surveys(tmp_path)
+        surveys.recon = root({}, project=tmp_path, clock=surveys.clock, key_join=large,
+                             memory_keys=memory_keys,
+                             requester=lambda t, d, r: surveys.inbox)  # fmt: skip
+        return surveys
+
+    def test_past_memory_keys_the_large_join_joins_and_tells_the_same(self, tmp_path: Path) -> None:
+        large = _Counting()
+        surveys = self._surveys(tmp_path, large, memory_keys=2)
+        surveys.survey(A, B)
+        assert large.joins == 0, "two keys are joined in memory"
+        archive, _ = surveys.survey({**A, "subject": "changed"}, C, {"id": "d"})
+        assert large.joins == 1, "three are joined on the large join"
+        assert _ops(archive) == [("update", "a"), ("insert", "c"), ("insert", "d"), ("delete", "b")]
+
+    def test_the_default_is_two_hundred_thousand(self) -> None:
+        from recon.application.changes import MEMORY_KEYS
+
+        assert MEMORY_KEYS == 200_000
+
+
 class TestTheMissionKey:
     def test_it_is_made_on_first_use_for_its_owner_alone_and_kept(self, tmp_path: Path) -> None:
         _mission(tmp_path, {"key": ["id"]})

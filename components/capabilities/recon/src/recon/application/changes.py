@@ -52,8 +52,8 @@ if TYPE_CHECKING:
 HASH_BYTES = 16
 
 #: By default, the most keys a comparison joins in memory; past it, the join is DuckDB's,
-#: which holds a bounded amount and spills the rest to disk. Measured (design record): in
-#: memory, about 0.45 KB of the process a key.
+#: which holds a bounded amount and spills the rest to disk. Measured (design record): a
+#: comparison of 200,000 keys in memory peaks at about 160 MB of the process.
 MEMORY_KEYS = 200_000
 
 #: What a record's hash is keyed with besides the mission's key, so a hash recon makes for

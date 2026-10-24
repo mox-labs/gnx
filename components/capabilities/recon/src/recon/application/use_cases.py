@@ -17,7 +17,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol
 
 from recon.application.captures import record_hook_payload
-from recon.application.changes import ChangeDetector
+from recon.application.changes import MEMORY_KEYS, ChangeDetector
 from recon.application.collectors import confined_transforms, declared_env
 from recon.application.plan import Plan, PlannedStream, build_plan, fan_out, plugin_warning
 from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun
@@ -74,6 +74,7 @@ if TYPE_CHECKING:
 
     from recon.application.collectors import SurveyCollectors
     from recon.domain.archives import ArchiveQuery, ArchiveState, ArchiveStore, Ended
+    from recon.domain.changes import KeyJoin
     from recon.domain.clock import Clock
     from recon.domain.collector import Collector, Plugins
     from recon.domain.documents import Capture
@@ -143,12 +144,15 @@ class Recon:
         version: str,
         root_found_by: str = "argument",
         channel: ChannelFactory | None = None,
+        key_join: KeyJoin | None = None,
+        memory_keys: int = MEMORY_KEYS,
     ) -> None:
         """``root_found_by`` is how the composition root found the project root:
         ``argument`` (the caller named it), ``repository`` (the nearest ancestor holding
         ``.git``) or ``working_directory``. Each survey records it. ``channel`` makes each
         survey's channel, through which OpenTelemetry and ``on_event`` receive; without
-        one they receive at once, on the survey's thread."""
+        one they receive at once, on the survey's thread. ``key_join`` joins a change
+        detection's comparisons of more than ``memory_keys`` keys (None: all in memory)."""
         self._missions = missions
         self._archives = archives
         self._query = query
@@ -160,6 +164,8 @@ class Recon:
         self._version = version
         self._root_found_by = root_found_by
         self._channel = channel
+        self._key_join = key_join
+        self._memory_keys = memory_keys
 
     # --- init ---------------------------------------------------------------------------
 
@@ -605,7 +611,8 @@ class Recon:
         if not any(entry.changes is not None for entry in config.collectors):
             return None
         mission = self._missions.mission_dir(name)
-        return ChangeDetector(self._archives, mission, self._missions.change_key(name))
+        return ChangeDetector(self._archives, mission, self._missions.change_key(name),
+                              large=self._key_join, memory_keys=self._memory_keys)  # fmt: skip
 
     @contextlib.contextmanager
     def _window_telemetry(

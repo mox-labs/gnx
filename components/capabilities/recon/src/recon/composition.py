@@ -35,13 +35,14 @@ from typing import TYPE_CHECKING, Any
 from recon import __version__
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.cli_collector import PopenRunner
-from recon.adapters._out.duckdb_query import DuckdbQuery
+from recon.adapters._out.duckdb_query import DuckdbJoin, DuckdbQuery
 from recon.adapters._out.event_channel import ThreadChannel
 from recon.adapters._out.markitdown_converter import MarkitdownConverter
 from recon.adapters._out.mission_files import MissionFiles, find_project
 from recon.adapters._out.otel_telemetry import OtelEvents, export_from_env
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
+from recon.application.changes import MEMORY_KEYS
 from recon.application.collectors import COLLECTORS_GROUP, CollectorPorts, build_collectors
 from recon.application.stream import StreamStop as StreamStop
 from recon.application.use_cases import Recon as Recon
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
 
     from recon.application.use_cases import ChannelFactory
     from recon.domain.archives import ArchiveStore
+    from recon.domain.changes import KeyJoin
     from recon.domain.clock import Clock
     from recon.domain.collector import Transform
     from recon.domain.converters import DocumentConverter
@@ -166,6 +168,8 @@ def root(
     shell: ShellRunner | None = None,
     converter: DocumentConverter | None = None,
     channel: ChannelFactory | None = None,
+    key_join: KeyJoin | None = None,
+    memory_keys: int = MEMORY_KEYS,
 ) -> Recon:
     """recon wired to this process: missions under ``project`` (default: the project root of
     the working directory), and the environment ``env`` (default: the process environment).
@@ -174,7 +178,9 @@ def root(
     Each port the rest names is bound to its real adapter unless one is given: the clock,
     the installed plugins, the archive store, the survey's Requester (built per survey by
     ``requester`` from the survey's telemetry), the shell, the document converter, and each
-    survey's event channel (``channel``, default a :class:`ThreadChannel` with its defaults).
+    survey's event channel (``channel``, default a :class:`ThreadChannel` with its defaults),
+    and the join of a change detection's large comparisons (``key_join``, default DuckDB's),
+    each of more than ``memory_keys`` keys (200,000 by default; fewer is joined in memory).
     A test's root is this one with fakes given for the ports it stands in for."""
     clock = clock or SystemClock()
     process_env = os.environ if env is None else env
@@ -213,6 +219,8 @@ def root(
         version=__version__,
         root_found_by=found_by,
         channel=channel or ThreadChannel,
+        key_join=key_join if key_join is not None else DuckdbJoin(),
+        memory_keys=memory_keys,
     )
 
 

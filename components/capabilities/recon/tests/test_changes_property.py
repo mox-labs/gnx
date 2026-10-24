@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from recon.adapters._out.archive_files import ArchiveFiles
+from recon.adapters._out.duckdb_query import DuckdbJoin
 from recon.application.changes import Comparison, Hasher, MemoryJoin, canonical, told_lines
 from recon.composition import root
 from recon.domain.changes import ChangesSpec
@@ -40,8 +41,10 @@ Records = list[dict[str, Any]]
 Snapshot = tuple[Records, str]  # records, and complete | truncated | failed
 Ops = list[tuple[str, str]]
 
-#: The joins every comparison property runs over; the DuckDB one joins them when it exists.
-JOINS: list[KeyJoin] = [MemoryJoin()]
+#: The joins every comparison property runs over, each with its number of cases: a DuckDB join
+#: costs about 9 ms (a connection and a directory of its own), so it runs fewer; the two are
+#: also compared directly (``test_the_two_joins_give_the_same_answers``).
+JOINS: list[tuple[KeyJoin, int]] = [(MemoryJoin(), CASES), (DuckdbJoin(), 100)]
 
 
 def _snapshot(
@@ -180,24 +183,33 @@ def _state(records: Records, spec: ChangesSpec) -> dict[str, str]:
     return {json.dumps([r[f] for f in spec.key]): _content(r, set(spec.volatile)) for r in records}
 
 
-@pytest.mark.parametrize("join", JOINS, ids=lambda j: type(j).__name__)
+@pytest.fixture(params=JOINS, ids=lambda j: type(j[0]).__name__)
+def engine(request: pytest.FixtureRequest) -> tuple[KeyJoin, int]:
+    found: tuple[KeyJoin, int] = request.param
+    return found
+
+
 class TestTheComparisonIsTheOracles:
     @pytest.mark.parametrize("spec", SPECS, ids=["deletes", "no-deletes"])
-    def test_c1_the_ops_are_the_oracle_s(self, join: KeyJoin, spec: ChangesSpec) -> None:
-        for seed in range(CASES):
+    def test_c1_the_ops_are_the_oracle_s(
+        self, engine: tuple[KeyJoin, int], spec: ChangesSpec
+    ) -> None:
+        join, cases = engine
+        for seed in range(cases):
             history = _history(random.Random(seed))
             for step, (rows, expected) in enumerate(run_history(history, spec, join)):
                 if rows is not None:
                     assert _ops(rows, spec) == expected, f"seed {seed}, snapshot {step}"
 
     def test_c2_after_each_whole_snapshot_the_fold_of_every_op_is_that_snapshot(
-        self, join: KeyJoin
+        self, engine: tuple[KeyJoin, int]
     ) -> None:
         """The strongest: truncated and failed snapshots between, deletes told, no keyless or
         ambiguous record (which hold deletes back): after each whole snapshot, folding every
         row told so far from empty gives it, key by key and content by content."""
+        join, cases = engine
         spec = SPECS[0]
-        for seed in range(CASES):
+        for seed in range(cases):
             history = _history(random.Random(seed), keyless=False, ambiguous=False)
             runs = run_history(history, spec, join)
             for step, (records, status) in enumerate(history):
@@ -205,10 +217,11 @@ class TestTheComparisonIsTheOracles:
                     assert _fold(runs, spec, step) == _state(records, spec), f"seed {seed}"
 
     def test_c2_a_key_gone_while_a_truncated_snapshot_intervened_is_deleted(
-        self, join: KeyJoin
+        self, engine: tuple[KeyJoin, int]
     ) -> None:
         """{a,b,c} whole, {a} truncated, {a,b} whole: c is told deleted (the case a truncated
         baseline lost)."""
+        join, cases = engine
         spec = SPECS[0]
         history: list[Snapshot] = [
             ([{"id": "a"}, {"id": "b"}, {"id": "c"}], "complete"),
@@ -223,7 +236,10 @@ class TestTheComparisonIsTheOracles:
         ]
         assert _fold(runs, spec) == _state(history[-1][0], spec)
 
-    def test_an_update_a_truncated_run_told_is_not_told_again(self, join: KeyJoin) -> None:
+    def test_an_update_a_truncated_run_told_is_not_told_again(
+        self, engine: tuple[KeyJoin, int]
+    ) -> None:
+        join, cases = engine
         spec = SPECS[0]
         history: list[Snapshot] = [
             ([{"id": "a", "s": 1}, {"id": "b", "s": 1}], "complete"),
@@ -234,45 +250,57 @@ class TestTheComparisonIsTheOracles:
         assert [_ops(rows or [], spec) for rows, _ in runs][1:] == [[("update", '["a"]')], []]
 
     def test_c2_check_of_the_checker_without_deletes_the_fold_keeps_what_went(
-        self, join: KeyJoin
+        self, engine: tuple[KeyJoin, int]
     ) -> None:
+        join, cases = engine
         spec = SPECS[1]
         history: list[Snapshot] = [([{"id": "a"}, {"id": "b"}], "complete"),
                                    ([{"id": "a"}], "complete")]  # fmt: skip
         assert _fold(run_history(history, spec, join), spec) != _state(history[-1][0], spec)
 
-    def test_c3_the_same_snapshot_twice_gives_no_ops(self, join: KeyJoin) -> None:
-        for seed in range(CASES):
+    def test_c3_the_same_snapshot_twice_gives_no_ops(self, engine: tuple[KeyJoin, int]) -> None:
+        join, cases = engine
+        for seed in range(cases):
             records, _ = _snapshot(random.Random(seed))
             again = [dict(r) for r in records]
             history: list[Snapshot] = [(records, "complete"), (again, "complete")]
             assert run_history(history, SPECS[0], join)[1][0] == [], f"seed {seed}"
 
-    def test_c4_a_change_to_a_volatile_field_alone_is_no_change(self, join: KeyJoin) -> None:
-        for seed in range(CASES):
+    def test_c4_a_change_to_a_volatile_field_alone_is_no_change(
+        self, engine: tuple[KeyJoin, int]
+    ) -> None:
+        join, cases = engine
+        for seed in range(cases):
             rng = random.Random(seed)
             records, _ = _snapshot(rng, ambiguous=False)
             touched = [{**r, "seen": rng.random()} for r in records]
             history: list[Snapshot] = [(records, "complete"), (touched, "complete")]
             assert run_history(history, SPECS[0], join)[1][0] == [], f"seed {seed}"
 
-    def test_c4_check_of_the_checker_undeclared_it_is_an_update(self, join: KeyJoin) -> None:
+    def test_c4_check_of_the_checker_undeclared_it_is_an_update(
+        self, engine: tuple[KeyJoin, int]
+    ) -> None:
+        join, cases = engine
         history: list[Snapshot] = [([{"id": "a", "seen": 1}], "complete"),
                                    ([{"id": "a", "seen": 2}], "complete")]  # fmt: skip
         rows = run_history(history, ChangesSpec(key=["id"]), join)[1][0]
         assert [r["op"] for r in rows or []] == ["update"]
 
-    def test_c5_a_truncated_or_failed_snapshot_never_deletes(self, join: KeyJoin) -> None:
+    def test_c5_a_truncated_or_failed_snapshot_never_deletes(
+        self, engine: tuple[KeyJoin, int]
+    ) -> None:
+        join, cases = engine
         spec = SPECS[0]
-        for seed in range(CASES):
+        for seed in range(cases):
             history = _history(random.Random(seed))
             for (rows, _), (_, status) in zip(run_history(history, spec, join), history,
                                               strict=True):  # fmt: skip
                 if status != "complete":
                     assert not any(r["op"] == "delete" for r in rows or []), f"seed {seed}"
 
-    def test_c5_a_failed_snapshot_tells_nothing(self, join: KeyJoin) -> None:
+    def test_c5_a_failed_snapshot_tells_nothing(self, engine: tuple[KeyJoin, int]) -> None:
         """A page-3 failure must not mark every later message deleted."""
+        join, cases = engine
         spec = SPECS[0]
         history: list[Snapshot] = [([{"id": "a"}, {"id": "b"}], "complete"),
                                    ([{"id": "a"}], "failed"),
@@ -280,8 +308,11 @@ class TestTheComparisonIsTheOracles:
         runs = run_history(history, spec, join)
         assert runs[1] == (None, None) and runs[2][0] == []
 
-    def test_c6_the_order_of_fields_or_records_is_no_change(self, join: KeyJoin) -> None:
-        for seed in range(CASES):
+    def test_c6_the_order_of_fields_or_records_is_no_change(
+        self, engine: tuple[KeyJoin, int]
+    ) -> None:
+        join, cases = engine
+        for seed in range(cases):
             rng = random.Random(seed)
             records, _ = _snapshot(rng)
             shuffled = [dict(rng.sample(list(r.items()), len(r))) for r in records]
@@ -289,7 +320,10 @@ class TestTheComparisonIsTheOracles:
             history: list[Snapshot] = [(records, "complete"), (shuffled, "complete")]
             assert run_history(history, SPECS[0], join)[1][0] == [], f"seed {seed}"
 
-    def test_c7_duplicates_collapse_and_ambiguity_holds_deletes_back(self, join: KeyJoin) -> None:
+    def test_c7_duplicates_collapse_and_ambiguity_holds_deletes_back(
+        self, engine: tuple[KeyJoin, int]
+    ) -> None:
+        join, cases = engine
         spec = SPECS[0]
         base: Records = [{"id": "a", "s": 1}, {"id": "gone", "s": 1}]
         same: Records = [{"id": "a", "s": 2}, {"id": "a", "s": 2}]
@@ -304,7 +338,10 @@ class TestTheComparisonIsTheOracles:
         assert comparison.counts.ambiguous == 1 and comparison.counts.withheld == "ambiguous"
         assert dict(comparison.told())[canonical(["a"])] == dict(told.told())[canonical(["a"])]
 
-    def test_c7_keyless_records_are_counted_and_hold_deletes_back(self, join: KeyJoin) -> None:
+    def test_c7_keyless_records_are_counted_and_hold_deletes_back(
+        self, engine: tuple[KeyJoin, int]
+    ) -> None:
+        join, cases = engine
         spec = SPECS[0]
         hasher = Hasher(spec, SECRET)
         base: Records = [{"id": "a"}, {"id": "b"}]
@@ -314,16 +351,20 @@ class TestTheComparisonIsTheOracles:
         assert list(comparison.rows()) == []
         assert comparison.counts.keyless == 2 and comparison.counts.withheld == "keyless"
 
-    def test_c8_the_first_snapshot_is_all_inserts(self, join: KeyJoin) -> None:
-        for seed in range(CASES):
+    def test_c8_the_first_snapshot_is_all_inserts(self, engine: tuple[KeyJoin, int]) -> None:
+        join, cases = engine
+        for seed in range(cases):
             records, _ = _snapshot(random.Random(seed))
             [(rows, expected)] = run_history([(records, "complete")], SPECS[0], join)
             assert rows is not None and all(r["op"] == "insert" for r in rows)
             assert _ops(rows, SPECS[0]) == expected, f"seed {seed}"
 
-    def test_c9_a_told_index_read_back_from_its_lines_is_the_index(self, join: KeyJoin) -> None:
+    def test_c9_a_told_index_read_back_from_its_lines_is_the_index(
+        self, engine: tuple[KeyJoin, int]
+    ) -> None:
+        join, cases = engine
         hasher = Hasher(SPECS[0], SECRET)
-        for seed in range(CASES):
+        for seed in range(cases):
             records, _ = _snapshot(random.Random(seed))
             comparison = Comparison(lambda r=records: r, None, hasher, join,  # type: ignore[misc]
                                     whole=True)  # fmt: skip
@@ -333,6 +374,32 @@ class TestTheComparisonIsTheOracles:
             assert list(read[1]) == list(comparison.told()), f"seed {seed}"
             assert told_lines(iter(lines), "another spec", len(records)) is None
             assert told_lines(iter(lines), hasher.digest, len(records) + 1) is None
+
+
+def test_the_two_joins_give_the_same_answers() -> None:
+    """The DuckDB join is the in-memory join's equal on every answer, over keys with quotes,
+    commas, backslashes and text beyond ASCII, which order alike in both."""
+    alphabet = ["a", "b", ",", '"', "\\", "é", "日", " ", "1"]
+    for seed in range(200):
+        rng = random.Random(seed)
+        keys = [canonical(["".join(rng.choices(alphabet, k=rng.randint(1, 4)))]) for _ in range(8)]
+        told = sorted(
+            {
+                rng.choice(keys): f"{rng.randint(0, 2):032x}" for _ in range(rng.randint(0, 8))
+            }.items()
+        )
+        new = [
+            (i, rng.choice(keys), f"{rng.randint(0, 2):032x}") for i in range(rng.randint(0, 12))
+        ]
+        answers = []
+        for join in (MemoryJoin(), DuckdbJoin()):
+            joined = join.join(told, new)
+            told_both = (list(joined.told(deletes=False)), list(joined.told(deletes=True)))
+            counts = (joined.told_count(deletes=False), joined.told_count(deletes=True))
+            answers.append((joined.ambiguous, list(joined.ops()), list(joined.gone()), told_both,
+                            counts))  # fmt: skip
+            joined.close()
+        assert answers[0] == answers[1], f"seed {seed}"
 
 
 def test_the_hash_is_keyed_and_canonical() -> None:
@@ -387,20 +454,23 @@ def _lines(path: Path) -> list[dict[str, Any]]:
     return [] if lines and lines[0].get("_empty") else lines
 
 
+@pytest.mark.parametrize("memory_keys", [None, 0], ids=["in-memory", "duckdb"])
 @pytest.mark.parametrize("spec", SPECS, ids=["deletes", "no-deletes"])
 def test_end_to_end_each_survey_s_change_table_is_the_oracle_s(
-    tmp_path: Path, spec: ChangesSpec
+    tmp_path: Path, spec: ChangesSpec, memory_keys: int | None
 ) -> None:
     """C1, C5 and C9 through recon's root: the previous table each survey picks from its
     archives, a truncated crawl and a failed table as the survey makes them, and each told
-    index equal to the one computed again from the chain once the kept ones are gone."""
+    index equal to the one computed again from the chain once the kept ones are gone; joined
+    in memory, and on DuckDB (``memory_keys=0``: every join is large)."""
+    sized: dict[str, Any] = {} if memory_keys is None else {"memory_keys": memory_keys}
     for seed in range(25):
         project = tmp_path / str(seed)
         (project / ".recon" / "m").mkdir(parents=True)
         (project / ".recon" / "m" / "config.yaml").write_text(yaml.safe_dump(_mission(spec)))
         mailbox = _Mailbox()
         clock = FixedClock()
-        recon = root({}, project=project, clock=clock,
+        recon = root({}, project=project, clock=clock, **sized,
                      requester=lambda t, d, r, m=mailbox: m)  # type: ignore[misc]  # fmt: skip
         oracle = Oracle(spec)
         history = _history(random.Random(seed))
