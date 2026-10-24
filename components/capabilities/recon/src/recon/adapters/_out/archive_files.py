@@ -490,12 +490,18 @@ def _is_empty_sentinel(line: bytes) -> bool:
 
 
 def _hold(path: Path) -> int:
-    """Hold an exclusive lock on ``path``, made if need be, until the descriptor is closed."""
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
+    """Hold an exclusive lock on ``path`` until the descriptor is closed. The file is locked
+    under another name and renamed into place, so no reader finds ``path`` unlocked while
+    it is being made, and none can hold a test of it as the writer takes it."""
+    making = path.with_name(f".{path.name}.{os.getpid()}")
+    descriptor = os.open(making, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.replace(making, path)
     except OSError:
         os.close(descriptor)
+        with contextlib.suppress(OSError):
+            making.unlink()
         raise
     return descriptor
 

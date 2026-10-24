@@ -854,6 +854,37 @@ class TestAnArchiveSaysWhetherItIsBeingWritten:
         assert reader.state(archive) == "complete"
         assert not (archive / "writer.lock").exists(), "a finished archive holds its data alone"
 
+    def test_a_reader_testing_the_lock_as_the_writer_takes_it_cannot_stop_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: the lock file was made, then locked. A reader testing it in between
+        held it shared for that moment, and the writer's exclusive lock, which does not
+        wait, failed, and the survey with it. It is now locked before it has its name."""
+        import fcntl
+
+        held: list[int] = []
+
+        def flock(descriptor: int, operation: int) -> None:
+            lock = tmp_path / "archive" / "2026-01-02-030405-000001" / "writer.lock"
+            if operation & fcntl.LOCK_EX and lock.exists():  # a reader, at that moment
+                reader = os.open(lock, os.O_RDONLY)
+                fcntl.flock(reader, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                held.append(reader)
+            fcntl.flock(descriptor, operation)
+
+        stand_in = types.ModuleType("fcntl")
+        stand_in.__dict__.update(fcntl.__dict__)
+        stand_in.__dict__["flock"] = flock
+        monkeypatch.setattr("recon.adapters._out.archive_files.fcntl", stand_in)
+        store = ArchiveFiles(SystemClock())
+        try:
+            archive = store.create(tmp_path, "2026-01-02-030405-000001")
+            assert store.state(archive) == "writing"
+            store.release(archive)
+        finally:
+            for reader in held:
+                os.close(reader)
+
     def test_an_archive_an_earlier_recon_wrote_reads_as_its_marker_says(
         self, tmp_path: Path
     ) -> None:
