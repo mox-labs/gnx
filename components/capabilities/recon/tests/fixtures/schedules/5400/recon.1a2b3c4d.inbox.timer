@@ -1,0 +1,12 @@
+# Made by `recon schedule install inbox`; `recon schedule remove inbox` removes it.
+[Unit]
+Description=recon: mission inbox of /home/someone/mail project, every 5400 s
+
+[Timer]
+OnCalendar=*-*-* 00,03,06,09,12,15,18,21:23:00
+OnCalendar=*-*-* 01,04,07,10,13,16,19,22:53:00
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

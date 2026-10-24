@@ -1,0 +1,2 @@
+# recon.1a2b3c4d.inbox: mission inbox of /home/someone/mail project, every 600 s
+7,17,27,37,47,57 * * * * /usr/bin/env 'PATH=/home/someone/.local/bin:/usr/bin:/bin' '/home/someone/.local/bin/recon' 'schedule' 'tick' 'inbox' '--project' '/home/someone/mail project' '--config-sha256' '0000000000000000000000000000000000000000000000000000000000000001' >/dev/null 2>&1

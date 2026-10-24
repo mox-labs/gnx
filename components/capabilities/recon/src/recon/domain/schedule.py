@@ -15,9 +15,15 @@ caught up one by one: that would be a burst of surveys against each source's rat
 
 from __future__ import annotations
 
+import html
+import re
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from recon.domain.errors import UsageError
+from recon.domain.missions import MISSION_NAME
 
 #: What a tick the host missed (asleep, off) becomes: one run once it is back, or none.
 Missed = Literal["once", "skip"]
@@ -75,3 +81,233 @@ class ScheduleSpec(BaseModel):
     def deadline(self) -> float:
         """The ``deadline:`` a mission scheduled so has unless it sets one."""
         return DEADLINE_SHARE * self.every
+
+
+# --- projection ---------------------------------------------------------------------------
+
+#: The schedulers a schedule is projected onto: launchd's user agents (macOS), systemd's user
+#: timers (Linux), and the user's crontab where neither is.
+Platform = Literal["launchd", "systemd", "cron"]
+
+PLATFORMS: tuple[Platform, ...] = ("launchd", "systemd", "cron")
+
+
+@dataclass(frozen=True)
+class ScheduledRun:
+    """Everything a projection writes, decided before it: the schedule's ``label`` (its name in
+    the scheduler, one per mission of a project), the ``mission`` and its absolute ``project``,
+    the absolute ``recon`` command a tick runs, the ``path`` it runs with, the digest of the
+    config it was installed for (a tick refuses another), ``every`` and ``missed``, and
+    ``offset_s``, where in each ``every`` its ticks fall (whole minutes, less than ``every``),
+    which spreads missions due at once."""
+
+    label: str
+    mission: str
+    project: str
+    recon: str
+    path: tuple[str, ...]
+    config_sha256: str
+    every: int
+    offset_s: int
+    missed: Missed
+
+    @property
+    def argv(self) -> tuple[str, ...]:
+        """What a tick runs: recon, by its absolute path, never through a shell."""
+        return (self.recon, "schedule", "tick", self.mission, "--project", self.project,
+                "--config-sha256", self.config_sha256)  # fmt: skip
+
+
+@dataclass(frozen=True)
+class ProjectedFile:
+    """One file a scheduler is given: its ``name`` in the scheduler's directory (for cron, the
+    name of the entry in recon's block of the crontab), and its whole ``text``."""
+
+    name: str
+    text: str
+
+
+def fire_times(every: int, offset_s: int) -> tuple[int, ...]:
+    """The times of day, in seconds from midnight, a schedule's ticks fall on: ``offset_s``,
+    then every ``every`` after it, through the day."""
+    return tuple(range(offset_s, DAY_S, every))
+
+
+def project(run: ScheduledRun, platform: Platform) -> tuple[ProjectedFile, ...]:
+    """The files that make ``platform``'s scheduler tick ``run``, as text: pure, so the same
+    run projects the same bytes. Raises UsageError for a run no scheduler file can hold."""
+    _check(run, platform)
+    if platform == "launchd":
+        return (ProjectedFile(f"{run.label}.plist", _plist(run)),)
+    if platform == "systemd":
+        return (
+            ProjectedFile(f"{run.label}.service", _service(run)),
+            ProjectedFile(f"{run.label}.timer", _timer(run)),
+        )
+    return (ProjectedFile(f"{run.label}.cron", _cron(run)),)
+
+
+def _check(run: ScheduledRun, platform: Platform) -> None:
+    if not MISSION_NAME.match(run.mission):
+        raise UsageError(
+            f"{run.mission!r} is not a mission name",
+            fix="name the mission as `recon init` does: letters, digits, '.', '_' and '-'",
+        )
+    named = [("the project", run.project), ("recon", run.recon)]
+    named += [("a PATH directory", directory) for directory in run.path]
+    for what, value in named:
+        if not value.startswith("/"):
+            raise UsageError(
+                f"{what} {value!r} is not an absolute path; a scheduled tick has no working "
+                "directory of its own to resolve it in",
+                fix="install the schedule from the project, with recon installed",
+            )
+        if any(c in value for c in "\n\r\x00"):
+            raise UsageError(
+                f"{what} {value!r} holds a line break, which no scheduler file can hold",
+                fix="move it to a path without one",
+            )
+        if platform == "cron" and "%" in value:
+            raise UsageError(
+                f"{what} {value!r} holds a %, which cron reads as a new line",
+                fix="move it to a path without one, or install with --platform launchd or systemd",
+            )
+    if run.every not in EVERY_ALLOWED or run.offset_s % 60 or not 0 <= run.offset_s < run.every:
+        raise UsageError(
+            f"offset {run.offset_s} s is not whole minutes within every ({run.every} s)",
+            fix="report it as a bug in recon",
+        )
+
+
+def _by_minute(run: ScheduledRun) -> list[tuple[tuple[int, ...], tuple[int, ...]]]:
+    """The ticks as (hours, minutes) pairs, each the hours a set of minutes falls in: the
+    smallest calendar every scheduler takes. All 24 hours means every hour."""
+    hours_of: dict[int, set[int]] = {}
+    for at in fire_times(run.every, run.offset_s):
+        hours_of.setdefault(at // 60 % 60, set()).add(at // 3600)
+    minutes_of: dict[tuple[int, ...], list[int]] = {}
+    for minute, hours in sorted(hours_of.items()):
+        minutes_of.setdefault(tuple(sorted(hours)), []).append(minute)
+    pairs = [(hours, tuple(minutes)) for hours, minutes in minutes_of.items()]
+    return sorted(pairs, key=lambda pair: (pair[1], pair[0]))
+
+
+def _every_hour(hours: tuple[int, ...]) -> bool:
+    return len(hours) == 24
+
+
+def _what(run: ScheduledRun) -> str:
+    return f"mission {run.mission} of {run.project}, every {run.every} s"
+
+
+def _made_by(run: ScheduledRun) -> str:
+    return (
+        f"# Made by `recon schedule install {run.mission}`; `recon schedule remove "
+        f"{run.mission}` removes it.\n"
+    )
+
+
+# launchd: a property list, written here rather than by plistlib so the domain imports nothing
+# it may not; each string is XML-escaped.
+
+
+def _plist_string(value: str, indent: str) -> str:
+    return f"{indent}<string>{html.escape(value, quote=False)}</string>\n"
+
+
+def _plist(run: ScheduledRun) -> str:
+    times: list[tuple[int, int]] = []  # (hour, minute); hour -1 is every hour
+    for hours, minutes in _by_minute(run):
+        for minute in minutes:
+            times += [(-1, minute)] if _every_hour(hours) else [(h, minute) for h in hours]
+    calendar = ""
+    for hour, minute in sorted(times):
+        calendar += "\t\t<dict>\n"
+        if hour >= 0:
+            calendar += f"\t\t\t<key>Hour</key>\n\t\t\t<integer>{hour}</integer>\n"
+        calendar += f"\t\t\t<key>Minute</key>\n\t\t\t<integer>{minute}</integer>\n\t\t</dict>\n"
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0">\n<dict>\n'
+        "\t<key>Label</key>\n" + _plist_string(run.label, "\t")
+        + "\t<key>ProgramArguments</key>\n\t<array>\n"
+        + "".join(_plist_string(arg, "\t\t") for arg in run.argv)
+        + "\t</array>\n"
+        + "\t<key>WorkingDirectory</key>\n" + _plist_string(run.project, "\t")
+        + "\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>PATH</key>\n"
+        + _plist_string(":".join(run.path), "\t\t")
+        + "\t</dict>\n"
+        + "\t<key>StartCalendarInterval</key>\n\t<array>\n" + calendar + "\t</array>\n"
+        + "\t<key>StandardOutPath</key>\n\t<string>/dev/null</string>\n"
+        + "\t<key>StandardErrorPath</key>\n\t<string>/dev/null</string>\n"
+        + "</dict>\n</plist>\n"
+    )  # fmt: skip
+
+
+# systemd: a oneshot service and the timer that starts it. A % in a value is a specifier there,
+# so it is written %%; an argument is quoted when it holds what would split or expand it.
+
+_SYSTEMD_BARE = re.compile(r"^[A-Za-z0-9_@%+=:,./-]+$")
+
+
+def _systemd(value: str) -> str:
+    return value.replace("%", "%%")
+
+
+def _systemd_arg(value: str) -> str:
+    if _SYSTEMD_BARE.match(value):
+        return _systemd(value)
+    quoted = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "$$")
+    return f'"{_systemd(quoted)}"'
+
+
+def _service(run: ScheduledRun) -> str:
+    return (
+        _made_by(run)
+        + "[Unit]\n"
+        + f"Description=recon: {_systemd(_what(run))}\n\n"
+        + "[Service]\n"
+        + "Type=oneshot\n"
+        + f"WorkingDirectory={_systemd(run.project)}\n"
+        + f"Environment={_systemd_arg('PATH=' + ':'.join(run.path))}\n"
+        + f"ExecStart={' '.join(_systemd_arg(arg) for arg in run.argv)}\n"
+        + "StandardOutput=null\n"
+    )
+
+
+def _timer(run: ScheduledRun) -> str:
+    calendars = ""
+    for hours, minutes in _by_minute(run):
+        hour = "*" if _every_hour(hours) else ",".join(f"{h:02d}" for h in hours)
+        calendars += f"OnCalendar=*-*-* {hour}:{','.join(f'{m:02d}' for m in minutes)}:00\n"
+    return (
+        _made_by(run)
+        + "[Unit]\n"
+        + f"Description=recon: {_systemd(_what(run))}\n\n"
+        + "[Timer]\n"
+        + calendars
+        + f"Persistent={'true' if run.missed == 'once' else 'false'}\n"
+        + "AccuracySec=1s\n\n"
+        + "[Install]\n"
+        + "WantedBy=timers.target\n"
+    )
+
+
+# cron: one entry of recon's block in the user's crontab. cron hands the line to /bin/sh, so
+# each argument is quoted whole; PATH is set by env(1), and the output goes nowhere.
+
+
+def _sh(value: str) -> str:
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def _cron(run: ScheduledRun) -> str:
+    words = ["/usr/bin/env", _sh("PATH=" + ":".join(run.path)), *(_sh(a) for a in run.argv)]
+    command = " ".join(words) + " >/dev/null 2>&1"
+    lines = f"# {run.label}: {_what(run)}\n"
+    for hours, minutes in _by_minute(run):
+        hour = "*" if _every_hour(hours) else ",".join(str(h) for h in hours)
+        lines += f"{','.join(str(m) for m in minutes)} {hour} * * * {command}\n"
+    return lines

@@ -8,6 +8,7 @@ parsed config.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -15,6 +16,11 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from recon.domain.capture import CaptureLog
+
+
+#: A mission's name: letters, digits, ``.``, ``_`` and ``-``, starting with a letter or a digit,
+#: so it is one safe path component, and one word in every file a schedule projects.
+MISSION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 @dataclass(frozen=True)

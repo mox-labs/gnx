@@ -16,7 +16,6 @@ are the YAML files of the ``recon.configs`` package.
 from __future__ import annotations
 
 import importlib.resources
-import re
 import sys
 from typing import TYPE_CHECKING
 
@@ -26,14 +25,12 @@ from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.private_files import make_dirs, write_file
 from recon.domain.capture import CAPTURE_LOG_NAME
 from recon.domain.errors import ConfigError, NotFoundError, Problem, UsageError
-from recon.domain.missions import ConfigFile, Template
+from recon.domain.missions import MISSION_NAME, ConfigFile, Template
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from recon.domain.clock import Clock
-
-_MISSION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def find_project(start: Path) -> tuple[Path, str]:
@@ -64,7 +61,7 @@ class MissionFiles:
         return self._root
 
     def mission_dir(self, name: str) -> Path:
-        if not _MISSION_NAME.match(name):
+        if not MISSION_NAME.match(name):
             raise UsageError(
                 f"{name!r} is not a mission name",
                 fix="name a mission with letters, digits, '.', '_' and '-', starting with a "

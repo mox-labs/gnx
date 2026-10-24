@@ -1,0 +1,10 @@
+# Made by `recon schedule install inbox`; `recon schedule remove inbox` removes it.
+[Unit]
+Description=recon: mission inbox of /home/someone/mail project, every 5400 s
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/someone/mail project
+Environment=PATH=/home/someone/.local/bin:/usr/bin:/bin
+ExecStart=/home/someone/.local/bin/recon schedule tick inbox --project "/home/someone/mail project" --config-sha256 0000000000000000000000000000000000000000000000000000000000000001
+StandardOutput=null
