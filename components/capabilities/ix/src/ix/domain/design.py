@@ -52,11 +52,11 @@ Origin = Literal["experiment", "genre", "ix"]
 
 
 class SourcedValue(Record):
-    """One resolved value of the design and where it came from."""
+    """One resolved value of the design and where it came from (``origin``)."""
 
     path: str
     value: Level | None
-    source: Origin
+    origin: Origin
     note: str = ""
 
 
@@ -684,7 +684,7 @@ def _reductions(
 
 
 def _from(origin: Origin, *, path: str, value: Level | None, note: str = "") -> SourcedValue:
-    return SourcedValue(path=path, value=value, source=origin, note=note)
+    return SourcedValue(path=path, value=value, origin=origin, note=note)
 
 
 @dataclass(frozen=True)

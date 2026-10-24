@@ -272,7 +272,7 @@ def _print_plan_decision(plan: ix.Plan) -> None:
         _field("Comparison", plan.comparison)
     margin = next((value for value in plan.provenance if value.path == "margin"), None)
     if margin is not None:
-        _field("Margin", f"{_text(margin.value)}, {_SOURCED[margin.source]}: {margin.note}")
+        _field("Margin", f"{_text(margin.value)}, {_SOURCED[margin.origin]}: {margin.note}")
     if plan.guardrails:
         _field("Guardrails", *plan.guardrails)
     _field("Verdict", plan.verdict)
@@ -339,7 +339,7 @@ def _print_plan_design(plan: ix.Plan, path: str) -> None:
         design.add_column(column)
     footnotes = []
     for value in plan.provenance:
-        design.add_row(escape(value.path), escape(_text(value.value)), value.source)
+        design.add_row(escape(value.path), escape(_text(value.value)), value.origin)
         if value.note and value.path != "margin":  # the margin's is on its own line above
             footnotes.append(f"{value.path}: {value.note}")
     out.print(design)

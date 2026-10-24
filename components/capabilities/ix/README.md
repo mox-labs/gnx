@@ -735,7 +735,7 @@ import ix
 
 result = ix.validate("examples/proxy-streaming")  # ix.Validation: valid, complete, problems
 plan = ix.plan("examples/proxy-streaming")  # ix.Plan; raises ix.InvalidExperimentError
-design = ix.resolve("examples/proxy-streaming")  # ix.Design: every value, with its source
+design = ix.resolve("examples/proxy-streaming")  # ix.Design: every value, with its origin
 genres, kinds = ix.genres(), ix.kinds()  # ix.Genres, ix.Kinds
 
 slower = "examples/delay-server/slower.yaml"

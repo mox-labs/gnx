@@ -218,9 +218,9 @@ class TestTheWidthIsAConditionOfTheRun:
         assert omitted.digest == written.digest
         assert omitted.experiment_digest == written.experiment_digest
         (sourced,) = [v for v in omitted.provenance if v.path == "trials_in_flight"]
-        assert (sourced.value, sourced.source) == (1, "ix")
+        assert (sourced.value, sourced.origin) == (1, "ix")
         (sourced,) = [v for v in written.provenance if v.path == "trials_in_flight"]
-        assert (sourced.value, sourced.source) == (1, "experiment")
+        assert (sourced.value, sourced.origin) == (1, "experiment")
         assert omitted.order.trials_in_flight == 1
         assert "one at a time" in omitted.order.description
 

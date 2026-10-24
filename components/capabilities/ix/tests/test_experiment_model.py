@@ -420,11 +420,11 @@ class TestResolution:
         assert design.repeats == genre.design.repeats.default
         assert (design.order, design.calibration) == (genre.design.order, "aa")
         for path in ("repeats", "order", "calibration", "primary.estimator"):
-            assert sourced[path].source == "genre", path
-        assert (sourced["control"].source, sourced["control"].value) == ("ix", "buffered")
-        assert sourced["seed"].source == "ix"
-        assert sourced["comparison"].source == "experiment"
-        assert sourced["primary.statistic"].source == "experiment"
+            assert sourced[path].origin == "genre", path
+        assert (sourced["control"].origin, sourced["control"].value) == ("ix", "buffered")
+        assert sourced["seed"].origin == "ix"
+        assert sourced["comparison"].origin == "experiment"
+        assert sourced["primary.statistic"].origin == "experiment"
         assert design.document()["schema"] == "ix.v1.design"
         assert design.genre == genre.name
         assert (design.analysis, design.report) == (genre.analysis, genre.report)
@@ -435,8 +435,8 @@ class TestResolution:
         compare_data.update(repeats=7, seed=11, control="streaming")
         design = _design(compare_data, builtin_genres, builtin_kinds)
         assert (design.repeats, design.seed, design.control) == (7, 11, "streaming")
-        sources = {value.path: value.source for value in design.provenance}
-        assert sources["repeats"] == sources["seed"] == sources["control"] == "experiment"
+        origins = {value.path: value.origin for value in design.provenance}
+        assert origins["repeats"] == origins["seed"] == origins["control"] == "experiment"
 
     def test_a_genre_supplies_the_comparison_it_fixes(
         self, compare_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds
@@ -446,7 +446,7 @@ class TestResolution:
         design = _design(compare_data, builtin_genres, builtin_kinds)
         assert design.comparison == "non-inferiority"
         (comparison,) = [v for v in design.provenance if v.path == "comparison"]
-        assert comparison.source == "genre"
+        assert comparison.origin == "genre"
 
     def test_the_seed_is_fixed_by_the_name_when_none_is_stated(
         self, compare_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds
@@ -491,9 +491,9 @@ class TestTwoReductions:
         design = _design(compare_data, builtin_genres, builtin_kinds)
         assert design.primary is not None
         assert (design.primary.statistic, design.primary.estimator) == ("p99", "mean")
-        sources = {v.path: v.source for v in design.provenance}
-        assert sources["primary.statistic"] == "experiment"
-        assert sources["primary.estimator"] == "genre"
+        origins = {v.path: v.origin for v in design.provenance}
+        assert origins["primary.statistic"] == "experiment"
+        assert origins["primary.estimator"] == "genre"
 
     def test_the_statistic_defaults_by_shape(
         self, compare_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds
@@ -504,9 +504,9 @@ class TestTwoReductions:
         assert design.primary is not None and design.primary.statistic == "p50"
         guardrail = design.guardrails[0]
         assert (guardrail.statistic, guardrail.estimator) == ("value", "max")
-        sources = {v.path: v.source for v in design.provenance}
-        assert sources["primary.statistic"] == "ix"
-        assert sources["guardrails.0.estimator"] == "experiment"
+        origins = {v.path: v.origin for v in design.provenance}
+        assert origins["primary.statistic"] == "ix"
+        assert origins["guardrails.0.estimator"] == "experiment"
 
     def test_a_boolean_combines_as_a_rate_whatever_the_genre_says(
         self, evaluate_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds
@@ -514,8 +514,8 @@ class TestTwoReductions:
         design = _design(evaluate_data, builtin_genres, builtin_kinds)
         assert design.primary is not None
         assert (design.primary.statistic, design.primary.estimator) == ("value", "rate")
-        sources = {v.path: v.source for v in design.provenance}
-        assert sources["primary.estimator"] == "ix"
+        origins = {v.path: v.origin for v in design.provenance}
+        assert origins["primary.estimator"] == "ix"
 
     def test_an_estimator_written_as_a_statistic_is_told_where_it_goes(
         self, compare_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds

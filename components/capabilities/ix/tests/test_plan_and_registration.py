@@ -11,7 +11,8 @@ ix does not know. Amending keeps the superseded record and the reason.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -23,9 +24,6 @@ from ix.application.experiments import Vocabulary, examine, make_plan
 from ix.domain.experiment import Experiment, cells
 from ix.domain.plan import Plan, plan_digest
 from ix.domain.registration import Registration, deviations
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 Write = Any  # the write_experiment fixture
 
@@ -76,7 +74,7 @@ class TestPlanStatesTheDecision:
         made = _plan(regress, vocabulary)
         assert made.decides == ("build25 is at most 5% worse than build20 on latency p50",)
         (margin,) = [value for value in made.provenance if value.path == "margin"]
-        assert (margin.value, margin.source) == ("5%", "experiment")
+        assert (margin.value, margin.origin) == ("5%", "experiment")
         assert "the person's decision" in margin.note
         # A margin in the metric's own unit says the unit.
         absolute = _plan({**regress, "margin": 3}, vocabulary)
@@ -100,7 +98,7 @@ class TestPlanStatesTheDecision:
         ]
         made = _plan(compare_data, vocabulary)
         (estimator,) = [v for v in made.provenance if v.path == "guardrails.0.estimator"]
-        assert (estimator.value, estimator.source) == ("rate", "ix")
+        assert (estimator.value, estimator.origin) == ("rate", "ix")
         assert "counts" in estimator.note
 
     def test_the_genre_is_carried_short_and_as_its_url(
@@ -764,6 +762,42 @@ class TestStoredRecordsTolerateChange:
             for held in (design, quiet)
         }
         assert len(digests) == 1
+
+    def test_where_a_value_came_from_is_its_origin_and_older_runs_say_whose_they_are(
+        self, write_experiment: Write
+    ) -> None:
+        """A resolved value says where it came from as ``origin``, the name its type
+        (``Origin``) and recon's provenance use; ``source`` is a catalog source in recon
+        and a problem's file in ix. A registration holds no provenance, so one made before
+        the rename still matches. A run keeps its design whole, so one recorded before the
+        rename is refused as a config error naming the ix that wrote it, never a trace."""
+        file: Path = write_experiment(
+            {
+                "name": "canned", "question": "Does the reply start with BANANA?",
+                "genre": "evaluate",
+                "subjects": {"agent": {"kind": "agent-session", "runtime": "mock"}},
+                "probes": [{"id": "fruit", "kind": "prompt", "prompt": "Name a fruit.",
+                            "mock_response": "BANANA", "truth": {"starts_with": "BANANA"}}],
+                "primary": {"metric": "text_matched"},
+                "threshold": {"op": ">=", "value": 0.5}, "repeats": 5,
+            }
+        )  # fmt: skip
+        assert {"origin"} <= set(ix.plan(file).document()["provenance"][0])
+        ix.register(file)
+        assert "provenance" not in json.loads(_record(file).read_text())["design"]
+        ran = ix.run(file, exploratory=True)
+        manifest = Path(ran.location, "ix.v1.run.jsonl")
+        older = []
+        for line in manifest.read_text().splitlines():
+            row = json.loads(line)
+            for value in row.get("design", {}).get("provenance", []):
+                value["source"] = value.pop("origin")
+            older.append(json.dumps(row))
+        manifest.write_text("\n".join(older) + "\n")
+        with pytest.raises(ix.ConfigError, match="cannot be read by this ix") as refused:
+            ix.report(ran.location)
+        assert "the ix that wrote it" in (refused.value.fix or "")
+        assert ix.plan(file).registration.status == "matches"
 
     def test_a_record_of_another_schema_major_is_refused_with_what_this_ix_reads(
         self, compare_data: dict[str, Any], write_experiment: Write
