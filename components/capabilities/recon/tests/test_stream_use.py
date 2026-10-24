@@ -103,7 +103,7 @@ class TestReconStream:
 
         assert document.windows == 1
         assert document.last is not None
-        assert (document.last.closed_by, document.last.table.records) == ("window", 9)
+        assert (document.last.closed_by, document.last.table.records) == ("seconds", 9)
         assert document.state == "complete"
         assert feed.closed.is_set()
 
@@ -186,7 +186,7 @@ class TestASurveyRunsOneWindow:
         assert document.status == "complete"
         assert [t.name for t in document.tables] == ["now"]
         [window] = document.windows
-        assert (window.stream, window.closed_by, window.table.status) == ("events", "window", "ok")
+        assert (window.stream, window.closed_by, window.table.status) == ("events", "seconds", "ok")
         assert window.table.records == 9
 
 

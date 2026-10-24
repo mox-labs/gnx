@@ -24,14 +24,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from recon.domain.archives import ARCHIVE_ID_FORMAT
 from recon.domain.clock import LONGEST_WAIT
 
-#: Why a window ended, when it ended well: its time, records or bytes bound was reached, its
-#: source ended, the stream was stopped by a signal, or it reached the stream's ``until``.
-SealReason = Literal["window", "records", "bytes", "eof", "signal", "until"]
+#: Why a window ended, when it ended well: the bound of ``window:`` it reached, named by its
+#: key (``seconds``, ``records``, ``bytes``), its source ended, the stream was stopped by a
+#: signal, or it reached the stream's ``until``.
+SealReason = Literal["seconds", "records", "bytes", "eof", "signal", "until"]
 
 #: How a window was closed, as ``meta.yaml``'s ``stream.closed_by`` says it: a
 #: :data:`SealReason`, or ``error`` for a window its source's fatal error ended, which keeps
 #: the records it got.
-ClosedBy = Literal["window", "records", "bytes", "eof", "signal", "until", "error"]
+ClosedBy = Literal["seconds", "records", "bytes", "eof", "signal", "until", "error"]
 
 #: What a full buffer does with one more record (:class:`BufferSpec`). There is no ``fail``:
 #: a burst would cost the whole stream.
@@ -242,7 +243,7 @@ class Windowing:
         """The windows that have ended by ``now``, in order, each by time or by ``until``."""
         ends: list[WindowEnd] = []
         while not self.ended and (close := self.close) is not None and now >= close:
-            reason: SealReason = "until" if close == self._until else "window"
+            reason: SealReason = "until" if close == self._until else "seconds"
             ends.append(self._end(reason, close))
             self.ended = self.ended or reason == "until"
         return ends

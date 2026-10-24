@@ -90,7 +90,7 @@ A window outcome (in `recon.v1.stream`'s `last` and `recon.v1.survey`'s `windows
 
 | `closed_by` | Means | `status` |
 |---|---|---|
-| `window`, `records`, `bytes` | the window's own bound was reached | `ok` |
+| `seconds`, `records`, `bytes` | the window's own bound was reached, named by its key in `window:` | `ok` |
 | `eof` | the source ended | `ok` |
 | `signal` | the stream was stopped | `ok` |
 | `until` | the stream reached `--until` | `ok` |

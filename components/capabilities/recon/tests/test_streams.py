@@ -188,7 +188,7 @@ class TestWindowsEndOnTheClock:
         run, outcomes, _ = _run(tmp_path, clock, _plan(WindowSpec(seconds=60)), source)
 
         assert [[r["at"] for r in _rows(o)] for o in outcomes] == [[0.0, 59.999], [60.0, 60.001]]
-        assert [o.closed_by for o in outcomes] == ["window", "eof"]
+        assert [o.closed_by for o in outcomes] == ["seconds", "eof"]
         assert run.windows == 2
 
     @pytest.mark.parametrize(("n", "k"), [(10, 3), (9, 3)])
@@ -211,7 +211,8 @@ class TestWindowsEndOnTheClock:
 
         _, [window], _ = _run(tmp_path, clock, _plan(WindowSpec(seconds=60)), source, windows=1)
 
-        assert window.closed_by == "window"
+        assert window.closed_by == "seconds"
+        assert _meta(window)["stream"]["closed_by"] == "seconds", "the durable record says so"
         assert window.closed_at == "2026-01-02T03:05:05+00:00", "opened 03:04:05, plus 60 s"
         assert _rows(window) == [{"seq": 0}]
         assert source.closed.is_set(), "the source was closed once the stream had its window"
@@ -243,9 +244,9 @@ class TestWindowsEndOnTheClock:
         writer.join(10)
         _, outcomes, _ = result[0]
         assert [(o.index, o.closed_by, o.table.records) for o in outcomes] == [
-            (0, "window", 1),
-            (1, "window", 0),
-            (2, "window", 0),
+            (0, "seconds", 1),
+            (1, "seconds", 0),
+            (2, "seconds", 0),
         ]
 
     def test_a_window_that_ends_is_ok_not_transient(self, tmp_path: Path) -> None:
@@ -257,8 +258,8 @@ class TestWindowsEndOnTheClock:
         )
 
         assert [(o.table.status, o.closed_by, o.table.error) for o in outcomes] == [
-            ("ok", "window", None),
-            ("ok", "window", None),
+            ("ok", "seconds", None),
+            ("ok", "seconds", None),
         ]
         store = ArchiveFiles(clock)
         assert [store.state(Path(o.archive)) for o in outcomes] == ["complete", "complete"]
@@ -819,7 +820,7 @@ class TestDeterminism:
             normalize=lambda r: {"n": r["seq"]},
         )
 
-        sealed = [o for o in outcomes if o.closed_by == "window"]
+        sealed = [o for o in outcomes if o.closed_by == "seconds"]
         assert len(sealed) >= 2
         for window in sealed:
             archive = Path(window.archive)
