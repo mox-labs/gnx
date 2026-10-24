@@ -30,7 +30,9 @@ recon exports over http/protobuf only: `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` is ref
 
 ## What never slows a survey
 
-OpenTelemetry and a program's `on_event` callback receive a survey's events through a bounded queue (4096 events) that a thread of its own drains, so neither slows the writing of the archive nor changes a byte of it; the event log alone is written as each event happens. At the survey's end the receivers get up to 10 seconds to catch up. The survey's document then says what they missed:
+OpenTelemetry and a program's `on_event` callback receive a survey's events through a bounded queue (4096 events) that a thread of its own drains, so neither slows the writing of the archive nor changes a byte of it; the event log alone is written as each event happens. At the survey's end the receivers get up to 10 seconds to catch up.
+
+The provider the `recon` command installs exports spans through a `BatchSpanProcessor` and metrics through a periodic reader, so ending a span only queues it. A program that installs its own tracer provider must use a batching span processor too: with a synchronous one (`SimpleSpanProcessor`), ending a span exports it then and there, and the OpenTelemetry sink ends any span still open when the survey ends on the survey's own thread, so an exporter that hangs could hold the survey's end beyond the 10 seconds. The survey's document then says what they missed:
 
 | Warning | Means | What to do |
 |---|---|---|

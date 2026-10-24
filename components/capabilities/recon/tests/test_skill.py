@@ -148,7 +148,8 @@ def test_the_telemetry_page_is_the_skill_reference() -> None:
     for taught in ("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
                    "configure_telemetry", "traceparent", "recon.event.span", "REDACTED",
                    "events_dropped", "telemetry_stuck", "otel_unavailable",
-                   "http.request.resend_count", "gen_ai.tool.name"):  # fmt: skip
+                   "http.request.resend_count", "gen_ai.tool.name",
+                   "BatchSpanProcessor"):  # fmt: skip
         assert taught in REFERENCES["telemetry"], taught
 
 
