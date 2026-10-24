@@ -782,7 +782,11 @@ class TestStoredRecordsTolerateChange:
                 "threshold": {"op": ">=", "value": 0.5}, "repeats": 5,
             }
         )  # fmt: skip
-        assert {"origin"} <= set(ix.plan(file).document()["provenance"][0])
+        planned = ix.plan(file).document()
+        assert {"origin"} <= set(planned["provenance"][0])
+        # Who chose a sensor is an origin too: ``experiment`` when listed, ``ix`` by default.
+        assert all("source" not in sensor for sensor in planned["sensors"])
+        assert [s.origin for s in ix.plan(file).sensors] == ["ix"]
         ix.register(file)
         assert "provenance" not in json.loads(_record(file).read_text())["design"]
         ran = ix.run(file, exploratory=True)

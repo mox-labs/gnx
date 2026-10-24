@@ -783,7 +783,8 @@ whether it came from the experiment, the genre or ix.
   the file holds none. The plan prints it as `Decides:`.
 - **Metrics come from sensors.** Name a metric; ix selects the one sensor that provides it
   and that the subjects and probes can feed. No sensor: `metric_unprovided`. Two:
-  `metric_ambiguous`, settled by listing one under `sensors:`.
+  `metric_ambiguous`, settled by listing one under `sensors:`. The plan's `sensors` say who
+  chose each (`origin`: `experiment` when listed, else `genre` or `ix`).
 - **A model-judged metric never decides.** Whether a metric is judged is declared by its
   sensor. A judged metric is refused as `primary` and as a guardrail in any genre with a
   verdict (`judged_gate`); it can still be reported under `metrics:`.

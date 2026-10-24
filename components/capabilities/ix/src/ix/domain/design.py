@@ -69,13 +69,13 @@ class RoleAssignment(Record):
 
 
 class SelectedSensor(Record):
-    """A sensor a run would use, the metrics it is there for, and who chose it; and the
-    confusion its kind declares, which a report tabulates."""
+    """A sensor a run would use, the metrics it is there for, and who chose it (``origin``);
+    and the confusion its kind declares, which a report tabulates."""
 
     kind: str
     metrics: tuple[str, ...]
     options: dict[str, Any] = {}
-    source: Origin = "ix"
+    origin: Origin = "ix"
     confusion: Confusion | None = None
 
     @property
@@ -423,7 +423,7 @@ def _selected(
             kind=sensor.name,
             metrics=(),
             options=dict(experiment.sensors[index].options),
-            source="experiment",
+            origin="experiment",
             confusion=sensor.confusion,
         )
         for index, sensor in listed
@@ -434,7 +434,7 @@ def _selected(
             kind=sensor.name,
             metrics=(*(current.metrics if current else ()), metric),
             options=current.options if current else options,
-            source=current.source if current else origin,
+            origin=current.origin if current else origin,
             confusion=sensor.confusion,
         )
     for name, selected in list(by_sensor.items()):
