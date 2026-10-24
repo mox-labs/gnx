@@ -31,19 +31,21 @@ import pytest
 import yaml
 
 import recon
+from recon.adapters._in.cli import _stopping
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.cli_collector import CliCollector, PopenRunner
 from recon.adapters._out.system_clock import SystemClock
-from recon.application.stream import Stream
+from recon.application.stream import Stream, StreamStop
 from recon.composition import root
 from recon.domain.errors import CollectionError
 from recon.domain.models import CollectorEntry, SourceEntry
 from recon.domain.stream import BufferSpec, WindowSpec
-from tests.recon_fakes import VirtualClock
-from tests.test_streams import Script, _plan, _telemetry
+from tests.recon_fakes import StalledArchives, VirtualClock
+from tests.test_streams import Script, _plan, _run, _seq, _telemetry
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Iterator
+    from collections.abc import Callable, Generator, Iterator
+    from contextlib import AbstractContextManager
 
     from recon.domain.documents import WindowOutcome
 
@@ -307,6 +309,75 @@ def test_a_signal_seals_the_window_with_every_record_it_had(
     assert (document["windows"], document["records"], document["dropped"]) == (1, lines, 0)
     assert document["last"]["closed_by"] == "signal"
     assert document["state"] == "complete"
+
+
+class TestTheCommandsHandlerAsksItNeverRaises:
+    """Ixian's re-check: the handler ``recon stream`` installs is what makes the first signal
+    drain. Installed here as the command installs it, with SIGTERM sent to this process while
+    a stalled store holds the writer (this thread) inside its write: the stop is heard once,
+    nothing is raised, and the window is sealed with every record written. The same signal
+    under a handler that raises, as the command's handler did before, halts the window with
+    none written, which is what this test exists to catch."""
+
+    def _signalled_while_writing(
+        self, tmp_path: Path, handler: Callable[[StreamStop], AbstractContextManager[None]]
+    ) -> tuple[StreamStop, list[WindowOutcome]]:
+        clock = VirtualClock()
+        store = StalledArchives(clock)
+        source = Script(clock, _seq(10), then="quiet", quiet_to=10.0)
+        stop = recon.StreamStop()
+        signalled = threading.Event()
+
+        def signal_the_writer() -> None:
+            assert source.done.wait(10), "the ten wait in the buffer"
+            assert store.writing.wait(10), "the writer is inside the store's write"
+            os.kill(os.getpid(), signal.SIGTERM)
+            signalled.set()
+            started = time.monotonic()  # let the handler run and the stop be heard
+            while stop.heard < 1 and time.monotonic() - started < 2:
+                time.sleep(0.01)
+            store.go.set()
+
+        threading.Thread(target=signal_the_writer, daemon=True).start()
+        try:
+            with handler(stop):
+                _, outcomes, _ = _run(
+                    tmp_path, clock, _plan(WindowSpec(seconds=60)), source, store=store,
+                    stop=stop,
+                )  # fmt: skip
+        except KeyboardInterrupt as exc:  # never let it end the test session quietly
+            raise AssertionError("a KeyboardInterrupt escaped the stream") from exc
+        assert signalled.is_set()
+        return stop, outcomes
+
+    def test_the_first_signal_is_asked_and_drains_however_busy_the_writer(
+        self, tmp_path: Path
+    ) -> None:
+        stop, [window] = self._signalled_while_writing(
+            tmp_path, lambda stop: _stopping(stop, as_json=True)
+        )
+
+        assert stop.heard == 1
+        assert (window.closed_by, window.table.records, window.dropped) == ("signal", 10, 0)
+
+    def test_a_handler_that_raises_would_halt_the_window_instead(self, tmp_path: Path) -> None:
+        """Check the checker: the assertions above fail under the handler they replaced."""
+
+        @contextlib.contextmanager
+        def raising(stop: StreamStop) -> Iterator[None]:
+            def interrupt(signum: int, frame: Any) -> None:
+                raise KeyboardInterrupt
+
+            previous = signal.signal(signal.SIGTERM, interrupt)
+            try:
+                yield
+            finally:
+                signal.signal(signal.SIGTERM, previous)
+
+        stop, [window] = self._signalled_while_writing(tmp_path, raising)
+
+        assert stop.heard == 0
+        assert (window.closed_by, window.table.records, window.dropped) == ("signal", 0, 10)
 
 
 def test_a_stream_of_a_quiet_command_leaves_no_process_behind(tmp_path: Path) -> None:

@@ -117,6 +117,8 @@ class StalledArchives(ArchiveFiles):
     def __init__(self, clock: Clock) -> None:
         super().__init__(clock)
         self.go = threading.Event()
+        #: Set once a writer is inside a table's write, held there until :attr:`go`.
+        self.writing = threading.Event()
 
     def write_table(
         self,
@@ -127,6 +129,7 @@ class StalledArchives(ArchiveFiles):
         columns: Sequence[str] = (),
         keep_on_error: bool = False,
     ) -> int:
+        self.writing.set()
         assert self.go.wait(10), "the test never let the store go"
         return super().write_table(
             archive, output, records, columns=columns, keep_on_error=keep_on_error
