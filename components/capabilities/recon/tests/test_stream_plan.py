@@ -123,6 +123,14 @@ class TestEveryProblemHasAPathAndAFix:
 
         assert "collectors.0.window" in _problems(plan)
 
+    def test_a_window_under_a_second_is_refused(self, plugins: Plugins) -> None:
+        """Review item 19 (Erlang): a window's end-markers are not held to the buffer's
+        bound, so a window of milliseconds would fill it with markers; a second is the floor."""
+        plan = _plan({"type": "pull", "window": {"seconds": 0.5}}, plugins)
+
+        assert "collectors.0.window.seconds" in _problems(plan)
+        assert not _problems(_plan({"type": "pull", "window": {"seconds": 1}}, plugins))
+
     def test_buffer_and_retain_without_a_stream_are_refused(self, plugins: Plugins) -> None:
         plan = _plan({"type": "once", "buffer": {"records": 5}, "retain": "all"}, plugins)
 

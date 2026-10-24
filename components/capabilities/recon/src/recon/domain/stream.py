@@ -55,12 +55,13 @@ _WINDOW_ID = re.compile(rf"^(\d{{{WINDOW_INDEX_DIGITS},}})-(.+)$")
 
 class WindowSpec(BaseModel):
     """``window:`` on a collector entry: what ends each window, the first of these reached.
-    ``seconds`` (a number of seconds, as ``deadline:`` is) from the window's open; ``records``
-    records; ``bytes`` bytes of records. At least one."""
+    ``seconds`` (a number of seconds, as ``deadline:`` is, at least 1: each window's end is an
+    event in the buffer outside its bound, so the floor bounds those) from the window's open;
+    ``records`` records; ``bytes`` bytes of records. At least one."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    seconds: float | None = Field(default=None, ge=1, allow_inf_nan=False)
     records: int | None = Field(default=None, ge=1)
     bytes: int | None = Field(default=None, ge=1)
 
@@ -101,7 +102,7 @@ class RetainSpec(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     windows: int | None = Field(default=None, ge=1)
-    seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    seconds: float | None = Field(default=None, ge=1, allow_inf_nan=False)
     bytes: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
