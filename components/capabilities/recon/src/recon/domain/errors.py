@@ -79,7 +79,7 @@ EXIT_MEANINGS: dict[str, str] = {
     "kept, marked incomplete",
     "store": "the survey could not finish its archive; it is kept, marked incomplete",
     "query": "the SQL failed, or reached outside the mission's archives",
-    "busy": "another recon is writing the stream; one writes a stream at a time",
+    "busy": "another recon is writing the stream, or surveying the mission",
     "interrupted": "Ctrl-C or SIGTERM stopped the command; a survey's archive reads `ended: "
     "stopped` (a stopped `recon stream` exits 0)",
 }
@@ -101,8 +101,8 @@ EXIT_NEXT: dict[str, str] = {
     "store": "free space where the archive is, or make it writable, then survey again",
     "query": "correct the SQL as the error's `fix` says; for a missing table, it names the "
     "tables there are",
-    "busy": "let that stream run, or stop its writer as the `fix` says (`kill -TERM <pid>`, "
-    "the pid in `details`, seals its window), then stream again",
+    "busy": "let it run, or stop it as the `fix` says (`kill -TERM <pid>`, the pid in "
+    "`details`), then run the command again",
     "interrupted": "run the command again",
 }
 

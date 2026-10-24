@@ -15,6 +15,8 @@
     <mission>/streams/<stream>/
       writer.lock             locked by the stream's one writer while it runs, holding its
                               pid (so a writer refused is told whose); kept, emptied
+    <mission>/writer.lock     locked by the mission's one survey while it runs, holding its
+                              pid, as a stream's is; kept, emptied
       <window id>/            each window, an archive as above, of one table
       retired.jsonl           a line for each window retain: removed: what, and why
 
@@ -34,6 +36,11 @@ stream reads that directory alone. A window's id starts with its index
 ``flock`` on its ``writer.lock``, which stays when it is let go, so no two writers ever hold
 two files of one name), so the index it gives each new window is one no other writer gives.
 The stream is ``writing`` while that lock is held, and otherwise reads as its last window.
+
+**One survey a mission.** A survey holds the mission's own ``writer.lock`` the same way from
+before it writes anything until it returns (:meth:`ArchiveFiles.hold_mission`), so two surveys
+of one mission, two scheduled ticks that overlap among them, never write two archives from
+the same moment of their sources.
 
 **Reading as it is written.** :meth:`ArchiveFiles.read_since` reads each table's file from a
 byte offset to its last whole line, the live ``.tmp`` of a table being written included, and
@@ -145,6 +152,9 @@ class ArchiveFiles:
         self._held: dict[Path, int] = {}
         #: The lock held on each stream this store is extending, by its directory.
         self._streams: dict[Path, int] = {}
+        #: The lock held on each mission a survey through this store is writing, by its
+        #: directory.
+        self._missions: dict[Path, int] = {}
 
     def create(self, mission_dir: Path, archive_id: str, *, stream: str | None = None) -> Path:
         home = mission_dir / "archive" if stream is None else _stream_dir(mission_dir, stream)
@@ -196,7 +206,7 @@ class ArchiveFiles:
         if directory in self._streams:
             return
         try:
-            descriptor = _hold(directory / WRITER_LOCK)
+            descriptor = _hold_naming_pid(directory / WRITER_LOCK)
         except OSError as exc:
             pid = _holder(directory / WRITER_LOCK)
             if pid == os.getpid():
@@ -214,17 +224,39 @@ class ArchiveFiles:
                 fix=stop,
                 details={"stream": stream} | ({} if pid is None else {"pid": pid}),
             ) from exc
-        # The holder's pid, so a writer refused can name it; cleared before it lets go.
-        os.ftruncate(descriptor, 0)
-        os.pwrite(descriptor, f"{os.getpid()}\n".encode(), 0)
         self._streams[directory] = descriptor
 
     def release_stream(self, mission_dir: Path, stream: str) -> None:
-        descriptor = self._streams.pop(_stream_dir(mission_dir, stream), None)
-        if descriptor is not None:
-            with contextlib.suppress(OSError):
-                os.ftruncate(descriptor, 0)  # no pid of a writer that has let go
-            os.close(descriptor)  # closing releases the lock; the file stays
+        _let_go(self._streams.pop(_stream_dir(mission_dir, stream), None))
+
+    def hold_mission(self, mission_dir: Path) -> None:
+        lock = mission_dir / WRITER_LOCK
+        try:
+            if mission_dir in self._missions:  # a survey's hold is that survey's alone
+                raise BlockingIOError(lock)
+            make_dirs(mission_dir)
+            descriptor = _hold_naming_pid(lock)
+        except OSError as exc:
+            pid = _holder(lock)
+            if pid == os.getpid():
+                stop = "this process is surveying it now: survey again once that survey returns"
+            elif pid is not None:
+                stop = (f"let it run, or stop it: kill -TERM {pid} (its pid) stops it, its "
+                        "archive reading ended: stopped; then survey again")  # fmt: skip
+            else:
+                stop = (f"let it run (`recon status {mission_dir.name}` shows its archive "
+                        "writing), then survey again")  # fmt: skip
+            raise ReconError(
+                f"another recon is surveying mission {mission_dir.name}; a mission has one "
+                "survey at a time",
+                kind="busy",
+                fix=stop,
+                details={"mission": mission_dir.name} | ({} if pid is None else {"pid": pid}),
+            ) from exc
+        self._missions[mission_dir] = descriptor
+
+    def release_mission(self, mission_dir: Path) -> None:
+        _let_go(self._missions.pop(mission_dir, None))
 
     def stream_state(self, mission_dir: Path, stream: str) -> ArchiveState | None:
         if _locked(_stream_dir(mission_dir, stream) / WRITER_LOCK):
@@ -821,9 +853,26 @@ def _hold(path: Path) -> int:
     return descriptor
 
 
+def _hold_naming_pid(path: Path) -> int:
+    """Hold the lock on ``path`` (:func:`_hold`) and write this process's pid in it, so one
+    refused can name the holder; :func:`_let_go` clears it before letting go."""
+    descriptor = _hold(path)
+    os.ftruncate(descriptor, 0)
+    os.pwrite(descriptor, f"{os.getpid()}\n".encode(), 0)
+    return descriptor
+
+
+def _let_go(descriptor: int | None) -> None:
+    """Let go of a lock :func:`_hold_naming_pid` took, its pid cleared; the file stays."""
+    if descriptor is not None:
+        with contextlib.suppress(OSError):
+            os.ftruncate(descriptor, 0)  # no pid of a writer that has let go
+        os.close(descriptor)  # closing releases the lock
+
+
 def _holder(path: Path) -> int | None:
-    """The pid the holder of a stream's lock wrote in it, when it is a process alive on this
-    host; None when it has not written it yet, or the file says something else."""
+    """The pid the holder of a stream's or a mission's lock wrote in it, when it is a process
+    alive on this host; None when it has not written it yet, or the file says something else."""
     try:
         said = path.read_text().strip()
     except OSError:

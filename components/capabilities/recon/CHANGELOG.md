@@ -4,6 +4,7 @@
 
 ### Changed: schedules and the mission lock (round 4, S and A2)
 
+- **One survey of a mission at a time** (ruling S2): a survey holds the mission's `writer.lock` (`.recon/<mission>/writer.lock`, an `flock` holding its pid, as a stream's does) from before it writes anything until it returns, so a second survey of the mission, by hand or a scheduled tick, is refused `busy` (11), its `details` naming the `mission` and the holder's `pid` and its fix how to stop it. Only a stream refused a second writer before; two overlapping surveys each wrote an archive from the same sources. A dry run holds nothing. `busy`'s meaning and next step now cover a survey too. The `ArchiveStore` port gains `hold_mission` and `release_mission`.
 - **What recon writes for a mission is private** (ruling A2): each directory it makes under `.recon/` is `0700` and each file `0600` (the config, tables, `meta.yaml`, the event and capture logs, capture bodies, locks, tombstones), set as each is made, whatever the umask. They were `0755` and `0644` under the usual umask. A directory made before keeps its mode.
 
 ## 0.13.0 — 2026-10-24

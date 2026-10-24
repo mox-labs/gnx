@@ -276,7 +276,8 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
     (marked incomplete); the exit code says what to do about the failures. A mission with
     streams runs one window of each stream, in turn, after its snapshot tables, each up to
     its window: (300 s by default): --dry-run says when the survey returns at the latest,
-    as survey.returns.
+    as survey.returns. One survey of a mission runs at a time: a second, started while one
+    runs, exits 11 (busy) before it writes anything, naming the first one's pid.
 
     \b
     recon survey my-scan --dry-run

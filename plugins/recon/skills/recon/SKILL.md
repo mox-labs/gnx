@@ -106,7 +106,7 @@ Act on the exit code, then on the error's `fix`:
 | 8 | `run_failed` | a table failed, and not only on credentials or transiently; the archive is kept, marked incomplete | read each failed table's error and fix its cause, then plan and survey again |
 | 9 | `store` | the survey could not finish its archive; it is kept, marked incomplete | free space where the archive is, or make it writable, then survey again |
 | 10 | `query` | the SQL failed, or reached outside the mission's archives | correct the SQL as the error's `fix` says; for a missing table, it names the tables there are |
-| 11 | `busy` | another recon is writing the stream; one writes a stream at a time | let that stream run, or stop its writer as the `fix` says (`kill -TERM <pid>`, the pid in `details`, seals its window), then stream again |
+| 11 | `busy` | another recon is writing the stream, or surveying the mission | let it run, or stop it as the `fix` says (`kill -TERM <pid>`, the pid in `details`), then run the command again |
 | 130 | `interrupted` | Ctrl-C or SIGTERM stopped the command; a survey's archive reads `ended: stopped` (a stopped `recon stream` exits 0) | run the command again |
 
 A survey whose tables failed exits 6 if any failed on credentials, 5 if every failure was transient, else 8 (`run_failed`). One whose archive could not be finished (a full disk) exits 9 (`store`) whatever its tables did, an `archive_unfinished` warning saying why. The error is this envelope, on one line:

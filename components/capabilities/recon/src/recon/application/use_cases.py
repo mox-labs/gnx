@@ -338,9 +338,28 @@ class Recon:
         Each table written that SQL cannot read is a ``table_unreadable`` warning, so it is
         found here rather than by the first query. An entry that is a stream runs one window,
         sealed when it ends (``windows``), after the snapshot tables, in config order: the
-        dirt road of a stream, a survey run from cron."""
+        dirt road of a stream, a survey run from cron. The mission is held while it runs, so
+        a second survey of it is refused ``busy`` before it writes anything."""
         source, plan, copy_to = self._prepare(name, config, replace)
         assert plan.config is not None  # _prepare raises on an invalid plan
+        mission = self._missions.mission_dir(name)
+        # One survey a mission at a time, from before it writes anything until it returns.
+        self._archives.hold_mission(mission)
+        try:
+            return self._survey(name, source, plan, copy_to, on_event)
+        finally:
+            self._archives.release_mission(mission)
+
+    def _survey(
+        self,
+        name: str,
+        source: ConfigFile,
+        plan: Plan,
+        copy_to: Path | None,
+        on_event: EventCallback | None,
+    ) -> SurveyDocument:
+        """:meth:`survey`, the mission held and its plan valid."""
+        assert plan.config is not None
         caller = on_event
         emit = on_event or (lambda event: None)
         streams = {stream.index for stream in plan.streams}
