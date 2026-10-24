@@ -308,6 +308,35 @@ A stream runs for as long as it is told to, so what it reaches, it reaches for t
 - **One writer a stream**: a second `recon stream` of the same stream is refused
   (`busy`) by an `flock` held for the run, so two processes never write one window id.
 
+### 11. A schedule → the operating system's scheduler (`recon schedule`)
+
+A schedule runs a mission's config with nobody watching, every tick, for as long as it is
+installed: the config's commands (boundary 1) and servers (boundary 8) included. That makes
+the config a persistence vector, and the scheduler's files a place a secret could be left.
+
+- **The config a tick runs is the one installed.** `install` records the config's sha256
+  in the scheduler's file, as the tick's `--config-sha256`; a tick whose config has another
+  refuses to run (`conflict`, logged) until `recon schedule install` runs again. A change to
+  a scheduled config, by hand, by an agent or by a merge, is read before it runs.
+- **What the files hold**: recon by the absolute path of the installation that installed
+  it, as an argument list (cron alone hands its line to `/bin/sh`: each argument is quoted
+  whole), the mission's name (checked as every mission name is), the absolute project, and
+  an explicit `PATH`: the installer's, kept to absolute directories that exist and that no
+  other user can write. Nothing else of the environment: no secret, no
+  `OTEL_EXPORTER_OTLP_HEADERS`. launchd's and cron's output go to `/dev/null`.
+- **Where they go**: the user's own domain alone (`~/Library/LaunchAgents`, the user's
+  systemd units, the user's crontab, in recon's marked block, every other line kept), each
+  file `0600`. No LaunchDaemon, system unit, `/etc/cron.d` or sudo.
+- **Credentials**: a tick has the scheduler's environment, not your shell's, so a
+  variable `auth.env` names is unset in it. Give it a form a tick resolves itself (an `mcp`
+  source's `token: file:PATH`, a `headers_helper`), never a secret in the config.
+- **Two ticks never overlap**: each survey holds the mission's lock; a tick that finds it
+  held is skipped and logged (`busy`).
+
+What this does **not** do: anything about who may write the config before it is
+installed, or about the scheduler's own files being changed by hand afterwards (`recon
+schedule status` reads such a schedule `installed: false`).
+
 ## Findings
 
 ### R-1 — generator cleanup silenced to satisfy the type checker (fixed 2026-08-17)

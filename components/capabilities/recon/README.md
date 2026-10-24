@@ -76,6 +76,11 @@ recon watch <mission> [--archive <id>] [--cursor <c>] [--interval <s>]
                                                        follow an archive as a survey writes it
 recon templates                                        list built-in templates
 recon capture <mission>                                append a hook payload (stdin) as a capture
+recon schedule install|remove <mission> [--platform <p>]
+                                                       run a mission by the OS scheduler,
+                                                       as its schedule: says; or stop it
+recon schedule list|status [<mission>]                what is installed; each schedule's
+                                                       last tick, lateness and skips
 recon --skill [-r <reference>]                         print the skill (for Claude)
 ```
 
@@ -164,6 +169,7 @@ A span that failed has `status: error`, a `message` in recon's own words that qu
 - **Not an agent.** Recon doesn't use an LLM during execution. It runs the config you wrote. Intelligence lives outside the tool.
 - **Not a research autopilot.** Recon produces structured data; synthesis stays with Claude and with the human.
 - **Not a message bus.** A survey asks each source what its mission says, writes the answers into one timestamped archive, and ends. A source that does not end is collected as a stream, into windows each sealed as an archive (`recon stream`), and a stream runs one window unless told otherwise. What either writes can be read while it is written (`recon watch`, `recon watch --stream`, `recon.read_since`), as the archives' own files; recon pushes nothing to subscribers.
+- **Not a scheduler.** A mission's `schedule:` is kept by the operating system's own scheduler (launchd, systemd's user timers, or cron), onto which `recon schedule install` projects it; there is no recon daemon. Each tick is one survey, held to the config that was installed (`recon --skill -r schedules`).
 
 ## Design
 
@@ -193,9 +199,10 @@ The tests run offline, except the live integration tests against OpenAlex, arXiv
 - [docs/reference/telemetry.md](docs/reference/telemetry.md) — the event log, the spans and attributes, exporting through OpenTelemetry, and its warnings
 - [docs/reference/live-reading.md](docs/reference/live-reading.md) — `recon watch`, `read_since` and archive states: the contract, the defaults, the refusals
 - [docs/reference/streaming.md](docs/reference/streaming.md) — streams: `window:`, `buffer:`, `retain:`, the `tail` and `sse` types, `recon stream`, `--stream`; every default and refusal
+- [docs/reference/schedules.md](docs/reference/schedules.md) — schedules: `schedule:`, `recon schedule install`, `list`, `remove`, `status` and `tick`, what is projected onto launchd, systemd and cron, the tick's log; every default and refusal
 - [docs/design/2026-10-19-record.md](docs/design/2026-10-19-record.md) — the design judgments behind 0.11.0 and 0.12.0, and recon's claims
 - [CHANGELOG.md](CHANGELOG.md)
-- `recon --skill` — the skill Claude uses to author missions; `-r normalize-spec`, `-r config-patterns`, `-r capture-format`, `-r live-reading`, `-r streaming`, `-r telemetry` for the references. The plugin's copy is generated from it (`just recon-skill`).
+- `recon --skill` — the skill Claude uses to author missions; `-r normalize-spec`, `-r config-patterns`, `-r capture-format`, `-r live-reading`, `-r streaming`, `-r schedules`, `-r telemetry` for the references. The plugin's copy is generated from it (`just recon-skill`).
 
 ## License
 

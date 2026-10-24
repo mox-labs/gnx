@@ -183,6 +183,29 @@ def test_the_streaming_page_is_the_skill_reference() -> None:
         assert taught in REFERENCES["streaming"], taught
 
 
+def test_the_schedules_page_is_the_skill_reference() -> None:
+    """Schedules are taught in full by ``recon --skill -r schedules``, and the skill points
+    there in one line; one text with its docs page, as streaming's is. An agent reading it
+    learns the key, each command and flag, each default, every refusal and its fix, and that
+    a tick's credentials are not its shell's."""
+    page = PACKAGE / "docs" / "reference" / "schedules.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    assert page.read_text(encoding="utf-8") == REFERENCES["schedules"]
+    assert "recon --skill -r schedules" in SKILL or "| `schedules` |" in SKILL
+    taught = REFERENCES["schedules"]
+    for said in ("every", "missed", "once", "skip", "0.8 × `every`", "provenance", "--platform",
+                 "launchd", "systemd", "cron", "Persistent=true", "/dev/null", "0600",
+                 "--config-sha256", "conflict", "busy", "schedule_overrun", "config_changed",
+                 "missed_ignored", "schedule.log", "skipped_by", "late_s", "scheduled_at",
+                 "installed", "unchanged", "replaced", "removed", "absent", "next_at",
+                 "last_tick", "skips", "env_unset", "1 MiB"):  # fmt: skip
+        assert said in taught, said
+    for name in ("schedule_install", "schedule_list", "schedule_remove", "schedule_status",
+                 "schedule_tick"):  # fmt: skip
+        assert f"recon.{name}(" in taught and hasattr(recon, name), name
+
+
 def test_the_skill_says_how_long_a_stream_holds_the_command() -> None:
     """Polish R3 (Ace 1-2): an agent reading only the skill learns that a stream's window,
     300 s by default, can outlast its tool call, that the dry run says when the run returns,

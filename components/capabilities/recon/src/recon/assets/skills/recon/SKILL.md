@@ -235,3 +235,4 @@ Each prints with `recon --skill -r <name>`:
 | `telemetry` | the event log, every span and attribute, exporting through OpenTelemetry |
 | `streaming` | stream keys, defaults, refusals; `tail`, `sse`; `--stream` |
 | `live-reading` | `recon watch` and `recon.read_since`: archive states, sealing, the cursor, every flag, default and refusal |
+| `schedules` | `schedule:`, `recon schedule` and its ticks: defaults, refusals, the log |
