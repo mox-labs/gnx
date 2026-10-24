@@ -316,15 +316,18 @@ class Arrivals:
             self.abandon(into=self._writing)
             return True
 
-    def abandon(self, into: int | None = None) -> None:
+    def abandon(self, into: int | None = None) -> int:
         """Stop the stream at once, as a second signal or a failure does: nothing more is
         admitted or written, and what waits is dropped, its stream's end the one event left.
         With ``into``, the window being written (or about to be), what later windows that will
         never be written held (the records admitted to them, their refusals, their gaps) is
         counted there, so nothing admitted goes uncounted; that window's own records that
-        waited are admitted to it, so its seal counts them dropped."""
+        waited are admitted to it, so its seal counts them dropped. Without it, what every
+        window not sealed held is discarded, and how many records that was is returned for
+        the caller to count (with ``into``, none is)."""
         with self._cond:
             self._admitting = False
+            discarded = 0
             if into is not None:
                 ledger = self._ledger(into)
                 for later in sorted(w for w in self._ledgers if w > into):
@@ -332,10 +335,14 @@ class Arrivals:
                     ledger.refused += gone.admitted + gone.refused
                     ledger.dropped += gone.admitted + gone.refused
                     ledger.gaps += gone.gaps
+            else:
+                discarded = sum(gone.admitted + gone.refused for gone in self._ledgers.values())
+                self._ledgers.clear()
             self._events.clear()
             self._events.append(_End("signal", self._clock.monotonic()))
             self._records = self._bytes = 0
             self._cond.notify_all()
+            return discarded
 
     def ledger(self, window: int) -> _Ledger:
         """What window ``window``'s arrivals came to, taken out: called once it is sealed, so
@@ -603,7 +610,9 @@ class Stream:
             if stop is not None and listener is not None:
                 stop.end()
                 listener.join(self._stop_s)
-            arrivals.abandon()
+            # Every way the loop returns stops admitting first, so this is none then; what
+            # it is counts dropped, so nothing that arrived goes uncounted.
+            dropped += arrivals.abandon()
             close()
             pump.join(self._stop_s)
             if pump.is_alive():

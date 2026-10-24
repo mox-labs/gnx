@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 from recon.adapters._out.archive_files import ArchiveFiles
-from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun
+from recon.application.stream import Arrivals, Stream, StreamGaps, StreamPlan, StreamRun
 from recon.domain.models import CollectorEntry
 from recon.domain.stream import (
     POSITION_FIELD,
@@ -556,6 +556,30 @@ class TestAStopAsked:
 
         assert [o.closed_by for o in outcomes] == ["signal"]
         assert run.records == 0
+
+
+class TestWhatTheEndOfARunDiscardsIsCounted:
+    """Review item 20 (Erlang): the end of a run abandons the buffer without a window to count
+    what it held in, so it says how much that was, and the run counts it dropped. Every way
+    a run returns stops admitting first, so it is none there; it is the buffer's answer that
+    is held to."""
+
+    def test_abandon_says_what_it_discarded(self) -> None:
+        clock = VirtualClock()
+        arrivals = Arrivals(clock, Windowing(WindowSpec(records=2), 0.0), BufferSpec(), "block")
+        for n in range(3):  # two in window 0, one in window 1
+            arrivals.put(json.dumps({"seq": n}).encode())
+
+        assert arrivals.abandon() == 3
+
+    def test_abandon_into_a_window_discards_nothing_uncounted(self) -> None:
+        clock = VirtualClock()
+        arrivals = Arrivals(clock, Windowing(WindowSpec(records=2), 0.0), BufferSpec(), "block")
+        for n in range(3):
+            arrivals.put(json.dumps({"seq": n}).encode())
+
+        assert arrivals.abandon(into=0) == 0
+        assert arrivals.ledger(0).refused == 1, "window 1's record, counted in window 0"
 
 
 class TestTheMetaIsTheSealedFile:
