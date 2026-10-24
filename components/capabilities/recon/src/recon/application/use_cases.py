@@ -17,7 +17,7 @@ from recon.application.captures import record_hook_payload
 from recon.application.collectors import declared_env
 from recon.application.plan import Plan, build_plan, fan_out, plugin_warning
 from recon.application.survey import EventCallback, Survey
-from recon.domain.archives import ARCHIVE_ID_FORMAT
+from recon.domain.archives import ARCHIVE_ID_FORMAT, READ_LIMIT
 from recon.domain.deadline import Deadline
 from recon.domain.documents import (
     ArchiveStatus,
@@ -29,6 +29,7 @@ from recon.domain.documents import (
     PlanDocument,
     PlanWrites,
     QueryRows,
+    RecordsSince,
     Required,
     StatusDocument,
     SurveyDocument,
@@ -451,6 +452,33 @@ class Recon:
             rows=rows,
             count=len(rows),
             warnings=[w.document() for w in result.warnings + _dropped(telemetry)],
+        )
+
+    def read_since(
+        self,
+        name: str,
+        cursor: str | None = None,
+        *,
+        archive: str | None = None,
+        limit: int = READ_LIMIT,
+    ) -> RecordsSince:
+        """The records of the mission's latest archive, or the one named, written since
+        ``cursor`` (None: from its first), at most ``limit``. The archive's state is read
+        before its records, so a read that finds it no longer ``writing`` and returns fewer
+        than ``limit`` holds its last records."""
+        path = self._archive(name, archive)
+        state = self._archives.state(path)
+        read = self._archives.read_since(path, cursor, limit=limit)
+        return RecordsSince(
+            mission=name,
+            archive=str(path),
+            archive_id=path.name,
+            state=_STATES[state],
+            records=[{"table": r.table, "record": r.record} for r in read.records],
+            count=len(read.records),
+            cursor=read.cursor,
+            sealed=read.sealed,
+            retracted=read.retracted,
         )
 
     def _archive(self, name: str, archive_id: str | None) -> Path:

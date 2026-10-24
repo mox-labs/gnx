@@ -215,6 +215,34 @@ class QueryRows(Document):
     warnings: list[dict[str, Any]]
 
 
+class RecordsSince(Document):
+    """What one read of an archive found: the records written since the cursor it was given,
+    and the cursor to read on from. A survey writing the archive is followed by reading again
+    with ``cursor`` until ``state`` is no longer ``writing`` and a read returns fewer records
+    than its limit: ``state`` is read before the records, so such a read holds the last of
+    them."""
+
+    schema_: Literal["recon.v1.records-since"] = Field(
+        default="recon.v1.records-since", alias="schema"
+    )
+    mission: str
+    #: The archive read: its directory, and its id (``--archive``), which a later read with
+    #: ``cursor`` names again.
+    archive: str
+    archive_id: str
+    state: ArchiveState
+    #: ``{"table", "record"}`` each, table by table in output-name order, each table's in the
+    #: order written. A table not yet ``sealed`` may still be retracted.
+    records: list[dict[str, Any]]
+    count: int
+    #: Opaque: pass it, unchanged, to the next read of the same archive.
+    cursor: str
+    #: Tables whose last record is now read: they gain no more.
+    sealed: list[str]
+    #: Tables that failed after records of theirs were read: those records are void.
+    retracted: list[str]
+
+
 class TemplateInfo(Document):
     name: str
     description: str

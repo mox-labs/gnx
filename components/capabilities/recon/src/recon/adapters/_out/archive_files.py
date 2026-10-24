@@ -23,6 +23,13 @@ reads ``writing``; one with an unlocked ``writer.lock`` and neither of the other
 a writer that died while making it, and reads ``incomplete``. Whether a writer is alive is
 known on its own host only.
 
+**Reading as it is written.** :meth:`ArchiveFiles.read_since` reads each table's file from a
+byte offset to its last whole line, the live ``.tmp`` of a table being written included, and
+hands back a cursor: the offset reached in each table, and which tables it has told sealed,
+as base64url JSON naming the archive. Only this store reads it; the ``.tmp`` path never
+leaves it. A table this cursor read from whose file is gone, with no sealed file in its
+place, failed and was retracted.
+
 A table is written to ``<output>.jsonl.tmp`` and renamed to ``<output>.jsonl`` when it
 ends; a table that fails is retracted, its ``.tmp`` removed. While it is written, its lines
 reach the ``.tmp`` whole, at most 64 KiB or 250 ms after they are given (:class:`_Lines`),
@@ -42,6 +49,8 @@ message}``).
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import fcntl
 import json
@@ -54,9 +63,16 @@ import yaml
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.event_log import EventLog
-from recon.domain.archives import ARCHIVE_ID_FORMAT, EVENT_LOG_NAME, StoredTable, WriteState
+from recon.domain.archives import (
+    ARCHIVE_ID_FORMAT,
+    EVENT_LOG_NAME,
+    NewRecords,
+    StoredTable,
+    TableRecord,
+    WriteState,
+)
 from recon.domain.capture import CAPTURE_LOG_NAME
-from recon.domain.errors import QueryError
+from recon.domain.errors import QueryError, UsageError
 from recon.domain.type_url import DEFAULT_RECORDS_TYPE_URL
 
 if TYPE_CHECKING:
@@ -196,6 +212,35 @@ class ArchiveFiles:
             }
         return {**raw, "tables": [t for t in raw.get("tables") or [] if isinstance(t, dict)]}
 
+    def read_since(self, archive: Path, cursor: str | None, *, limit: int) -> NewRecords:
+        if limit < 1:
+            raise UsageError(
+                f"a read's limit is the most records it returns, 1 or more; got {limit}",
+                fix="read with a limit of 1 or more, or leave it at its default",
+            )
+        positions = _decode(cursor, archive)
+        files = dict(_table_files(archive))
+        records: list[TableRecord] = []
+        sealed: list[str] = []
+        retracted = [n for n, (_, told) in positions.items() if not told and n not in files]
+        for name, path in files.items():
+            offset, told = positions.get(name, (0, False))
+            if told or len(records) >= limit:
+                continue
+            read = _read_table(path, name, offset, limit - len(records))
+            if read is None:  # its .tmp went between listing and opening, and no table came
+                if name in positions:
+                    retracted.append(name)
+                continue
+            lines, positions[name], ended = read
+            records += [TableRecord(name, json.loads(line)) for line in lines]
+            if ended:
+                positions[name] = (positions[name][0], True)
+                sealed.append(name)
+        for name in retracted:
+            positions.pop(name, None)
+        return NewRecords(records, _encode(archive, positions), sealed, sorted(retracted))
+
     def tables(self, archive: Path) -> list[StoredTable]:
         layout = self._table_layout(archive)
         if layout != TABLE_LAYOUT:
@@ -327,6 +372,108 @@ def _table_files(archive: Path) -> list[tuple[str, Path]]:
         elif path.name.endswith(_LIVE):
             found.setdefault(path.name.removesuffix(_LIVE), path)
     return sorted(found.items())
+
+
+#: A cursor's format, which the cursor names: one this store does not know is refused.
+_CURSOR_FORMAT = 1
+
+
+def _encode(archive: Path, positions: dict[str, tuple[int, bool]]) -> str:
+    """The cursor at ``positions``: each table's offset, and whether it was told sealed."""
+    body = {
+        "format": _CURSOR_FORMAT,
+        "archive": archive.name,
+        "tables": {name: [offset, told] for name, (offset, told) in sorted(positions.items())},
+    }
+    text = json.dumps(body, separators=(",", ":"))
+    return base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
+
+
+def _decode(cursor: str | None, archive: Path) -> dict[str, tuple[int, bool]]:
+    """The positions ``cursor`` holds; none for no cursor. Raises UsageError for a cursor
+    this store did not give, or gave for another archive."""
+    if cursor is None:
+        return {}
+    try:
+        body = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+    except (ValueError, binascii.Error):
+        body = None
+    tables = body.get("tables") if isinstance(body, dict) else None
+    if (
+        not isinstance(body, dict)
+        or body.get("format") != _CURSOR_FORMAT
+        or not isinstance(body.get("archive"), str)
+        or not isinstance(tables, dict)
+        or not all(_is_position(position) for position in tables.values())
+    ):
+        raise UsageError(
+            "the cursor is not one recon gave: pass on the cursor the last read returned, "
+            "unchanged",
+            fix="read without a cursor to start from the archive's first record",
+        )
+    if body["archive"] != archive.name:
+        raise UsageError(
+            f"the cursor is for archive {body['archive']}, not {archive.name}",
+            fix=f"read archive {body['archive']} with it (--archive {body['archive']}), or "
+            f"read {archive.name} without a cursor",
+            details={"archive": archive.name, "cursor_archive": body["archive"]},
+        )
+    return {str(name): (int(offset), bool(told)) for name, (offset, told) in tables.items()}
+
+
+def _is_position(position: Any) -> bool:
+    return (
+        isinstance(position, list)
+        and len(position) == 2
+        and isinstance(position[0], int)
+        and not isinstance(position[0], bool)
+        and position[0] >= 0
+        and isinstance(position[1], bool)
+    )
+
+
+def _read_table(
+    path: Path, output: str, offset: int, limit: int
+) -> tuple[list[bytes], tuple[int, bool], bool] | None:
+    """Up to ``limit`` whole lines of the table ``output`` from ``offset``; the offset after
+    them; and whether the table is sealed and read to its end. None when a table being
+    written went before it was opened, with no sealed file in its place: it was retracted."""
+    candidates = [path] if not path.name.endswith(_LIVE) else [path, path.with_suffix("")]
+    for candidate in candidates:
+        try:
+            f = open(candidate, "rb")  # noqa: SIM115 - closed below, after a choice of files
+        except FileNotFoundError:
+            continue
+        with f:
+            sealed = not candidate.name.endswith(_LIVE)
+            size = os.fstat(f.fileno()).st_size
+            if offset > size:
+                raise UsageError(
+                    f"the cursor is past the end of table {output}: it is not this archive's",
+                    fix="read without a cursor to start from the archive's first record",
+                )
+            if sealed and offset == 0 and _empty_table_columns(candidate) is not None:
+                return [], (size, False), True  # an empty table: its one line is no record
+            f.seek(offset)
+            lines: list[bytes] = []
+            while len(lines) < limit:
+                line = f.readline()
+                if not line.endswith(b"\n"):
+                    break  # the end, or a line not yet whole
+                if not sealed and offset == 0 and _is_empty_sentinel(line):
+                    break  # the table is about to be sealed empty: read it once it is
+                lines.append(line)
+                offset += len(line)
+            return lines, (offset, False), sealed and offset == size
+    return None
+
+
+def _is_empty_sentinel(line: bytes) -> bool:
+    try:
+        parsed = json.loads(line)
+    except ValueError:
+        return False
+    return isinstance(parsed, dict) and parsed.get("_empty") is True
 
 
 def _hold(path: Path) -> int:

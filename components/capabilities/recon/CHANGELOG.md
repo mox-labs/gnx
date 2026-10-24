@@ -7,6 +7,10 @@
 - **An archive's `state` can be `writing`.** `status` (each archive's `state`) and `query` (the document's `state`) say `writing` while a survey writes the archive, where they said `incomplete`, so a consumer that matched on `ok` and `incomplete` alone meets a third value. The survey holds an `flock` on `writer.lock` in the archive while it writes and removes it when done, so `incomplete` now means the survey failed a table, was stopped or died, never that it is still running. A survey's own `status` stays `ok` or `incomplete`.
 - **The `ArchiveStore` port** (what `root(archives=...)` takes) has `state(archive)` (`writing`, `complete` or `incomplete`) and `release(archive)` in place of `is_incomplete(archive)`, and its `tables()` lists a table not yet sealed, with `StoredTable.sealed` false.
 
+### Added
+
+- **`recon.read_since(mission, cursor=None, *, archive=None, limit=1000)`** follows an archive while a survey writes it. It returns `recon.v1.records-since`: the whole records written since the cursor, from sealed tables and the one being written, at most `limit`; the archive's `state`; the tables `sealed` and `retracted` since, each told once; and the opaque `cursor` to read on from. A cursor recon did not give for that archive, or a `limit` below 1, is a `usage` error with a fix.
+
 ### Changed
 
 - **`query` reads only sealed tables.** A query of an archive being written sees the tables finished so far; the one being written is not a table yet, and the human output warns that the archive is being written.

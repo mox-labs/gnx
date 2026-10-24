@@ -10,7 +10,9 @@ writer stopped without finishing it (:data:`WriteState`).
 How it is stored (a directory of JSONL files) is :class:`ArchiveStore`'s decision; what
 engine answers SQL over it, and the sandbox that engine runs in, is :class:`ArchiveQuery`'s.
 The engine reads the tables where the store says they are (:meth:`ArchiveStore.tables`), and
-nothing else of the store's layout.
+nothing else of the store's layout. A reader that follows an archive while it is written
+reads through :meth:`ArchiveStore.read_since`, which knows where a table being written is
+and gives out only cursors, so no caller learns the store's files.
 """
 
 from __future__ import annotations
@@ -36,6 +38,11 @@ ARCHIVE_ID_FORMAT = "%Y-%m-%d-%H%M%S-%f"
 
 #: The survey's ``recon.v1.event`` lines, beside ``meta.yaml``; never a table.
 EVENT_LOG_NAME = "telemetry.jsonl"
+
+#: The most records one read of an archive returns unless told otherwise
+#: (:meth:`ArchiveStore.read_since`): enough to keep up with a survey read once a second,
+#: few enough that a read of a large archive's start stays small.
+READ_LIMIT = 1000
 
 #: Where the writing of an archive stands. ``writing``: a survey holds it and is writing it.
 #: ``complete``: its survey finished it with every table. ``incomplete``: no survey holds it
@@ -74,6 +81,31 @@ class StoredTable:
     empty: bool = False
     columns: tuple[str, ...] = ()
     sealed: bool = True
+
+
+@dataclass(frozen=True)
+class TableRecord:
+    """One record of one of an archive's tables, by the table's output name."""
+
+    table: str
+    record: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class NewRecords:
+    """What :meth:`ArchiveStore.read_since` read: the records written since the cursor it
+    was given, in whole, and the cursor to read on from.
+
+    ``cursor`` is opaque: only the store that gave it reads it. ``sealed`` names each table
+    whose last record is now read (it gains no more), and ``retracted`` each table this
+    cursor had read from that failed, so the records read from it are void. Each table is
+    told sealed or retracted once along a chain of cursors.
+    """
+
+    records: list[TableRecord]
+    cursor: str
+    sealed: list[str] = field(default_factory=list)
+    retracted: list[str] = field(default_factory=list)
 
 
 class ArchiveStore(Protocol):
@@ -137,6 +169,14 @@ class ArchiveStore(Protocol):
         """``meta.yaml`` in the current format, whichever format it was written in; one
         from a newer recon as written, for the reader to take the fields it knows.
         ``format_version`` is None when it is missing or unreadable."""
+        ...
+
+    def read_since(self, archive: Path, cursor: str | None, *, limit: int) -> NewRecords:
+        """The records of ``archive`` written since ``cursor`` (None: from the start), at
+        most ``limit`` of them, whole records only, from its sealed tables and the ones being
+        written alike, table by table in output-name order. Fewer than ``limit`` means the
+        read caught up. Raises UsageError for a cursor this store did not give for this
+        archive, and for a ``limit`` below 1."""
         ...
 
     def tables(self, archive: Path) -> list[StoredTable]:

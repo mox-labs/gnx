@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from recon.domain.archives import READ_LIMIT
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
@@ -24,6 +26,7 @@ if TYPE_CHECKING:
         MissionDocument,
         PlanDocument,
         QueryRows,
+        RecordsSince,
         StatusDocument,
         SurveyDocument,
         TemplatesDocument,
@@ -99,6 +102,27 @@ def query(
     """Rows from the latest archive of ``name``, or the archive named (an id ``status(name)``
     lists). ``recon.v1.query-rows``, naming the archive as ``archive_id``."""
     return _root(root).query(name, sql, archive=archive)
+
+
+def read_since(
+    name: str,
+    cursor: str | None = None,
+    *,
+    archive: str | None = None,
+    limit: int = READ_LIMIT,
+    root: Path | None = None,
+) -> RecordsSince:
+    """The records of the latest archive of ``name``, or the archive named, written since
+    ``cursor``: every record from the first when there is none. ``recon.v1.records-since``.
+
+    Each read returns whole records only, at most ``limit``, from the tables sealed and the
+    one being written alike, and a ``cursor`` to pass to the next read of the same archive
+    (name it with ``archive``: its ``archive_id``). The cursor is opaque. ``state`` says
+    whether a survey is still writing the archive; ``sealed`` and ``retracted`` name the
+    tables that ended since, a retracted table's records void. Reads write nothing, so a
+    reader changes no byte of the archive. Raises UsageError for a cursor recon did not give
+    for that archive, or a ``limit`` below 1."""
+    return _root(root).read_since(name, cursor, archive=archive, limit=limit)
 
 
 def configure_telemetry() -> list[Problem]:
