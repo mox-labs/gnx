@@ -90,6 +90,38 @@ def test_every_directory_is_0700_and_every_file_0600(tmp_path: Path, usual_umask
     assert made["dirs"] >= 8 and made["files"] >= 12, made
 
 
+def test_a_crawl_s_page_log_and_change_detection_s_files_are_0600_too(
+    tmp_path: Path, usual_umask: None
+) -> None:
+    """What pagination and change detection keep beside a table (the page log, the change
+    table, the told index) and the mission's change key are a mission's files like any other:
+    a change table holds the source's content, and the key is what keeps a hash from being
+    guessed (SECURITY.md R-17)."""
+    from tests.test_paginated_survey import PAGINATE, PagedApi
+
+    config = {
+        "catalog": [{"name": "api", "url": "https://api.test"}],
+        "collectors": [
+            {"name": "items", "type": "api", "source": "api", "endpoint": "/items",
+             "extract": "items", "paginate": PAGINATE["cursor"], "changes": {"key": ["id"]}},
+        ],
+    }  # fmt: skip
+    given = tmp_path / "mission.yaml"
+    given.write_text(yaml.safe_dump(config, sort_keys=False))
+    api = PagedApi("cursor", 5, 2)
+    recon = root({}, project=tmp_path, requester=lambda telemetry, deadline, limiter: api)
+
+    recon.init("m", config=given)
+    survey = recon.survey("m")
+
+    assert survey.status == "complete"
+    modes = _modes(tmp_path / ".recon")
+    archive = Path(survey.path).relative_to(tmp_path)
+    for name in ("items.pages.jsonl", "items.changes.jsonl", "items.keys.jsonl"):
+        assert modes[str(archive / name)] == 0o600, f"{name}: {modes[str(archive / name)]:o}"
+    assert modes[".recon/m/changes.key"] == 0o600
+
+
 class TestAMissionMadeBeforeIsWarnedAbout:
     """A mission an older recon made keeps its modes (recon never changes a path it did not
     make), so ``recon status`` says when one is open to other users, with the command that

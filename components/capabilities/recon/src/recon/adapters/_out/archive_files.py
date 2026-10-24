@@ -401,7 +401,7 @@ class ArchiveFiles:
         path = archive / f"{output}.{sidecar}.jsonl"
         tmp = path.with_suffix(".jsonl.tmp")
         try:
-            with tmp.open("w", encoding="utf-8") as f:
+            with open(open_file(tmp, os.O_WRONLY | os.O_TRUNC), "w", encoding="utf-8") as f:
                 for line in lines:
                     f.write(json.dumps(line, default=str) + "\n")
             os.replace(tmp, path)
