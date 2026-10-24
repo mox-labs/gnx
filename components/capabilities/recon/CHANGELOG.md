@@ -1,5 +1,11 @@
 # Changelog — recon
 
+## Unreleased
+
+### Changed
+
+- **A table being written is readable as it goes.** Its records reach the table's file as whole lines at most 64 KiB or 250 ms after the collector gives them, never part of a line, where they were buffered and reached it every 1000 records. Flushing to the disk stays every 1000 records. `scripts/bench_table_write.py` measures the cost: 3.6-3.9% on a 200,000-line `cli` survey, against 84-89% for a write per line.
+
 ## 0.12.0 — 2026-10-22
 
 ### Removed (breaking)

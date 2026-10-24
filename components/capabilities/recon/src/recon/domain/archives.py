@@ -77,8 +77,12 @@ class ArchiveStore(Protocol):
     ) -> int:
         """Write every record to the table ``output`` and return how many there were.
 
-        The table appears whole or not at all: on any error, including one the records
-        raise, nothing is left and the error propagates. ``records`` is closed either way.
+        While the table is written, a record is written whole or not at all: a reader of the
+        live table sees whole records, soon after each is given, and never part of one. The
+        table is sealed when this returns, and the survey's ``recon.collect`` end event says
+        how it ended. Until then its records are provisional: on any error, including one the
+        records raise, the table is retracted (nothing of it is left, the records a reader
+        already saw included) and the error propagates. ``records`` is closed either way.
         ``columns`` are the table's columns when they are known (a ``normalize:`` spec's): a
         table that collected nothing keeps them, so a query of them still binds.
         """

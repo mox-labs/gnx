@@ -11,6 +11,11 @@
                               table succeeded
       captures.jsonl, raw/    the capture log, when the mission preserves raw
 
+A table is written to ``<output>.jsonl.tmp`` and renamed to ``<output>.jsonl`` when it
+ends; a table that fails is retracted, its ``.tmp`` removed. While it is written, its lines
+reach the ``.tmp`` whole, at most 64 KiB or 250 ms after they are given (:class:`_Lines`),
+and every 1000 records are flushed to the disk.
+
 A table that collected nothing holds one sentinel line, ``{"_empty": true}``, so a reader of
 the file sees it was written; it is not a record and is not counted. When the table's
 columns are known (its collector's ``normalize:`` spec), the line keeps them as
@@ -28,6 +33,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import threading
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -57,6 +63,11 @@ EMPTY_SENTINEL: dict[str, Any] = {"_empty": True}
 #: Records written between two fsyncs: the most a crash can lose from a table being written.
 _FSYNC_EVERY = 1000
 
+#: A table's lines wait in memory until this many bytes wait, or :data:`_WRITE_SECONDS` have
+#: passed, then are written together (ruling A2's fallback, measured: see :class:`_Lines`).
+_WRITE_BYTES = 64 * 1024
+_WRITE_SECONDS = 0.25
+
 
 class ArchiveFiles:
     def __init__(self, clock: Clock) -> None:
@@ -82,20 +93,18 @@ class ArchiveFiles:
         try:
             # closing() is what runs the collector's own cleanup (a subprocess killed, a
             # client closed) when writing stops early.
-            with contextlib.closing(records), open(tmp, "w") as f:
+            with contextlib.closing(records), _Lines(tmp) as f:
                 for record in records:
                     f.write(json.dumps(record, default=str) + "\n")
                     count += 1
                     if count % _FSYNC_EVERY == 0:
-                        f.flush()
-                        os.fsync(f.fileno())
+                        f.sync()
                 if count == 0:
                     empty = (
                         {**EMPTY_SENTINEL, "_columns": list(columns)} if columns else EMPTY_SENTINEL
                     )
                     f.write(json.dumps(empty) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
+                f.sync()
             os.replace(tmp, path)
         except BaseException:
             with contextlib.suppress(OSError):
@@ -177,6 +186,82 @@ class ArchiveFiles:
         except (OSError, yaml.YAMLError):
             return TABLE_LAYOUT
         return raw.get("table_layout", 1) if isinstance(raw, dict) else TABLE_LAYOUT
+
+
+class _Lines:
+    """A file a table is written to, in whole lines: what is given waits in memory until 64
+    KiB of it is waiting or 250 ms have passed, then goes to the file in one ``write`` of
+    whole lines, so a reader of the file sees every line written by then, each whole, and no
+    part of the next, at most 250 ms late however slowly the lines come. A write the disk
+    cuts short is taken back before the error is raised. What reaches the disk itself is
+    left to :meth:`sync`.
+
+    Measured by ``scripts/bench_table_write.py`` (a 200,000-line ``cli`` survey, against the
+    buffered writer before it): one ``write`` per line cost 84-89%, past ruling A2's 5%
+    bound, so lines are batched as the ruling says to then, which cost 3.6-3.9%. A thread
+    writes what waits on time, so a collector that is slow to give its next record does not
+    hold back the last one."""
+
+    def __init__(self, path: Path) -> None:
+        self._descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        self._size = 0
+        self._waiting: list[bytes] = []
+        self._waiting_bytes = 0
+        self._lock = threading.Lock()
+        self._failed: OSError | None = None
+        self._stop = threading.Event()
+        self._timer = threading.Thread(target=self._write_on_time, name="recon-table-writer")
+        self._timer.daemon = True
+        self._timer.start()
+
+    def __enter__(self) -> _Lines:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._stop.set()
+        self._timer.join()
+        os.close(self._descriptor)
+
+    def write(self, line: str) -> None:
+        data = line.encode()
+        with self._lock:
+            if self._failed is not None:
+                raise self._failed
+            self._waiting.append(data)
+            self._waiting_bytes += len(data)
+            if self._waiting_bytes >= _WRITE_BYTES:
+                self._write_waiting()
+
+    def sync(self) -> None:
+        """Write what waits, then flush the file to the disk."""
+        with self._lock:
+            if self._failed is not None:
+                raise self._failed
+            self._write_waiting()
+            os.fsync(self._descriptor)
+
+    def _write_waiting(self) -> None:
+        """Write every waiting line in one ``write``. The lock is held."""
+        if not self._waiting:
+            return
+        data = b"".join(self._waiting)
+        self._waiting.clear()
+        self._waiting_bytes = 0
+        written = os.write(self._descriptor, data)
+        if written != len(data):
+            with contextlib.suppress(OSError):  # the error below is the one to report
+                os.ftruncate(self._descriptor, self._size)
+            raise OSError(f"wrote {written} of {len(data)} bytes of lines to the table")
+        self._size += written
+
+    def _write_on_time(self) -> None:
+        while not self._stop.wait(_WRITE_SECONDS):
+            with self._lock:
+                try:
+                    self._write_waiting()
+                except OSError as exc:  # raised to the writer at its next line
+                    self._failed = exc
+                    return
 
 
 def _is_archive_id(name: str) -> bool:

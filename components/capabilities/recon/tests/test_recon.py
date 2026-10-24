@@ -4,8 +4,10 @@ import hashlib
 import inspect
 import json
 import math
+import os
 import tempfile
 import time
+import types
 from collections.abc import Generator, Iterator
 from pathlib import Path
 from typing import Any, ClassVar, NoReturn
@@ -358,6 +360,120 @@ class TestAtomicJsonlWrite:
             # final file exists, no lingering .tmp
             assert (archive / "t.jsonl").exists()
             assert not (archive / "t.jsonl.tmp").exists()
+
+
+#: The ``os`` the archive store calls, replaced in a test by :func:`_os_with`, so what the
+#: test counts is the store's calls alone.
+STORE_OS = "recon.adapters._out.archive_files.os"
+
+
+def _os_with(**replaced: Any) -> types.ModuleType:
+    """``os``, with the functions ``replaced`` names standing in for its own."""
+    stand_in = types.ModuleType("os")
+    stand_in.__dict__.update(os.__dict__)
+    stand_in.__dict__.update(replaced)
+    return stand_in
+
+
+class TestATableIsWrittenInWholeLines:
+    """While a table is written, a reader of its file sees each record within 250 ms of its
+    being written, as a whole line, and never part of one (A2). Lines are written together,
+    whole, so a burst of records is not a write each; flushing to the disk stays batched."""
+
+    def test_a_record_is_visible_while_the_collector_waits_for_its_next(
+        self, tmp_path: Path
+    ) -> None:
+        live = tmp_path / "out.jsonl.tmp"
+        seen: list[bytes] = []
+        waited: list[float] = []
+
+        def make() -> Generator[dict[str, Any], None, None]:
+            yield {"n": 0}
+            started = time.monotonic()
+            while time.monotonic() - started < 5 and not (
+                live.exists() and live.read_bytes().endswith(b"\n")
+            ):
+                time.sleep(0.01)
+            seen.append(live.read_bytes())
+            waited.append(time.monotonic() - started)
+            yield {"n": 1}
+
+        ArchiveFiles(SystemClock()).write_table(tmp_path, "out", make())
+        assert seen == [b'{"n": 0}\n'], (
+            "a record written is on disk, whole, while the collector has not yet given the "
+            "next: a slow source does not hold back what it already gave"
+        )
+        assert waited[0] < 2, "within the 250 ms bound, with room for a slow machine"
+
+    def test_a_burst_of_records_is_written_in_few_writes_of_whole_lines(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        writes: list[bytes] = []
+        real = os.write
+
+        def counted(descriptor: int, data: bytes) -> int:
+            writes.append(bytes(data))
+            written: int = real(descriptor, data)
+            return written
+
+        monkeypatch.setattr(STORE_OS, _os_with(write=counted))
+        records = ({"n": n, "text": "x" * 50} for n in range(5000))
+        ArchiveFiles(SystemClock()).write_table(tmp_path, "out", records)
+        assert 1 < len(writes) < 100, "lines are written together, not a write each"
+        assert all(data.endswith(b"\n") for data in writes), "every write ends a line"
+        assert (tmp_path / "out.jsonl").read_bytes() == b"".join(writes)
+
+    def test_a_line_is_one_write_however_long(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        writes: list[int] = []
+        real = os.write
+
+        def counted(descriptor: int, data: bytes) -> int:
+            writes.append(len(data))
+            written: int = real(descriptor, data)
+            return written
+
+        monkeypatch.setattr(STORE_OS, _os_with(write=counted))
+        long = {"text": "x" * 200_000}
+        given: list[dict[str, Any]] = [long, {"n": 1}]
+        ArchiveFiles(SystemClock()).write_table(tmp_path, "out", (r for r in given))
+        assert writes == [len(json.dumps(long)) + 1, len('{"n": 1}') + 1], (
+            "a line longer than any buffer still goes to the file in one write, so a reader "
+            "sees all of it or none of it"
+        )
+
+    def test_flushing_to_the_disk_stays_batched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        synced: list[int] = []
+        monkeypatch.setattr(STORE_OS, _os_with(fsync=synced.append))
+        records = ({"n": n} for n in range(2500))
+        ArchiveFiles(SystemClock()).write_table(tmp_path, "out", records)
+        assert len(synced) == 3, "one fsync per 1000 records, and one when the table ends"
+
+    def test_a_write_the_disk_cuts_short_is_taken_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real = os.write
+        live = tmp_path / "out.jsonl.tmp"
+        sizes: list[int] = []
+
+        def short(descriptor: int, data: bytes) -> int:
+            if b'"n": 1' in data:
+                sizes.append(live.stat().st_size)
+                cut: int = real(descriptor, data[:3])
+                return cut
+            written: int = real(descriptor, data)
+            return written
+
+        monkeypatch.setattr(STORE_OS, _os_with(write=short))
+        first = {"n": 0, "text": "x" * 70_000}  # past 64 KiB: written before the next comes
+        given: list[dict[str, Any]] = [first, {"n": 1}]
+        with pytest.raises(OSError, match="wrote 3 of"):
+            ArchiveFiles(SystemClock()).write_table(tmp_path, "out", (r for r in given))
+        assert sizes == [len(json.dumps(first)) + 1], "taken back to the last whole line"
+        assert not live.exists() and not (tmp_path / "out.jsonl").exists()
 
 
 class TestIncompleteSentinel:
