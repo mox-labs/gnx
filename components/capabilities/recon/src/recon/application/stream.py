@@ -126,6 +126,23 @@ class StreamRun:
     last: WindowOutcome | None
 
 
+class ConservationError(RuntimeError):
+    """A defect in recon: a window's table holds more records than were admitted to it, so
+    the identity every count rests on (admitted = written + dropped) broke. Raised, never
+    clamped: a drop count that hid it would be a false record of the stream."""
+
+
+def _drops(stream: str, index: int, ledger: _Ledger, written: int) -> int:
+    """A window's drops: the records admitted to it that its table does not hold, and those
+    refused before admission. ConservationError when the table holds more than was admitted."""
+    if written > ledger.admitted:
+        raise ConservationError(
+            f"stream {stream} window {index}: {ledger.admitted} admitted, but its sealed table "
+            f"holds {written}; a defect in recon, please report it"
+        )
+    return ledger.admitted - written + ledger.refused
+
+
 # --- the buffer ------------------------------------------------------------------------------
 
 
@@ -741,7 +758,7 @@ class Stream:
                     window.first = ends.first.get(POSITION_FIELD)
                 if ends.last is not None and POSITION_FIELD in ends.last:
                     window.last = ends.last[POSITION_FIELD]
-                window_dropped = max(0, ledger.admitted - ends.records) + ledger.refused
+                window_dropped = _drops(plan.name, window.index, ledger, ends.records)
                 span.set("recon.records", window.records)
                 span.set("recon.dropped", window_dropped)
                 error = window.error or (window.end.error if isinstance(window.end, _End) else None)

@@ -5,6 +5,7 @@ test runs on a virtual clock its script moves, so nothing sleeps for the time it
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import threading
@@ -19,6 +20,7 @@ import yaml
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.application.stream import (
     Arrivals,
+    ConservationError,
     Stream,
     StreamGaps,
     StreamPlan,
@@ -40,6 +42,7 @@ from tests.recon_fakes import StalledArchives, VirtualClock
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator, Sequence
 
+    from recon.domain.archives import TableEnds
     from recon.domain.clock import Clock
     from recon.domain.documents import WindowOutcome
     from recon.domain.telemetry import EventCallback
@@ -399,6 +402,8 @@ class TestFlow:
             stamped.setdefault(int(at // 7), []).append(record["seq"])
         assert sum(o.dropped for o in outcomes) > 0, "the burst overflowed"
         assert [o.index for o in outcomes] == sorted(stamped)
+        everything = [row["seq"] for o in outcomes for row in _rows(o)]
+        assert len(everything) == len(set(everything)), "no record is written twice"
         for o in outcomes:
             written = [row["seq"] for row in _rows(o)]
             assert o.table.records + o.dropped == len(stamped[o.index]), o.index
@@ -508,6 +513,26 @@ class TestEveryRecordIsCountedWhenTheStreamBreaks:
 
         assert window.closed_by == "error", "no ticker, no until: still it ends"
         assert run.records == 1
+
+
+class TestAWindowThatWroteMoreThanItWasGiven:
+    """Review re-check (Dijkstra): a window's drops are the records admitted to it that its
+    table does not hold, and those refused. A table holding more than was admitted can only
+    mean the conservation identity broke; it fails loudly, never clamped to no drop."""
+
+    def test_a_table_that_claims_a_record_never_admitted_fails_the_run(
+        self, tmp_path: Path
+    ) -> None:
+        clock = VirtualClock()
+
+        class Forged(ArchiveFiles):
+            def table_ends(self, archive: Path, output: str) -> TableEnds:
+                ends = super().table_ends(archive, output)
+                return dataclasses.replace(ends, records=ends.records + 1)
+
+        with pytest.raises(ConservationError, match="3 admitted.*4"):
+            _run(tmp_path, clock, _plan(WindowSpec(seconds=60)), Script(clock, _seq(3)),
+                 store=Forged(clock))  # fmt: skip
 
 
 class TestAStopAsked:
