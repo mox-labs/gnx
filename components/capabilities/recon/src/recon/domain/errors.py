@@ -164,6 +164,8 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "missed_ignored",
     # ticks skipped in a row because the one before still ran: the survey outlasts every
     "schedule_overrun",
+    # a mission's directory or file that users other than its owner can reach
+    "mission_exposed",
 )
 
 

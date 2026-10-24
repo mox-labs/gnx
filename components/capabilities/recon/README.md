@@ -133,7 +133,7 @@ A survey in which any table failed still writes its archive (marked `.incomplete
   captures.jsonl, raw/ the capture log, when preserve_raw: true
 ```
 
-Everything recon writes for a mission is its owner's alone: each directory it makes under `.recon/` (the mission's, its archives', streams' and captures') is `0700` and each file (the config, tables, `meta.yaml`, logs, captures, locks) `0600`, whatever the umask would allow. A mission's tables hold what its sources answered, a mailbox as readily as a public feed. A directory that was there before recon wrote into it keeps its mode.
+Everything recon writes for a mission is its owner's alone: each directory it makes under `.recon/` (the mission's, its archives', streams' and captures') is `0700` and each file (the config, tables, `meta.yaml`, logs, captures, locks) `0600`, whatever the umask would allow. A mission's tables hold what its sources answered, a mailbox as readily as a public feed. A directory or file that was there before keeps its mode: `recon status` warns (`mission_exposed`) when a mission's is open to other users, with the `chmod -R go-rwx` that closes it, and changes nothing itself.
 
 A collector may declare `type_url:` (dotted grammar, default `recon.v1.records`) so a consumer can tell what a table holds without reading collector code. `status` and `query` still read archives written by recon 0.8 (`format_version: 1`), and read a `meta.yaml` from a newer recon for the fields they know. Only a directory named as a survey names its archive (`2026-04-01-143022-000000`) is an archive: another directory under `archive/` is left alone. An archive whose `table_layout` this recon does not know (a newer recon wrote it) is refused by `query` with that number, rather than misread.
 

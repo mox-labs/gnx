@@ -1546,7 +1546,8 @@ def test_status_reports_an_archive_a_dead_survey_left_half_made(project: Path) -
     document = _doc(_invoke("status", "m", "--json"))
     human = unstyle(_invoke("status").stderr)
 
-    [warning] = document["warnings"]
+    # The test made the mission with the umask's modes, so it is also mission_exposed.
+    [warning] = [w for w in document["warnings"] if w["kind"] != "mission_exposed"]
     assert warning["kind"] == "archive_abandoned" and str(dead) in warning["message"]
     assert str(dead) in warning["fix"]
     assert str(dead) in human

@@ -774,8 +774,28 @@ class Recon:
             root=str(self._missions.root),
             missions=[self._mission_status(name, history=mission is not None) for name in names],
             plugins=_installed(self._plugins),
-            warnings=[w.document() for name in names for w in self._abandoned(name)],
+            warnings=[
+                w.document() for name in names for w in self._abandoned(name) + self._exposed(name)
+            ],
         )
+
+    def _exposed(self, name: str) -> list[Problem]:
+        """A ``mission_exposed`` warning when a path of the mission (one an older recon made,
+        or one changed since) is open to other users; recon changes no mode it did not set."""
+        path = self._missions.exposed(name)
+        if path is None:
+            return []
+        mission = self._missions.mission_dir(name)
+        return [
+            Problem(
+                "",
+                f"mission {name}: {path} can be reached by users other than its owner, and "
+                "what a mission collects is its owner's alone",
+                kind="mission_exposed",
+                fix=f"chmod -R go-rwx '{mission}'",
+                got=str(path),
+            )
+        ]
 
     def _abandoned(self, name: str) -> list[Problem]:
         return [

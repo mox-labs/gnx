@@ -97,7 +97,7 @@ sha256, never by anything in the response.
 
 What recon writes is private to the user running it: each directory it makes for a mission
 (`.recon/` and everything under it) is `0700` and each file `0600`, set as the path is made, so
-the umask cannot widen it. A directory that was already there keeps its own mode.
+the umask cannot widen it. A directory or file that was already there keeps its own mode: `recon status` warns (`mission_exposed`) of the first one in a mission open to other users, and names the `chmod -R go-rwx` that closes the mission; it changes nothing.
 
 `$markitdown` is the one built-in transform that opens a file, and the path it opens is
 a collected value. It reads only under the mission directory and the catalog's `local`

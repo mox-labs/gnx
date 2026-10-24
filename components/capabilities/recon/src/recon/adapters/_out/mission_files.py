@@ -16,7 +16,10 @@ are the YAML files of the ``recon.configs`` package.
 from __future__ import annotations
 
 import importlib.resources
+import os
+import stat
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
@@ -28,8 +31,6 @@ from recon.domain.errors import ConfigError, NotFoundError, Problem, UsageError
 from recon.domain.missions import MISSION_NAME, ConfigFile, Template
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from recon.domain.clock import Clock
 
 
@@ -121,6 +122,18 @@ class MissionFiles:
         except OSError:
             return 0
 
+    def exposed(self, name: str) -> Path | None:
+        top = self.mission_dir(name)
+        if _reachable(top):
+            return top
+        for directory, subdirectories, files in os.walk(top):
+            subdirectories.sort()
+            here = Path(directory)
+            for entry in subdirectories + sorted(files):
+                if _reachable(here / entry):
+                    return here / entry
+        return None
+
     def is_directory(self, path: Path) -> bool:
         return path.is_dir()
 
@@ -132,6 +145,16 @@ class MissionFiles:
                 text = file.read_text(encoding="utf-8")
                 found.append(Template(file.name.removesuffix(".yaml"), _description(text), text))
         return sorted(found, key=lambda t: t.name)
+
+
+def _reachable(path: Path) -> bool:
+    """Whether a user other than the owner has any permission on ``path``; a link is not
+    followed (its own bits mean nothing)."""
+    try:
+        mode = path.lstat().st_mode
+    except OSError:
+        return False
+    return not stat.S_ISLNK(mode) and bool(mode & (stat.S_IRWXG | stat.S_IRWXO))
 
 
 def _description(text: str) -> str:

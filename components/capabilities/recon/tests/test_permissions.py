@@ -90,6 +90,48 @@ def test_every_directory_is_0700_and_every_file_0600(tmp_path: Path, usual_umask
     assert made["dirs"] >= 8 and made["files"] >= 12, made
 
 
+class TestAMissionMadeBeforeIsWarnedAbout:
+    """A mission an older recon made keeps its modes (recon never changes a path it did not
+    make), so ``recon status`` says when one is open to other users, with the command that
+    closes it, and changes nothing itself."""
+
+    def _mission(self, project: Path) -> Path:
+        given = project / "mission.yaml"
+        given.write_text(yaml.safe_dump({"collectors": [{"name": "a", "type": "cli",
+                                                         "run": "echo 1"}]}))  # fmt: skip
+        root({}, project=project).init("m", config=given)
+        return project / ".recon" / "m"
+
+    def test_a_private_mission_is_not_warned_about(self, tmp_path: Path) -> None:
+        self._mission(tmp_path)
+
+        status = root({}, project=tmp_path).status()
+
+        assert [w for w in status.warnings if w["kind"] == "mission_exposed"] == []
+
+    @pytest.mark.parametrize(("where", "mode"), [("config.yaml", 0o644), ("", 0o755),
+                                                 ("archive", 0o750)])  # fmt: skip
+    def test_a_path_other_users_can_reach_is_warned_with_the_fix_and_left_as_it_is(
+        self, tmp_path: Path, where: str, mode: int
+    ) -> None:
+        mission = self._mission(tmp_path)
+        (mission / "archive").mkdir(mode=0o700)
+        exposed = mission / where if where else mission
+        exposed.chmod(mode)
+
+        status = root({}, project=tmp_path).status("m")
+
+        [warning] = [w for w in status.warnings if w["kind"] == "mission_exposed"]
+        assert warning["got"] == str(exposed)
+        assert warning["fix"] == f"chmod -R go-rwx '{mission}'"
+        assert stat.S_IMODE(exposed.stat().st_mode) == mode, "status changes no mode"
+
+    def test_the_kind_is_a_warning_kind_recon_publishes(self) -> None:
+        from recon.domain.errors import PROBLEM_KINDS
+
+        assert "mission_exposed" in PROBLEM_KINDS
+
+
 def test_the_check_above_fails_on_a_file_any_other_user_can_read(tmp_path: Path) -> None:
     """Check the checker: a file left 0644 is caught by the same comparison."""
     leaked = tmp_path / "m" / "config.yaml"

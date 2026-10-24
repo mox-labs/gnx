@@ -80,6 +80,12 @@ class MissionStore(Protocol):
 
     def capture_count(self, name: str) -> int: ...
 
+    def exposed(self, name: str) -> Path | None:
+        """The first path of the mission's own (its directory, or one under it) that a user
+        other than its owner can reach: group or world permission bits set. None when every
+        one is the owner's alone. Changes nothing."""
+        ...
+
     def is_directory(self, path: Path) -> bool:
         """Whether ``path`` is a directory: a ``local`` source must name one."""
         ...
