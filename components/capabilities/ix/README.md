@@ -331,6 +331,10 @@ def register(registry):
   sensor under `sensors:` settles an ambiguity or gives it options;
 - a probe's truth key that no sensor in use reads is refused (`truth_unclaimed`), so a typo
   does not pass silently;
+- `trials_in_flight` above 1 is refused (`trials_in_flight_refused`) where a kind in use
+  is `exclusive`, a deciding metric is contended or the genre is `exclusive`; the fix names
+  each and says `trials_in_flight: 1`. A contended metric only reported is a warning
+  (`trials_in_flight_contended`);
 - a `{name}` placeholder must be bound to what a trial fills it with
   (`unbound_placeholder`). A subject's options are filled with the cell's levels, so a
   factor binds them: `characterize` over `factors: {rounds: [1, 2, 3]}` with `loop:

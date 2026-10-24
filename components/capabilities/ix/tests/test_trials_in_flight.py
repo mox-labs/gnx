@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ix.domain.ports import Probe
+    from ix.domain.problem import Problem
     from ix.domain.run import Interaction, Target
 
 Write = Any
@@ -219,3 +220,67 @@ class TestTheWidthIsAConditionOfTheRun:
         with pytest.raises(ix.UsageError) as below:
             _root().run(folder, exploratory=True, trials_in_flight=0)
         assert below.value.details == {"path": "--trials-in-flight", "value": 0}
+
+
+def _refusal(found: ix.Validation) -> Problem:
+    (refused,) = [p for p in found.problems if p.kind == "trials_in_flight_refused"]
+    assert (refused.path, refused.got) == ("trials_in_flight", 2)
+    assert refused.fix.startswith("trials_in_flight: 1")
+    return refused
+
+
+class TestOverlapIsRefusedWhereItWouldConfound:
+    """X5: a width above one is a validation problem, never a clamp, when a kind in use is
+    ``exclusive``, a deciding metric is ``contended`` or the genre is ``exclusive``; its fix
+    names each and says ``trials_in_flight: 1``."""
+
+    def test_shared_kinds_and_uncontended_decisions_may_overlap(self, tmp_path: Path) -> None:
+        found = ix.validate(_canned(tmp_path, trials_in_flight=4))
+        assert found.valid and found.warnings == ()
+
+    def test_each_exclusive_kind_and_contended_decision_is_named(
+        self, write_experiment: Write
+    ) -> None:
+        file = write_experiment(experiment(trials_in_flight=2))
+        refused = _refusal(ix.validate(file))
+        for named in ("subject kind process", "probe kind http-load", "sensor timing",
+                      "latency (primary)"):  # fmt: skip
+            assert named in refused.message, named
+            assert named.split(" (")[0].rsplit(" ", 1)[-1] in refused.fix
+        assert ix.validate(write_experiment(experiment())).valid  # one at a time: as ever
+
+    def test_a_gates_genre_keeps_its_trials_apart(self, tmp_path: Path) -> None:
+        subjects = {
+            "baseline": {"kind": "agent-session", "runtime": "mock"},
+            "candidate": {"kind": "agent-session", "runtime": "mock", "max_turns": 2},
+        }
+        gate = _canned(
+            tmp_path, genre="regress", subjects=subjects, threshold=None, margin="10pp",
+            trials_in_flight=2,
+        )  # fmt: skip
+        refused = _refusal(ix.validate(gate))
+        assert "genre regress" in refused.message and "regress" in refused.fix
+
+    def test_a_contended_metric_decides_nothing_in_flight(self, tmp_path: Path) -> None:
+        timed = _canned(
+            tmp_path, primary={"metric": "duration"}, threshold={"op": "<=", "value": 5000},
+            trials_in_flight=2,
+        )  # fmt: skip
+        refused = _refusal(ix.validate(timed))
+        assert "duration (primary)" in refused.message
+
+    def test_a_contended_metric_only_reported_is_warned_of(self, tmp_path: Path) -> None:
+        found = ix.validate(_canned(tmp_path, metrics=["duration"], trials_in_flight=2))
+        assert found.valid
+        (warned,) = found.warnings
+        assert (warned.kind, warned.path) == ("trials_in_flight_contended", "trials_in_flight")
+        assert "duration" in warned.message
+
+    def test_the_command_lines_width_is_held_to_the_same_rule(
+        self, write_experiment: Write
+    ) -> None:
+        file = write_experiment(experiment())
+        with pytest.raises(ix.InvalidExperimentError) as refused:
+            Root(registry=fake_registry()).run(file, exploratory=True, trials_in_flight=2)
+        assert refused.value.exit_code == 3
+        assert [p.kind for p in refused.value.problems] == ["trials_in_flight_refused"]

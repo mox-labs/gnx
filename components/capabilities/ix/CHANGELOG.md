@@ -21,6 +21,11 @@
   and its description), and so does the report (`Report.trials_in_flight`, and its `Run`
   line). `ix run --trials-in-flight N` (`ix.run(trials_in_flight=N)`) overrides it for one
   run, noted under `Changed`; like `--repeats`, only with `--exploratory` or `--dry-run`.
+- **The problems `trials_in_flight_refused` and `trials_in_flight_contended`.** A width
+  above 1 is refused, never lowered on its own, where a kind in use is `exclusive`, a
+  deciding metric (`primary`, a guardrail) is contended or the genre is `exclusive`: the
+  fix names each and says `trials_in_flight: 1`. A contended metric only reported is a
+  warning.
 - **`isolation` on every kind, `contended` on every metric.** A kind says whether two trials
   may use it at once (`isolation: shared | exclusive`; a kind that says nothing, a third
   party's included, is `exclusive`), and a metric whether its reading moves with whatever

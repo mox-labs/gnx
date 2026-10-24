@@ -31,6 +31,8 @@ guidance: |
   comparison is not yours to change here.
   Register the experiment before any run (`ix register`), so the margin cannot move
   once the numbers are in. A run of an experiment that changed since its registration
-  gives no gate result until the registration is amended with a reason.  What would falsify it: the interval of the difference lies wholly beyond the margin on
+  gives no gate result until the registration is amended with a reason.
+  Its trials run one at a time (`isolation: exclusive`): `trials_in_flight` above 1 is
+  refused here, whatever the kinds allow.  What would falsify it: the interval of the difference lies wholly beyond the margin on
   the worse side. An interval that crosses the margin is inconclusive, and inconclusive
   does not pass a gate.
