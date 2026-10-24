@@ -230,13 +230,32 @@ class TestTheBaseline:
         third, _ = surveys.survey()
         assert _ops(third) == [("delete", "a")]
 
-        # A kept index whose header holds is what the next comparison reads: one that says
-        # zzz was told makes zzz's delete told.
+        # Ixian F5: an index edited by hand, its header's counts made to hold, is not
+        # trusted: its body is not what the header's keyed digest says, so it is computed
+        # again, and zzz, a key never seen, is never told deleted.
         header = json.loads((third / "inbox.keys.jsonl").read_text().splitlines()[0])
         kept = [{**header, "keys": 1}, {"key": canonical(["zzz"]), "hash": "0"}]
         (third / "inbox.keys.jsonl").write_text("".join(json.dumps(x) + "\n" for x in kept))
         fourth, _ = surveys.survey()
-        assert _ops(fourth) == [("delete", "zzz")]
+        assert _ops(fourth) == []
+
+    def test_an_index_whose_body_is_not_its_header_s_is_computed_again(
+        self, tmp_path: Path
+    ) -> None:
+        """F5: a told index's header carries a digest of its body, keyed with the mission's
+        key, so a body changed in place (a hash, a key added) with every count left as it
+        was is caught on read: the index is computed again from the chain."""
+        _mission(tmp_path, {"key": ["id"], "deletes": True})
+        surveys = Surveys(tmp_path)
+        first, _ = surveys.survey(A, B)
+        lines = (first / "inbox.keys.jsonl").read_text().splitlines()
+        header = json.loads(lines[0])
+        assert isinstance(header["mac"], str) and len(header["mac"]) == 32
+        forged = [lines[0], json.dumps({"key": canonical(["a"]), "hash": "0" * 32}),
+                  json.dumps({"key": canonical(["zzz"]), "hash": "0" * 32})]  # fmt: skip
+        (first / "inbox.keys.jsonl").write_text("".join(line + "\n" for line in forged))
+        second, _ = surveys.survey(A)
+        assert _ops(second) == [("delete", "b")], "a is unchanged and b, as told, is gone"
 
     def test_a_rebuilt_told_index_keeps_the_deletes_of_its_time(self, tmp_path: Path) -> None:
         """Dijkstra F2: a told index computed again folds each table as it was told then. With

@@ -13,11 +13,12 @@ is kept only in the told index, never in a change row, a warning or telemetry.
 **The told index** of a table, ``<output>.keys.jsonl``, written with its change table, is the
 fold of every change row told for its output and source up to it (:mod:`recon.domain.changes`):
 a header (``spec``: the digest of the key and volatile fields and of the key's identity; the
-table's record and keyless counts; the index's key count), then a line per key, sorted, with
-its content's hash. It is a cache of a pure function: a table's told index is the one its
-comparison with the previous table's gives, so one that is missing, or whose header is not
-the spec's or does not count its table, is computed again from the chain, back to the first
-whose index holds. An earlier archive is only read, never written.
+table's record and keyless counts; the index's key count; ``mac``, a digest of all of it
+keyed with the mission's key), then a line per key, sorted, with its content's hash. It is a
+cache of a pure function: a table's told index is the one its comparison with the previous
+table's gives, so one that is missing, whose header is not the spec's or does not count its
+table, or whose ``mac`` does not hold (edited by hand), is computed again from the chain,
+back to the first whose index holds. An earlier archive is only read, never written.
 
 **The join** (:class:`~recon.domain.changes.KeyJoin`) of a table's keys with a told index is
 :class:`MemoryJoin` for one of up to ``memory_keys`` keys, else the port's other adapter (DuckDB
@@ -33,7 +34,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from functools import cached_property
+from functools import cached_property, partial
 from typing import TYPE_CHECKING, Any
 
 from recon.domain.changes import CHANGE_COLUMNS, CHANGES_TYPE_URL, changes_output
@@ -59,6 +60,9 @@ MEMORY_KEYS = 200_000
 #: What a record's hash is keyed with besides the mission's key, so a hash recon makes for
 #: change detection is never one it makes for anything else.
 _PERSON = b"recon.changes"
+
+#: What a told index's ``mac`` is keyed with besides the mission's key.
+_MAC_PERSON = b"recon.told"
 
 
 def canonical(value: Any) -> str:
@@ -103,6 +107,17 @@ class Hasher:
     def _keyed(self) -> hashlib.blake2b:
         return hashlib.blake2b(digest_size=HASH_BYTES, key=self.secret, person=_PERSON)
 
+    def mac(self, header: dict[str, Any], pairs: Iterable[tuple[str, str]]) -> str:
+        """The keyed digest of a told index: its ``header``'s counts and spec, then each of its
+        ``(key, content)`` pairs in order. Its header carries it, so an index edited by hand,
+        however its counts are made to hold, is not what the mission's key says, and is
+        computed again (Ixian F5)."""
+        mac = hashlib.blake2b(digest_size=HASH_BYTES, key=self.secret, person=_MAC_PERSON)
+        mac.update(canonical({k: header.get(k) for k in _MACED}).encode())
+        for key, content in pairs:
+            mac.update(canonical([key, content]).encode("utf-8", "surrogatepass") + b"\n")
+        return mac.hexdigest()
+
     @property
     def digest(self) -> str:
         """The spec's digest: its key and volatile fields, and the identity of the key the
@@ -110,6 +125,10 @@ class Hasher:
         identity = hashlib.blake2b(b"identity", digest_size=8, key=self.secret).hexdigest()
         spec = {"key": self.spec.key, "volatile": sorted(self.spec.volatile), "secret": identity}
         return hashlib.blake2b(canonical(spec).encode(), digest_size=HASH_BYTES).hexdigest()
+
+
+#: The header fields a told index's ``mac`` covers, with its body.
+_MACED = ("spec", "records", "keyless", "keys")
 
 
 def normalize_digest(normalize: dict[str, str] | None) -> str:
@@ -267,9 +286,16 @@ class Comparison:
         return self._joined.told_count(deletes=self.deletes)
 
     def lines(self, records: int) -> Iterator[dict[str, Any]]:
-        """The told index as its sidecar holds it, for a table of ``records`` records."""
-        yield {"spec": self._hasher.digest, "records": records, "keyless": self.counts.keyless,
-               "keys": self.told_count()}  # fmt: skip
+        """The told index as its sidecar holds it, for a table of ``records`` records: its
+        header, ``mac`` last, then a line a key. The index is listed twice, once for the
+        ``mac``."""
+        header: dict[str, Any] = {
+            "spec": self._hasher.digest,
+            "records": records,
+            "keyless": self.counts.keyless,
+            "keys": self.told_count(),
+        }
+        yield {**header, "mac": self._hasher.mac(header, self.told())}  # fmt: skip
         for key, content in self.told():
             yield {"key": key, "hash": content}
 
@@ -278,16 +304,26 @@ class Comparison:
 
 
 def told_lines(
-    lines: Iterator[dict[str, Any]], spec: str, records: int
+    read: Callable[[], Iterator[dict[str, Any]] | None], hasher: Hasher, records: int
 ) -> tuple[int, Iterator[tuple[str, str]]] | None:
-    """A kept told index, when its header is for ``spec`` and a table of ``records``
-    records: its key count, and its ``(key, content)`` pairs; None when it is not."""
-    header = next(lines, None)
-    if not isinstance(header, dict) or header.get("spec") != spec:
+    """A kept told index, read by ``read`` (None: there is none), when its header is for
+    ``hasher``'s spec and a table of ``records`` records and its ``mac`` is what the
+    mission's key gives for it: its key count, and its ``(key, content)`` pairs; None when it
+    is not. It is read twice: once to check it, once for its pairs."""
+    lines = read()
+    header = next(lines, None) if lines is not None else None
+    if not isinstance(header, dict) or header.get("spec") != hasher.digest:
         return None
     if header.get("records") != records or not isinstance(header.get("keys"), int):
         return None
-    return header["keys"], ((line["key"], line["hash"]) for line in lines)
+    try:
+        held = hasher.mac(header, ((line["key"], line["hash"]) for line in lines))  # type: ignore[union-attr]
+    except (KeyError, TypeError):
+        return None
+    again = read() if held == header.get("mac") else None
+    if again is None or next(again, None) is None:
+        return None
+    return header["keys"], ((line["key"], line["hash"]) for line in again)
 
 
 # --- the detector, over the store ---------------------------------------------------------
@@ -460,8 +496,8 @@ class ChangeDetector:
         told = _Told(None)
         current: _Compared | None = last
         while current is not None and current not in again:
-            lines = self._archives.read_sidecar(current.archive, table.name, "keys")
-            kept = told_lines(iter(lines), hasher.digest, current.records) if lines else None
+            read = partial(self._archives.read_sidecar, current.archive, table.name, "keys")
+            kept = told_lines(read, hasher, current.records)
             if kept is not None:
                 told = _Told(kept[1], kept[0])
                 break

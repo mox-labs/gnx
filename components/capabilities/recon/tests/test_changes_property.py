@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import random
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -369,11 +370,16 @@ class TestTheComparisonIsTheOracles:
             comparison = Comparison(lambda r=records: r, None, hasher, join,  # type: ignore[misc]
                                     whole=True)  # fmt: skip
             lines = list(comparison.lines(len(records)))
-            read = told_lines(iter(lines), hasher.digest, len(records))
+            read = told_lines(partial(iter, lines), hasher, len(records))
             assert read is not None and read[0] == len(lines) - 1, f"seed {seed}"
             assert list(read[1]) == list(comparison.told()), f"seed {seed}"
-            assert told_lines(iter(lines), "another spec", len(records)) is None
-            assert told_lines(iter(lines), hasher.digest, len(records) + 1) is None
+            another = Hasher(SPECS[0], b"another key" * 3)
+            assert told_lines(partial(iter, lines), another, len(records)) is None
+            assert told_lines(partial(iter, lines), hasher, len(records) + 1) is None
+            if len(lines) > 1:  # a body edited in place, every count as it was (F5)
+                edited = [lines[0], {**lines[1], "hash": "f" * 32}, *lines[2:]]
+                if edited != lines:
+                    assert told_lines(partial(iter, edited), hasher, len(records)) is None
 
 
 def test_the_two_joins_give_the_same_answers() -> None:
