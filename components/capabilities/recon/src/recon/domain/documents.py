@@ -247,6 +247,8 @@ class StreamStatus(Document):
     #: The first window's id, which ``watch --stream --archive`` takes to read from the start.
     first: str | None
     latest: ArchiveStatus | None
+    #: The windows ``retain:`` removed, each leaving a tombstone beside the windows.
+    retired: int = 0
 
 
 class MissionStatus(Document):

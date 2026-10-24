@@ -15,6 +15,7 @@
     <mission>/streams/<stream>/
       writer.lock             locked by the stream's one writer while it runs; kept
       <window id>/            each window, an archive as above, of one table
+      <window id>.retired     a window retain: removed: what it was and why it went
 
 **Writing, complete, incomplete.** The writer holds an ``flock`` on ``writer.lock`` from
 :meth:`ArchiveFiles.create` until :meth:`ArchiveFiles.release` or its death, as matrix's
@@ -65,6 +66,7 @@ import contextlib
 import fcntl
 import json
 import os
+import shutil
 import threading
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, BinaryIO
@@ -102,6 +104,11 @@ STREAMS = "streams"
 
 #: Where a table's torn last line is moved: a write a dying writer cut short.
 TORN = ".torn"
+
+#: A retired window's tombstone, ``<window id>.retired`` beside the windows, and the suffix
+#: of a window being removed, out of every listing.
+RETIRED = ".retired"
+RETIRING = ".retiring"
 
 #: The layout of an archive's tables this store writes and reads, named in ``meta.yaml``.
 TABLE_LAYOUT = 1
@@ -212,6 +219,34 @@ class ArchiveFiles:
         if not directory.is_dir():
             return []
         return sorted(d.name for d in directory.iterdir() if d.is_dir())
+
+    def size(self, archive: Path) -> int:
+        return sum(path.stat().st_size for path in archive.rglob("*") if path.is_file())
+
+    def retire(self, archive: Path, tombstone: dict[str, Any]) -> None:
+        home = archive.parent
+        for leftover in home.glob(f".*{RETIRING}"):  # a retirement a dead writer began
+            shutil.rmtree(leftover, ignore_errors=True)
+        stone = home / f"{archive.name}{RETIRED}"
+        tmp = home / f".{stone.name}.tmp"
+        tmp.write_text(json.dumps(tombstone, default=str) + "\n")
+        os.replace(tmp, stone)
+        # Out of every listing at once, then removed: a writer that dies between leaves a
+        # hidden directory the next retirement removes, never half a window.
+        going = home / f".{archive.name}.{os.getpid()}{RETIRING}"
+        archive.rename(going)
+        shutil.rmtree(going)
+
+    def retired(self, mission_dir: Path, stream: str) -> list[dict[str, Any]]:
+        directory = _stream_dir(mission_dir, stream)
+        if not directory.is_dir():
+            return []
+        stones = []
+        for path in directory.glob(f"*{RETIRED}"):
+            index = window_index(path.name.removesuffix(RETIRED))
+            if index is not None:
+                stones.append((index, json.loads(path.read_text())))
+        return [stone for _, stone in sorted(stones, key=lambda pair: pair[0])]
 
     def last_record(self, archive: Path, output: str) -> dict[str, Any] | None:
         sealed = archive / f"{output}.jsonl"

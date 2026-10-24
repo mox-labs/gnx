@@ -12,7 +12,7 @@ import contextlib
 import hashlib
 import json
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -62,7 +62,7 @@ from recon.domain.errors import (
     UsageError,
 )
 from recon.domain.normalize import apply_normalize
-from recon.domain.stream import window_index
+from recon.domain.stream import window_index, window_opened
 from recon.domain.telemetry import QUERY, SURVEY
 
 if TYPE_CHECKING:
@@ -516,6 +516,7 @@ class Recon:
                 buffer=planned.buffer,
                 overflow=planned.overflow,
                 columns=tuple(entry.normalize or ()),
+                retain=planned.retain,
             )
             run = engine.run(
                 mission,
@@ -655,6 +656,7 @@ class Recon:
             windows=len(windows),
             first=windows[0].name if windows else None,
             latest=self._archive_status(windows[-1]) if windows else None,
+            retired=len(self._archives.retired(mission, stream)),
         )
 
     def _archive_status(self, archive: Path) -> ArchiveStatus:
@@ -1105,7 +1107,7 @@ def _meeting(windows: list[Path], since: datetime | None, until: datetime | None
     """The windows whose span meets ``[since, until)``: a window spans from its open to the
     next one's (the last, onward), and its open is in its id, so no window is opened to
     choose."""
-    opened = [_window_opened(window.name) for window in windows]
+    opened = [window_opened(window.name) for window in windows]
     kept = []
     for at, window in enumerate(windows):
         start, end = opened[at], opened[at + 1] if at + 1 < len(windows) else None
@@ -1115,14 +1117,6 @@ def _meeting(windows: list[Path], since: datetime | None, until: datetime | None
             continue
         kept.append(window)
     return kept
-
-
-def _window_opened(window: str) -> datetime | None:
-    """When a window opened, as its id says (in UTC)."""
-    try:
-        return datetime.strptime(window.split("-", 1)[1], ARCHIVE_ID_FORMAT).replace(tzinfo=UTC)
-    except (IndexError, ValueError):
-        return None
 
 
 def _ended(state: ArchiveState, meta: Mapping[str, Any]) -> Ended | None:

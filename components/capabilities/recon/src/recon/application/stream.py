@@ -60,6 +60,7 @@ from recon.domain.stream import (
     Windowing,
     window_id,
     window_index,
+    window_opened,
 )
 from recon.domain.telemetry import COLLECT
 
@@ -72,7 +73,14 @@ if TYPE_CHECKING:
     from recon.domain.capture import CaptureLog
     from recon.domain.clock import Clock
     from recon.domain.models import CollectorEntry, SourceEntry
-    from recon.domain.stream import BufferSpec, ClosedBy, Overflow, SealReason, WindowSpec
+    from recon.domain.stream import (
+        BufferSpec,
+        ClosedBy,
+        Overflow,
+        Retain,
+        SealReason,
+        WindowSpec,
+    )
     from recon.domain.telemetry import EventCallback, Span, Telemetry
 
 #: By default, the seconds the end of a stream waits for its source's thread to stop, once
@@ -101,6 +109,7 @@ class StreamPlan:
     buffer: BufferSpec
     overflow: Overflow
     columns: tuple[str, ...] = ()
+    retain: Retain = "all"
 
 
 @dataclass(frozen=True)
@@ -477,6 +486,7 @@ class Stream:
             ).start()
         meta = {"config_sha256": config_sha256, "preserve_raw": preserve_raw, "resolved": resolved}
         sealed, records, dropped = 0, 0, 0
+        sizes: dict[str, int] = {}  # each window's size, read once, for retain: {bytes}
         first: str | None = None
         outcome: WindowOutcome | None = None
         previous, carried = start.previous, start.after
@@ -507,6 +517,7 @@ class Stream:
                 first = first or outcome.id
                 if on_window is not None:
                     on_window(outcome)
+                self._retain(mission_dir, plan, outcome, sizes)
                 if not isinstance(window.end, WindowEnd) or window.end.reason == "until":
                     break
                 if window.end.index == last:
@@ -770,6 +781,59 @@ class Stream:
             since = None
         gap = None if after is not None else Gap(since, self._clock.now(), resumed=False)
         return _Start(index, last.name, after, gap)
+
+    def _retain(
+        self, mission_dir: Path, plan: StreamPlan, sealed: WindowOutcome, sizes: dict[str, int]
+    ) -> None:
+        """Retire the sealed windows ``plan.retain`` does not keep, oldest first, once
+        ``sealed`` is: each that ``windows`` leaves out, that closed more than ``seconds``
+        before it, or that the newest windows' ``bytes`` leave no room for. The newest is
+        always kept, and a window not sealed is never retired. Each costs the windows the
+        rules look at; the sizes are read once a run."""
+        rule = plan.retain
+        if isinstance(rule, str):
+            return
+        windows = self._archives.archives(mission_dir, stream=plan.name)
+        going: set[str] = set()
+        if rule.windows is not None:
+            going.update(window.name for window in windows[: -rule.windows])
+        now = datetime.fromisoformat(sealed.closed_at)
+        if rule.seconds is not None:
+            cutoff = now - timedelta(seconds=rule.seconds)
+            for window, after in zip(windows, windows[1:], strict=False):
+                closed = window_opened(after.name)  # a window closes as the next opens
+                if closed is not None and closed < cutoff:
+                    going.add(window.name)
+        if rule.bytes is not None:
+            held = 0
+            for at, window in enumerate(reversed(windows)):
+                if window.name not in sizes:
+                    sizes[window.name] = self._archives.size(window)
+                held += sizes[window.name]
+                if held > rule.bytes and at > 0:
+                    going.update(w.name for w in windows[: len(windows) - at])
+                    break
+        for window in windows[:-1]:
+            if window.name not in going:
+                continue
+            meta = self._archives.read_meta(window)
+            stream = _stream_meta(meta)
+            if stream is None or self._archives.state(window) == "writing":
+                continue  # never sealed: kept, as what a dead writer left
+            [source] = stream.get("sources") or [{}]
+            tombstone = {
+                "id": window.name,
+                "index": stream.get("index"),
+                "opened_at": stream.get("opened_at"),
+                "closed_at": stream.get("closed_at"),
+                "closed_by": stream.get("closed_by"),
+                "records": source.get("records"),
+                "dropped": source.get("dropped"),
+                "retired_at": now.isoformat(),
+                "rule": rule.model_dump(exclude_none=True),
+            }
+            self._archives.retire(window, tombstone)
+            sizes.pop(window.name, None)
 
     def _warn_overflow(self, plan: StreamPlan, dropped: int, emit: EventCallback) -> None:
         """One ``stream_overflow`` warning for the run, its counts kept current."""

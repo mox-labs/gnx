@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Final, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -257,6 +257,18 @@ def window_id(index: int, opened: datetime) -> str:
     """A window's id: its index, then when it opened (``00000003-2026-10-24-010203-456789``).
     Unique by construction in its stream, which one writer at a time extends."""
     return f"{index:0{WINDOW_INDEX_DIGITS}d}-{opened.strftime(ARCHIVE_ID_FORMAT)}"
+
+
+def window_opened(name: str) -> datetime | None:
+    """When a window opened, as its id says (UTC); None for a name that is not a window's
+    id."""
+    found = _WINDOW_ID.match(name)
+    if found is None:
+        return None
+    try:
+        return datetime.strptime(found.group(2), ARCHIVE_ID_FORMAT).replace(tzinfo=UTC)
+    except ValueError:
+        return None
 
 
 def window_index(name: str) -> int | None:

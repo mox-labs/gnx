@@ -160,6 +160,21 @@ class ArchiveStore(Protocol):
         """The names of the mission's streams, sorted."""
         ...
 
+    def size(self, archive: Path) -> int:
+        """The bytes ``archive`` takes where it is stored."""
+        ...
+
+    def retire(self, archive: Path, tombstone: dict[str, Any]) -> None:
+        """Remove a sealed window of a stream, as its stream's ``retain:`` says, and keep
+        ``tombstone`` (what it was, and why it went) in its place, so its absence reads as
+        retention. The tombstone is kept before the window goes. For a stream this writer
+        holds."""
+        ...
+
+    def retired(self, mission_dir: Path, stream: str) -> list[dict[str, Any]]:
+        """The tombstones of the stream's retired windows, oldest first."""
+        ...
+
     def last_record(self, archive: Path, output: str) -> dict[str, Any] | None:
         """The last whole record of the table ``output``, sealed or left unsealed by a writer
         that died; None when it has none. A torn last line, a write a dying writer cut short,
