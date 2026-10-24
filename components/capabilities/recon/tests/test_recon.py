@@ -896,6 +896,26 @@ class TestAnArchiveSaysWhetherItIsBeingWritten:
         assert raised.value.kind == "store" and raised.value.fix
         assert sorted(p.name for p in (tmp_path / "archive").iterdir()) == [first.name]
 
+    def test_an_archive_id_taken_while_this_one_is_made_is_refused_as_store(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review (Dijkstra): the check that an id is free and the rename into place are not
+        one step; a survey taking the same id between them made the rename raise a bare
+        OSError. It is a ``store`` error with a fix, and nothing of this one is left."""
+        real = Path.rename
+
+        def raced(self: Path, target: Any) -> Path:
+            Path(target).mkdir()
+            (Path(target) / "meta.yaml").write_text("tables: []\n")  # the other survey's
+            return real(self, target)
+
+        monkeypatch.setattr(Path, "rename", raced)
+        with pytest.raises(recon.ReconError) as raised:
+            ArchiveFiles(SystemClock()).create(tmp_path, "2026-01-02-030405-000001")
+        monkeypatch.undo()
+        assert raised.value.kind == "store" and raised.value.fix
+        assert [p.name for p in (tmp_path / "archive").iterdir()] == ["2026-01-02-030405-000001"]
+
     def test_a_reader_testing_the_lock_as_the_writer_takes_it_cannot_stop_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

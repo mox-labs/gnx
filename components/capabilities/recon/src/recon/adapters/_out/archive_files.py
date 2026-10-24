@@ -127,15 +127,19 @@ class ArchiveFiles:
         descriptor = _hold(making / WRITER_LOCK)
         try:
             (making / INCOMPLETE_MARKER).write_text("")
+            taken = ReconError(
+                f"archive {archive_id} already exists in {archive.parent}; an archive is "
+                "never written twice",
+                kind="store",
+                fix="survey again: a new survey's archive is named for the moment it starts",
+                details={"archive": str(archive)},
+            )
             if archive.exists():
-                raise ReconError(
-                    f"archive {archive_id} already exists in {archive.parent}; an archive is "
-                    "never written twice",
-                    kind="store",
-                    fix="survey again: a new survey's archive is named for the moment it starts",
-                    details={"archive": str(archive)},
-                )
-            making.rename(archive)
+                raise taken
+            try:
+                making.rename(archive)
+            except OSError as exc:  # another survey took the id since it was checked
+                raise taken from exc
         except BaseException:
             os.close(descriptor)
             for leftover in (making / WRITER_LOCK, making / INCOMPLETE_MARKER):
