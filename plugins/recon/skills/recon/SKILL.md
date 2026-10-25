@@ -126,6 +126,7 @@ Documents name their shape in `schema`: `recon.v1.plan`, `recon.v1.survey`, `rec
 preserve_raw: false            # true: keep every fetched body in the archive's capture log
 deadline: 600                  # optional: seconds the whole survey may take (> 0)
 schedule: {every: 600, missed: once}   # optional: the OS scheduler runs it
+subscriptions: [{name, output, match, deliver}]  # who is told what changed; -r subscriptions
 catalog:                       # where to look; optional
   - name: <source>             # required, unique
     type: api                  # api | web | local | mcp, or a kind an installed type adds

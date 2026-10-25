@@ -15,7 +15,7 @@ a schedule's last tick ``last_tick``).
 ``source`` is a catalog source's name (a setting's provenance is its ``origin``), ``streams``
 the stream statuses (a plan's directories are ``stream_paths``), ``captures`` a count (whether
 a plan keeps captures is its ``preserve_raw``), ``skipped`` the sources a plan passed over (a
-read's retired windows are its ``retired_range``, and why a tick ran no survey its
+read's retired windows (or archives) are its ``retired_range``, and why a tick ran no survey its
 ``skipped_by``, as a window's close is its ``closed_by``). ``status`` is an outcome: a survey's
 ``complete`` or ``incomplete``, a table's ``ok`` or ``error``. The capture line
 (:class:`Capture`) is the format other tools write, versioned by its own schema, and keeps

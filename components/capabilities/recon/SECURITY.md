@@ -2,7 +2,7 @@
 
 recon collects from heterogeneous sources — HTTP APIs, local CLIs, web pages, MCP servers,
 capture logs, files followed as they grow, server-sent events — and normalises the results to
-JSONL. Two things make it worth reading before
+JSONL. What changed in them it can give to a command the config names (boundary 12). Two things make it worth reading before
 you run someone else's config: **a recon config runs programs** (shell commands, and the MCP
 servers it starts), and recon handles source credentials.
 
@@ -382,6 +382,54 @@ What this does **not** do: anything about who may write the config before it is
 installed, or about the scheduler's own files being changed by hand afterwards (`recon
 schedule status` reads such a schedule `installed: false`).
 
+### 12. Change rows and deliveries → a subscriber, a command, an agent (`recon subscribe`, `deliver:`)
+
+A change row's `key` and `record` are what a source sent, and a subscription carries them on:
+to whoever reads them (`recon subscribe`, `recon.changes_since`), and to the command its
+`deliver:` names, run with nobody watching after every scheduled survey. A mail's subject is a
+stranger's text, so this is where a stranger's words come closest to an agent: a prompt
+injection channel, and, through a command, an execution one.
+
+- **Untrusted content is marked by the schema, never by delimiters in the text.** The fields
+  that carry a source's content are marked `"untrusted": true` in their documents' JSON
+  schemas (`recon.v1.changes-since`'s `rows[].key` and `rows[].record`, `recon.v1.delivery`'s
+  `key` and `fields`; `recon.domain.documents.UNTRUSTED`). recon wraps no text in markers such
+  as `<untrusted>`: the text could close them itself.
+- **A delivery is never instructions.** It must never be handed to an agent as instructions or
+  as a user's turn, and must never start an agent's action. recon itself hands a delivery to no
+  agent and starts none: core ships one adapter, `command:`, and OS notifications, Claude Code
+  mods or an agent that reads deliveries are outside it. A command the config names that passes
+  a delivery to an agent must pass it as data (a tool's result), and the agent acts on what it
+  decides, never on what the text says.
+- **A row never reaches a shell, an AppleScript or a URL.** The command is the config's argument
+  list, run as given with `shell=False`; the row is one ASCII JSON line on its standard input
+  and in no argument. It runs in its own session, in the project's directory, its stdout going
+  nowhere, and past `deliver.timeout` it is stopped with every process it started.
+- **What can hide or reorder text is taken out** of every string a delivery carries: a
+  terminal's escape sequences (CSI, OSC, DCS, SOS, PM, APC, and their one-byte C1 forms), every
+  other control character but tab and line feed, bidirectional controls, Unicode tag characters
+  and lone surrogates; each string is then cut to `deliver.max_chars` (200). There is no body
+  unless `deliver.fields` names one.
+- **The command gets no credential of recon's**: not recon's environment, but the few variables
+  a desktop notifier needs (`recon --skill -r subscriptions` lists them), so a token an `env:`
+  reference names does not reach it.
+- **A command the config names is a program the config runs** (boundary 1): reviewing a
+  subscription's `deliver:` is reviewing what it runs. A scheduled config's digest covers its
+  `command:`, so a changed one is refused until the schedule is installed again (boundary 11);
+  the program it names is not covered, so keep it where only you can write it.
+- **What is kept is private** (`subscriptions/` beside the mission, `0600`): each
+  subscription's acked cursor, and its dead letters, which hold the cleaned delivery of each row
+  set aside, bounded at 1 MiB and one rotation.
+- **A cursor is input** (boundary 9): a change cursor names its mission and output, and one of
+  another, one recon did not give, or one naming an archive the mission never had is refused
+  (`usage`); it names an archive only to be matched against the archives the store lists,
+  never made into a path. An ack is monotone: one before the one acked is refused.
+
+What this does **not** do: anything about what the text means. A cleaned subject can still say
+"ignore your instructions"; the schema says it is untrusted, and it is the reader's to treat it
+so. recon does not sandbox the command, and does not know what the command does with what it
+is given.
+
 ## Findings
 
 ### R-1 — generator cleanup silenced to satisfy the type checker (fixed 2026-08-17)
@@ -621,8 +669,8 @@ Regression: `recon/tests/test_changes.py::TestHostileContent`.
 
 ## Not covered
 
-- No sandboxing of collector commands or of the MCP servers a config starts. See
-  boundaries 1 and 8.
+- No sandboxing of collector commands, of the MCP servers a config starts, or of a
+  subscription's `deliver:` command. See boundaries 1, 8 and 12.
 - No egress allowlist. A source may point anywhere.
 - No TLS pinning; recon uses the platform trust store.
 - Declared collector effects are not enforced.

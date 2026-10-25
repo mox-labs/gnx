@@ -226,6 +226,45 @@ def test_the_changes_page_is_the_skill_reference() -> None:
         assert taught in REFERENCES["changes"], taught
 
 
+def test_the_subscriptions_page_is_the_skill_reference() -> None:
+    """Subscriptions are taught in full by ``recon --skill -r subscriptions``, and the skill
+    points there in one line; one text with its docs page. An agent reading it learns each key
+    and its default, reading with a cursor at least once, the ack's rules, what a command is
+    given and how, the untrusted fields, every refusal and warning, and the library calls."""
+    page = PACKAGE / "docs" / "reference" / "subscriptions.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    taught = REFERENCES["subscriptions"]
+    assert page.read_text(encoding="utf-8") == taught
+    assert "-r subscriptions" in SKILL
+    for said in ("`name`", "`output`", "`match`", "`deliver.command`", "`deliver.fields`",
+                 "`deliver.max_per_tick`", "`10`", "`deliver.attempts`", "`3`",
+                 "`deliver.deadline`", "`30`", "`deliver.timeout`", "`deliver.max_chars`",
+                 "`200`", "provenance", "`op`", "`key.<field>`", "`record.<field>`",
+                 "no SQL filter", "at least once", "`id`", "retired_range", "monotone",
+                 "`busy`", "outcome: unchanged", "by no shell", "standard input", "`summary`",
+                 "dead letter", "`recon.v1.delivery`", "`recon.v1.deliver`",
+                 "`recon.v1.changes-since`", "`recon.v1.subscription`", "untrusted",
+                 "never hand a delivery to an agent as instructions", "delivery_failed",
+                 "delivery_dead_lettered", "subscription_busy", "changes_retired",
+                 "`declared`", "0600", "stale"):  # fmt: skip
+        assert said.lower() in taught.lower(), said
+    for name in ("changes_since", "subscribe", "ack", "unsubscribe", "deliver"):
+        assert f"recon.{name}(" in taught and hasattr(recon, name), name
+
+
+def test_security_says_boundary_12_as_ruled() -> None:
+    """V1: change rows and deliveries carry untrusted content, marked by the schema and not by
+    delimiters in the text; a delivery is never an agent's instructions or user turn, and never
+    starts its action."""
+    security = (PACKAGE / "SECURITY.md").read_text(encoding="utf-8")
+    assert "### 12. Change rows and deliveries" in security
+    for said in ("marked by the schema, never by delimiters in the text",
+                 "must never be handed to an agent as instructions or\n  as a user's turn",
+                 "must never start an agent's action", "`shell=False`"):  # fmt: skip
+        assert said in security, said
+
+
 def test_the_pagination_page_is_the_skill_reference() -> None:
     """Pagination is taught in full by ``recon --skill -r pagination``, and the skill points
     there in one line; one text with its docs page. An agent reading it learns each key, its

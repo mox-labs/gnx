@@ -81,6 +81,10 @@ recon schedule install|remove <mission> [--platform <p>]
                                                        as its schedule: says; or stop it
 recon schedule list|status [<mission>]                what is installed; each schedule's
                                                        last tick, lateness and skips
+recon subscribe <mission> <name> [--cursor <c>]        what changed, as a subscription says
+recon ack <mission> <name> <cursor>                    move its cursor on, never back
+recon unsubscribe <mission> <name>                     forget what it acked
+recon deliver <mission> [--subscription <name>]        give each row to its command
 recon --skill [-r <reference>]                         print the skill (for Claude)
 ```
 
@@ -169,12 +173,12 @@ A span that failed has `status: error`, a `message` in recon's own words that qu
 
 - **Not an agent.** Recon doesn't use an LLM during execution. It runs the config you wrote. Intelligence lives outside the tool.
 - **Not a research autopilot.** Recon produces structured data; synthesis stays with Claude and with the human.
-- **Not a message bus.** A survey asks each source what its mission says, writes the answers into one timestamped archive, and ends. A source that does not end is collected as a stream, into windows each sealed as an archive (`recon stream`), and a stream runs one window unless told otherwise. What either writes can be read while it is written (`recon watch`, `recon watch --stream`, `recon.read_since`), as the archives' own files; recon pushes nothing to subscribers.
+- **Not a message bus.** A survey asks each source what its mission says, writes the answers into one timestamped archive, and ends. A source that does not end is collected as a stream, into windows each sealed as an archive (`recon stream`), and a stream runs one window unless told otherwise. What either writes can be read while it is written (`recon watch`, `recon watch --stream`, `recon.read_since`), as the archives' own files. What changed is read across the archives by a subscription, from a cursor its reader holds, at least once (`recon subscribe`, `recon ack`), or given to a command the config names, row by row, after a survey (`recon deliver`, and each scheduled tick); there is no broker, no push channel and no daemon, and a delivery is data, never an agent's instruction (`recon --skill -r subscriptions`).
 - **Not a scheduler.** A mission's `schedule:` is kept by the operating system's own scheduler (launchd, systemd's user timers, or cron), onto which `recon schedule install` projects it; there is no recon daemon. Each tick is one survey, held to the config that was installed (`recon --skill -r schedules`).
 
 ## Design
 
-Library first, hexagonal. `import recon` is the API: `recon.init`, `plan`, `survey`, `stream`, `status`, `query`, `read_since`, `templates`, `capture` each return a versioned document (a frozen pydantic record, `recon.SurveyDocument` and its siblings) whose `.document()` is what the CLI prints under `--json`, or raise an error whose `kind` says what to do. Each takes `root=`, the project its missions live in, so a program need not change directory: `recon.survey("m", root=Path("~/src/app").expanduser())`. `ConfigError` is also a `ValueError` and `NotFoundError` a `KeyError`. The CLI calls those names and nothing else.
+Library first, hexagonal. `import recon` is the API: `recon.init`, `plan`, `survey`, `stream`, `status`, `query`, `read_since`, `changes_since`, `subscribe`, `ack`, `deliver`, `templates`, `capture` each return a versioned document (a frozen pydantic record, `recon.SurveyDocument` and its siblings) whose `.document()` is what the CLI prints under `--json`, or raise an error whose `kind` says what to do. Each takes `root=`, the project its missions live in, so a program need not change directory: `recon.survey("m", root=Path("~/src/app").expanduser())`. `ConfigError` is also a `ValueError` and `NotFoundError` a `KeyError`. The CLI calls those names and nothing else.
 
 The domain holds the frozen Pydantic models, the normalize language, and the ports, each hiding a decision likely to change: `MissionStore` (where missions live, and that they are YAML), `ArchiveStore` (how an archive is stored), `ArchiveQuery` (the SQL engine and its sandbox), `Clock`, `Requester` (HTTP), `ShellRunner`, `DocumentConverter`, `CaptureLog` and `EventSink` (where telemetry goes). The application plans a mission (`plan.py`), builds a survey's collectors and holds every type to the same rules (`collectors.py`: only the types the mission uses, each seeing only the environment it declares, `normalize:` applied to every type), runs a survey over the ports (`survey.py`), runs a stream through its window writer, a bounded buffer and a thread that reads its source (`stream.py`), and composes the operations (`use_cases.py`). Outbound adapters implement the ports with YAML files, JSONL directories, DuckDB, httpx2, subprocess, markitdown and OpenTelemetry, and the `mcp` collector type is FastMCP's client on the MCP SDK; `composition.py` is the one place they meet, and holds no policy. Its `root()` binds each port to its adapter unless it is given one (the clock, the plugins, the archive store, the survey's requester, the shell, the converter), so a test's root is recon's own with fakes, and the command line runs over a root passed to it as `main(obj=...)`. `layers.json`, run by `tests/test_layering.py`, holds the import rules, and `tests/test_determinism.py` the contract that the same mission and the same answers give the same records.
 
@@ -203,10 +207,11 @@ The tests run offline, except the live integration tests against OpenAlex, arXiv
 - [docs/reference/pagination.md](docs/reference/pagination.md) — `paginate:` on an `api` collector: `link`, `header`, `cursor`, `offset`; every stop, what it records, every default and refusal
 - [docs/reference/changes.md](docs/reference/changes.md) — `changes:`: what changed in a table since its baseline, as a table of its own; the key index, the mission's key, every default and refusal
 - [docs/reference/streaming.md](docs/reference/streaming.md) — streams: `window:`, `buffer:`, `retain:`, the `tail` and `sse` types, `recon stream`, `--stream`; every default and refusal
+- [docs/reference/subscriptions.md](docs/reference/subscriptions.md) — subscriptions: `subscriptions:`, `match:`, `recon.changes_since`, `recon subscribe`, `ack`, `unsubscribe`, and `deliver:` with `recon deliver`: the cursor, the ids, what a command is given; every default and refusal
 - [docs/reference/schedules.md](docs/reference/schedules.md) — schedules: `schedule:`, `recon schedule install`, `list`, `remove`, `status` and `tick`, what is projected onto launchd, systemd and cron, the tick's log; every default and refusal
 - [docs/design/2026-10-19-record.md](docs/design/2026-10-19-record.md) — the design judgments behind 0.11.0 and 0.12.0, and recon's claims
 - [CHANGELOG.md](CHANGELOG.md)
-- `recon --skill` — the skill Claude uses to author missions; `-r normalize-spec`, `-r config-patterns`, `-r capture-format`, `-r live-reading`, `-r streaming`, `-r pagination`, `-r changes`, `-r schedules`, `-r telemetry`, `-r errors` for the references. The plugin's copy is generated from it (`just recon-skill`).
+- `recon --skill` — the skill Claude uses to author missions; `-r normalize-spec`, `-r config-patterns`, `-r capture-format`, `-r live-reading`, `-r streaming`, `-r pagination`, `-r changes`, `-r subscriptions`, `-r schedules`, `-r telemetry`, `-r errors` for the references. The plugin's copy is generated from it (`just recon-skill`).
 
 ## License
 
