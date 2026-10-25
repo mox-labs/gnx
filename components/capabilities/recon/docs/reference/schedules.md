@@ -90,7 +90,7 @@ auth: {token: "file:mail.token", header: Authorization, prefix: "Bearer "}
 auth: {headers_helper: "/usr/bin/security find-generic-password -w -s mail-headers"}
 ```
 
-- `auth.token: file:PATH` reads the credential from a file, a relative path being relative to the mission's directory. The file must be readable by you alone (`chmod 600`): one its group or others can read is refused before anything is sent, `config`, with the `chmod` that fixes it.
+- `auth.token: file:PATH` reads the credential from a file, a relative path being relative to the mission's directory. The file must be yours alone to read and write (`chmod 600`), and the file itself, not a link: one its group or others can read or write, or a link, is refused before anything is sent, `config`, with the fix.
 - `auth.headers_helper` names a command, run once a survey within the source's `timeout`, whose standard output is a JSON object of the headers to send: a keychain read, a cloud CLI's token. Name it by an absolute path, since a tick's `PATH` is the installed one.
 - An `mcp` source takes the same: `token: file:PATH` or `headers_helper` for a remote server, `env: {NAME: file:PATH}` for what a stdio server is given; or a stdio server that holds its own token.
 

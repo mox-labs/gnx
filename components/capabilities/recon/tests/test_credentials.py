@@ -119,6 +119,27 @@ class TestFiles:
         assert f"chmod 600 {tmp_path / 'key'}" in (refused.value.fix or "")
         assert "s3cret" not in str(refused.value)
 
+    @pytest.mark.parametrize("mode", [0o620, 0o602, 0o622])
+    def test_a_file_its_group_or_others_can_write_is_refused(
+        self, tmp_path: Path, mode: int
+    ) -> None:
+        """Round-4 review M5: one who can write the file chooses the credential recon sends."""
+        _secret(tmp_path / "key", "s3cret", mode)
+        with pytest.raises(CollectionError) as refused:
+            resolve_reference("file:key", {}, tmp_path, "auth.token")
+        assert refused.value.kind == "config"
+        assert f"chmod 600 {tmp_path / 'key'}" in (refused.value.fix or "")
+
+    def test_a_link_is_refused_never_followed(self, tmp_path: Path) -> None:
+        """M5: a link is opened as itself (O_NOFOLLOW), never as what it names: whoever can
+        change the link chooses the file, and the modes checked must be the file's read."""
+        _secret(tmp_path / "real", "s3cret")
+        (tmp_path / "key").symlink_to(tmp_path / "real")
+        with pytest.raises(CollectionError) as refused:
+            resolve_reference("file:key", {}, tmp_path, "auth.token")
+        assert refused.value.kind == "config" and "link" in str(refused.value)
+        assert "s3cret" not in str(refused.value)
+
     def test_a_missing_file_is_a_config_error(self, tmp_path: Path) -> None:
         with pytest.raises(CollectionError) as missing:
             resolve_reference("file:nowhere", {}, tmp_path, "auth.token")

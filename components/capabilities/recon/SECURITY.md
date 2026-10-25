@@ -62,9 +62,11 @@ sent as a header (`auth.header`), a query parameter (`auth.param`), or both. Or
 source's `timeout`, whose standard output is a JSON object of the headers to send (a
 keychain's `security find-generic-password -w`, a cloud CLI's token). So an unattended
 survey (one an OS scheduler runs) gets its credential without a secret written into the
-scheduler's files or its environment. A `file:` its group or others can read is refused
-before anything is sent (`config`, with the `chmod 600` that fixes it): a credential every
-account on the host can read is not kept as one. A helper runs with recon's rights and
+scheduler's files or its environment. A `file:` its group or others can read or write is
+refused before anything is sent (`config`, with the `chmod 600` that fixes it): a credential
+every account on the host can read is not kept as one, and one another can write is theirs to
+choose. A link is refused too, never followed (`O_NOFOLLOW`): the modes judged are the file's
+read, and whoever can change a link cannot choose the file. A helper runs with recon's rights and
 environment, as a `cli` command does (boundary 1): name it by an absolute path. Consequences:
 
 - The secret is attached to requests to **whatever URL that source declares**. A config

@@ -19,7 +19,9 @@ helper run once a survey, however many requests (pages, reconnects) a source get
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -34,8 +36,10 @@ if TYPE_CHECKING:
     from recon.domain.models import SourceEntry
     from recon.domain.shell import ShellRunner
 
-#: The permission bits that let a file's group or others read it.
+#: The permission bits that let a file's group or others read it, or write it (and so choose
+#: the credential recon sends: round-4 review M5).
 _READABLE_BY_OTHERS = 0o044
+_WRITABLE_BY_OTHERS = 0o022
 
 
 def resolve_reference(
@@ -51,15 +55,35 @@ def resolve_reference(
     path = Path(name).expanduser()
     path = path if path.is_absolute() else mission_dir / path
     try:
-        mode = path.stat().st_mode
-        if mode & _READABLE_BY_OTHERS:
+        # The file itself, never what a link names (O_NOFOLLOW): the modes checked are those
+        # of the file read, and whoever can change a link cannot choose the file.
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
             raise CollectionError(
-                f"{where}: the file {path} can be read by its group or by others (mode "
+                f"{where}: {path} is a link, and recon reads a credential from the file itself, "
+                "never through a link",
+                kind="config",
+                fix=f"name the file it links to, or put the credential in {path} itself, chmod 600",
+            ) from None
+        raise CollectionError(
+            f"{where}: the file {path} could not be read: {type(exc).__name__}",
+            kind="config",
+            fix=f"put the credential in {path}, or correct the path (a relative one is "
+            "relative to the mission's directory)",
+        ) from exc
+    try:
+        mode = os.fstat(descriptor).st_mode
+        if mode & (_READABLE_BY_OTHERS | _WRITABLE_BY_OTHERS):
+            how = "read" if mode & _READABLE_BY_OTHERS else "written"
+            raise CollectionError(
+                f"{where}: the file {path} can be {how} by its group or by others (mode "
                 f"{mode & 0o777:o}), so recon does not take a credential from it",
                 kind="config",
                 fix=f"chmod 600 {path}",
             )
-        return path.read_text(encoding="utf-8").strip()
+        with os.fdopen(descriptor, encoding="utf-8", closefd=False) as file:
+            return file.read().strip()
     except OSError as exc:
         raise CollectionError(
             f"{where}: the file {path} could not be read: {type(exc).__name__}",
@@ -67,6 +91,8 @@ def resolve_reference(
             fix=f"put the credential in {path}, or correct the path (a relative one is "
             "relative to the mission's directory)",
         ) from exc
+    finally:
+        os.close(descriptor)
 
 
 def helper_headers(command: str, shell: ShellRunner, timeout: float, source: str) -> dict[str, str]:
