@@ -1,5 +1,15 @@
 # Changelog — ix
 
+## Unreleased
+
+### Fixed
+
+- **`examples/delay-server` accepts every connection that arrives at once** (up to 128).
+  Its listen queue held 5, so the trials-in-flight control's four runs, opening sixteen
+  connections together, could have some dropped. The client retries a second later, and
+  that second read as the server's latency, biasing the control. Requests past
+  `--capacity` still wait in the server.
+
 ## 0.7.0 — 2026-10-24
 
 `docs/design/2026-10-19-record.md` has the reasons for this release's changes, in §27.

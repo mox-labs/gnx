@@ -107,7 +107,10 @@ Each P report lists `trials_in_flight: 4 in place of 1 (--trials-in-flight)` und
 The control's kinds forbid overlap, so ix refuses it a width above one. Each of its P runs
 is four `ix run`s of the same file started together against the one server, which serves
 four requests at once (`--capacity 4`) and queues the rest, as a service with four workers
-does. The first of the four is the P run that is paired; the others are its load.
+does. The first of the four is the P run that is paired; the others are its load. The
+server accepts all sixteen connections the four runs open at once, so the rest queue in the
+server: a connection its listen queue had no room for would be dropped, and the client's
+retry a second later would read as latency the workers never caused.
 
 ```bash
 python3 examples/delay-server/server.py --port 18474 --delay-ms 40 --capacity 4 &
