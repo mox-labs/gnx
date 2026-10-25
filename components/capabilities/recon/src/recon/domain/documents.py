@@ -46,6 +46,12 @@ SurveyStatus = Literal["complete", "incomplete"]
 #: there byte for byte and left it, or overwrote a different one (``--replace``).
 InitOutcome = Literal["created", "unchanged", "replaced"]
 
+#: Marks a field of a published document whose value is a source's content: text a
+#: stranger may have written (a mail's subject), to be read as data, never as instructions.
+#: The schema says it (``"untrusted": true`` in the field's JSON schema), not delimiters in
+#: the text, which the text itself could forge (SECURITY.md, boundary 12).
+UNTRUSTED: dict[str, Any] = {"untrusted": True}
+
 
 class Document(BaseModel):
     """Base of every published record: frozen, unknown keys refused, ``schema`` by alias."""
@@ -381,6 +387,77 @@ class SubscriptionDocument(Document):
     dead_letters: int = 0
 
 
+#: What a delivery gives a command: one change row, or one row counting the rows past
+#: ``deliver.max_per_tick`` that it gives together.
+DeliveryKind = Literal["change", "summary"]
+
+
+class Delivery(Document):
+    """What a subscription's command is given on its standard input, as one JSON line: one
+    change row (``kind: change``), or one row that counts the rest of a delivery's rows
+    (``kind: summary``), so a burst of changes is a few runs of the command, never one a
+    change.
+
+    ``id`` names it: a change's is its row's (``recon.v1.changes-since``), so a command given
+    it twice (delivery is at least once) drops it by its ``id``; a summary's is a digest of the
+    first and last row it counts. ``key`` and ``fields`` are the source's content, **untrusted**
+    (their schema says so), each string cleaned of a terminal's escapes, bidirectional
+    controls and tag characters and cut to ``deliver.max_chars``: data, never instructions,
+    never an agent's prompt or a user's turn, never a reason to act. No body unless
+    ``deliver.fields`` names one."""
+
+    schema_: Literal["recon.v1.delivery"] = Field(default="recon.v1.delivery", alias="schema")
+    kind: DeliveryKind
+    mission: str
+    subscription: str
+    output: str
+    id: str
+    #: A change's archive (or window); a summary's, its last row's.
+    archive: str
+    #: A change's op; null for a summary.
+    op: ChangeOp | None = None
+    #: A change's key, ``{field: value}``; null for a summary.
+    key: dict[str, Any] | None = Field(default=None, json_schema_extra=UNTRUSTED)
+    #: The record's fields ``deliver.fields`` names, each null when the record lacks it (a
+    #: delete has no record); empty for a summary.
+    fields: dict[str, Any] = Field(default_factory=dict, json_schema_extra=UNTRUSTED)
+    #: A summary's: how many rows it counts, and the ids of its first and last.
+    count: int | None = None
+    first: str | None = None
+    last: str | None = None
+
+
+class DeliveryRun(Document):
+    """One delivery of one subscription: how many rows it gave one at a time and acked
+    (``delivered``), how many it gave as one counted row (``coalesced``), how many it set aside
+    after their last attempt (``dead_lettered``), the cursor acked after it, and whether rows
+    are left for the next delivery (``more``: its deadline, or a row its command failed,
+    stopped it). ``skipped_by: busy`` when another consumer held the subscription."""
+
+    subscription: str
+    output: str
+    delivered: int = 0
+    coalesced: int = 0
+    dead_lettered: int = 0
+    skipped_by: Literal["busy"] | None = None
+    cursor: str | None = None
+    more: bool = False
+    #: The row its command failed this time, to be given again at the next delivery.
+    failing: SubscriptionFailing | None = None
+    retired_range: WindowRange | None = None
+
+
+class DeliverDocument(Document):
+    """A delivery of a mission's subscriptions that have ``deliver:``: one run each, in config
+    order. A row a command failed is a warning (``delivery_failed``, or
+    ``delivery_dead_lettered`` once set aside), never the delivery's failure: the rest go on."""
+
+    schema_: Literal["recon.v1.deliver"] = Field(default="recon.v1.deliver", alias="schema")
+    mission: str
+    deliveries: list[DeliveryRun]
+    warnings: list[dict[str, Any]] = []
+
+
 class MissionStatus(Document):
     name: str
     config: str
@@ -493,13 +570,6 @@ class RecordsSince(Document):
     #: from the cursor's to the one before ``archive`` (``last`` is None when no
     #: tombstone names it). Their records, and the rest of the cursor's window, are gone.
     retired_range: WindowRange | None = None
-
-
-#: Marks a field of a published document whose value is a source's content: text a
-#: stranger may have written (a mail's subject), to be read as data, never as instructions.
-#: The schema says it (``"untrusted": true`` in the field's JSON schema), not delimiters in
-#: the text, which the text itself could forge (SECURITY.md, boundary 12).
-UNTRUSTED: dict[str, Any] = {"untrusted": True}
 
 
 class ChangeRow(Document):
@@ -767,6 +837,9 @@ class TickDocument(Document):
     skipped_by: Skipped | None
     survey: SurveyDocument | None
     warnings: list[dict[str, Any]] = []
+    #: The delivery of the mission's subscriptions that have ``deliver:``, run after the survey
+    #: sealed its archive; null when it has none, or ran no survey.
+    deliveries: DeliverDocument | None = None
 
 
 class ScheduleStatus(Document):

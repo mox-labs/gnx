@@ -318,18 +318,21 @@ class TestLibrarySurface:
         steered while it runs, ``StreamStop``, is declared too. Changed (ruling S3): the
         ``schedule_*`` operations and the two documents they return. Changed (ruling R1):
         ``changes_since`` and its ``ChangesSince``. Changed (ruling R3): ``subscribe``,
-        ``ack``, ``unsubscribe`` and the ``SubscriptionDocument`` the last two return."""
+        ``ack``, ``unsubscribe`` and the ``SubscriptionDocument`` the last two return; (ruling
+        R4) ``deliver`` and its ``DeliverDocument``."""
         operations = {"init", "plan", "survey", "status", "query", "templates", "capture",
                       "survey_failure", "error_document", "skill", "skill_references",
                       "configure_telemetry", "read_since", "watch", "stream",
                       "stream_failure", "schedule_install", "schedule_list",
                       "schedule_remove", "schedule_status", "schedule_tick",
-                      "changes_since", "subscribe", "ack", "unsubscribe"}  # fmt: skip
+                      "changes_since", "subscribe", "ack", "unsubscribe",
+                      "deliver"}  # fmt: skip
         documents = {"MissionDocument", "PlanDocument", "SurveyDocument", "TableOutcome",
                      "StatusDocument", "QueryRows", "TemplatesDocument", "Capture",
                      "ErrorDocument", "RecordsSince", "StreamDocument",
                      "WindowOutcome", "ScheduleDocument", "SchedulesDocument",
-                     "TickDocument", "ChangesSince", "SubscriptionDocument"}  # fmt: skip
+                     "TickDocument", "ChangesSince", "SubscriptionDocument",
+                     "DeliverDocument"}  # fmt: skip
         errors = {"ReconError", "UsageError", "ConfigError", "ConflictError", "NotFoundError",
                   "QueryError", "CollectionError", "Problem"}  # fmt: skip
         tables = {"ERROR_KINDS", "EXIT_CODES", "EXIT_MEANINGS", "EXIT_NEXT", "PROBLEM_KINDS",
@@ -492,4 +495,5 @@ def test_the_public_names_are_the_ones_callers_use() -> None:
         "ScheduleDocument", "SchedulesDocument", "TickDocument",
         "changes_since", "ChangesSince",
         "subscribe", "ack", "unsubscribe", "SubscriptionDocument",
+        "deliver", "DeliverDocument",
     }  # fmt: skip

@@ -36,6 +36,7 @@ from recon.domain.documents import (
     BrokenPluginInfo,
     ChangesSince,
     CollectorTypeInfo,
+    DeliverDocument,
     InstalledPlugins,
     MissionDocument,
     MissionStatus,
@@ -93,7 +94,7 @@ if TYPE_CHECKING:
     from recon.domain.paginate import PageLog
     from recon.domain.schedule import Platform, ScheduleHost, Scheduler, ScheduleStore
     from recon.domain.stream import GapLog, RetainSpec, Stop, WindowSpec
-    from recon.domain.subscriptions import SubscriptionStore
+    from recon.domain.subscriptions import Deliverer, SubscriptionStore
     from recon.domain.telemetry import Channel, EventCallback, Telemetry
 
 
@@ -163,6 +164,7 @@ class Recon:
         key_join: KeyJoin | None = None,
         memory_keys: int = MEMORY_KEYS,
         subscriptions: SubscriptionStore | None = None,
+        deliverer: Deliverer | None = None,
     ) -> None:
         """``root_found_by`` is how the composition root found the project root:
         ``argument`` (the caller named it), ``repository`` (the nearest ancestor holding
@@ -174,8 +176,9 @@ class Recon:
         recon command and PATH, and ``local``, the clock's time as the host's local time;
         without them, the ``schedule_*`` operations are refused. ``key_join`` joins a change
         detection's comparisons of more than ``memory_keys`` keys (None: all in memory).
-        ``subscriptions`` keeps what each subscription acked (None: the ``subscribe``, ``ack``
-        and ``unsubscribe`` operations are refused)."""
+        ``subscriptions`` keeps what each subscription acked (None: the ``subscribe``, ``ack``,
+        ``unsubscribe`` and ``deliver`` operations are refused); ``deliverer`` gives a
+        subscription's deliveries to its ``command:`` (None: ``deliver`` is refused)."""
         self._missions = missions
         self._archives = archives
         self._query = query
@@ -204,13 +207,15 @@ class Recon:
         self._memory_keys = memory_keys
         self._subscriptions = (
             None
-            if subscriptions is None
+            if subscriptions is None or deliverer is None
             else Subscriptions(
                 store=subscriptions,
                 clock=clock,
                 mission_dir=missions.mission_dir,
                 prepare=lambda name: self._prepare(name, None, False)[1],
                 reader=self._change_reader,
+                deliverer=deliverer,
+                project=missions.project,
             )
         )
 
@@ -409,18 +414,25 @@ class Recon:
 
     def _scheduled_survey(
         self, name: str, scheduled: dict[str, Any], config_sha256: str
-    ) -> SurveyDocument:
+    ) -> tuple[SurveyDocument, DeliverDocument | None]:
         """:meth:`survey` as a tick runs it, its archive's ``meta.yaml`` saying when the tick
         was due and how late it started (``scheduled``). The mission is held first; then its
         config is read once, and those bytes are what is checked against ``config_sha256``,
-        planned and run, so no config swapped after a check runs (Dijkstra, Vector F4)."""
+        planned and run, so no config swapped after a check runs (Dijkstra, Vector F4). Then,
+        the archive sealed and the mission let go, the delivery of its subscriptions that have
+        ``deliver:`` (ruling R4), by the same config's plan; None when it has none."""
         mission = self._missions.mission_dir(name)
         self._archives.hold_mission(mission)
         try:
             source, plan, _ = self._prepare(name, None, False, expect_sha256=config_sha256)
-            return self._survey(name, source, plan, None, None, scheduled=scheduled)
+            document = self._survey(name, source, plan, None, None, scheduled=scheduled)
         finally:
             self._archives.release_mission(mission)
+        assert plan.config is not None
+        delivering = any(s.deliver is not None for s in plan.config.subscriptions)
+        if self._subscriptions is None or not delivering:
+            return document, None
+        return document, self._subscriptions.deliver(name, plan=plan)
 
     def _survey(
         self,
@@ -932,6 +944,15 @@ class Recon:
         (``removed``; ``absent`` when nothing was). A subscription the config still declares
         then reads from the first archive again."""
         return self._subscribing().remove(name, subscription)
+
+    def deliver(self, name: str, *, subscription: str | None = None) -> DeliverDocument:
+        """Give each subscription with ``deliver:`` (or the one named) the rows it has not
+        acked, to its command: at most ``max_per_tick`` one at a time, the rest as one row
+        counting them, all within its ``deadline``. A row a command fails is given again next
+        time and set aside after ``attempts``, each said as a warning, never raised. Raises
+        NotFoundError for a subscription the config does not declare, UsageError for one with
+        no ``deliver:``."""
+        return self._subscribing().deliver(name, subscription)
 
     # --- status, query, templates, capture ----------------------------------------------
 

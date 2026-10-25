@@ -82,7 +82,8 @@ EXIT_MEANINGS: dict[str, str] = {
     "kept, marked incomplete",
     "store": "the survey could not finish its archive; it is kept, marked incomplete",
     "query": "the SQL failed, or reached outside the mission's archives",
-    "busy": "another recon is writing the stream, or surveying the mission",
+    "busy": "another recon is writing the stream, surveying the mission, or reading the "
+    "subscription",
     "stale": "the config changed since its schedule was installed; ticks are refused",
     "interrupted": "Ctrl-C or SIGTERM stopped the command; a survey's archive reads `ended: "
     "stopped` (a stopped `recon stream` exits 0)",
@@ -183,6 +184,13 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "env_unscheduled",
     # a scheduled mission's npx or uvx package with no exact version: fetched anew every tick
     "package_unpinned",
+    # a subscription's delivery: a row its command failed, given again at the next; a row set
+    # aside after its last attempt, so the rows after it go on; the subscription held by
+    # another consumer; archives retain: removed before their rows were delivered
+    "delivery_failed",
+    "delivery_dead_lettered",
+    "subscription_busy",
+    "changes_retired",
 )
 
 

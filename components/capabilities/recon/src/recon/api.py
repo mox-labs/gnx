@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from recon.domain.documents import (
         Capture,
         ChangesSince,
+        DeliverDocument,
         MissionDocument,
         PlanDocument,
         QueryRows,
@@ -296,6 +297,23 @@ def unsubscribe(name: str, subscription: str, *, root: Path | None = None) -> Su
     ``recon.v1.subscription``, ``outcome`` ``removed``, or ``absent`` when nothing was kept.
     While the config declares it, its next read starts from the first archive."""
     return _root(root).unsubscribe(name, subscription)
+
+
+def deliver(
+    name: str, *, subscription: str | None = None, root: Path | None = None
+) -> DeliverDocument:
+    """Give each of the mission's subscriptions with ``deliver:`` (or the one named) the rows
+    it has not acked, to its ``command:``, which gets each as one ``recon.v1.delivery`` JSON line
+    on its standard input, by no shell. ``recon.v1.deliver``.
+
+    At most ``deliver.max_per_tick`` rows (10) one at a time, each acked once its command exits
+    0; the rest as one row counting them; all within ``deliver.deadline`` (30 s), each run
+    within ``deliver.timeout`` (10 s). A row its command fails is given again next time, and
+    after ``deliver.attempts`` (3) set aside as a dead letter; each said as a warning
+    (``delivery_failed``, ``delivery_dead_lettered``), never raised. A scheduled tick runs this
+    after its survey. Raises NotFoundError for a subscription the config does not declare,
+    UsageError for one with no ``deliver:``."""
+    return _root(root).deliver(name, subscription=subscription)
 
 
 def configure_telemetry() -> list[Problem]:

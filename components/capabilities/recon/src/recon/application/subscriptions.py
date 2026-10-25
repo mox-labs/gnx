@@ -28,19 +28,22 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from recon.application.changes import canonical
-from recon.domain.archives import ARCHIVE_ID_FORMAT
+from recon.domain.archives import ARCHIVE_ID_FORMAT, READ_MAX_BYTES
 from recon.domain.changes import changes_output
 from recon.domain.documents import (
     ChangeRow,
     ChangesSince,
+    DeliverDocument,
+    Delivery,
+    DeliveryRun,
     SubscriptionDocument,
     SubscriptionFailing,
     SubscriptionStatus,
     WindowRange,
 )
-from recon.domain.errors import NotFoundError, UsageError
+from recon.domain.errors import NotFoundError, Problem, ReconError, UsageError
 from recon.domain.stream import window_index
-from recon.domain.subscriptions import SubscriptionState, matches
+from recon.domain.subscriptions import Failing, SubscriptionState, clean, matches
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -51,7 +54,12 @@ if TYPE_CHECKING:
     from recon.domain.changes import ChangeOp
     from recon.domain.clock import Clock
     from recon.domain.documents import SubscriptionOutcome
-    from recon.domain.subscriptions import SubscriptionSpec, SubscriptionStore
+    from recon.domain.subscriptions import (
+        Delivered,
+        Deliverer,
+        SubscriptionSpec,
+        SubscriptionStore,
+    )
 
 #: A change cursor names its format first: one this recon does not know is refused.
 _CURSOR = "c1"
@@ -313,7 +321,8 @@ class Subscriptions:
     never back. One consumer at a time holds a subscription; a second is refused ``busy``.
 
     ``prepare`` is a mission's plan (raising as a survey's would); ``reader`` the reader of an
-    output's change rows in it."""
+    output's change rows in it; ``deliverer`` gives a delivery to a command, run in
+    ``project``."""
 
     def __init__(
         self,
@@ -323,12 +332,16 @@ class Subscriptions:
         mission_dir: Callable[[str], Path],
         prepare: Callable[[str], Plan],
         reader: Callable[[str, str, Plan], ChangeReader],
+        deliverer: Deliverer,
+        project: Path,
     ) -> None:
         self._store = store
         self._clock = clock
         self._mission_dir = mission_dir
         self._prepare = prepare
         self._reader = reader
+        self._deliverer = deliverer
+        self._project = project
 
     def read(
         self,
@@ -455,6 +468,72 @@ class Subscriptions:
     def _dead(self, name: str, spec: SubscriptionSpec) -> int:
         return self._store.dead_letters(self._mission_dir(name), spec.name)
 
+    def deliver(
+        self, name: str, subscription: str | None = None, *, plan: Plan | None = None
+    ) -> DeliverDocument:
+        """Give the rows each subscription with ``deliver:`` has not acked to its command, or
+        the one named's alone (ruling R4): at most ``max_per_tick`` one at a time, each acked
+        once its command exits 0, then the rest it can count before its ``deadline`` as one
+        row counting them. A row its command fails waits, holding the rows after it, for the
+        next delivery, and after ``attempts`` is set aside as a dead letter, so a poison row
+        never holds the subscription for good. ``plan`` is the mission's, when the caller has
+        planned it (a tick: the config it checked). Raises NotFoundError for a subscription the
+        config does not declare, UsageError for one with no ``deliver:``."""
+        plan = plan if plan is not None else self._prepare(name)
+        assert plan.config is not None
+        declared = list(enumerate(plan.config.subscriptions))
+        if subscription is not None:
+            spec = _declared(plan, name, subscription)
+            if spec.deliver is None:
+                raise UsageError(
+                    f"subscription {subscription} has no deliver:, so there is nothing to give "
+                    "its rows to: its subscriber reads them",
+                    fix=f"recon subscribe {name} {subscription}, or give it deliver: {{command: "
+                    "[<program>, ...]}",
+                    details={"subscription": subscription},
+                )
+            declared = [(i, s) for i, s in declared if s.name == subscription]
+        runs: list[DeliveryRun] = []
+        warnings: list[Problem] = []
+        for index, spec in declared:
+            if spec.deliver is None:
+                continue
+            run, found = self._deliver(name, index, spec, plan)
+            runs.append(run)
+            warnings += found
+        return DeliverDocument(
+            mission=name, deliveries=runs, warnings=[w.document() for w in warnings]
+        )
+
+    def _deliver(
+        self, name: str, index: int, spec: SubscriptionSpec, plan: Plan
+    ) -> tuple[DeliveryRun, list[Problem]]:
+        at = f"subscriptions.{index}.deliver"
+        mission = self._mission_dir(name)
+        try:
+            self._store.hold(mission, spec.name)
+        except ReconError as busy:
+            if busy.kind != "busy":
+                raise
+            fix = busy.fix or "let the other consumer finish, then deliver again"
+            warning = Problem(at, str(busy), kind="subscription_busy", fix=fix, got=spec.name)
+            return DeliveryRun(subscription=spec.name, output=spec.output,
+                               skipped_by="busy"), [warning]  # fmt: skip
+        try:
+            return _Delivery(self, name, at, spec, plan).run()
+        except (OSError, UsageError) as exc:
+            fix = (exc.fix if isinstance(exc, UsageError) else None) or (
+                "free space where the mission is, or make it writable, then: recon deliver "
+                f"{name}"
+            )  # fmt: skip
+            warning = Problem(at, f"subscription {spec.name} was not delivered: {exc}",
+                              kind="delivery_failed", fix=fix, got=spec.name)  # fmt: skip
+            state = self._store.state(mission, spec.name)
+            return DeliveryRun(subscription=spec.name, output=spec.output, more=True,
+                               cursor=state.cursor if state else None), [warning]  # fmt: skip
+        finally:
+            self._store.release(mission, spec.name)
+
 
 def _declared(plan: Plan, name: str, subscription: str) -> SubscriptionSpec:
     """The subscription the mission's config declares by that name; NotFoundError naming those
@@ -522,3 +601,300 @@ def _document(
         failing=_failing(state),
         dead_letters=dead_letters,
     )
+
+
+#: How many rows a delivery reads at a time while it looks for the next row its ``match:``
+#: keeps, and while it counts the rows it gives as one.
+_SCAN_ROWS = 100
+_COUNT_ROWS = 1000
+
+#: The most characters of what a command said when it failed that recon keeps.
+_ERROR_CHARS = 500
+
+
+@dataclass
+class _Next:
+    """The next row a ``match:`` keeps after a position: the positions before and after it;
+    or none (``row`` None) as far as was read, ``before`` where reading stopped, and ``cut``
+    when the deadline stopped it short."""
+
+    row: ChangeRow | None
+    before: Position | None
+    after: Position | None
+    retired: WindowRange | None
+    cut: bool = False
+
+
+class _Delivery:
+    """One delivery of one subscription, held by its consumer lock while it runs."""
+
+    def __init__(
+        self, owner: Subscriptions, name: str, at: str, spec: SubscriptionSpec, plan: Plan
+    ) -> None:
+        assert spec.deliver is not None
+        self._owner = owner
+        self._store = owner._store
+        self._name = name
+        self._at = at
+        self._spec = spec
+        self._deliver = spec.deliver
+        self._mission = owner._mission_dir(name)
+        self._reader = owner._reader(name, spec.output, plan)
+        self._clock = owner._clock
+        self._started = owner._clock.monotonic()
+        self._warnings: list[Problem] = []
+        self._retired: WindowRange | None = None
+        self._acked: str | None = None
+        self._acked_at: str | None = None
+
+    def _left(self) -> float:
+        return self._deliver.deadline - (self._clock.monotonic() - self._started)
+
+    def run(self) -> tuple[DeliveryRun, list[Problem]]:
+        state = self._store.state(self._mission, self._spec.name)
+        position = _acked(self._reader, state, self._name, self._spec)
+        acked = position
+        self._acked = state.cursor if state is not None else None
+        self._acked_at = state.acked_at if state is not None else None
+        failing = state.failing if state is not None else None
+        delivered = dead = coalesced = 0
+        more = False
+        while delivered + dead < self._deliver.max_per_tick:
+            if self._left() <= 0:
+                more = True
+                break
+            found = self._next(position)
+            if found.row is None or found.before is None or found.after is None:
+                position = found.before or position
+                more = found.cut
+                break
+            row, before, after = found.row, found.before, found.after
+            done = self._give(self._change(row))
+            if done.ok:
+                delivered += 1
+                position, failing = after, None
+                self._keep(position, None)
+                continue
+            attempts = failing.attempts if failing is not None and failing.id == row.id else 0
+            attempts += 1
+            error = clean(done.error, _ERROR_CHARS)
+            if attempts >= self._deliver.attempts:
+                self._dead_letter(row, attempts, error)
+                dead += 1
+                position, failing = after, None
+                self._keep(position, None)
+                continue
+            failing = Failing(id=row.id, attempts=attempts, error=error)
+            position = before
+            self._keep(position, failing)
+            self._warnings.append(self._failed(row.id, attempts, error))
+            more = True
+            break
+        else:
+            position, coalesced, more = self._coalesce(position)
+        if position is not None and (acked is None or position.order() != acked.order()):
+            self._keep(position, failing)
+        if self._retired is not None:
+            self._warnings.append(self._gone(self._retired))
+        return (
+            DeliveryRun(
+                subscription=self._spec.name,
+                output=self._spec.output,
+                delivered=delivered,
+                coalesced=coalesced,
+                dead_lettered=dead,
+                cursor=None if position is None else self._reader.encode(position),
+                more=more,
+                failing=None
+                if failing is None
+                else SubscriptionFailing(id=failing.id, attempts=failing.attempts,
+                                         error=failing.error),
+                retired_range=self._retired,
+            ),
+            self._warnings,
+        )  # fmt: skip
+
+    def _read(self, position: Position | None, rows: int) -> ChangeRead:
+        read = self._reader.read(position, max_records=rows, max_bytes=READ_MAX_BYTES)
+        self._retired = self._retired or read.retired
+        return read
+
+    def _next(self, position: Position | None) -> _Next:
+        """The next row after ``position`` (None: from the first archive) that the
+        subscription's ``match:`` keeps."""
+        at = position or Position()
+        while True:
+            if self._left() <= 0:
+                return _Next(None, at, at, self._retired, cut=True)
+            read = self._read(at, _SCAN_ROWS)
+            for k, row in enumerate(read.rows):
+                if not matches(self._spec.match, _change(row)):
+                    continue
+                before = at if k == 0 else self._read(at, k).position
+                after = self._read(before, 1).position
+                return _Next(row, before, after, self._retired)
+            at = read.position
+            if not read.more:
+                return _Next(None, at, at, self._retired)
+
+    def _coalesce(self, position: Position | None) -> tuple[Position | None, int, bool]:
+        """The rows past ``max_per_tick``, counted as far as the deadline lets, given as one
+        row counting them; the position after them once it is, how many, and whether rows are
+        left for the next delivery."""
+        at = position
+        count = 0
+        first: ChangeRow | None = None
+        last: ChangeRow | None = None
+        cut = False
+        while True:
+            if self._left() <= 0:
+                cut = True
+                break
+            read = self._read(at, _COUNT_ROWS)
+            for row in read.rows:
+                if matches(self._spec.match, _change(row)):
+                    count += 1
+                    first = first or row
+                    last = row
+            at = read.position
+            if not read.more:
+                break
+        if not count or first is None or last is None:
+            return at, 0, cut
+        summary = self._summary(first, last, count)
+        done = self._give(summary)
+        if not done.ok:
+            self._warnings.append(
+                Problem(
+                    self._at,
+                    f"subscription {self._spec.name}'s command failed the row counting {count} "
+                    f"more change(s): {clean(done.error, _ERROR_CHARS)}",
+                    kind="delivery_failed",
+                    fix=f"they are counted again at the next delivery (recon deliver "
+                    f"{self._name}, or the schedule's next tick); run the command by hand with "
+                    "a delivery on its standard input to see why",
+                    got=summary.id,
+                )
+            )
+            return position, 0, True
+        self._keep(at, None)
+        return at, count, cut
+
+    def _give(self, delivery: Delivery) -> Delivered:
+        payload = (json.dumps(delivery.document(), ensure_ascii=True) + "\n").encode("ascii")
+        timeout = max(0.001, min(self._deliver.timeout, self._left()))
+        return self._owner._deliverer.deliver(
+            self._deliver.command, payload, timeout_s=timeout, cwd=self._owner._project
+        )
+
+    def _change(self, row: ChangeRow) -> Delivery:
+        chars = self._deliver.max_chars
+        record = row.record or {}
+        return Delivery(
+            kind="change",
+            mission=self._name,
+            subscription=self._spec.name,
+            output=self._spec.output,
+            id=row.id,
+            archive=row.archive,
+            op=row.op,
+            key=None if row.key is None else {k: cleaned(v, chars) for k, v in row.key.items()},
+            fields={field: cleaned(record.get(field), chars) for field in self._deliver.fields},
+        )
+
+    def _summary(self, first: ChangeRow, last: ChangeRow, count: int) -> Delivery:
+        return Delivery(
+            kind="summary",
+            mission=self._name,
+            subscription=self._spec.name,
+            output=self._spec.output,
+            id=_summary_id(first.id, last.id),
+            archive=last.archive,
+            count=count,
+            first=first.id,
+            last=last.id,
+        )
+
+    def _keep(self, position: Position | None, failing: Failing | None) -> None:
+        """Keep ``position`` as acked, and ``failing``: ``acked_at`` moves only with the
+        cursor."""
+        cursor = None if position is None else self._reader.encode(position)
+        if cursor != self._acked:
+            self._acked, self._acked_at = cursor, self._clock.now().isoformat()
+        self._store.keep(
+            self._mission,
+            self._spec.name,
+            SubscriptionState(
+                output=self._spec.output, cursor=cursor, acked_at=self._acked_at, failing=failing
+            ),
+        )
+
+    def _dead_letter(self, row: ChangeRow, attempts: int, error: str) -> None:
+        self._store.dead_letter(
+            self._mission,
+            self._spec.name,
+            {
+                "id": row.id,
+                "archive": row.archive,
+                "output": self._spec.output,
+                "op": row.op,
+                "attempts": attempts,
+                "error": error,
+                "set_aside_at": self._clock.now().isoformat(),
+                "delivery": self._change(row).document(),
+            },
+        )
+        self._warnings.append(
+            Problem(
+                self._at,
+                f"subscription {self._spec.name}'s command failed row {row.id} {attempts} "
+                f"time(s), so it is set aside as a dead letter and the rows after it go on: "
+                f"{error}",
+                kind="delivery_dead_lettered",
+                fix="the row is kept with the subscription's dead letters (`recon status "
+                f"{self._name}` counts them; recon --skill -r subscriptions says where); fix "
+                "the command, then give it the row's delivery by hand",
+                got=row.id,
+            )
+        )
+
+    def _failed(self, row: str, attempts: int, error: str) -> Problem:
+        return Problem(
+            self._at,
+            f"subscription {self._spec.name}'s command failed row {row} (attempt {attempts} of "
+            f"{self._deliver.attempts}): {error}",
+            kind="delivery_failed",
+            fix=f"the row is given again at the next delivery (recon deliver {self._name}, or "
+            f"the schedule's next tick) and set aside after {self._deliver.attempts} attempts; "
+            "run the command by hand with a delivery on its standard input to see why",
+            got=row,
+        )
+
+    def _gone(self, retired: WindowRange) -> Problem:
+        return Problem(
+            self._at,
+            f"{retired.count} archive(s) from {retired.first} were retired by retain: before "
+            f"subscription {self._spec.name} was delivered their rows, which are gone",
+            kind="changes_retired",
+            fix="keep archives longer than deliveries lag: raise the collector's retain:, or "
+            "deliver more often",
+            got=retired.count,
+        )
+
+
+def _summary_id(first: str, last: str) -> str:
+    """A summary's ``id``: a digest of the ids of the first and last row it counts."""
+    digest = hashlib.blake2b(digest_size=16, person=b"recon.summary")
+    digest.update(f"{first}:{last}".encode())
+    return digest.hexdigest()
+
+
+def cleaned(value: Any, max_chars: int) -> Any:
+    """A row's ``value`` as a delivery carries it: a string cleaned
+    (:func:`~recon.domain.subscriptions.clean`); a number, a boolean or null as it is; a list
+    or an object as its JSON text, cleaned, so no value grows past ``max_chars``."""
+    if isinstance(value, str):
+        return clean(value, max_chars)
+    if value is None or isinstance(value, bool | int | float):
+        return value
+    return clean(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str), max_chars)

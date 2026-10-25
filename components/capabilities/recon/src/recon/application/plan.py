@@ -310,6 +310,7 @@ def build_plan(
     subscriptions, _ = _validate_items(
         raw.get("subscriptions"), "subscriptions", SubscriptionSpec, problems
     )
+    problems[:] = [_argument_list(problem) for problem in problems]
     found, values = _subscription_problems(subscriptions, changing, dict(entries))
     problems += found
     provenance += values
@@ -1357,6 +1358,18 @@ def _changes(i: int, entry: CollectorEntry) -> tuple[list[SourcedValue], list[Pr
     return values, problems
 
 
+def _argument_list(problem: Problem) -> Problem:
+    """A ``deliver.command`` written as one string is a shell's line, which no delivery is
+    given to: the fix says to write it as an argument list."""
+    if problem.path.endswith(".deliver.command") and problem.kind == "wrong_shape":
+        return replace(
+            problem,
+            fix="write command: as an argument list, [<program>, <argument>, ...]: it runs by "
+            "no shell, so a row can never become a word of it",
+        )
+    return problem
+
+
 def _subscription_problems(
     subscriptions: list[tuple[int, SubscriptionSpec]],
     changing: Mapping[str, int],
@@ -1408,6 +1421,20 @@ def _subscription_problems(
         entry = entries[changing[subscription.output]]
         assert entry.changes is not None
         columns = tuple(entry.normalize or ())
+        if subscription.deliver is not None:
+            values += _delivered(at, subscription)
+            for position, wanted in enumerate(subscription.deliver.fields):
+                if columns and wanted not in columns:
+                    problems.append(
+                        Problem(
+                            f"{at}.deliver.fields.{position}",
+                            f"{wanted} is not a column normalize: makes, so no record has it",
+                            kind="name_unknown",
+                            fix="name a column of normalize: in deliver.fields",
+                            got=wanted,
+                            allowed=columns,
+                        )
+                    )
         allowed = (
             *ROW_FIELDS,
             *(f"key.{field}" for field in entry.changes.key),
@@ -1434,6 +1461,39 @@ def _subscription_problems(
                     )
                 )
     return problems, values
+
+
+def _delivered(at: str, subscription: SubscriptionSpec) -> list[SourcedValue]:
+    """``deliver:``'s effective settings, each with where it came from: the command and the
+    fields it is given, how many rows one delivery gives one at a time, the attempts before a
+    row is set aside, the seconds a delivery and each run may take, and the characters a
+    string keeps."""
+    deliver = subscription.deliver
+    assert deliver is not None
+    notes = {
+        "fields": "no record field: a delivery carries the row's op, output and key, no body",
+        "max_per_tick": "rows given one at a time a delivery; the rest as one row counting them",
+        "attempts": "times a row is given to a command that fails it before it is set aside",
+        "deadline": "seconds one delivery of the subscription may take, every run included",
+        "timeout": "seconds one run of the command may take",
+        "max_chars": "characters each string of a row keeps",
+    }
+    said = "run as given, by no shell, the row on its standard input"
+    values = [
+        SourcedValue(path=f"{at}.deliver.command", value=deliver.command, origin="mission",
+                     note=said)
+    ]  # fmt: skip
+    for key, note in notes.items():
+        given = key in deliver.model_fields_set
+        values.append(
+            SourcedValue(
+                path=f"{at}.deliver.{key}",
+                value=getattr(deliver, key),
+                origin="mission" if given else "recon",
+                note="" if given else note,
+            )
+        )
+    return values
 
 
 def plugin_warning(broken: BrokenPlugin) -> Problem:

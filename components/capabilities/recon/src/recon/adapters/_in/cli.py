@@ -1,5 +1,5 @@
 """The ``recon`` command line: init, survey, stream, status, query, watch, subscribe, ack,
-unsubscribe, schedule, templates, capture.
+unsubscribe, deliver, schedule, templates, capture.
 
 An inbound adapter over the library API and nothing else: every call goes through
 ``recon``'s declared names, so a program importing ``recon`` gets exactly what these
@@ -943,6 +943,47 @@ def unsubscribe(name: str, subscription: str, as_json: bool) -> None:
     else:
         said = {"removed": "Removed", "absent": "Nothing kept of"}[document.outcome]
         err.print(f"[green]{said}:[/] {escape(name)} {escape(subscription)}")
+
+
+@main.command(epilog=EXIT_CODES)
+@click.argument("name")
+@click.option(
+    "--subscription",
+    default=None,
+    metavar="NAME",
+    help="Deliver this subscription alone (default: each one with deliver:)",
+)
+@_json_option
+def deliver(name: str, subscription: str | None, as_json: bool) -> None:
+    """Give each subscription with deliver: the rows it has not acked, to its command.
+
+    The command (deliver.command, an argument list, run by no shell) gets each row as one
+    recon.v1.delivery JSON line on its standard input: op, output, key and the record fields
+    deliver.fields names, each string cleaned and cut. At most deliver.max_per_tick rows (10)
+    one at a time, each acked once the command exits 0, then the rest as one row counting
+    them, all within deliver.deadline (30 s). A row the command fails is given again next
+    time, and after deliver.attempts (3) set aside as a dead letter; each is a warning, and
+    the command exits 0. A scheduled tick runs this after its survey.
+
+    \b
+    recon deliver my-mail --json
+    recon deliver my-mail --subscription new-mail
+    """
+    document = _operations().deliver(name, subscription=subscription)
+    if as_json:
+        _emit(document.document())
+        return
+    _print_warnings(document.warnings)
+    for run in document.deliveries:
+        if run.skipped_by is not None:
+            err.print(f"[yellow]{escape(run.subscription)}: skipped ({run.skipped_by})[/]")
+            continue
+        more = "; more to deliver" if run.more else ""
+        said = (f"{run.subscription}: {run.delivered} delivered, {run.coalesced} counted in "
+                f"one, {run.dead_lettered} set aside{more}")  # fmt: skip
+        err.print(f"[dim]{escape(said)}[/]")
+    if not document.deliveries:
+        err.print(f"[dim]No subscription of {escape(name)} has deliver:[/]")
 
 
 # --- schedule ----------------------------------------------------------------------------

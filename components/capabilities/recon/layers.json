@@ -107,11 +107,12 @@
       "files": ["src/recon/adapters/__init__.py", "src/recon/adapters/_out/__init__.py",
                 "src/recon/adapters/_out/event_channel.py", "src/recon/adapters/_out/http_requester.py",
                 "src/recon/adapters/_out/markitdown_converter.py",
-                "src/recon/adapters/_out/otel_telemetry.py", "src/recon/adapters/_out/system_clock.py"],
+                "src/recon/adapters/_out/otel_telemetry.py", "src/recon/adapters/_out/system_clock.py",
+                "src/recon/adapters/_out/command_deliverer.py"],
       "allow": ["*", "recon.domain"],
       "forbid": ["yaml"],
       "why": {
-        "*": "one technology each behind one port: httpx2 and tenacity (Requester), markitdown (DocumentConverter), OpenTelemetry (EventSink), the system clock (Clock)",
+        "*": "one technology each behind one port: httpx2 and tenacity (Requester), markitdown (DocumentConverter), OpenTelemetry (EventSink), the system clock (Clock), a child process given a delivery on its standard input (Deliverer)",
         "recon.domain only": "an adapter reaches the port it implements, and no other adapter"
       }
     },
