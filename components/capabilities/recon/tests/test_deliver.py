@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 import unicodedata
@@ -257,9 +258,10 @@ HOSTILE = (
 class TestAHostileSubjectStaysInert:
     def _deliver(self, tmp_path: Path, **deliver: Any) -> tuple[list[bytes], Path]:
         out = tmp_path / "given.jsonl"
-        body = ("import sys\n"
+        body = ("import os, sys\n"
                 "with open(sys.argv[1], 'ab') as f:\n"
-                "    f.write(sys.stdin.buffer.read())\n")  # fmt: skip
+                "    f.write(sys.stdin.buffer.read())\n"
+                "open(sys.argv[1] + '.cwd', 'w').write(os.getcwd())\n")  # fmt: skip
         _mission(tmp_path, {**_script(tmp_path, body, str(out)), **deliver})
         mail = Mail(tmp_path, CommandDeliverer({"PATH": "/usr/bin:/bin"}))
         mail.survey({"id": "x1", "subject": HOSTILE, "from": "mallory@evil.test"})
@@ -281,8 +283,19 @@ class TestAHostileSubjectStaysInert:
             assert stripped not in subject, repr(stripped)
         assert "owned" not in subject, "an OSC sequence goes whole, its text with it"
         assert len(subject) <= 200
+        ran_in = Path((project / "given.jsonl.cwd").read_text()).resolve()
+        assert ran_in == project.resolve(), "the command ran in the project, where PWN* would be"
         assert not [p for p in project.rglob("PWN*")], "no shell ran"
         assert not list(project.parent.glob("PWN*"))
+
+    def test_the_same_subject_through_a_shell_would_leave_pwn_where_it_is_looked_for(
+        self, tmp_path: Path
+    ) -> None:
+        """Ixian S4, the positive control: the subject handed to a shell, as a delivery never
+        is, runs its substitutions in the project, where the test above looks for PWN*."""
+        subprocess.run(["/bin/sh", "-c", f"echo {HOSTILE.split(chr(0x1b))[0]}"], cwd=tmp_path,
+                       capture_output=True, check=False)  # fmt: skip
+        assert {p.name for p in tmp_path.glob("PWN*")} >= {"PWN1", "PWN2", "PWN3"}
 
     def test_by_default_no_body_and_no_subject_is_given(self, tmp_path: Path) -> None:
         [line], _ = self._deliver(tmp_path)

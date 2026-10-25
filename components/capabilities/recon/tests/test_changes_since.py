@@ -138,15 +138,23 @@ class TestD1AtLeastOnceThroughACrash:
     """Ixian D-R1: surveys at random, reads between them, and a reader that crashes before it
     keeps its cursor (it acted on the rows, then died). What it got, its duplicates dropped by
     ``id``, is every change table concatenated in order; and a row comes twice only when the
-    read that first gave it was never kept."""
+    read that first gave it was never kept. Across the seeds, rows were given again and reads
+    were cut by ``max_records``, so both paths ran (Ixian, review S4)."""
 
-    @pytest.mark.parametrize("seed", range(12))
-    def test_rows_delivered_are_the_change_tables_concatenated(
-        self, tmp_path: Path, seed: int
-    ) -> None:
+    def test_rows_delivered_are_the_change_tables_concatenated(self, tmp_path: Path) -> None:
+        redelivered = cut = 0
+        for seed in range(12):
+            again, short = self._run(tmp_path / str(seed), seed)
+            redelivered, cut = redelivered + again, cut + short
+        assert redelivered >= 1, "no seed gave a row again: the crash path never ran"
+        assert cut >= 1, "no read was cut by max_records"
+
+    def _run(self, tmp_path: Path, seed: int) -> tuple[int, int]:
+        """One seed's run: how many rows came again, and how many reads a bound cut."""
         rng = random.Random(seed)
         _mission(tmp_path, {"key": ["id"], "deletes": True})
         surveys = Surveys(tmp_path)
+        cut = 0
         pool = [{"id": k, "subject": s} for k in "abcdef" for s in ("x", "y")]
         kept: str | None = None  # the cursor the reader keeps, as it would on disk
         got: list[tuple[str, bool]] = []  # each row's id, and whether its read was kept
@@ -155,7 +163,9 @@ class TestD1AtLeastOnceThroughACrash:
                 inbox = {m["id"]: m for m in rng.sample(pool, rng.randint(0, 6))}
                 surveys.survey(*inbox.values())
                 continue
-            read = surveys.recon.changes_since("m", "inbox", kept, max_records=rng.randint(1, 4))
+            bound = rng.randint(1, 4)
+            read = surveys.recon.changes_since("m", "inbox", kept, max_records=bound)
+            cut += read.more and read.count == bound
             crashed = rng.random() < 0.35  # acted on the rows, then died before keeping it
             got += [(row.id, not crashed) for row in read.rows]
             if not crashed:
@@ -173,6 +183,7 @@ class TestD1AtLeastOnceThroughACrash:
                 assert not seen[row], "a row comes again only after a read never kept"
             seen[row] = seen.get(row, False) or was_kept
         assert list(dict.fromkeys(row for row, _ in got)) == told
+        return len(got) - len(seen), cut
 
 
 class TestD2ARetiredArchiveIsSaid:

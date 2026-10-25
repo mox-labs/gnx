@@ -203,6 +203,20 @@ class TestAcks:
         kept = SubscriptionFiles().state(tmp_path / ".recon" / "m", "all")
         assert kept is not None and kept.cursor == later
 
+    def test_an_ack_of_an_earlier_archive_after_a_later_one_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """Ixian S4: monotone across archives, not only within one: a cursor in the first
+        archive, acked after one in the second, is older, and refused."""
+        surveys = self._surveyed(tmp_path)  # one archive: a, b
+        early = surveys.recon.subscribe("m", "all", max_records=1).cursor
+        surveys.survey(A, B, C)
+        late = surveys.recon.subscribe("m", "all").cursor
+        assert surveys.recon.ack("m", "all", late).outcome == "acked"
+        with pytest.raises(UsageError) as refused:
+            surveys.recon.ack("m", "all", early)
+        assert refused.value.details["acked"]["archive"] != refused.value.details["got"]["archive"]
+
     def test_an_ack_of_a_cursor_of_another_output_or_mission_is_refused(
         self, tmp_path: Path
     ) -> None:
