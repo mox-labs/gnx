@@ -63,6 +63,56 @@ def test_every_page_draws_a_token_and_is_retried_as_a_request_is(tmp_path: Path)
     assert sum(1 for s in clock.slept if s == 1.0) == 4, "each page past the burst waits"
 
 
+class _Spy:
+    """A RateLimiter that counts the tokens drawn, by source, then draws as the real one."""
+
+    def __init__(self, limiter: Any) -> None:
+        self.limiter = limiter
+        self.acquired: list[str] = []
+
+    def acquire(self, source: Any, deadline: Any = None) -> None:
+        self.acquired.append(source.name)
+        self.limiter.acquire(source, deadline)
+
+
+def _spied(clock: FixedClock, spies: list[_Spy]) -> Any:
+    def requester(telemetry: Any, deadline: Any, limiter: Any) -> Any:
+        from recon.adapters._out.http_requester import HttpRequester
+
+        spies.append(_Spy(limiter))
+        return HttpRequester(spies[-1], clock, telemetry, deadline=deadline)  # type: ignore[arg-type]
+
+    return requester
+
+
+def test_each_page_draws_one_token_from_the_spy_and_a_fault_at_page_k_fails_the_table(
+    tmp_path: Path,
+) -> None:
+    """Ixian P5, by a spy on the limiter: a crawl of n pages draws n tokens, one each (a
+    retried page one more), and a page that fails after its retries fails the table as
+    transient, sealing nothing of a half crawl as ok."""
+    clock = FixedClock()
+    spies: list[_Spy] = []
+    with PagedServer(4, 1) as server:
+        _write(tmp_path, "m", _mission(server.url, source={"rate_limit": {"rps": 5, "burst": 2}}))
+        document = root({}, project=tmp_path, clock=clock,
+                        requester=_spied(clock, spies)).survey("m")  # fmt: skip
+    assert document.status == "complete"
+    pages = len(server.asked)
+    assert pages == 4 and [s.acquired for s in spies] == [["api"] * pages], "a token a page"
+
+    clock, spies = FixedClock(), []
+    with PagedServer(4, 1, refuse={2: [503, 503, 503]}) as server:
+        _write(tmp_path, "n", _mission(server.url))
+        document = root({}, project=tmp_path, clock=clock,
+                        requester=_spied(clock, spies)).survey("n")  # fmt: skip
+    [table] = document.tables
+    assert (table.status, table.error.kind if table.error else None) == ("error", "transient")
+    assert len(spies[0].acquired) == server.hits, "every send, retries too, drew its token"
+    assert server.asked == [None, 1], "no page after the one that failed is asked for"
+    assert server.hits == 2 + 3, "two pages, then the third sent and retried twice"
+
+
 def test_a_crawl_kept_raw_replays_from_its_captures_byte_for_byte(tmp_path: Path) -> None:
     """P6: with preserve_raw, a capture collector reading the crawl's captures, the server
     gone, writes the same table, each record in its place (``_position``)."""

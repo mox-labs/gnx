@@ -419,6 +419,34 @@ class TestWhatWasTold:
         self._told_once(tmp_path, "inbox")
         self._told_once(tmp_path, "other")
 
+    def test_a_survey_that_died_between_its_summary_and_its_rows_folds_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F3's other half, found by a mutant that survived (design record): the summary is
+        written before the change table, so a survey that dies between them leaves a summary
+        and no rows. That table told nothing: the next survey tells its rows."""
+        write_table = ArchiveFiles.write_table
+        dies = {"left": 1}
+
+        def dies_at_rows(self: ArchiveFiles, archive: Path, output: str, *a: Any,
+                         **kw: Any) -> int:  # fmt: skip
+            if output.endswith(".changes") and dies["left"]:
+                dies["left"] -= 1
+                raise SystemExit("killed")
+            return write_table(self, archive, output, *a, **kw)
+
+        monkeypatch.setattr(ArchiveFiles, "write_table", dies_at_rows)
+        _mission(tmp_path, {"key": ["id"]})
+        surveys = Surveys(tmp_path)
+        with pytest.raises(SystemExit):
+            surveys.survey(A, B)
+        [died] = sorted((tmp_path / ".recon" / "m" / "archive").iterdir())
+        meta = yaml.safe_load((died / "meta.yaml").read_text())
+        assert meta["ended"] is None and meta["tables"][0]["changes"]["previous"] is None
+        assert (died / "inbox.keys.jsonl").exists() and not (died / "inbox.changes.jsonl").exists()
+        again, _ = surveys.survey(A, B)
+        assert _ops(again) == [("insert", "a"), ("insert", "b")]
+
     def test_a_key_index_that_cannot_be_written_leaves_no_change_table(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -969,6 +997,34 @@ class TestStreams:
         assert _window_ops(resumed) == [("insert", "c")]
         assert ArchiveFiles(FixedClock()).read_meta(resumed)["tables"][0]["changes"][
             "previous"] == failed.name  # fmt: skip
+
+    def test_a_window_never_tells_a_delete_whatever_its_spec_says(self, tmp_path: Path) -> None:
+        """C7, held by the detector itself, not only by the plan's refusal of deletes: true on
+        a stream (a mutant that left it to the plan survived; design record)."""
+        import shutil
+
+        from recon.application.changes import ChangeDetector
+
+        _stream_mission(tmp_path)
+        recon = root({}, project=tmp_path, clock=VirtualClock(),
+                     plugins=plugins_with(feed=_Feed(self.RECORDS[:4])))  # fmt: skip
+        recon.stream("m", "s", windows=2)  # a1 b1 | a2 c1: b is not in the second
+        first, second = _windows(tmp_path)
+        again = tmp_path / "again"
+        shutil.copytree(second, again)
+        for sidecar in ("s.changes.jsonl", "s.keys.jsonl"):
+            (again / sidecar).unlink()
+        store = ArchiveFiles(FixedClock())
+        secret = MissionFiles(tmp_path, FixedClock()).change_key("m")
+        detector = ChangeDetector(store, tmp_path / ".recon" / "m", secret)
+        [table] = store.read_meta(second)["tables"]
+        from recon.domain.documents import TableOutcome
+
+        outcome = TableOutcome.model_validate({**table, "changes": None})
+        told = detector.window(again, "s", first.name, outcome,
+                               ChangesSpec(key=["id"], deletes=True), None)  # fmt: skip
+        assert told.changes is not None and told.changes.deletes == 0
+        assert [row["op"] for row in _rows(again, "s")] == ["update", "insert"]
 
     def test_a_window_whose_changes_fail_is_sealed_and_says_so(self, tmp_path: Path) -> None:
         """F6 for a stream: the change phase never fails a window."""

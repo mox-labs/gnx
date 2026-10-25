@@ -88,6 +88,18 @@ class TestEveryProblemHasAPathAndAFix:
         for value in nearest.split(" or "):
             assert f"every: {value}" in problem.fix, problem.fix
 
+    @pytest.mark.parametrize("every", [420, 3540, 86400 * 7, 59, 90])
+    def test_an_every_that_does_not_divide_a_day_is_refused_by_the_plan(
+        self, plugins: Plugins, every: int
+    ) -> None:
+        """Ixian S6: 420 s (7 min), 3540 s, a week, under a minute, a minute and a half: no
+        scheduler keeps them on one daily grid, so each is a plan problem at
+        ``schedule.every`` with the values that are kept."""
+        plan = _plan(plugins, schedule={"every": every})
+
+        assert not plan.valid
+        assert _problems(plan)["schedule.every"].kind == "invalid_value"
+
     def test_the_allowed_values_are_the_minutes_that_divide_a_day(self) -> None:
         assert EVERY_ALLOWED[0] == 60 and EVERY_ALLOWED[-1] == 86400
         assert all(e % 60 == 0 and 86400 % e == 0 for e in EVERY_ALLOWED)

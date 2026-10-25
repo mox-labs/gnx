@@ -344,6 +344,8 @@ class TestNoSecretIsProjected:
                            and p.name != "config.yaml")  # fmt: skip
         ran = json.dumps([host.runner.ran, host.runner.given]).encode()
         printed = json.dumps(document.document()).encode()
+        # Ixian S6: check the checker, that something was projected for it to search.
+        assert document.label and document.label.encode() in written + ran, "nothing written"
         for where, data in (("files", written), ("commands", ran), ("document", printed)):
             assert SENTINEL.encode() not in data, where
             assert b"OTEL_EXPORTER_OTLP_HEADERS" not in data, where
