@@ -443,6 +443,20 @@ class TestThePlan:
         problem = _problems(mission, plugins)["collectors.0.window.pages"]
         assert "paginate" in problem.message and "records" in problem.fix
 
+    @pytest.mark.parametrize("overflow", ["drop_newest", "drop_oldest"])
+    def test_a_crawl_drops_no_record_its_page_log_says_was_read(
+        self, plugins: Plugins, overflow: str
+    ) -> None:
+        """Dijkstra's review: a record dropped from a page whose mark is kept is lost for good,
+        as the next run goes on past that page. A crawl's buffer blocks: ``block`` is the
+        default for ``api``, and a ``drop_*`` the mission writes is refused, with the fix."""
+        mission = _mission(PAGINATE["cursor"], window={"pages": 2},
+                           buffer={"overflow": overflow})  # fmt: skip
+        problem = _problems(mission, plugins)["collectors.0.buffer.overflow"]
+        assert "paginate" in problem.message and "overflow: block" in problem.fix
+        assert build_plan(_mission(PAGINATE["cursor"], window={"pages": 2},
+                                   buffer={"overflow": "block"}), plugins, {}).valid  # fmt: skip
+
     def test_a_stream_takes_no_deletes_whatever_it_pages_by(self, plugins: Plugins) -> None:
         mission = _mission(PAGINATE["cursor"], window={"pages": 2},
                            changes={"key": ["id"], "deletes": True})  # fmt: skip

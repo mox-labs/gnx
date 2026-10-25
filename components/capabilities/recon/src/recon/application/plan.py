@@ -499,6 +499,20 @@ def _stream_problems(
             )
         )
     buffer = entry.buffer
+    dropping = buffer is not None and buffer.overflow in ("drop_newest", "drop_oldest")
+    if dropping and entry.paginate is not None:
+        assert buffer is not None
+        problems.append(
+            Problem(
+                f"{at}.buffer.overflow",
+                f"overflow: {buffer.overflow} drops records a crawl read, and a crawl that "
+                "reads its source page by page (paginate:) goes on past a page its page log "
+                "names, so a record dropped from it is never read again",
+                fix="overflow: block (the default for api): the crawl waits for room, and its "
+                "source is asked for no page sooner than the windows are written",
+                got=buffer.overflow,
+            )
+        )
     if buffer is not None and buffer.max_record_bytes > buffer.bytes:
         problems.append(
             Problem(
