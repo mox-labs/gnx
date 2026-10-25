@@ -14,7 +14,7 @@ import pytest
 import yaml
 
 from recon.adapters._out.archive_files import ArchiveFiles
-from recon.application.subscriptions import row_id
+from recon.application.subscriptions import Position, row_id
 from recon.composition import root
 from recon.domain.errors import NotFoundError, UsageError
 from tests.recon_fakes import FixedClock, VirtualClock, plugins_with
@@ -324,11 +324,29 @@ class TestD4AForeignCursorIsRefused:
     def test_a_cursor_naming_an_archive_the_mission_never_had_is_refused(
         self, tmp_path: Path
     ) -> None:
+        """Even one recon signed: an archive gone with no tombstone is no place to read on."""
         surveys = self._two(tmp_path)
-        never = _body(archive="2001-01-01-000000-000000")
+        reader = surveys.recon._change_reader("m", "inbox")  # noqa: SLF001 - a signed cursor
+        never = reader.encode(Position(archive="2001-01-01-000000-000000"))
         with pytest.raises(UsageError) as refused:
             surveys.recon.changes_since("m", "inbox", never)
         assert "neither has nor retired" in str(refused.value)
+
+    def test_a_forged_but_plausible_cursor_is_refused_never_read_on_from(
+        self, tmp_path: Path
+    ) -> None:
+        """Ixian S4: a real archive, a row past the end of its change table (or any edit of a
+        cursor recon gave) is refused, never a read that silently skips or repeats rows."""
+        surveys = self._two(tmp_path)
+        real = surveys.recon.changes_since("m", "inbox").cursor
+        body = json.loads(bytes.fromhex(real.removeprefix("c1").split(".")[0]))
+        for forged in ({**body, "row": 999}, {**body, "done": not body["done"]},
+                       {**body, "index": 7}):  # fmt: skip
+            text = json.dumps(forged, separators=(",", ":")).encode().hex()
+            for cursor in ("c1" + text, "c1" + text + "." + real.split(".")[-1]):
+                with pytest.raises(UsageError):
+                    surveys.recon.changes_since("m", "inbox", cursor)
+        assert surveys.recon.changes_since("m", "inbox", real).rows == []
 
     def test_an_output_without_changes_is_not_found_and_names_those_with(
         self, tmp_path: Path

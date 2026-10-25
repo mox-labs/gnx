@@ -1501,7 +1501,8 @@ class Recon:
                 details={"value": output, "allowed": known},
             )
         mission = self._missions.mission_dir(name)
-        return ChangeReader(self._archives, mission, name, output, plan.changes[output])
+        return ChangeReader(self._archives, mission, name, output, plan.changes[output],
+                            self._missions.change_key(name))  # fmt: skip
 
     def _ended(self, archive: Path, state: ArchiveState) -> Ended | None:
         return None if state == "writing" else _ended(state, self._archives.read_meta(archive))

@@ -24,11 +24,12 @@
       "name": "application",
       "files": ["src/recon/application/**/*.py"],
       "allow": ["__future__", "collections", "contextlib", "dataclasses", "datetime", "fnmatch",
-                "functools", "hashlib", "html", "inspect", "json", "pathlib", "re", "threading",
+                "functools", "hashlib", "hmac", "html", "inspect", "json", "pathlib", "re", "threading",
                 "typing", "urllib", "pydantic", "recon.domain", "recon.application"],
       "forbid": ["opentelemetry", "duckdb", "httpx2", "httpx", "markitdown", "yaml", "open"],
       "why": {
         "hashlib, json": "the config's sha256 in the archive's meta, a hook payload's body, and a stream's records as the buffer holds them (test_layering's LAYER_STDLIB)",
+        "hmac": "compare_digest alone: a change cursor's signature compared in constant time (application/subscriptions.py)",
         "threading": "a stream's pump and ticker threads and its bounded buffer (application/stream.py), where ruling B1 puts them; every wait for time goes through the clock port (test_layering's LAYER_STDLIB)",
         "recon.domain, recon.application": "the use cases run over the ports, in the domain's types"
       }

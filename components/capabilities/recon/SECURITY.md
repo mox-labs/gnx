@@ -424,9 +424,10 @@ injection channel, and, through a command, an execution one.
 - **What is kept is private** (`subscriptions/` beside the mission, `0600`): each
   subscription's acked cursor, and its dead letters, which hold the cleaned delivery of each row
   set aside, bounded at 1 MiB and one rotation.
-- **A cursor is input** (boundary 9): a change cursor names its mission and output, and one of
-  another, one recon did not give, or one naming an archive the mission never had is refused
-  (`usage`); it names an archive only to be matched against the archives the store lists,
+- **A cursor is input** (boundary 9): a change cursor names its mission and output, and is
+  signed with the mission's key (`changes.key`), so one of another, one recon did not give,
+  one edited however plausibly (a row past its table's end), or one naming an archive the
+  mission never had is refused (`usage`); it names an archive only to be matched against the archives the store lists,
   never made into a path. An ack is monotone: one before the one acked is refused.
 
 What this does **not** do: anything about what the text means. A cleaned subject can still say

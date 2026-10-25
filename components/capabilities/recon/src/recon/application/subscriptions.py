@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import hmac
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -65,6 +66,9 @@ if TYPE_CHECKING:
 #: A change cursor names its format first: one this recon does not know is refused.
 _CURSOR = "c1"
 
+#: What a change cursor's signature is keyed with besides the mission's key.
+_CURSOR_PERSON = b"recon.cursor"
+
 #: What a row's ``id`` is keyed with, so it is never a digest recon makes for anything else.
 _ID_PERSON = b"recon.row"
 
@@ -104,7 +108,8 @@ class ChangeRead:
 class ChangeReader:
     """Reads the change rows of ``output`` in the mission at ``mission_dir`` (named
     ``mission``): across its archives, or across the windows of ``stream`` when the output is
-    a stream's."""
+    a stream's. Its cursors are signed with the mission's key (``secret``): one edited, however
+    plausible (a real archive, a row past its table's end), is refused, never read on from."""
 
     def __init__(
         self,
@@ -113,7 +118,9 @@ class ChangeReader:
         mission: str,
         output: str,
         stream: str | None,
+        secret: bytes,
     ) -> None:
+        self._secret = secret
         self._archives = archives
         self._mission_dir = mission_dir
         self._mission = mission
@@ -278,15 +285,24 @@ class ChangeReader:
             "done": position.done,
             "index": position.index,
         }
-        return _CURSOR + json.dumps(body, separators=(",", ":")).encode().hex()
+        text = json.dumps(body, separators=(",", ":")).encode()
+        return f"{_CURSOR}{text.hex()}.{self._sign(text)}"
+
+    def _sign(self, text: bytes) -> str:
+        digest = hashlib.blake2b(digest_size=16, key=self._secret, person=_CURSOR_PERSON)
+        digest.update(text)
+        return digest.hexdigest()
 
     def decode(self, cursor: str) -> Position:
         """The position ``cursor`` holds. Raises UsageError for a cursor recon did not give for
         a read of change rows, or gave for another mission or output."""
         body: Any = None
+        hexed, _, signed = cursor.removeprefix(_CURSOR).partition(".")
         if cursor.startswith(_CURSOR):
             try:
-                body = json.loads(bytes.fromhex(cursor.removeprefix(_CURSOR)))
+                text = bytes.fromhex(hexed)
+                if hmac.compare_digest(signed, self._sign(text)):
+                    body = json.loads(text)
             except ValueError:
                 body = None
         fresh = "read without a cursor to start from the first archive"

@@ -18,6 +18,7 @@ from click.testing import CliRunner
 from recon.adapters._in.cli import main
 from recon.adapters._out.subscription_files import SubscriptionFiles
 from recon.application.plan import build_plan
+from recon.application.subscriptions import Position
 from recon.composition import load_plugins
 from recon.domain.errors import NotFoundError, ReconError, UsageError
 from recon.domain.subscriptions import matches
@@ -228,9 +229,10 @@ class TestAcks:
                 "done": False}  # fmt: skip
         with pytest.raises(UsageError):
             surveys.recon.ack("m", "all", "c1" + json.dumps(body).encode().hex())
-        never = {**body, "mission": "m", "archive": "2001-01-01-000000-000000"}
+        reader = surveys.recon._change_reader("m", "inbox")  # noqa: SLF001 - a signed cursor
+        never = reader.encode(Position(archive="2001-01-01-000000-000000"))
         with pytest.raises(UsageError) as refused:
-            surveys.recon.ack("m", "all", "c1" + json.dumps(never).encode().hex())
+            surveys.recon.ack("m", "all", never)
         assert "neither has nor retired" in str(refused.value)
         assert SubscriptionFiles().state(tmp_path / ".recon" / "m", "all") is None
 
