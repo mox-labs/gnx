@@ -55,7 +55,7 @@ changes: {table: inbox.changes, type_url: recon.v1.changes, previous: 2026-10-24
 
 When `deletes: true` and the table's deletes were not told, `deletes_withheld` says why (`truncated`, `keyless`, `ambiguous`) and the survey warns `deletes_withheld`, at `collectors.<i>.changes.deletes`, with what to change. `deletes_told` says whether they were told: a told index computed again folds each table as it was told then, so switching `deletes:` on later never drops a key no delete row told.
 
-Nothing in the comparison fails a survey or a window. When a table's changes cannot be told, its outcome's `changes` has `error` (`kind`, `message`, `fix`), it has no change table and is no told index, and the survey warns `changes_failed` at `collectors.<i>.changes`: the next table of its output is compared with what was told before it, so it tells this table's changes too. A record's text may hold anything a stranger sends, a lone surrogate (`"\ud800"`) included: it is hashed and compared as any text is.
+A reader (`recon watch`, `read_since`) gets a change table's rows only once it is sealed, so every row it sees is one that was told. Nothing in the comparison fails a survey or a window. When a table's changes cannot be told, its outcome's `changes` has `error` (`kind`, `message`, `fix`), it has no change table and is no told index, and the survey warns `changes_failed` at `collectors.<i>.changes`: the next table of its output is compared with what was told before it, so it tells this table's changes too. A record's text may hold anything a stranger sends, a lone surrogate (`"\ud800"`) included: it is hashed and compared as any text is.
 
 ## The content hash and the key index
 

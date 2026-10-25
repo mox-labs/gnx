@@ -97,6 +97,7 @@ from recon.domain.archives import (
     TableRecord,
 )
 from recon.domain.capture import CAPTURE_LOG_NAME
+from recon.domain.changes import CHANGES_SUFFIX
 from recon.domain.errors import QueryError, ReconError, UsageError
 from recon.domain.stream import window_index
 from recon.domain.type_url import DEFAULT_RECORDS_TYPE_URL
@@ -528,6 +529,10 @@ class ArchiveFiles:
         for name, path in files.items():
             offset, told = positions.get(name, (0, False))
             if told:
+                continue
+            if path.name.endswith(_LIVE) and name.endswith(f".{CHANGES_SUFFIX}"):
+                # A change table is read once sealed, never as it is written: one its writer
+                # died writing told nothing, and the next survey tells its rows (review G2).
                 continue
             if budget.spent():
                 budget.cut = True  # a table left unread, which may have records
