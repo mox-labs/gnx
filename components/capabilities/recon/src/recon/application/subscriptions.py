@@ -21,10 +21,11 @@ an archive before a reader reached it: the read that passes such archives says s
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from recon.application.changes import canonical
@@ -214,10 +215,14 @@ class ChangeReader:
                 break
         return ChangeRead(rows, at, more, state, retired)
 
-    def unread(self, position: Position | None) -> set[str]:
+    def unread(
+        self, position: Position | None, *, within: float | None = None, now: datetime | None = None
+    ) -> set[str]:
         """The archives (a stream's windows) whose sealed change table holds a row
         ``position`` has not passed (None: none passed): the one it is in, unless its table is
-        done, and each after it whose change table is not empty."""
+        done, and each after it whose change table is not empty. With ``within``, those
+        written to their end no more than ``within`` seconds before ``now`` alone (one that does
+        not say when is counted in)."""
         archives = self._archives.archives(self._mission_dir, stream=self._stream)
         names = [archive.name for archive in archives]
         start = 0
@@ -232,7 +237,10 @@ class ChangeReader:
         unread = set()
         for archive in archives[start:]:
             rows = self._archives.read_table(archive, self._table)
-            if rows is not None and next(iter(rows), None) is not None:
+            if rows is None or next(iter(rows), None) is None:
+                continue
+            made = None if within is None else _made_at(self._archives.read_meta(archive))
+            if made is None or now is None or (now - made).total_seconds() <= (within or 0):
                 unread.add(archive.name)
         return unread
 
@@ -297,6 +305,19 @@ class ChangeReader:
             )
         return Position(body["archive"], body["row"], body["at"], body["done"],
                         body.get("index"))  # fmt: skip
+
+
+def _made_at(meta: dict[str, Any]) -> datetime | None:
+    """When an archive (a window) was written to its end, as its ``meta.yaml`` says; None when
+    it does not say."""
+    stream = meta.get("stream")
+    stamp = stream.get("closed_at") if isinstance(stream, dict) else meta.get("timestamp")
+    if isinstance(stamp, str):
+        with contextlib.suppress(ValueError):
+            stamp = datetime.fromisoformat(stamp)
+    if isinstance(stamp, datetime):
+        return stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
+    return None
 
 
 def row_id(archive: str, output: str, row: int, op: str, key: Any) -> str:
@@ -524,7 +545,8 @@ class Subscriptions:
                 position = _acked(reader, self._store.state(mission, spec.name), name, spec)
             except UsageError:
                 position = None
-            held[index] = (spec.name, reader.unread(position))
+            unread = reader.unread(position, within=spec.max_lag, now=self._clock.now())
+            held[index] = (spec.name, unread)
         return held
 
     def _dead(self, name: str, spec: SubscriptionSpec) -> int:

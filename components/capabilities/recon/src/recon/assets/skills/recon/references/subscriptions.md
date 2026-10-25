@@ -50,6 +50,7 @@ subscriptions:
 | `output` | the output whose change rows it reads: a collector's output (`<name>`, or `<name>-<source>` fanned out) whose entry has `changes:` | required |
 | `match` | which rows it reads (below) | `{}`: every row |
 | `deliver` | the command each row is given to (below) | none: its subscriber reads them with `recon subscribe` |
+| `max_lag` | the seconds it keeps `retain:` from removing an archive whose rows it has not acked; past that, the archive goes and the subscriber is told | `2592000` (30 days) |
 | `deliver.command` | the program run for each row, by no shell, as an `mcp` source's stdio server is | required in the block |
 | `deliver.args` | its arguments, as given: no row is ever one of them | `[]` |
 | `deliver.fields` | the record's fields a delivery carries, each a `normalize:` column when there are some | `[]`: no body, only the row's op, output and key |
@@ -92,7 +93,7 @@ A read is `recon.v1.changes-since`:
 
 A read is at most 1000 rows and about 1 MiB of them, at least one row when one is there. An archive whose change table is empty, or that has none, costs a read nothing: the read goes on past it. One being written holds the reader there until its survey seals it. Archives are read in the order they were made, by each one's `index` (its `meta.yaml`'s), never by the clock: a clock set back between two surveys gives the later archive an earlier id, and it is read after the earlier all the same. An archive made before indexes has none; those are read first, by when they began (the legacy rule).
 
-`retain:` never removes an archive (or a stream's window) holding change rows a subscription the config declares has not acked: a notification lost in silence is worse than the disk it takes. While one holds archives back, the plan and `recon status` warn `subscription_behind`, at `subscriptions.<i>`, `got` the archives it holds, with the fix: read and ack them, deliver them, or remove the subscription from `subscriptions:` (one no longer declared holds nothing). An archive retired before this rule, or while its subscription was not declared, is said by the read that passes it, `retired_range`, never in silence.
+`retain:` does not remove an archive (or a stream's window) holding change rows a subscription the config declares has not acked, for `max_lag` seconds after it was written (30 days by default): a notification lost in silence is worse than the disk it takes, and a subscription nobody reads must not grow a mission for ever. Past `max_lag` the archive goes as `retain:` says, and the subscriber is told: `retired_range` in its read, `changes_retired` in its delivery. While one holds archives back, the plan and `recon status` warn `subscription_behind`, at `subscriptions.<i>`, `got` the archives it holds, with the fix: read and ack them, deliver them, or remove the subscription from `subscriptions:` (one no longer declared holds nothing). An archive retired before this rule, or while its subscription was not declared, is said by the read that passes it, `retired_range`, never in silence.
 
 ## A named subscription: subscribe and ack
 

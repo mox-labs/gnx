@@ -57,6 +57,13 @@ DELIVER_TIMEOUT_S = 10.0
 MAX_CHARS = 200
 
 
+#: By default, the seconds a subscription keeps retention from removing an archive whose
+#: change rows it has not acked: 30 days. Past it, the archive goes as ``retain:`` says, and
+#: the subscriber is told (``retired_range``, ``changes_retired``): a subscription nobody
+#: reads must not keep a mission growing for ever (Erlang, review F2).
+MAX_LAG_S = 2_592_000.0
+
+
 class DeliverSpec(BaseModel):
     """``deliver:`` on a subscription: give each row to ``command``.
 
@@ -114,7 +121,8 @@ class SubscriptionSpec(BaseModel):
     """One of a mission's ``subscriptions:``. ``name`` names it among the mission's, and is
     what ``recon subscribe`` takes; ``output`` is the output whose change rows it reads;
     ``match:`` chooses which (every row by default); ``deliver:`` gives each to a command (none
-    by default: the subscriber reads them itself)."""
+    by default: the subscriber reads them itself). ``max_lag``: the seconds it keeps ``retain:``
+    from removing an archive whose rows it has not acked (30 days by default)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -122,6 +130,7 @@ class SubscriptionSpec(BaseModel):
     output: str
     match: dict[str, str | list[str]] = {}
     deliver: DeliverSpec | None = None
+    max_lag: float = Field(default=MAX_LAG_S, gt=0, allow_inf_nan=False)
 
     @field_validator("name")
     @classmethod

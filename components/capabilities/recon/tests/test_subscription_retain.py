@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from recon.composition import root
+from recon.domain.subscriptions import Delivered
 from tests.recon_fakes import VirtualClock, plugins_with
 from tests.test_changes import Surveys, _Feed, _stream_mission, _windows
 
@@ -105,3 +106,53 @@ class TestASubscriptionHoldsItsArchives:
         recon.ack("m", "log", recon.subscribe("m", "log").cursor)
         recon.stream("m", "s", windows=1)
         assert len(_windows(tmp_path)) == 1
+
+
+class Recording:
+    """The Deliverer port, recording each payload and running nothing."""
+
+    def __init__(self) -> None:
+        self.given: list[bytes] = []
+
+    def deliver(self, argv: Any, payload: bytes, **kw: Any) -> Delivered:
+        self.given.append(payload)
+        return Delivered(True, 0)
+
+
+class TestTheHoldIsBounded:
+    """Erlang F2: a subscription nobody reads must not grow a mission for ever. It holds an
+    archive for ``max_lag`` seconds (30 days by default, which the plan reports); past that,
+    retention goes ahead and the subscriber is told the archives went, ``changes_retired``."""
+
+    def _surveyed(self, tmp_path: Path, max_lag: int) -> Surveys:
+        _mission(tmp_path, [{"name": "all", "output": "inbox", "max_lag": max_lag,
+                             "deliver": {"command": "/usr/bin/true"}}])  # fmt: skip
+        surveys = Surveys(tmp_path)
+        surveys.survey(A)
+        surveys.clock.advance(100)
+        surveys.survey(A, B)
+        surveys.survey(A, B, C)
+        return surveys
+
+    def test_past_max_lag_the_archives_retire_and_the_subscriber_is_told(
+        self, tmp_path: Path
+    ) -> None:
+        surveys = self._surveyed(tmp_path, max_lag=50)
+        assert len(_archives(tmp_path)) == 2, "the first, 100 s old, went; the second is held"
+        recording = Recording()
+        recon = root({}, project=tmp_path, clock=surveys.clock, deliverer=recording,
+                     requester=lambda t, d, r: surveys.inbox)  # fmt: skip
+        document = recon.deliver("m")
+        assert [w["kind"] for w in document.warnings] == ["changes_retired"]
+        assert document.deliveries[0].retired_range is not None
+        assert len(recording.given) == 2, "b and c, what was kept"
+
+    def test_within_max_lag_they_are_held(self, tmp_path: Path) -> None:
+        self._surveyed(tmp_path, max_lag=1000)
+        assert len(_archives(tmp_path)) == 3
+
+    def test_the_default_is_30_days_and_the_plan_says_so(self, tmp_path: Path) -> None:
+        _mission(tmp_path, [{"name": "all", "output": "inbox"}])
+        plan = Surveys(tmp_path).recon.plan("m")
+        said = {value.path: (value.value, value.origin) for value in plan.provenance}
+        assert said["subscriptions.0.max_lag"] == (2592000.0, "recon")

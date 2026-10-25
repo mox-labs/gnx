@@ -1406,6 +1406,15 @@ def _subscription_problems(
                 note="" if origin == "mission" else "no match: every change row of the output",
             )
         )
+        lagging = "max_lag" in subscription.model_fields_set
+        values.append(
+            SourcedValue(
+                path=f"{at}.max_lag",
+                value=subscription.max_lag,
+                origin="mission" if lagging else "recon",
+                note="" if lagging else "30 days: retain: keeps what it has not acked that long",
+            )
+        )
         if subscription.output not in changing:
             problems.append(
                 Problem(
