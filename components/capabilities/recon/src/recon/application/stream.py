@@ -48,8 +48,9 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
+from recon.application.changes import changes_failed, failed, join_unclosed
 from recon.application.survey import PROGRESS_S
 from recon.domain.archives import META_FORMAT_VERSION
 from recon.domain.documents import TableError, TableOutcome, WindowOutcome
@@ -70,6 +71,7 @@ if TYPE_CHECKING:
     from contextlib import AbstractContextManager
     from pathlib import Path
 
+    from recon.application.changes import ChangeDetector
     from recon.domain.archives import ArchiveStore
     from recon.domain.capture import CaptureLog
     from recon.domain.clock import Clock
@@ -565,8 +567,10 @@ class Stream:
         telemetry: WindowTelemetry,
         progress_s: float = PROGRESS_S,
         stop_s: float = STOP_S,
+        changes: ChangeDetector | None = None,
     ) -> None:
         self._archives = archives
+        self._changes = changes
         self._clock = clock
         self._recon_version = recon_version
         self._telemetry = telemetry
@@ -914,30 +918,55 @@ class Stream:
             if ledger.first is None
             else {"first": ledger.first, "last": ledger.last},
         }
-        document = {
-            "format_version": META_FORMAT_VERSION,
-            "recon_version": self._recon_version,
-            "config_sha256": meta["config_sha256"],
-            "started_at": opened_at,
-            "timestamp": closed_at,
-            "preserve_raw": meta["preserve_raw"],
-            "resolved": meta["resolved"],
-            # How the window's writer ended it: stopped on request, as a stopped survey says.
-            "ended": "stopped" if closed_by == "stopped" else "finished",
-            "tables": [table.document()],
-            "stream": {
-                "name": plan.name,
-                "index": window.index,
-                "previous": window.previous,
-                "opened_at": opened_at,
-                "closed_at": closed_at,
-                "closed_by": closed_by,
-                "window": plan.window.model_dump(exclude_none=True),
-                "sources": [source],
-                "reproducible": reproducible,
-            },
-        }
-        self._archives.write_meta(window.archive, document)
+
+        def document(table: TableOutcome, ended: Literal["finished", "stopped"] | None) -> Any:
+            return {
+                "format_version": META_FORMAT_VERSION,
+                "recon_version": self._recon_version,
+                "config_sha256": meta["config_sha256"],
+                "started_at": opened_at,
+                "timestamp": closed_at,
+                "preserve_raw": meta["preserve_raw"],
+                "resolved": meta["resolved"],
+                # How the window's writer ended it: stopped on request, as a survey says;
+                # null while it compares, read as crashed if it is never written again.
+                "ended": ended,
+                "tables": [table.document()],
+                "stream": {
+                    "name": plan.name,
+                    "index": window.index,
+                    "previous": window.previous,
+                    "opened_at": opened_at,
+                    "closed_at": closed_at,
+                    "closed_by": closed_by,
+                    "window": plan.window.model_dump(exclude_none=True),
+                    "sources": [source],
+                    "reproducible": reproducible,
+                },
+            }
+
+        spec = plan.entry.changes
+        if spec is not None and self._changes is not None:
+            # Against what the chain has told, never a delete (ruling C7); a window whose
+            # source failed holds records too, and tells them (Dijkstra F1). Its summary is
+            # in meta.yaml before its first row can be read (F3).
+            try:
+                table = self._changes.window(
+                    window.archive, plan.name, window.previous, table, spec,
+                    plan.entry.normalize,
+                    pending=lambda told: self._archives.write_meta(
+                        window.archive, document(told, None)),
+                )  # fmt: skip
+            except Exception as exc:  # the window's changes fail, never the window (F6)
+                warning = changes_failed(plan.at, table.name, exc)
+                self.warnings = [w for w in self.warnings if w.kind != warning.kind] + [warning]
+                table = failed(table, exc)
+            for output, unclosed in self._changes.unclosed():
+                warning = join_unclosed(plan.at, output, unclosed)
+                self.warnings = [w for w in self.warnings if w.kind != warning.kind] + [warning]
+        self._archives.write_meta(
+            window.archive, document(table, "stopped" if closed_by == "stopped" else "finished")
+        )
         if error is None:
             self._archives.mark_complete(window.archive)
         return WindowOutcome(
@@ -989,8 +1018,8 @@ class Stream:
             return
         windows = self._archives.archives(mission_dir, stream=plan.name)
         going: set[str] = set()
-        if rule.windows is not None:
-            going.update(window.name for window in windows[: -rule.windows])
+        if rule.archives is not None:
+            going.update(window.name for window in windows[: -rule.archives])
         now = datetime.fromisoformat(sealed.closed_at)
         if rule.seconds is not None:
             cutoff = now - timedelta(seconds=rule.seconds)

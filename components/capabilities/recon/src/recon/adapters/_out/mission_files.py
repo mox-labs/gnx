@@ -6,6 +6,8 @@
       config.yaml
       captures/captures.jsonl, captures/raw/    the external capture log (`recon capture`)
       archive/<archive id>/                     one per survey
+      changes.key                               the key change detection hashes with, mode
+                                                0600, made by the first survey that needs it
 
 The project root is the one the caller names, or else the nearest ancestor of the working
 directory holding ``.git`` (a directory, or a worktree's file); outside a repository it is
@@ -16,23 +18,27 @@ are the YAML files of the ``recon.configs`` package.
 from __future__ import annotations
 
 import importlib.resources
-import re
+import os
+import secrets
+import stat
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog
+from recon.adapters._out.private_files import make_dirs, open_file, write_file
 from recon.domain.capture import CAPTURE_LOG_NAME
-from recon.domain.errors import ConfigError, NotFoundError, Problem, UsageError
-from recon.domain.missions import ConfigFile, Template
+from recon.domain.errors import ConfigError, NotFoundError, Problem, ReconError, UsageError
+from recon.domain.missions import MISSION_NAME, ConfigFile, Template
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from recon.domain.clock import Clock
 
-_MISSION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+#: The mission's change-detection key (``MissionStore.change_key``), mode 0600, and its size.
+CHANGE_KEY = "changes.key"
+CHANGE_KEY_BYTES = 32
 
 
 def find_project(start: Path) -> tuple[Path, str]:
@@ -63,7 +69,7 @@ class MissionFiles:
         return self._root
 
     def mission_dir(self, name: str) -> Path:
-        if not _MISSION_NAME.match(name):
+        if not MISSION_NAME.match(name):
             raise UsageError(
                 f"{name!r} is not a mission name",
                 fix="name a mission with letters, digits, '.', '_' and '-', starting with a "
@@ -102,8 +108,8 @@ class MissionFiles:
 
     def write_config(self, name: str, text: bytes) -> Path:
         path = self.config_path(name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(text)
+        make_dirs(path.parent)
+        write_file(path, text)
         return path
 
     def missions(self) -> list[str]:
@@ -123,6 +129,42 @@ class MissionFiles:
         except OSError:
             return 0
 
+    def exposed(self, name: str) -> Path | None:
+        top = self.mission_dir(name)
+        if _reachable(top):
+            return top
+        for directory, subdirectories, files in os.walk(top):
+            subdirectories.sort()
+            here = Path(directory)
+            for entry in subdirectories + sorted(files):
+                if _reachable(here / entry):
+                    return here / entry
+        return None
+
+    def change_key(self, name: str) -> bytes:
+        path = self.mission_dir(name) / CHANGE_KEY
+        try:
+            return _whole_key(path, path.read_bytes())
+        except FileNotFoundError:
+            pass
+        make_dirs(path.parent)
+        # Made whole under another name and linked into place, which fails when another
+        # process linked its key first: the key is one, and never read half written.
+        made = path.with_name(f".{CHANGE_KEY}.{os.getpid()}")
+        descriptor = open_file(made, os.O_WRONLY | os.O_TRUNC)
+        try:
+            os.write(descriptor, secrets.token_bytes(CHANGE_KEY_BYTES))
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            os.link(made, path)
+        except FileExistsError:
+            pass
+        finally:
+            made.unlink(missing_ok=True)
+        return _whole_key(path, path.read_bytes())
+
     def is_directory(self, path: Path) -> bool:
         return path.is_dir()
 
@@ -134,6 +176,33 @@ class MissionFiles:
                 text = file.read_text(encoding="utf-8")
                 found.append(Template(file.name.removesuffix(".yaml"), _description(text), text))
         return sorted(found, key=lambda t: t.name)
+
+
+def _whole_key(path: Path, held: bytes) -> bytes:
+    """``held``, the key ``path`` holds, when it is a whole key; else refused, the file left as
+    it is: an empty key would unkey every hash, a short one weaken it, and a key made again
+    behind the owner's back would hide that the file was changed (Vector, round-4 review S4)."""
+    if len(held) == CHANGE_KEY_BYTES:
+        return held
+    raise ReconError(
+        f"{path} holds {len(held)} bytes, and a mission's change key is {CHANGE_KEY_BYTES}: it "
+        "was cut short, emptied or replaced, so recon does not hash with it",
+        kind="config",
+        fix=f"put back the key it held, if you kept a copy; or remove {path}, and the next survey "
+        "makes a new one and computes every told index again from the archives kept (no change "
+        "is told twice)",
+        details={"path": str(path), "got": len(held), "allowed": [CHANGE_KEY_BYTES]},
+    )
+
+
+def _reachable(path: Path) -> bool:
+    """Whether a user other than the owner has any permission on ``path``; a link is not
+    followed (its own bits mean nothing)."""
+    try:
+        mode = path.lstat().st_mode
+    except OSError:
+        return False
+    return not stat.S_ISLNK(mode) and bool(mode & (stat.S_IRWXG | stat.S_IRWXO))
 
 
 def _description(text: str) -> str:

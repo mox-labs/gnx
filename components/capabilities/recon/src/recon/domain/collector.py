@@ -22,6 +22,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from recon.domain.paginate import NoPages
 from recon.domain.stream import NoGaps
 
 if TYPE_CHECKING:
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from recon.domain.errors import Problem
     from recon.domain.http import Requester
     from recon.domain.models import CollectorEntry, SourceEntry
+    from recon.domain.paginate import PageLog
     from recon.domain.ratelimit import RateLimiter
     from recon.domain.shell import ShellRunner
     from recon.domain.stream import GapLog, PacedBy
@@ -124,12 +126,15 @@ class CollectorContext:
     survey's clock port, which a type that waits between reads (a file followed as it grows)
     or before reconnecting waits on, so a test's clock decides it. ``gaps`` is where a
     stream's collector says when its source was not read (:class:`~recon.domain.stream.Gap`);
-    a snapshot survey's keeps none.
+    a snapshot survey's keeps none. ``pages`` is where a collector that reads its source page
+    by page (an entry's ``paginate:``) says each page it read and why its crawl stopped short
+    (:class:`~recon.domain.paginate.PageLog`), for the table being collected; a stream's keeps
+    none.
 
     ``env`` is not the process environment. It holds only the variables the mission
-    declares for this type: the ``auth.env`` names of the catalog sources its collectors
-    run against, and the variables their kinds read (``CollectorType.source_env``). Reading
-    any other name raises a config error that says where to declare it.
+    declares for this type: the ``auth.token: env:NAME`` variables of the catalog sources its
+    collectors run against, and the variables their kinds read (``CollectorType.source_env``).
+    Reading any other name raises a config error that says where to declare it.
     """
 
     requester: Requester
@@ -145,6 +150,7 @@ class CollectorContext:
     project_dir: Path | None = None
     clock: Clock | None = None
     gaps: GapLog = field(default_factory=NoGaps)
+    pages: PageLog = field(default_factory=NoPages)
 
 
 def _no_problems(entry: CollectorEntry) -> list[Problem]:
@@ -193,7 +199,7 @@ class CollectorType:
       settings ``source_settings`` accepts, with paths relative to it (``command``,
       ``url``); the planner prefixes ``catalog.<i>.``. Pure: no I/O.
     - ``source_env`` names the environment variables such a source reads beyond
-      ``auth.env``, each with where the source names it (``{"GITHUB_TOKEN": "token"}``): the
+      ``auth.token``, each with where the source names it (``{"GITHUB_TOKEN": "token"}``): the
       mission declares them for every type whose collectors run against the source, and the
       plan warns when one is unset. Pure.
     - ``effects`` declares what a run can touch; ``None`` means unknown.
@@ -214,7 +220,9 @@ class CollectorType:
       the catalog (a ``cli`` run's ``{url}`` with no source to fill it); paths are relative
       to the entry, as ``check``'s are. Pure: no I/O.
     - ``describe`` returns what a planned run would do (the URL, the command) for a
-      reviewer. Pure: no I/O, no network.
+      reviewer. Pure: no I/O, no network. A run that starts commands describes them as
+      ``commands`` (shell lines) or ``server`` (a server's command line): a scheduled
+      mission's plan reads those two for a package fetched unpinned every tick.
     - ``preflight`` says, in words, what a dry run does to check a run of the type (``starts
       each stdio server a run names``). Non-empty, a dry run builds the type's collector, asks
       its ``requirements(entry, source)`` for each run, says this in the plan, and closes it.
@@ -227,6 +235,11 @@ class CollectorType:
       the next when it is ready (a file, a command, a polled API), or ``source``, which sends
       whether recon is ready or not (server-sent events). It decides a stream's default
       overflow (``recon.domain.stream.default_overflow``): ``block`` or ``drop_newest``.
+    - ``paginates`` says the collector reads ``entry.paginate`` (:mod:`recon.domain.paginate`),
+      and only such a type takes ``paginate:``: it follows the stopping rules of
+      :class:`~recon.domain.paginate.Crawl`, gives each record ``_position`` ``{page, i}``, and
+      says each page and a crawl cut short through ``CollectorContext.pages``. The plan reports
+      the cap and the least time the crawl takes at the source's rate limit.
     """
 
     create: Callable[[CollectorContext], Collector]
@@ -251,6 +264,7 @@ class CollectorType:
     preflight: str = ""
     unbounded: bool = False
     paced_by: PacedBy = "recon"
+    paginates: bool = False
 
 
 @dataclass(frozen=True)

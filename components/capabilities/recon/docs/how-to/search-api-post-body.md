@@ -9,7 +9,7 @@ This walkthrough uses **Exa** (neural search) because the auth is simple and the
 Install recon from the gnx repository (see [first-survey.md](./first-survey.md) for an editable install from a checkout):
 
 ```bash
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.13.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.14.0#subdirectory=components/capabilities/recon"
 recon --version
 ```
 
@@ -49,7 +49,7 @@ catalog:
     url: https://api.exa.ai
     auth:
       header: x-api-key
-      env: EXA_API_KEY
+      token: env:EXA_API_KEY
       # no prefix — Exa uses raw x-api-key
     rate_limit: { rps: 1, burst: 2 }
     user_agent: "exa-discovery (you@example.com)"   # optional; default: recon/<version>
@@ -157,7 +157,7 @@ catalog:
     url: https://api.exa.ai
     auth:
       header: x-api-key
-      env: EXA_API_KEY
+      token: env:EXA_API_KEY
     rate_limit: { rps: 1, burst: 2 }
     user_agent: "exa-discovery (you@example.com)"
 
@@ -216,7 +216,7 @@ catalog:
     url: https://api.firecrawl.dev
     auth:
       header: Authorization
-      env: FIRECRAWL_API_KEY
+      token: env:FIRECRAWL_API_KEY
       prefix: "Bearer "          # ← Firecrawl needs Bearer
 
 collectors:
@@ -247,7 +247,7 @@ catalog:
     url: https://api.tavily.com
     auth:
       header: Authorization
-      env: TAVILY_API_KEY
+      token: env:TAVILY_API_KEY
       prefix: "Bearer "
 
 collectors:
@@ -281,7 +281,7 @@ catalog:
     url: https://google.serper.dev
     auth:
       header: X-API-KEY
-      env: SERPER_API_KEY
+      token: env:SERPER_API_KEY
       # no prefix — Serper uses raw X-API-KEY
 
 collectors:

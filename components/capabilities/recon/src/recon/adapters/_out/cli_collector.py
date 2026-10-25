@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from recon.adapters._out.parsing import parse_line
+from recon.adapters._out.private_files import make_dirs, open_file
 from recon.domain.collector import CollectorType
 from recon.domain.errors import CollectionError, Problem
 from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, bound
@@ -209,8 +210,8 @@ def _tee(path: Path | None) -> Iterator[Callable[[str], object]]:
     if path is None:
         yield lambda line: None
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
+    make_dirs(path.parent)
+    with os.fdopen(open_file(path, os.O_WRONLY | os.O_APPEND), "a", encoding="utf-8") as f:
         yield f.write
 
 

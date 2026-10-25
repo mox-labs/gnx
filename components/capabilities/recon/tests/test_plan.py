@@ -84,7 +84,7 @@ class TestValidPlans:
                 {
                     "name": "gh",
                     "url": "https://api.github.com",
-                    "auth": {"header": "Authorization", "env": "GH_TOKEN_FOR_TEST"},
+                    "auth": {"header": "Authorization", "token": "env:GH_TOKEN_FOR_TEST"},
                 }
             ],
             "collectors": [{"name": "r", "type": "api", "endpoint": "/x"}],
@@ -92,7 +92,7 @@ class TestValidPlans:
         plan = _plan(raw, registry, env={})
         assert plan.valid
         [warning] = plan.warnings
-        assert warning.kind == "env_unset" and warning.path == "catalog.0.auth.env"
+        assert warning.kind == "env_unset" and warning.path == "catalog.0.auth.token"
         assert "GH_TOKEN_FOR_TEST is not set" in warning.message
         assert not _plan(raw, registry, env={"GH_TOKEN_FOR_TEST": "t"}).warnings
 
@@ -566,7 +566,9 @@ class TestProblemRecords:
 
         plan = _plan(
             {
-                "catalog": [{"name": "gh", "url": "https://x", "auth": {"env": "UNSET_FOR_TEST"}}],
+                "catalog": [
+                    {"name": "gh", "url": "https://x", "auth": {"token": "env:UNSET_FOR_TEST"}}
+                ],
                 "collectors": [{"name": "c", "type": "api", "endpoint": "/{x}", "extra": 1}],
             },
             registry,
@@ -768,7 +770,7 @@ class TestFanOutByKind:
             "catalog": [
                 {"name": "repo", "type": "local", "url": "/tmp"},
                 {"name": "keyed", "url": "https://api.example.test",
-                 "auth": {"env": "API_KEY", "header": "x-api-key"}},
+                 "auth": {"token": "env:API_KEY", "header": "x-api-key"}},
             ],
             "collectors": [
                 {"name": "todos", "type": "cli", "run": "rg TODO ."},

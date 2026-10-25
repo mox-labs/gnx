@@ -14,6 +14,7 @@ import pytest
 
 from recon.adapters._out.api_collector import ApiCollector
 from recon.adapters._out.cli_collector import CliCollector
+from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.http_requester import HttpRequester
 from recon.adapters._out.markitdown_converter import MarkitdownConverter
 from recon.adapters._out.system_clock import SystemClock
@@ -46,14 +47,16 @@ def _collectors() -> dict[str, Collector]:
     conv = MarkitdownConverter()
     return {
         "cli": CliCollector(),
-        "api": ApiCollector(req, {}, DEFAULT_USER_AGENT),
+        "api": ApiCollector(req, Credentials({}), DEFAULT_USER_AGENT),
         "web": WebCollector(req, conv, DEFAULT_USER_AGENT),
     }
 
 
 def _api_records(entry: CollectorEntry, source: SourceEntry | None) -> list[dict[str, Any]]:
     """Helper — materializes the streaming iterator for test assertions."""
-    return list(ApiCollector(_requester(), {}, DEFAULT_USER_AGENT).collect(entry, source))
+    return list(
+        ApiCollector(_requester(), Credentials({}), DEFAULT_USER_AGENT).collect(entry, source)
+    )
 
 
 # --- OpenAlex (no auth, fast) ---

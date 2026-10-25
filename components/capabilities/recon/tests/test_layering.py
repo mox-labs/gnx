@@ -52,7 +52,8 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "recon"
 #: names a location (a mission directory, an archive); touching the filesystem through it
 #: is caught separately. ``datetime`` is the type the clock port returns; reading the time
 #: through it is caught separately. ``inspect`` reads a transform's signature, and
-#: ``functools`` binds its keywords.
+#: ``functools`` binds its keywords. ``shlex`` splits a command line given as a string into
+#: words (a scheduled command's packages); it reads no file unless handed a stream.
 PURE_STDLIB = frozenset(
     {
         "__future__",
@@ -65,6 +66,7 @@ PURE_STDLIB = frozenset(
         "inspect",
         "pathlib",
         "re",
+        "shlex",
         "typing",
         "urllib",
     }
@@ -311,15 +313,18 @@ class TestLibrarySurface:
 
         Changed requirement: the operations return typed documents, so their types are
         declared names too. Changed again (review item 6): a control an operation takes to be
-        steered while it runs, ``StreamStop``, is declared too."""
+        steered while it runs, ``StreamStop``, is declared too. Changed (ruling S3): the
+        ``schedule_*`` operations and the two documents they return."""
         operations = {"init", "plan", "survey", "status", "query", "templates", "capture",
                       "survey_failure", "error_document", "skill", "skill_references",
                       "configure_telemetry", "read_since", "watch", "stream",
-                      "stream_failure"}  # fmt: skip
+                      "stream_failure", "schedule_install", "schedule_list",
+                      "schedule_remove", "schedule_status", "schedule_tick"}  # fmt: skip
         documents = {"MissionDocument", "PlanDocument", "SurveyDocument", "TableOutcome",
                      "StatusDocument", "QueryRows", "TemplatesDocument", "Capture",
                      "ErrorDocument", "RecordsSince", "StreamDocument",
-                     "WindowOutcome"}  # fmt: skip
+                     "WindowOutcome", "ScheduleDocument", "SchedulesDocument",
+                     "TickDocument"}  # fmt: skip
         errors = {"ReconError", "UsageError", "ConfigError", "ConflictError", "NotFoundError",
                   "QueryError", "CollectionError", "Problem"}  # fmt: skip
         tables = {"ERROR_KINDS", "EXIT_CODES", "EXIT_MEANINGS", "EXIT_NEXT", "PROBLEM_KINDS",
@@ -478,4 +483,6 @@ def test_the_public_names_are_the_ones_callers_use() -> None:
         "templates",
         "stream", "stream_failure", "StreamDocument", "WindowOutcome",
         "StreamStop",
+        "schedule_install", "schedule_list", "schedule_remove", "schedule_status", "schedule_tick",
+        "ScheduleDocument", "SchedulesDocument", "TickDocument",
     }  # fmt: skip

@@ -8,11 +8,12 @@
       "name": "domain",
       "files": ["src/recon/domain/**/*.py"],
       "allow": ["__future__", "collections", "contextlib", "dataclasses", "datetime", "functools",
-                "html", "inspect", "pathlib", "re", "threading", "typing", "urllib",
+                "html", "inspect", "pathlib", "re", "shlex", "threading", "typing", "urllib",
                 "pydantic", "recon.domain"],
       "forbid": ["opentelemetry", "duckdb", "httpx2", "httpx", "markitdown", "yaml", "open"],
       "why": {
         "stdlib": "recon's PURE_STDLIB (tests/test_layering.py): pathlib names a location and datetime is the type the clock port returns; touching the filesystem or reading the clock through them is caught by test_layering's effect scan",
+        "shlex": "splitting a command line given as a string into words, to find the packages a scheduled command fetches (domain/schedule.py's unpinned); no stream is handed it, so it reads no file",
         "threading": "TIMEOUT_MAX alone, the longest wait the platform's timers take, which the plan holds a source's timeout and rate to (domain/clock.py); the domain starts no thread (test_layering's LAYER_STDLIB). Accepted: owner ruling 2026-10-22",
         "pydantic": "every published document and config model is a pydantic model",
         "forbid": "the adapters' technologies, YAML, and the builtin open, which no import shows"
@@ -34,12 +35,14 @@
     {
       "name": "adapter_support",
       "files": ["src/recon/adapters/_out/parsing.py", "src/recon/adapters/_out/user_agent.py",
-                "src/recon/adapters/_out/http_source.py"],
-      "allow": ["*", "recon.domain"],
+                "src/recon/adapters/_out/http_source.py", "src/recon/adapters/_out/private_files.py",
+                "src/recon/adapters/_out/credentials.py"],
+      "allow": ["*", "recon.domain", "recon.adapters._out.credentials"],
       "forbid": ["yaml"],
       "why": {
-        "*": "body parsing (xmltodict, lazily), the distribution's version for the User-Agent, and how a request to an HTTP source is addressed and carries its credential (shared by api and sse)",
-        "recon.domain": "the errors a bad body raises; these helpers hold no port and reach no adapter"
+        "*": "body parsing (xmltodict, lazily), the distribution's version for the User-Agent, how a request to an HTTP source is addressed and carries its credential (shared by api and sse), the modes every file and directory of a mission is made with (ruling A2: shared by the stores and the cli collector's capture), and where every source kind's credential comes from (a variable, a file, a helper's headers: shared by api, sse and mcp, ruling A1)",
+        "recon.domain": "the errors a bad body raises; these helpers hold no port and reach no adapter",
+        "recon.adapters._out.credentials": "http_source sends the credential the shared resolver gives"
       }
     },
     {
@@ -47,10 +50,11 @@
       "files": ["src/recon/adapters/_out/archive_files.py", "src/recon/adapters/_out/capture_files.py",
                 "src/recon/adapters/_out/event_log.py", "src/recon/adapters/_out/mission_files.py"],
       "allow": ["*", "recon.domain", "recon.adapters._out.capture_files",
-                "recon.adapters._out.event_log"],
+                "recon.adapters._out.event_log", "recon.adapters._out.private_files"],
       "why": {
         "*": "one technology, the local filesystem, and YAML for the archive's meta and the mission's config",
-        "capture_files, event_log": "the archive store composes the archive's capture log and event log, and the mission store reuses the capture log for the mission's external log: one technology composing its own files"
+        "capture_files, event_log": "the archive store composes the archive's capture log and event log, and the mission store reuses the capture log for the mission's external log: one technology composing its own files",
+        "private_files": "every file and directory a store makes is made private (ruling A2)"
       }
     },
     {
@@ -61,21 +65,33 @@
                 "src/recon/adapters/_out/sse_collector.py"],
       "allow": ["*", "recon.domain", "recon.adapters._out.parsing",
                 "recon.adapters._out.user_agent", "recon.adapters._out.capture_files",
-                "recon.adapters._out.http_source"],
+                "recon.adapters._out.http_source", "recon.adapters._out.private_files",
+                "recon.adapters._out.credentials"],
       "forbid": ["yaml"],
       "why": {
         "*": "each collector type's own technology: a child process for cli, the MCP client (fastmcp, the mcp SDK, jsonschema) for mcp, the local filesystem for tail, nothing beyond the requester port for api, web and sse",
-        "parsing, user_agent, http_source": "the shared helpers",
+        "parsing, user_agent, http_source, private_files, credentials": "the shared helpers (private_files: the cli collector tees its stdout into the archive's capture; credentials: every source kind's credential reference, ruling A1)",
         "capture_files": "the capture collector reads the capture format through its one reader, so no second parser of the format exists"
+      }
+    },
+    {
+      "name": "scheduler",
+      "files": ["src/recon/adapters/_out/schedulers.py", "src/recon/adapters/_out/schedule_files.py"],
+      "allow": ["*", "recon.domain", "recon.adapters._out.private_files"],
+      "forbid": ["yaml"],
+      "why": {
+        "*": "the operating system's schedulers, each by its own command run as an argument list (launchctl, systemctl --user, crontab), and the mission's install record as JSON",
+        "private_files": "a projected file and the install record are written readable by their owner alone, as every file of a mission is (ruling A2)"
       }
     },
     {
       "name": "query",
       "files": ["src/recon/adapters/_out/duckdb_query.py"],
-      "allow": ["*", "recon.domain"],
+      "allow": ["*", "recon.domain", "recon.adapters._out.private_files"],
       "forbid": ["yaml"],
       "why": {
-        "recon.domain only": "which files make an archive is the ArchiveStore's secret (domain/archives.py); the query reads the tables the store names, never the store adapter's layout"
+        "recon.domain only": "which files make an archive is the ArchiveStore's secret (domain/archives.py); the query reads the tables the store names, never the store adapter's layout",
+        "private_files": "the large join's directory under the mission is made private, as every directory of a mission is (ruling A2; round-4 review F7)"
       }
     },
     {

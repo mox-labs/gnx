@@ -4,6 +4,7 @@
 
     <mission>/archive/<archive id>/
       <output>.jsonl          one table per collector and source, one record per line
+      <output>.pages.jsonl    a paginated table's page log, each page's token: no table
       meta.yaml               recon version, config sha256, times, and per table: type_url,
                               records, status, seconds, error {kind, message[, fix]}
       telemetry.jsonl         the survey's recon.v1.event lines, as they happened
@@ -15,6 +16,8 @@
     <mission>/streams/<stream>/
       writer.lock             locked by the stream's one writer while it runs, holding its
                               pid (so a writer refused is told whose); kept, emptied
+    <mission>/writer.lock     locked by the mission's one survey while it runs, holding its
+                              pid, as a stream's is; kept, emptied
       <window id>/            each window, an archive as above, of one table
       retired.jsonl           a line for each window retain: removed: what, and why
 
@@ -34,6 +37,11 @@ stream reads that directory alone. A window's id starts with its index
 ``flock`` on its ``writer.lock``, which stays when it is let go, so no two writers ever hold
 two files of one name), so the index it gives each new window is one no other writer gives.
 The stream is ``writing`` while that lock is held, and otherwise reads as its last window.
+
+**One survey a mission.** A survey holds the mission's own ``writer.lock`` the same way from
+before it writes anything until it returns (:meth:`ArchiveFiles.hold_mission`), so two surveys
+of one mission, two scheduled ticks that overlap among them, never write two archives from
+the same moment of their sources.
 
 **Reading as it is written.** :meth:`ArchiveFiles.read_since` reads each table's file from a
 byte offset to its last whole line, the live ``.tmp`` of a table being written included, and
@@ -76,22 +84,26 @@ import yaml
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.event_log import EventLog
+from recon.adapters._out.private_files import DIR_MODE, make_dirs, open_file, write_file
 from recon.domain.archives import (
     ARCHIVE_ID_FORMAT,
     EVENT_LOG_NAME,
+    SIDECARS,
     ArchiveState,
     NewRecords,
+    Sidecar,
     StoredTable,
     TableEnds,
     TableRecord,
 )
 from recon.domain.capture import CAPTURE_LOG_NAME
+from recon.domain.changes import CHANGES_SUFFIX
 from recon.domain.errors import QueryError, ReconError, UsageError
 from recon.domain.stream import window_index
 from recon.domain.type_url import DEFAULT_RECORDS_TYPE_URL
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Sequence
+    from collections.abc import Generator, Iterable, Iterator, Sequence
     from pathlib import Path
 
     from recon.domain.clock import Clock
@@ -144,18 +156,21 @@ class ArchiveFiles:
         self._held: dict[Path, int] = {}
         #: The lock held on each stream this store is extending, by its directory.
         self._streams: dict[Path, int] = {}
+        #: The lock held on each mission a survey through this store is writing, by its
+        #: directory.
+        self._missions: dict[Path, int] = {}
 
     def create(self, mission_dir: Path, archive_id: str, *, stream: str | None = None) -> Path:
         home = mission_dir / "archive" if stream is None else _stream_dir(mission_dir, stream)
         archive = home / archive_id
-        archive.parent.mkdir(parents=True, exist_ok=True)
+        make_dirs(archive.parent)
         # Made whole under a name no reader lists, then renamed into place: an archive is
         # never seen without its lock and marker, whenever its writer dies.
         making = archive.with_name(f".{archive_id}.{os.getpid()}.making")
-        making.mkdir()
+        making.mkdir(mode=DIR_MODE)
         descriptor = _hold(making / WRITER_LOCK)
         try:
-            (making / INCOMPLETE_MARKER).write_text("")
+            write_file(making / INCOMPLETE_MARKER, b"")
             taken = ReconError(
                 f"archive {archive_id} already exists in {archive.parent}; an archive is "
                 "never written twice",
@@ -191,11 +206,11 @@ class ArchiveFiles:
 
     def hold_stream(self, mission_dir: Path, stream: str) -> None:
         directory = _stream_dir(mission_dir, stream)
-        directory.mkdir(parents=True, exist_ok=True)
+        make_dirs(directory)
         if directory in self._streams:
             return
         try:
-            descriptor = _hold(directory / WRITER_LOCK)
+            descriptor = _hold_naming_pid(directory / WRITER_LOCK)
         except OSError as exc:
             pid = _holder(directory / WRITER_LOCK)
             if pid == os.getpid():
@@ -213,17 +228,39 @@ class ArchiveFiles:
                 fix=stop,
                 details={"stream": stream} | ({} if pid is None else {"pid": pid}),
             ) from exc
-        # The holder's pid, so a writer refused can name it; cleared before it lets go.
-        os.ftruncate(descriptor, 0)
-        os.pwrite(descriptor, f"{os.getpid()}\n".encode(), 0)
         self._streams[directory] = descriptor
 
     def release_stream(self, mission_dir: Path, stream: str) -> None:
-        descriptor = self._streams.pop(_stream_dir(mission_dir, stream), None)
-        if descriptor is not None:
-            with contextlib.suppress(OSError):
-                os.ftruncate(descriptor, 0)  # no pid of a writer that has let go
-            os.close(descriptor)  # closing releases the lock; the file stays
+        _let_go(self._streams.pop(_stream_dir(mission_dir, stream), None))
+
+    def hold_mission(self, mission_dir: Path) -> None:
+        lock = mission_dir / WRITER_LOCK
+        try:
+            if mission_dir in self._missions:  # a survey's hold is that survey's alone
+                raise BlockingIOError(lock)
+            make_dirs(mission_dir)
+            descriptor = _hold_naming_pid(lock)
+        except OSError as exc:
+            pid = _holder(lock)
+            if pid == os.getpid():
+                stop = "this process is surveying it now: survey again once that survey returns"
+            elif pid is not None:
+                stop = (f"let it run, or stop it: kill -TERM {pid} (its pid) stops it, its "
+                        "archive reading ended: stopped; then survey again")  # fmt: skip
+            else:
+                stop = (f"let it run (`recon status {mission_dir.name}` shows its archive "
+                        "writing), then survey again")  # fmt: skip
+            raise ReconError(
+                f"another recon is surveying mission {mission_dir.name}; a mission has one "
+                "survey at a time",
+                kind="busy",
+                fix=stop,
+                details={"mission": mission_dir.name} | ({} if pid is None else {"pid": pid}),
+            ) from exc
+        self._missions[mission_dir] = descriptor
+
+    def release_mission(self, mission_dir: Path) -> None:
+        _let_go(self._missions.pop(mission_dir, None))
 
     def stream_state(self, mission_dir: Path, stream: str) -> ArchiveState | None:
         if _locked(_stream_dir(mission_dir, stream) / WRITER_LOCK):
@@ -267,7 +304,7 @@ class ArchiveFiles:
         # a writer that dies after it leaves the window listed, and the next retirement
         # retires it again; a reader keeps the last tombstone of an id.
         line = (json.dumps(tombstone, default=str) + "\n").encode()
-        descriptor = os.open(home / RETIRED, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        descriptor = open_file(home / RETIRED, os.O_WRONLY | os.O_APPEND)
         try:
             os.write(descriptor, line)
             os.fsync(descriptor)
@@ -359,6 +396,40 @@ class ArchiveFiles:
             raise kept
         return count
 
+    def write_sidecar(
+        self, archive: Path, output: str, sidecar: Sidecar, lines: Iterable[dict[str, Any]]
+    ) -> None:
+        path = archive / f"{output}.{sidecar}.jsonl"
+        tmp = path.with_suffix(".jsonl.tmp")
+        try:
+            with open(open_file(tmp, os.O_WRONLY | os.O_TRUNC), "w", encoding="utf-8") as f:
+                for line in lines:
+                    f.write(json.dumps(line, default=str) + "\n")
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            raise
+
+    def read_sidecar(
+        self, archive: Path, output: str, sidecar: Sidecar
+    ) -> Iterator[dict[str, Any]] | None:
+        path = archive / f"{output}.{sidecar}.jsonl"
+        if not path.is_file():
+            return None
+        return _sidecar_lines(path)
+
+    def read_table(
+        self, archive: Path, output: str, *, unsealed: bool = False
+    ) -> Iterator[dict[str, Any]] | None:
+        path = archive / f"{output}.jsonl"
+        if path.is_file():
+            return _table_records(path)
+        live = archive / f"{output}{_LIVE}"
+        if unsealed and live.is_file():
+            return _table_records(live, whole=True)
+        return None
+
     def capture_log(self, archive: Path) -> FilesystemCaptureLog:
         return FilesystemCaptureLog(archive, self._clock)
 
@@ -373,7 +444,8 @@ class ArchiveFiles:
         tmp = path.with_suffix(".yaml.tmp")
         stamped = {**meta, "table_layout": TABLE_LAYOUT}
         try:
-            tmp.write_text(yaml.safe_dump(stamped, default_flow_style=False, sort_keys=False))
+            text = yaml.safe_dump(stamped, default_flow_style=False, sort_keys=False)
+            write_file(tmp, text.encode())
             tmp.replace(path)
         except OSError:
             with contextlib.suppress(OSError):
@@ -458,6 +530,10 @@ class ArchiveFiles:
             offset, told = positions.get(name, (0, False))
             if told:
                 continue
+            if path.name.endswith(_LIVE) and name.endswith(f".{CHANGES_SUFFIX}"):
+                # A change table is read once sealed, never as it is written: one its writer
+                # died writing told nothing, and the next survey tells its rows (review G2).
+                continue
             if budget.spent():
                 budget.cut = True  # a table left unread, which may have records
                 continue
@@ -526,7 +602,7 @@ class _Lines:
     one; adding a line takes no lock, which a lock per line cost on short lines."""
 
     def __init__(self, path: Path, flush_bytes: int, flush_s: float) -> None:
-        self._descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        self._descriptor = open_file(path, os.O_WRONLY | os.O_TRUNC)
         self._flush_bytes = flush_bytes
         self._flush_s = flush_s
         self._size = 0
@@ -606,7 +682,7 @@ def _move_torn_tail(path: Path) -> None:
         if whole == size:
             return
         f.seek(whole)
-        path.with_name(path.name + TORN).write_bytes(f.read())
+        write_file(path.with_name(path.name + TORN), f.read())
         f.truncate(whole)
 
 
@@ -648,13 +724,41 @@ def _is_archive_id(name: str) -> bool:
 _LIVE = ".jsonl.tmp"
 
 
+def _sidecar_lines(path: Path) -> Iterator[dict[str, Any]]:
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            yield json.loads(line)
+
+
+def _table_records(path: Path, *, whole: bool = False) -> Iterator[dict[str, Any]]:
+    """A sealed table's records: each line, but a table's that collected nothing, whose one
+    line is the empty sentinel. ``whole``: a table its writer died writing, whose last line
+    may be cut short: each line that ends, and no other."""
+    with path.open("rb") as f:
+        for line in f:
+            if whole and not line.endswith(b"\n"):
+                break
+            record = json.loads(line)
+            if isinstance(record, dict) and record.get("_empty") is True:
+                continue
+            yield record
+
+
+def _is_sidecar(name: str) -> bool:
+    """Whether ``name`` is a table's sidecar (``<output>.pages.jsonl``), being written or not."""
+    stem = name.removesuffix(".tmp").removesuffix(".jsonl")
+    return any(stem.endswith(f".{sidecar}") for sidecar in SIDECARS)
+
+
 def _table_files(archive: Path) -> list[tuple[str, Path]]:
     """The archive's tables by output name, each with its file: every JSONL file but the
-    capture log and the event log, and each table being written (its ``.jsonl.tmp``) that has
-    no sealed file yet."""
+    capture log, the event log and the tables' sidecars, and each table being written (its
+    ``.jsonl.tmp``) that has no sealed file yet."""
     logs = {CAPTURE_LOG_NAME, EVENT_LOG_NAME}
     found: dict[str, Path] = {}
     for path in archive.glob("*.jsonl*"):
+        if _is_sidecar(path.name):
+            continue
         if path.name.endswith(".jsonl") and path.name not in logs:
             found[path.name.removesuffix(".jsonl")] = path
         elif path.name.endswith(_LIVE):
@@ -810,7 +914,7 @@ def _is_empty_sentinel(line: bytes) -> bool:
 def _hold(path: Path) -> int:
     """Hold an exclusive lock on ``path``, made if need be, until the descriptor is closed.
     It is made in an archive no reader lists yet, so none can test it as it is taken."""
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
+    descriptor = open_file(path, os.O_WRONLY)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -819,9 +923,26 @@ def _hold(path: Path) -> int:
     return descriptor
 
 
+def _hold_naming_pid(path: Path) -> int:
+    """Hold the lock on ``path`` (:func:`_hold`) and write this process's pid in it, so one
+    refused can name the holder; :func:`_let_go` clears it before letting go."""
+    descriptor = _hold(path)
+    os.ftruncate(descriptor, 0)
+    os.pwrite(descriptor, f"{os.getpid()}\n".encode(), 0)
+    return descriptor
+
+
+def _let_go(descriptor: int | None) -> None:
+    """Let go of a lock :func:`_hold_naming_pid` took, its pid cleared; the file stays."""
+    if descriptor is not None:
+        with contextlib.suppress(OSError):
+            os.ftruncate(descriptor, 0)  # no pid of a writer that has let go
+        os.close(descriptor)  # closing releases the lock
+
+
 def _holder(path: Path) -> int | None:
-    """The pid the holder of a stream's lock wrote in it, when it is a process alive on this
-    host; None when it has not written it yet, or the file says something else."""
+    """The pid the holder of a stream's or a mission's lock wrote in it, when it is a process
+    alive on this host; None when it has not written it yet, or the file says something else."""
     try:
         said = path.read_text().strip()
     except OSError:

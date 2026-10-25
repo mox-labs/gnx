@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 
+from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.http_requester import HttpRequester
 from recon.adapters._out.sse_collector import SseCollector, collector_type
 from recon.domain.errors import CollectionError
@@ -77,7 +78,7 @@ class Listening:
         self.gaps = Gaps()
         requester = HttpRequester(RateLimiter(self.clock), self.clock)
         self.collector = SseCollector(
-            requester, self.clock, self.gaps, env or {}, "recon-test",
+            requester, self.clock, self.gaps, Credentials(env or {}), "recon-test",
             jitter=random.Random("a seed") if jitter is DEFAULT else jitter,
             pause=self.clock.sleep if pause is DEFAULT else pause,
         )  # fmt: skip
@@ -158,7 +159,7 @@ class TestEvents:
             listening = Listening(
                 server.url,
                 env={"FEED_TOKEN": "t0ken"},
-                auth={"header": "Authorization", "env": "FEED_TOKEN", "prefix": "Bearer "},
+                auth={"header": "Authorization", "token": "env:FEED_TOKEN", "prefix": "Bearer "},
             )
             listening.until(1)
             listening.stop()

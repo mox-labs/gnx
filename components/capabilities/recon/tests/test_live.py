@@ -242,6 +242,26 @@ class TestWholeLinesOnly:
         assert [r.record for r in second.records] == [{"n": 1}, {"n": 2}]
         assert first.exhausted == second.exhausted == []
 
+    def test_a_change_table_is_read_only_once_it_is_sealed(self, tmp_path: Path) -> None:
+        """Dijkstra G2: a change table being written is no change told yet: a writer that dies
+        mid-write leaves it unsealed, its table not compared, and the next survey tells those
+        rows again. So a reader sees none of its rows until it is sealed, then all of them;
+        a table of records is still read as it is written."""
+        store = ArchiveFiles(SystemClock())
+        archive = store.create(tmp_path, "2026-01-02-030405-000001")
+        (archive / "inbox.jsonl.tmp").write_bytes(b'{"n": 0}\n')
+        live = archive / "inbox.changes.jsonl.tmp"
+        live.write_bytes(b'{"op": "insert", "key": {"id": "a"}, "record": {"id": "a"}}\n')
+        first = store.read_since(archive, None, max_records=100, max_bytes=1 << 20)
+        live.rename(archive / "inbox.changes.jsonl")
+        second = store.read_since(archive, first.cursor, max_records=100, max_bytes=1 << 20)
+        store.release(archive)
+
+        assert [(r.table, r.record) for r in first.records] == [("inbox", {"n": 0})]
+        assert [(r.table, r.record["op"]) for r in second.records] == [("inbox.changes",
+                                                                         "insert")]  # fmt: skip
+        assert first.retracted == second.retracted == []
+
     def test_a_short_write_taken_back_under_a_reader_is_a_retraction_not_its_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

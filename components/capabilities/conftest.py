@@ -92,6 +92,11 @@ EXPECTED_SKIPS: frozenset[str] = frozenset(
         "calls live APIs; set RECON_LIVE=1 to run",
         # dao's check of its parser against the real catalog, which lives outside this repo.
         "the dao corpus is not on this machine",
+        # recon's schedule projections, each linted by its own platform's validator: a run
+        # shows one of these two, and CI (Linux) runs systemd-analyze. A validator missing on
+        # its own platform skips with another reason, which fails the run.
+        "plutil -lint runs on macOS",
+        "systemd-analyze verify runs on Linux",
     }
 )
 

@@ -203,7 +203,7 @@ def test_a_failed_request_says_what_to_do_next(base_url: str) -> None:
     meta.yaml and the survey document had no fix."""
     with pytest.raises(CollectionError) as excinfo:
         _get(base_url, "/forbidden", max_bytes=100_000)
-    assert "auth.env" in (excinfo.value.fix or "")
+    assert "auth.token" in (excinfo.value.fix or "")
     with pytest.raises(CollectionError) as excinfo:
         _get(base_url, "/missing")
     assert "endpoint" in (excinfo.value.fix or "")

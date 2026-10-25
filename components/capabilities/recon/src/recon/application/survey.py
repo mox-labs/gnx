@@ -8,7 +8,12 @@ Determinism (the contract the tests in ``test_determinism.py`` hold):
     directories, a survey writes the same records, in the same order, to the same tables.
     The time enters only through the ``Clock`` port. With the clock fixed too, the whole
     archive is the same: its name, every table, and ``meta.yaml``. The one exception is the
-    capture log a mission with ``preserve_raw`` keeps: each capture has a unique ``id``.
+    capture log a mission with ``preserve_raw`` keeps: each capture has a unique ``id``. A
+    survey a scheduled tick runs also records when the tick was due, in the host's local time
+    (``scheduled_at``, ``late_s``): the same clock in the same time zone, the same values.
+    An entry with ``changes:`` adds its baseline (the earlier archive its tables are compared
+    with) and the mission's change key to the inputs: the same baseline, tables, spec and key
+    give the same change tables and key indexes.
 
     A stream's window keeps the same contract, window by window (``stream.py``): given the
     same records arriving at the same stamps on the clock port, each window holds the same
@@ -44,13 +49,26 @@ before its first record (an ``extract:`` that resolves to nothing in a response 
 empty, items that are not objects, captures no filter kept): the survey keeps the table,
 empty, and warns with the reason, so an empty table never reads as a source that had
 nothing.
+
+Once every table has run, each table sealed ``ok`` of an entry with ``changes:`` is compared
+with its baseline (:mod:`recon.application.changes`): its change table (``<output>.changes``)
+and its key index are written, and its outcome says what was found. A stop during that is
+recorded as ``ended: stopped``, and what it wrote is then not to be read.
+
+A table read page by page (``paginate:``) says each page and why its crawl stopped short
+through the survey's page log (:class:`TablePages`, the collectors' ``CollectorContext.pages``).
+Once the table is sealed its page log is kept beside it (``<output>.pages.jsonl``); a crawl
+cut short seals the table ``ok`` and ``truncated``, with what cut it, and warns
+(``paginate_pages``, ``paginate_loop``, ``paginate_empty``). A table that fails keeps no page log.
 """
 
 from __future__ import annotations
 
 import contextlib
+from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
+from recon.application.changes import changes_failed, failed, join_unclosed
 from recon.application.plan import fan_out
 from recon.domain.archives import META_FORMAT_VERSION
 from recon.domain.deadline import Deadline, DeadlineExceededError
@@ -64,11 +82,14 @@ if TYPE_CHECKING:
     from datetime import datetime
     from pathlib import Path
 
+    from recon.application.changes import ChangeDetector
     from recon.domain.archives import ArchiveStore
     from recon.domain.capture import CaptureLog
+    from recon.domain.changes import DeletesWithheld
     from recon.domain.clock import Clock
     from recon.domain.collector import Collector
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
+    from recon.domain.paginate import TruncatedBy
     from recon.domain.telemetry import Span, Telemetry
 
 #: By default, the least seconds between two ``recon.collect.progress`` events of a table.
@@ -92,6 +113,30 @@ class CollectorError(CollectionError):
         super().__init__(f"[{where}] {cause}", kind=kind, fix=fix)
 
 
+class TablePages:
+    """The page log of a survey's tables (``recon.domain.paginate.PageLog``), one table at a
+    time, as tables run: :meth:`begin` starts a table's, and :meth:`end` hands it over. Each
+    page is one entry, ``{"page", "token"}``, so it holds a crawl's ``pages`` entries at most."""
+
+    def __init__(self) -> None:
+        self.pages: list[dict[str, Any]] = []
+        self.truncated_by: TruncatedBy | None = None
+
+    def page(self, index: int, token: Any) -> None:
+        self.pages.append({"page": index, "token": token})
+
+    def truncated(self, by: TruncatedBy) -> None:
+        self.truncated_by = by
+
+    def begin(self) -> None:
+        self.pages, self.truncated_by = [], None
+
+    def end(self) -> tuple[list[dict[str, Any]], TruncatedBy | None]:
+        taken = self.pages, self.truncated_by
+        self.begin()
+        return taken
+
+
 class Survey:
     """One survey's run: the ports it writes through and the tables it has recorded.
 
@@ -101,7 +146,8 @@ class Survey:
     what the run found worth saying about tables that succeeded, and about an archive it
     could not finish. ``finished`` is false when ``meta.yaml`` could not be written or the
     archive could not be marked complete, so it reads incomplete whatever its tables did.
-    ``progress_s`` is the least time between two progress events of a table."""
+    ``progress_s`` is the least time between two progress events of a table. ``pages`` is the
+    page log its collectors were built with (``CollectorContext.pages``)."""
 
     def __init__(
         self,
@@ -115,8 +161,12 @@ class Survey:
         kinds: Mapping[str, Collection[str]] | None = None,
         deadline: Deadline | None = None,
         progress_s: float = PROGRESS_S,
+        pages: TablePages | None = None,
+        changes: ChangeDetector | None = None,
     ) -> None:
         self._archives = archives
+        self._pages = pages if pages is not None else TablePages()
+        self._changes = changes
         self._progress_s = progress_s
         self._clock = clock
         self._deadline = deadline if deadline is not None else Deadline(clock)
@@ -138,13 +188,16 @@ class Survey:
         config_sha256: str | None = None,
         resolved: Mapping[str, Any] | None = None,
         streams: Collection[int] = (),
+        scheduled: Mapping[str, Any] | None = None,
     ) -> list[TableOutcome]:
         """Run every table into ``archive``, a new one :meth:`ArchiveStore.create` made at
         ``started``, and write its ``meta.yaml``. Returns the tables, which also land in
         ``meta.yaml`` under ``tables``. ``resolved`` says where what the survey resolved came
         from (how its project root was found, which declared variables were set), and is
         written as given. The entries at the positions in ``streams`` are streams, written
-        window by window into their own archives, so they are no table here."""
+        window by window into their own archives, so they are no table here. A survey a
+        scheduled tick runs is given ``scheduled`` (``scheduled_at``, ``late_s``), written into
+        ``meta.yaml`` as given; one run by hand has neither key."""
         captures = self._archives.capture_log(archive) if config.preserve_raw else None
         tables: list[TableOutcome] = []
         what = f"the survey's deadline ({config.deadline:g}s)" if config.deadline else ""
@@ -157,6 +210,7 @@ class Survey:
             "timestamp": None,  # when it ended: set by _meta, here so the key keeps its place
             "preserve_raw": config.preserve_raw,
             "resolved": dict(resolved or {}),
+            **dict(scheduled or {}),
         }
         try:
             with self._deadline.bound(config.deadline, what, fix):
@@ -164,6 +218,9 @@ class Survey:
                     if index in streams:
                         continue
                     tables += self._run_entry(index, entry, config, collectors, archive, captures)
+            # Every table has run, so the survey reaches its end: what changed is told now,
+            # each table's summary in meta.yaml before its rows can be read.
+            self._compare(config, tables, archive, meta)
         except KeyboardInterrupt:
             # Stopped on request (Ctrl-C, SIGTERM): the tables that ended are recorded, and
             # that it was stopped, so it never reads as a survey that died. One that cannot
@@ -188,15 +245,75 @@ class Survey:
             self._emit({"kind": "archive_warning", "reason": warning.message, "fix": warning.fix})
         return tables
 
+    def _compare(
+        self,
+        config: ReconConfig,
+        tables: list[TableOutcome],
+        archive: Path,
+        head: dict[str, Any],
+    ) -> None:
+        """Each table sealed ``ok`` of an entry with ``changes:``, compared with its baseline:
+        its key index and change table written, and its outcome (in ``tables``, in place)
+        saying what was found. A table that failed is compared with nothing and is no
+        baseline. ``meta.yaml`` is written as each table is compared, ``ended`` null until
+        the survey writes how it ended: a table's summary is there before its first row can
+        be read, so a survey stopped, or one that dies, here has told what a reader saw
+        (Dijkstra F3)."""
+        if self._changes is None:
+            return
+        at = {entry.name: (i, entry) for i, entry in enumerate(config.collectors)}
+
+        def progress(position: int, table: TableOutcome) -> None:
+            tables[position] = table
+            self._archives.write_meta(archive, self._meta(head, tables, None))
+
+        for position, table in enumerate(tables):
+            index, entry = at[table.collector]
+            if entry.changes is None or table.status != "ok":
+                continue
+            try:
+                compared = self._changes.snapshot(archive, table, entry.changes, entry.normalize,
+                                                  pending=partial(progress, position))  # fmt: skip
+            except OSError as exc:  # its changes failed, and the archive cannot be finished
+                tables[position] = failed(table, exc)
+                self._unfinished(f"{table.name}'s change table could not be written", exc)
+                continue
+            except Exception as exc:  # the table's changes fail, never the survey (Vector F6)
+                tables[position] = failed(table, exc)
+                self._warn(table.name, changes_failed(f"collectors.{index}", table.name, exc))
+                continue
+            for output, unclosed in self._changes.unclosed():
+                self._warn(output, join_unclosed(f"collectors.{index}", output, unclosed))
+            with contextlib.suppress(OSError):  # its counts; the survey's end writes them too
+                progress(position, compared)
+            tables[position] = compared
+            withheld = compared.changes.deletes_withheld if compared.changes else None
+            if withheld is not None:
+                self._warn(table.name, _withheld(index, entry, table.name, withheld))
+
+    def _unfinished(self, what: str, exc: OSError) -> None:
+        """An archive that cannot keep what it was to keep cannot be finished: it reads
+        incomplete, and a warning says why."""
+        self.finished = False
+        warning = Problem(
+            "",
+            f"{what}, so the archive reads incomplete: {exc}",
+            kind="archive_unfinished",
+            fix="free space in the archive's directory, or make it writable, then survey again",
+        )
+        self.warnings.append(warning)
+        self._emit({"kind": "archive_warning", "reason": warning.message, "fix": warning.fix})
+
     def _meta(
         self,
         head: dict[str, Any],
         tables: list[TableOutcome],
-        ended: Literal["finished", "stopped"],
+        ended: Literal["finished", "stopped"] | None,
     ) -> dict[str, Any]:
         """The archive's ``meta.yaml``: ``head``, when the survey ended, how (``ended``, the
-        :data:`~recon.domain.archives.Ended` its writer can know: ``crashed`` is a reader's),
-        and its tables."""
+        :data:`~recon.domain.archives.Ended` its writer can know: ``crashed`` is a reader's;
+        None while it compares its tables, which a reader reads as ``crashed`` should it
+        never be written again), and its tables."""
         return {
             **head,
             "timestamp": self._clock.now().isoformat(),
@@ -251,6 +368,7 @@ class Survey:
         # its table share the name.
         target = entry if output == entry.name else entry.model_copy(update={"name": output})
         start = self._clock.monotonic()
+        self._pages.begin()
         first: list[dict[str, Any]] = []
         nothing: NoRecordsError | None = None
         what = f"table {output}'s deadline ({entry.deadline:g}s)" if entry.deadline else ""
@@ -297,7 +415,22 @@ class Survey:
             )
         if count == 1:
             self._check_extract(index, entry, output, first[0])
-        return table.model_copy(update={"records": count, "seconds": seconds})
+        update: dict[str, Any] = {"records": count, "seconds": seconds}
+        pages, truncated_by = self._pages.end()
+        if pages:
+            self._keep_pages(archive, output, pages)
+        if truncated_by is not None:
+            update |= {"truncated": True, "truncated_by": truncated_by}
+            self._warn(output, _truncated(index, entry, output, truncated_by, len(pages)))
+        return table.model_copy(update=update)
+
+    def _keep_pages(self, archive: Path, output: str, pages: list[dict[str, Any]]) -> None:
+        """Keep a sealed table's page log beside it; an archive that cannot keep it cannot be
+        finished, as one that cannot keep its ``meta.yaml``."""
+        try:
+            self._archives.write_sidecar(archive, output, "pages", pages)
+        except OSError as exc:
+            self._unfinished(f"{output}'s page log could not be written", exc)
 
     def _check_extract(
         self, index: int, entry: CollectorEntry, output: str, record: dict[str, Any]
@@ -428,6 +561,66 @@ def _keeping_first(
             yield record
     finally:
         records.close()
+
+
+#: Why a table's deletes were withheld, and what to do about it.
+_WITHHELD: dict[str, tuple[str, str]] = {
+    "truncated": ("its crawl was cut short, so a key it lacks may only be past where it "
+                  "stopped", "read every page: raise paginate.pages, or narrow the request"),
+    "keyless": ("it holds records with no key, which may be the ones that went",
+                "name key fields every record has (changes.key), or shape the records so they "
+                "have them"),
+    "ambiguous": ("it holds a key with two contents, so which one went is not known",
+                  "name key fields that tell its records apart (changes.key)"),
+}  # fmt: skip
+
+
+def _withheld(index: int, entry: CollectorEntry, output: str, why: DeletesWithheld) -> Problem:
+    """The warning for a table whose deletes were asked for and withheld."""
+    reason, fix = _WITHHELD[why]
+    return Problem(
+        f"collectors.{index}.changes.deletes",
+        f"{output}'s deletes were not told: {reason}",
+        kind="deletes_withheld",
+        fix=f"{fix} on collector {entry.name!r}",
+        got=why,
+    )
+
+
+def _truncated(
+    index: int, entry: CollectorEntry, output: str, by: TruncatedBy, pages: int
+) -> Problem:
+    """The warning for a table whose crawl ``by`` cut short after ``pages`` pages."""
+    at = f"collectors.{index}.paginate"
+    whole = "so it is not a whole snapshot of its source"
+    if by == "pages":
+        return Problem(
+            f"{at}.pages",
+            f"{output} read its cap of {pages} page(s) with more to read: the table is "
+            f"truncated, {whole}",
+            kind="paginate_pages",
+            fix=f"raise paginate.pages on collector {entry.name!r}, or narrow what it asks for",
+            got=pages,
+        )
+    if by == "loop":
+        return Problem(
+            at,
+            f"{output}'s page {pages - 1} named a next page it had read already, so the crawl "
+            f"stopped there: the table is truncated, {whole}",
+            kind="paginate_loop",
+            fix=f"check that paginate on collector {entry.name!r} reads the API's next token "
+            "(paginate.next, paginate.param), and that the API advances it",
+            got=pages,
+        )
+    return Problem(
+        at,
+        f"{output} read empty pages in a row that still named a next one, so the crawl "
+        f"stopped after {pages} page(s): the table is truncated, {whole}",
+        kind="paginate_empty",
+        fix=f"check that extract: on collector {entry.name!r} finds each page's records, and "
+        "that the API ends its pages; or narrow what it asks for",
+        got=pages,
+    )
 
 
 def _attributes(table: TableOutcome) -> dict[str, str | None]:

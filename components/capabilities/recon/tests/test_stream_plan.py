@@ -77,7 +77,7 @@ class TestTheDefaultsAreFilledAndSaid:
                 "type": "push",
                 "window": {"records": 500, "bytes": 65536},
                 "buffer": {"records": 64, "overflow": "drop_oldest"},
-                "retain": {"windows": 48},
+                "retain": {"archives": 48},
             },
             plugins,
         )
@@ -90,7 +90,7 @@ class TestTheDefaultsAreFilledAndSaid:
         assert values["collectors.0.buffer.records"] == (64, "mission")
         assert values["collectors.0.buffer.overflow"] == ("drop_oldest", "mission")
         assert values["collectors.0.buffer.bytes"][1] == "recon"
-        assert values["collectors.0.retain"] == ({"windows": 48}, "mission")
+        assert values["collectors.0.retain"] == ({"archives": 48}, "mission")
         assert not [w for w in plan.warnings if w.kind == "retain_unset"]
 
     def test_keeping_every_window_by_default_is_a_warning_with_the_growth_and_a_fix(
@@ -103,10 +103,15 @@ class TestTheDefaultsAreFilledAndSaid:
         assert "1440 windows a day" in warning.message
         assert "retain:" in warning.fix
 
-    def test_a_snapshot_entry_is_no_stream_and_reports_nothing(self, plugins: Plugins) -> None:
+    def test_a_snapshot_entry_is_no_stream_and_reports_only_its_retain(
+        self, plugins: Plugins
+    ) -> None:
         plan = _plan({"type": "once"}, plugins)
 
-        assert plan.valid and plan.provenance == []
+        assert plan.valid
+        assert [(v.path, v.value, v.origin) for v in plan.provenance] == [
+            ("collectors.0.retain", "all", "recon")
+        ], "a snapshot keeps its archives as a stream its windows (round-4 review S1)"
         assert "stream" not in plan.runs[0].document()
 
     def test_window_on_a_type_that_ends_makes_it_a_stream(self, plugins: Plugins) -> None:
@@ -131,13 +136,17 @@ class TestEveryProblemHasAPathAndAFix:
         assert "collectors.0.window.seconds" in _problems(plan)
         assert not _problems(_plan({"type": "pull", "window": {"seconds": 1}}, plugins))
 
-    def test_buffer_and_retain_without_a_stream_are_refused(self, plugins: Plugins) -> None:
+    def test_buffer_without_a_stream_is_refused_and_retain_is_a_snapshot_s_too(
+        self, plugins: Plugins
+    ) -> None:
+        """A snapshot entry keeps archives as a stream keeps windows, so ``retain:`` is its
+        too (round-4 review S1); ``buffer:`` is a stream's alone."""
         plan = _plan({"type": "once", "buffer": {"records": 5}, "retain": "all"}, plugins)
 
         problems = _problems(plan)
         assert problems["collectors.0.buffer"][0] == "invalid_value"
         assert "window:" in problems["collectors.0.buffer"][1]
-        assert "collectors.0.retain" in problems
+        assert "collectors.0.retain" not in problems
 
     def test_a_normalize_column_named_position_is_refused(self, plugins: Plugins) -> None:
         plan = _plan({"type": "pull", "normalize": {"_position": "offset"}}, plugins)
@@ -162,7 +171,17 @@ class TestEveryProblemHasAPathAndAFix:
 
         assert "collectors.0.buffer.max_record_bytes" in _problems(plan)
 
-    @pytest.mark.parametrize("retain", [{}, {"windows": 0}, {"seconds": -1}, "some", {"age": 30}])
+    def test_retain_counts_archives_and_windows_is_no_key_of_it(self, plugins: Plugins) -> None:
+        """The owner's ruling on review S1: every window is an archive (B3), so retain's count
+        is ``archives``, for streams and snapshots alike; ``windows`` would name two things,
+        and before 1.0 it is gone, no alias."""
+        for entry in ({"type": "pull", "retain": {"windows": 3}},
+                      {"type": "once", "retain": {"windows": 3}}):  # fmt: skip
+            problems = _problems(_plan(entry, plugins))
+            assert problems["collectors.0.retain.windows"][0] == "unknown_key", entry
+        assert not _problems(_plan({"type": "pull", "retain": {"archives": 3}}, plugins))
+
+    @pytest.mark.parametrize("retain", [{}, {"archives": 0}, {"seconds": -1}, "some", {"age": 30}])
     def test_retain_is_all_or_a_bound(self, plugins: Plugins, retain: Any) -> None:
         plan = _plan({"type": "pull", "retain": retain}, plugins)
 

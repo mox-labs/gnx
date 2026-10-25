@@ -235,7 +235,7 @@ catalog:
   - name: semantic-scholar
     type: api
     url: https://api.semanticscholar.org/graph/v1
-    auth: { header: x-api-key, env: S2_API_KEY }
+    auth: { header: x-api-key, token: env:S2_API_KEY }
     rate_limit: { rps: 0.33, burst: 1 }
 
 collectors:
@@ -308,7 +308,7 @@ catalog:
     url: https://api.github.com
     auth:
       header: Authorization
-      env: GITHUB_TOKEN
+      token: env:GITHUB_TOKEN
       prefix: "Bearer "
     rate_limit: { rps: 1, burst: 2 }
     user_agent: "release-monitor/1 (mailto:you@example.org)"
@@ -535,7 +535,7 @@ catalog:
   - name: exa
     type: api
     url: https://api.exa.ai
-    auth: { header: x-api-key, env: EXA_API_KEY }
+    auth: { header: x-api-key, token: env:EXA_API_KEY }
     rate_limit: { rps: 1, burst: 2 }
 
 collectors:
@@ -579,7 +579,7 @@ catalog:
     url: https://api.firecrawl.dev
     auth:
       header: Authorization
-      env: FIRECRAWL_API_KEY
+      token: env:FIRECRAWL_API_KEY
       prefix: "Bearer "
     rate_limit: { rps: 1, burst: 2 }
 
@@ -615,7 +615,7 @@ catalog:
     url: https://api.tavily.com
     auth:
       header: Authorization
-      env: TAVILY_API_KEY
+      token: env:TAVILY_API_KEY
       prefix: "Bearer "
     rate_limit: { rps: 2, burst: 5 }
 
@@ -648,7 +648,7 @@ catalog:
   - name: serper
     type: api
     url: https://google.serper.dev
-    auth: { header: X-API-KEY, env: SERPER_API_KEY }   # no "Bearer" prefix
+    auth: { header: X-API-KEY, token: env:SERPER_API_KEY }   # no "Bearer" prefix
     rate_limit: { rps: 5, burst: 10 }
 
 collectors:
@@ -683,7 +683,7 @@ catalog:
     url: https://api.perplexity.ai
     auth:
       header: Authorization
-      env: PERPLEXITY_API_KEY
+      token: env:PERPLEXITY_API_KEY
       prefix: "Bearer "
     rate_limit: { rps: 0.5, burst: 1 }
 
@@ -719,7 +719,7 @@ catalog:
   - name: exa
     type: api
     url: https://api.exa.ai
-    auth: { header: x-api-key, env: EXA_API_KEY }
+    auth: { header: x-api-key, token: env:EXA_API_KEY }
 
 collectors:
   - name: discovery

@@ -9,7 +9,7 @@ You'll learn the **probe → normalize → survey** workflow by doing it. Total 
 Install recon from the gnx repository:
 
 ```bash
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.13.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.14.0#subdirectory=components/capabilities/recon"
 recon --version
 ```
 
@@ -47,7 +47,7 @@ catalog:
     url: https://api.github.com
     auth:
       header: Authorization
-      env: GITHUB_TOKEN
+      token: env:GITHUB_TOKEN
       prefix: "Bearer "
     rate_limit: { rps: 1, burst: 2 }
     user_agent: "dep-releases (you@example.com)"   # optional; default: recon/<version>
@@ -166,7 +166,7 @@ catalog:
     url: https://api.github.com
     auth:
       header: Authorization
-      env: GITHUB_TOKEN
+      token: env:GITHUB_TOKEN
       prefix: "Bearer "
     rate_limit: { rps: 1, burst: 2 }
     user_agent: "dep-releases (you@example.com)"
@@ -257,13 +257,21 @@ This is the shape of every recon mission, regardless of domain. Fetch a sample, 
 
 ## Running this on a schedule
 
-Recon is mechanical, so it runs without Claude present. A cron entry:
+Recon is mechanical, so it runs without Claude present. Add a schedule to the mission, in seconds:
 
-```cron
-0 * * * * cd /path/to/project && recon survey dep-releases
+```yaml
+schedule:
+  every: 3600
 ```
 
-Every hour, a fresh timestamped archive lands under `.recon/dep-releases/archive/`. The next time Claude looks, it can diff the latest archive against the previous one to find releases that are new — without needing to have been awake when they shipped.
+then install it onto the machine's own scheduler (launchd on macOS, systemd's user timers on Linux, cron elsewhere):
+
+```
+recon schedule install dep-releases --json
+recon schedule status dep-releases --json
+```
+
+Every hour, a fresh timestamped archive lands under `.recon/dep-releases/archive/`, and each tick is a line of `.recon/dep-releases/schedule.log`. A tick runs the config that was installed and no other: after editing the mission, read the change and run `recon schedule install` again. A tick does not see your shell's environment, so a token named `env:NAME` is unset there, and the plan warns `env_unscheduled`: name it `auth.token: file:PATH` (a file only you can read) or `auth.headers_helper` instead (`recon --skill -r schedules`). The next time Claude looks, it can diff the latest archive against the previous one to find releases that are new — without needing to have been awake when they shipped.
 
 If a table fails (GitHub down, token expired), the archive is still written and marked incomplete, and the exit code says what kind of failure it was: 5 when every failure was transient (retry later), 6 when any failed on credentials (replace the token), 8 otherwise. `recon status` shows which archives are incomplete, and the archive's `telemetry.jsonl` shows what happened to each table and each request: every `recon.collect` and `recon.http.request` span that ended with `status: error` names its `error.type` (`503`, `auth`, `httpx2.ConnectTimeout`).
 

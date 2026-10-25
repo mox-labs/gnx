@@ -28,7 +28,7 @@ A state, where a table's `ok` or `error` is an outcome. Beside it, `ended` says 
 |---|---|---|
 | `finished` | it ran to its end and wrote `meta.yaml`, so an `incomplete` archive's tables failed (or it could not be marked complete) | the writer, in `meta.yaml` |
 | `stopped` | it was stopped on request (Ctrl-C, SIGTERM, a stream's stop) and wrote `meta.yaml` saying so, with the tables that ended before the stop | the writer, in `meta.yaml` |
-| `crashed` | it left no `meta.yaml`: it was killed (SIGKILL, its host went down), or could not write one (a full disk; that survey said so as it ended, with an `archive_unfinished` warning and exit 9). The two read alike because the record that would tell them apart is the one missing | no one: read from that absence |
+| `crashed` | it left no `meta.yaml`, or only the one it writes as it compares its tables (`ended: null`, with the tables compared so far): it was killed (SIGKILL, its host went down), or could not write one (a full disk; that survey said so as it ended, with an `archive_unfinished` warning and exit 9). The two read alike because the record that would tell them apart is the one missing | no one: read from that absence |
 
 A survey stopped on request exits `interrupted` (130), the exit kind every gnx tool shares; its archive reads `ended: stopped`. A stream's stop is how its run ends, so `recon stream` exits 0 (`recon --skill -r streaming`).
 
@@ -37,6 +37,7 @@ The survey holds an `flock` on `writer.lock` in the archive while it writes, and
 ## A table while it is written
 
 - A table's records reach its file as whole lines, at most 64 KiB or 250 ms after the collector gives them. A reader never sees part of a record.
+- A change table (`<output>.changes`) is read only once it is sealed, never as it is written: one whose writer died mid-write told nothing, and the next survey tells its rows, so a reader that saw them early would see them twice.
 - A table is **sealed** when its writer renames it into place as it ends: it gains and loses no line after that. A table a survey that died was writing is never sealed: it stays unsealed, and `query` never reads it.
 - A table that **fails** is **retracted**: its file is removed, and the records read from it while it was written are void. The table's error is in `meta.yaml`. A stream's window is never retracted: one whose source failed is sealed with the records it got (`recon --skill -r streaming`), and `recon watch --stream` follows a stream's windows one after another.
 - `recon query` reads sealed tables only. On an archive being written it sees the tables finished so far, and the table being written is not a view yet.

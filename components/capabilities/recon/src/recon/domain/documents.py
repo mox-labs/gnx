@@ -10,11 +10,13 @@ its id too), what ``--archive`` takes; ``path`` is the directory of what the rec
 about, and ``<what>_path`` another's. ``records`` and ``windows`` are counts, as they are in
 ``meta.yaml``; a list of them is named for what it holds (``table_records``,
 ``stream_windows``), and a range of windows is ``window_range``. ``first`` and ``last`` are
-the ends of a span, ids where they name windows (a whole window outcome is ``last_window``).
+the ends of a span, ids where they name windows (a whole window outcome is ``last_window``,
+a schedule's last tick ``last_tick``).
 ``source`` is a catalog source's name (a setting's provenance is its ``origin``), ``streams``
 the stream statuses (a plan's directories are ``stream_paths``), ``captures`` a count (whether
 a plan keeps captures is its ``preserve_raw``), ``skipped`` the sources a plan passed over (a
-read's retired windows are its ``retired_range``). ``status`` is an outcome: a survey's
+read's retired windows are its ``retired_range``, and why a tick ran no survey its
+``skipped_by``, as a window's close is its ``closed_by``). ``status`` is an outcome: a survey's
 ``complete`` or ``incomplete``, a table's ``ok`` or ``error``. The capture line
 (:class:`Capture`) is the format other tools write, versioned by its own schema, and keeps
 its own names: its ``status`` is the response's.
@@ -29,7 +31,10 @@ from pydantic import BaseModel, ConfigDict, Field
 # Pydantic reads the field types when the models are built, so they are imported to run.
 from recon.domain.archives import ArchiveState, Ended  # noqa: TC001
 from recon.domain.capture import CAPTURE_SCHEMA, CaptureKind
+from recon.domain.changes import DeletesWithheld  # noqa: TC001
 from recon.domain.errors import ERROR_KINDS, ErrorKind, ReconError
+from recon.domain.paginate import TruncatedBy  # noqa: TC001
+from recon.domain.schedule import Missed, Platform, Skipped  # noqa: TC001
 from recon.domain.stream import ClosedBy  # noqa: TC001
 
 #: Whether a survey's archive holds every table it was asked for: :data:`ArchiveState`
@@ -132,8 +137,10 @@ class PlanDocument(Document):
     #: What this dry run did to check the requirements, by collector type (``mcp: started
     #: each stdio server a run names ...``); empty when it ran, fetched and wrote nothing.
     preflight: list[str] = []
-    #: Each setting of a stream the survey would use, with where it came from: what the
-    #: mission wrote, and every default recon filled in (a window, a buffer, retain).
+    #: Each setting of a stream the survey would use, and of a schedule (``schedule.every``,
+    #: ``schedule.missed``, and the ``deadline`` a scheduled mission has), with where it came
+    #: from: what the mission wrote, and every default recon filled in (a window, a buffer,
+    #: retain, a scheduled mission's deadline).
     provenance: list[SourcedValue] = []
 
 
@@ -147,8 +154,51 @@ class TableError(Document):
     fix: str | None = None
 
 
+class ChangeSummary(Document):
+    """What a table's change detection found (``changes:``, :mod:`recon.domain.changes`): its
+    change table (``table``, an output of the same archive, whose records are ``type_url``'s
+    and hold untrusted content in ``record``), the table compared before it, whose told index
+    it was compared with (``previous``: an archive's id, or a window's; None: nothing was told
+    before, so every key is an insert), the digest of the spec (``spec``: its key and volatile
+    fields) and of the ``normalize:`` its records were made with, the rows by op, the records
+    it could not compare, and why its deletes were withheld when they were asked for."""
+
+    table: str
+    type_url: str
+    previous: str | None
+    spec: str
+    normalize: str | None
+    rows: int
+    inserts: int = 0
+    updates: int = 0
+    deletes: int = 0
+    #: True: the previous table's records were made with another ``normalize:`` (or it does
+    #: not say), so the change table holds one ``rebaselined`` row and no other, and the told
+    #: index starts again from this table.
+    rebaselined: bool = False
+    keyless: int = 0
+    ambiguous: int = 0
+    deletes_withheld: DeletesWithheld | None = None
+    #: True: this table's deletes were told (asked for, and not withheld), so its told index
+    #: holds no key the table lacks. A told index computed again folds the table as it was
+    #: told then, whatever ``deletes:`` says now.
+    deletes_told: bool = False
+    #: Set when the table's changes could not be told (a classified failure of its change
+    #: table, never of its survey): it has no change table, tells nothing and is no told
+    #: index, so the next table of its output tells its changes too.
+    error: TableError | None = None
+    #: A window's: the windows before it, since ``previous``, that told nothing (their writer
+    #: died before it compared them, or their changes failed). This window tells their whole
+    #: records, oldest first, before its own.
+    untold: list[str] = []
+
+
 class TableOutcome(Document):
-    """One table of a survey: what produced it and how it ended."""
+    """One table of a survey: what produced it and how it ended. ``truncated``: its crawl
+    stopped short of its source's end (``paginate:``), so it is sealed ``ok`` and is not a
+    whole snapshot of the source; ``truncated_by`` says what cut it: ``pages`` (its cap),
+    ``loop`` (a token it had used already) or ``empty`` (empty pages in a row that still
+    linked on)."""
 
     name: str
     file: str
@@ -160,6 +210,10 @@ class TableOutcome(Document):
     records: int = 0
     seconds: float = 0.0
     error: TableError | None = None
+    truncated: bool = False
+    truncated_by: TruncatedBy | None = None
+    #: What its change detection found, for an entry with ``changes:``; None otherwise.
+    changes: ChangeSummary | None = None
 
 
 class WindowOutcome(Document):
@@ -484,7 +538,8 @@ def failure_kind(tables: list[TableOutcome]) -> ErrorKind | None:
 
 
 _SURVEY_FAILURE_FIX = {
-    "auth": "check the credentials named by the failing sources' auth.env, then: recon survey {n}",
+    "auth": "check the credentials the failing sources' auth.token or headers_helper give, "
+    "then: recon survey {n}",
     "transient": "retry later: recon survey {n}",
     "run_failed": "read each failed table's error (meta.yaml, or --json), fix its cause, "
     "then: recon survey {n} --dry-run",
@@ -543,3 +598,100 @@ def stream_failure(document: StreamDocument) -> ReconError | None:
         f"--stream {document.stream}",
         details={"archive": last.id, "path": last.path, "window": last.id},
     )
+
+
+# --- schedules ------------------------------------------------------------------------------
+
+#: What ``recon schedule install`` or ``remove`` did: put a schedule in place where there was
+#: none, found the same one there and left it, put a different one in its place; took one
+#: out, or found none to take.
+ScheduleOutcome = Literal["installed", "unchanged", "replaced", "removed", "absent"]
+
+
+class ScheduleDocument(Document):
+    """A mission's schedule as ``install`` or ``remove`` left it: on which scheduler and under
+    which ``label``, what each tick runs (``argv``), and the ``files`` it is in (``crontab``
+    for cron's entry); empty after a remove."""
+
+    schema_: Literal["recon.v1.schedule"] = Field(default="recon.v1.schedule", alias="schema")
+    mission: str
+    platform: Platform
+    label: str
+    outcome: ScheduleOutcome
+    every: int | None
+    missed: Missed | None
+    #: Where in each ``every`` the ticks fall, in seconds: the mission's own, which spreads
+    #: missions due at the same moment.
+    offset_s: int | None
+    #: The digest of the config the schedule was installed for: a tick refuses another.
+    config_sha256: str | None
+    argv: list[str]
+    files: list[str]
+    warnings: list[dict[str, Any]]
+
+
+class TickOutcome(Document):
+    """One tick, as ``<mission>/schedule.log`` keeps it, a line each: when it was due
+    (``scheduled``: the latest tick of the grid at or before it started), when it started and
+    ended, its exit code and kind (``ok``, or the error kind the code maps to), the archive its
+    survey wrote, why it ran none (``skipped_by``), and how late it started."""
+
+    #: ISO 8601, local time; None when the schedule is not known (no record, no schedule:).
+    scheduled: str | None
+    started: str
+    ended: str
+    exit: int
+    kind: str
+    #: The survey's archive id; None when it wrote none.
+    archive: str | None
+    skipped_by: Skipped | None
+    late_s: float | None
+
+
+class TickDocument(Document):
+    """A tick that ran or was skipped as a schedule says: the ``survey`` it ran, or why it ran
+    none (``skipped_by: missed``, a tick run late under ``missed: skip``). A tick refused (a
+    changed config, the mission ``busy``) raises the error instead, after logging it."""
+
+    schema_: Literal["recon.v1.tick"] = Field(default="recon.v1.tick", alias="schema")
+    mission: str
+    scheduled_at: str | None
+    late_s: float | None
+    skipped_by: Skipped | None
+    survey: SurveyDocument | None
+    warnings: list[dict[str, Any]] = []
+
+
+class ScheduleStatus(Document):
+    """One schedule of the project: whether it is ``installed`` (its files in place as
+    ``install`` wrote them), whether the config has changed since (its ticks are then
+    refused until it is installed again), and when the next tick is due."""
+
+    mission: str
+    label: str
+    platform: Platform
+    installed: bool
+    #: None when no install of the mission is recorded.
+    config_changed: bool | None
+    every: int | None
+    missed: Missed | None
+    #: ISO 8601, local time: the next tick of the mission's ``schedule:``; None without one.
+    next_at: str | None
+    #: The last tick the log holds; None before the first.
+    last_tick: TickOutcome | None = None
+    #: How late the schedule is now: the seconds since the tick due last, when it has not
+    #: run (0 when it has); None when not installed.
+    late_s: float | None = None
+    #: The ticks skipped in a row at the log's end.
+    skips: int = 0
+
+
+class SchedulesDocument(Document):
+    """The project's schedules: what ``list`` finds installed, or what ``status`` says of
+    each mission with a schedule, on one scheduler."""
+
+    schema_: Literal["recon.v1.schedules"] = Field(default="recon.v1.schedules", alias="schema")
+    root: str
+    platform: Platform
+    schedules: list[ScheduleStatus]
+    warnings: list[dict[str, Any]] = []

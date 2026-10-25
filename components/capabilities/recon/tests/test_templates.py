@@ -38,6 +38,7 @@ import yaml
 from recon.adapters._out.api_collector import ApiCollector
 from recon.adapters._out.capture_collector import CaptureCollector
 from recon.adapters._out.capture_files import FilesystemCaptureLog
+from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.mcp_collector import McpCollector
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
@@ -119,7 +120,9 @@ def _records(template: str, raw: dict[str, Any], fixture: Path, tmp_path: Path) 
         SourceEntry.model_validate(s) for s in config["catalog"] if s["name"] == entry.source
     ]
     requester = RecordedRequester(fixture)
-    records = list(ApiCollector(requester, {}, DEFAULT_USER_AGENT).collect(entry, source))
+    records = list(
+        ApiCollector(requester, Credentials({}), DEFAULT_USER_AGENT).collect(entry, source)
+    )
     assert requester.urls, "the collector asked its source"
     return records
 

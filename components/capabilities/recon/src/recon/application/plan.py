@@ -27,12 +27,16 @@ from typing import TYPE_CHECKING, Any, get_args
 
 from pydantic import BaseModel, ValidationError
 
-from recon.domain.archives import EVENT_LOG_NAME, table_name
+from recon.domain.archives import EVENT_LOG_NAME, SIDECARS, table_name
 from recon.domain.capture import CAPTURE_LOG_NAME
+from recon.domain.changes import CHANGES_SUFFIX, changes_output
+from recon.domain.credentials import env_name
 from recon.domain.documents import SourcedValue
 from recon.domain.errors import Problem
 from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
 from recon.domain.normalize import path_problem, spec_problems
+from recon.domain.paginate import COUNTED, crawl_floor_s
+from recon.domain.schedule import DAY_S, ScheduleSpec, every_fix, pinned_form, unpinned
 from recon.domain.stream import (
     DEFAULT_WINDOW_S,
     POSITION_FIELD,
@@ -61,6 +65,11 @@ RESERVED_OUTPUT_NAMES = frozenset(
 
 #: What an output name may not hold: it is the stem of one file in the archive.
 _NOT_IN_A_FILE_NAME = ("/", "\\", "..")
+
+#: The suffixes recon gives the files it writes beside a table, each with what it holds: an
+#: output named so would be one of them.
+_BESIDE = {"pages": "page log", "keys": "key index", CHANGES_SUFFIX: "change table"}
+assert set(SIDECARS) < set(_BESIDE)
 
 #: pydantic's error types, as problem kinds; a type error not listed is ``wrong_shape`` when
 #: its name says the value had the wrong type, else ``invalid_value``.
@@ -218,6 +227,8 @@ def build_plan(
 
     raw = {k: v for k, v in raw.items() if not _ignored(k)}
     problems = _top_level_problems(raw)
+    schedule, scheduling = _schedule(raw)
+    problems += scheduling
     sources, sources_whole = _validate_items(raw.get("catalog"), "catalog", SourceEntry, problems)
     entries, entries_whole = _validate_items(
         raw.get("collectors"), "collectors", CollectorEntry, problems
@@ -260,10 +271,27 @@ def build_plan(
                 warnings += unset
         else:
             problems.extend(_not_a_stream(i, entry))
+            values, unset = _snapshot_retain(i, entry, schedule)
+            provenance += values
+            warnings += unset
+            if entry.paginate is not None:
+                problems.extend(_position_problems(i, entry))
+                values, short = _paginate(i, entry, targets, raw.get("deadline"))
+                provenance += values
+                warnings += short
+        if entry.changes is not None:
+            problems.extend(_changes_problems(i, entry, is_stream))
+            values, shifting = _changes(i, entry)
+            provenance += values
+            problems += shifting
         for source, output in targets:
             problems.extend(_output_problems(i, output, produced_by))
             for key in _table_keys(output):
                 produced_by.setdefault(key, (i, output))
+            if entry.changes is not None:
+                problems.extend(_change_table_problems(i, output, produced_by))
+                for key in _table_keys(changes_output(output)):
+                    produced_by.setdefault(key, (i, changes_output(output)))
             if source is not None:
                 used_sources.add(source.name)
             # A type's describe sees only a source whose own settings were accepted.
@@ -276,13 +304,21 @@ def build_plan(
     if is_directory is not None:
         problems += _directory_problems(sources, used_sources, is_directory, base)
     warnings += _credential_warnings(sources, used_sources - refused, env, plugins)
+    if schedule is not None:
+        warnings += _unscheduled_env(sources, used_sources - refused, plugins)
+        warnings += _unpinned_packages(runs, entries, sources)
     config = None
     if not problems:
+        deadline = raw.get("deadline")
+        if schedule is not None:
+            provenance += _scheduled(schedule, raw)
+            deadline = schedule.deadline if deadline is None else deadline
         config = ReconConfig(
             catalog=[src for _, src in sources],
             collectors=[entry for _, entry in entries],
             preserve_raw=raw.get("preserve_raw", False),
-            deadline=raw.get("deadline"),
+            deadline=deadline,
+            schedule=schedule,
         )
     return Plan(
         config=config,
@@ -381,11 +417,11 @@ def _retain_unset(at: str, name: str, window: WindowSpec) -> Problem:
     if window.seconds is not None:
         per_day = 86400 / window.seconds
         growth = f"up to {per_day:g} windows a day, one each {window.seconds:g}s"
-        keep = f"retain: {{windows: {max(1, int(per_day))}}} keeps a day of them"
+        keep = f"retain: {{archives: {max(1, int(per_day))}}} keeps a day of them"
     else:
         bound = f"{window.records} records" if window.records else f"{window.bytes} bytes"
         growth = f"a window each {bound}"
-        keep = "retain: {windows: 100} keeps the last 100"
+        keep = "retain: {archives: 100} keeps the last 100"
     size = f", each at most {window.bytes} bytes of records" if window.bytes else ""
     return Problem(
         f"{at}.retain",
@@ -423,15 +459,14 @@ def _stream_problems(
                 got=entry.deadline,
             )
         )
-    if POSITION_FIELD in (entry.normalize or {}):
+    problems += _position_problems(i, entry)
+    if entry.paginate is not None:
         problems.append(
             Problem(
-                f"{at}.normalize.{POSITION_FIELD}",
-                f"{POSITION_FIELD} is the field recon keeps a stream's record's position in its "
-                "source in, and writes beside the columns normalize: makes",
-                kind="name_taken",
-                fix=f"name the column something else; {POSITION_FIELD} is in every row already",
-                got=POSITION_FIELD,
+                f"{at}.paginate",
+                "a stream does not read its source page by page yet: paginate: is a snapshot "
+                "table's",
+                fix="remove window: to survey it as a snapshot table, or remove paginate:",
             )
         )
     buffer = entry.buffer
@@ -448,18 +483,161 @@ def _stream_problems(
     return problems
 
 
-def _not_a_stream(i: int, entry: CollectorEntry) -> list[Problem]:
-    """``buffer:`` and ``retain:`` on an entry that is no stream: they would do nothing."""
+def _position_problems(i: int, entry: CollectorEntry) -> list[Problem]:
+    """A ``normalize:`` column named as the field recon keeps a record's position in, in an
+    entry whose records carry one (a stream's, a paginated table's)."""
+    if POSITION_FIELD not in (entry.normalize or {}):
+        return []
     return [
         Problem(
-            f"collectors.{i}.{key}",
-            f"{key}: is a stream's, and collector {entry.name!r} is not one: its type's records "
-            "end, and it sets no window:",
-            fix=f"add window: to collect it as a stream, or remove {key}:",
+            f"collectors.{i}.normalize.{POSITION_FIELD}",
+            f"{POSITION_FIELD} is the field recon keeps a record's position in its source in "
+            "(a stream's, or a paginated table's), and writes beside the columns normalize: makes",
+            kind="name_taken",
+            fix=f"name the column something else; {POSITION_FIELD} is in every row already",
+            got=POSITION_FIELD,
         )
-        for key, value in (("buffer", entry.buffer), ("retain", entry.retain))
-        if value is not None
     ]
+
+
+def _paginate(
+    i: int,
+    entry: CollectorEntry,
+    targets: list[tuple[SourceEntry | None, str]],
+    deadline: Any,
+) -> tuple[list[SourcedValue], list[Problem]]:
+    """A paginated entry's cap and where it came from, its note saying, for each run, the
+    least seconds its crawl takes at its source's rate limit (``(pages - burst) / rps``)
+    against the deadline that bounds its table: the floor is no key a mission writes, so it has
+    no path of its own (Knuth, round-4 review S2); and a warning for each run whose deadline is
+    shorter than that."""
+    spec = entry.paginate
+    assert spec is not None
+    at = f"collectors.{i}.paginate"
+    origin: Origin = "mission" if "pages" in spec.model_fields_set else "recon"
+    notes: list[str] = []
+    warnings: list[Problem] = []
+    # The mission's deadline as written: one that is not a number is its own problem.
+    numeric = isinstance(deadline, int | float) and not isinstance(deadline, bool)
+    written = [
+        (entry.deadline, f"collectors.{i}.deadline"),
+        (deadline if numeric else None, "deadline"),
+    ]
+    bounds = [(seconds, path) for seconds, path in written if seconds is not None]
+    for source, output in targets:
+        if source is None:
+            continue
+        rate = source.rate_limit
+        floor = crawl_floor_s(spec.pages, burst=rate.burst, rps=rate.rps)
+        bound = min(bounds, key=lambda bounded: bounded[0], default=None)
+        against = f"the deadline ({bound[1]}: {bound[0]:g}s)" if bound else "no deadline: bounds it"
+        notes.append(
+            f"{output}: {spec.pages} page(s) at source {source.name!r}'s rate_limit "
+            f"({rate.rps:g} rps, burst {rate.burst}) take at least {floor:g}s; {against}"
+        )
+        if bound is not None and floor > bound[0]:
+            warnings.append(
+                Problem(
+                    bound[1],
+                    f"{output} may read {spec.pages} page(s), which take at least {floor:g}s at "
+                    f"source {source.name!r}'s rate_limit, past the deadline of {bound[0]:g}s: "
+                    "a crawl that long fails its table as transient",
+                    kind="deadline_short",
+                    fix=f"raise {bound[1]} to {floor:g} or more, lower paginate.pages on "
+                    f"collector {entry.name!r}, or raise the source's rate_limit if the API "
+                    "allows it",
+                    got=bound[0],
+                )
+            )
+    note = "; ".join(notes)
+    return [SourcedValue(path=f"{at}.pages", value=spec.pages, origin=origin, note=note)], warnings
+
+
+def _not_a_stream(i: int, entry: CollectorEntry) -> list[Problem]:
+    """``buffer:`` on an entry that is no stream: it would do nothing."""
+    if entry.buffer is None:
+        return []
+    return [
+        Problem(
+            f"collectors.{i}.buffer",
+            f"buffer: is a stream's, and collector {entry.name!r} is not one: its type's "
+            "records end, and it sets no window:",
+            fix="add window: to collect it as a stream, or remove buffer:",
+        )
+    ]
+
+
+def _snapshot_retain(
+    i: int, entry: CollectorEntry, schedule: ScheduleSpec | None
+) -> tuple[list[SourcedValue], list[Problem]]:
+    """A snapshot entry's ``retain:`` (Knuth, round-4 review S1), with where it came from, and
+    the warning for a scheduled mission whose entry keeps every archive by default: each tick
+    adds a whole table, and its told index, for ever."""
+    at = f"collectors.{i}"
+    unset = entry.retain is None
+    retain: Retain = entry.retain if entry.retain is not None else "all"
+    shown = retain if isinstance(retain, str) else retain.model_dump(exclude_none=True)
+    value = SourcedValue(
+        path=f"{at}.retain",
+        value=shown,
+        origin="recon" if unset else "mission",
+        note="no archive is removed unless the mission says so" if unset else "",
+    )
+    if not unset or schedule is None:
+        return [value], []
+    per_day = max(1, DAY_S // schedule.every)
+    warning = Problem(
+        f"{at}.retain",
+        f"collector {entry.name!r} keeps every archive a tick makes ({per_day} a day, one each "
+        f"{schedule.every}s, each its whole table), and nothing removes them",
+        kind="retain_unset",
+        fix=f"retain: {{archives: {per_day}}} keeps a day of them; retain: {{seconds: 2592000}} "
+        "keeps 30 days; or write retain: all to keep every archive and say so",
+    )
+    return [value], [warning]
+
+
+def _schedule(raw: dict[Any, Any]) -> tuple[ScheduleSpec | None, list[Problem]]:
+    """The mission's ``schedule:``, None when it has none or it does not validate; and the
+    problems with it, an ``every`` no scheduler keeps fixed by the nearest one that does."""
+    if raw.get("schedule") is None:
+        return None, []
+    try:
+        return ScheduleSpec.model_validate(raw["schedule"]), []
+    except ValidationError as exc:
+        problems = _from_pydantic("schedule", ScheduleSpec, exc)
+    return None, [
+        replace(p, fix=every_fix(p.got))
+        if p.path == "schedule.every" and p.kind == "invalid_value" and isinstance(p.got, int)
+        else p
+        for p in problems
+    ]
+
+
+def _scheduled(schedule: ScheduleSpec, raw: dict[Any, Any]) -> list[SourcedValue]:
+    """Where a scheduled mission's settings came from: its ``schedule:`` and its ``deadline``,
+    which defaults to a share of ``every``."""
+    given = raw["schedule"]
+    values = [
+        SourcedValue(path="schedule.every", value=schedule.every, origin="mission"),
+        SourcedValue(
+            path="schedule.missed",
+            value=schedule.missed,
+            origin="mission" if "missed" in given else "recon",
+            note=""
+            if "missed" in given
+            else "ticks missed while the host was away run once, coalesced, when it is back",
+        ),
+    ]
+    if raw.get("deadline") is None:
+        note = (f"a scheduled mission's: 0.8 × schedule.every ({schedule.every} s), so a tick "
+                "ends before the next is due")  # fmt: skip
+        values.append(
+            SourcedValue(path="deadline", value=schedule.deadline, origin="recon", note=note)
+        )
+    else:
+        values.append(SourcedValue(path="deadline", value=raw["deadline"], origin="mission"))
+    return values
 
 
 def _ignored(key: Any) -> bool:
@@ -758,6 +936,27 @@ def _entry_problems(
                 f"{at}.extract", problem, fix="use at most one * in the path", got=entry.extract
             )
         )
+    paginate = entry.paginate
+    if paginate is not None and ctype is not None and not ctype.paginates:
+        problems.append(
+            Problem(
+                f"{at}.paginate",
+                f"a {entry.type} collector does not read its source page by page, so it takes "
+                "no paginate:",
+                kind="unknown_key",
+                fix="remove paginate: (an api collector reads pages)",
+                allowed=_entry_keys(ctype),
+            )
+        )
+    elif paginate is not None and paginate.next and (problem := path_problem(paginate.next)):
+        problems.append(
+            Problem(
+                f"{at}.paginate.next",
+                problem,
+                fix="use at most one * in the path",
+                got=paginate.next,
+            )
+        )
     transforms = tuple(sorted(f"${name}" for name in plugins.transforms))
     for column, message in spec_problems(entry.normalize or {}, plugins.transforms).items():
         unknown = message.startswith("unknown transform")
@@ -861,6 +1060,7 @@ def _entry_keys(ctype: CollectorType) -> tuple[str, ...]:
     """Every key an entry of this type may hold: recon's own and the type's settings."""
     own = set(ctype.settings.model_fields) if ctype.settings is not None else set()
     shared = set(CollectorEntry.model_fields) - (set() if ctype.extracts else {"extract"})
+    shared -= set() if ctype.paginates else {"paginate"}
     return tuple(sorted(shared | own))
 
 
@@ -1017,6 +1217,17 @@ def _output_problems(
                 got=output,
             )
         )
+    elif suffix := next((s for s in _BESIDE if output.casefold().endswith(f".{s}")), None):
+        problems.append(
+            Problem(
+                at,
+                f"output {output!r} is named as recon names a file of its own beside a table "
+                f"(<table>.{suffix}.jsonl: its {_BESIDE[suffix]})",
+                kind="name_taken",
+                fix="rename the collector",
+                got=output,
+            )
+        )
     taken = next((produced_by[key] for key in _table_keys(output) if key in produced_by), None)
     if taken is not None and taken[1] == output:
         problems.append(
@@ -1042,6 +1253,90 @@ def _output_problems(
             )
         )
     return problems
+
+
+def _change_table_problems(
+    i: int, output: str, produced_by: Mapping[str, tuple[int, str]]
+) -> list[Problem]:
+    """A problem when ``output``'s change table would be one table with an output already
+    named: SQL knows it as ``<output>_changes``."""
+    changes = changes_output(output)
+    taken = next((produced_by[key] for key in _table_keys(changes) if key in produced_by), None)
+    if taken is None:
+        return []
+    return [
+        Problem(
+            f"collectors.{i}.changes",
+            f"{output}'s change table, {changes} (SQL: {table_name(changes)}), would be one "
+            f"table with the output of collectors.{taken[0]} ({taken[1]!r})",
+            kind="name_taken",
+            fix="rename one of the two collectors",
+            got=taken[1],
+        )
+    ]
+
+
+def _changes_problems(i: int, entry: CollectorEntry, is_stream: bool) -> list[Problem]:
+    """What ``changes:`` may not say: a key or volatile field ``normalize:`` does not make,
+    and deletes of a stream, whose windows never yield one."""
+    spec = entry.changes
+    assert spec is not None
+    at = f"collectors.{i}.changes"
+    problems = []
+    columns = tuple(entry.normalize or ())
+    if columns:
+        for name in ("key", "volatile"):
+            for position, field in enumerate(getattr(spec, name)):
+                if field not in columns:
+                    problems.append(
+                        Problem(
+                            f"{at}.{name}.{position}",
+                            f"{field} is not a column normalize: makes, so no record has it",
+                            kind="name_unknown",
+                            fix=f"name a column of normalize: in changes.{name}",
+                            got=field,
+                            allowed=columns,
+                        )
+                    )
+    if is_stream and spec.deletes:
+        problems.append(
+            Problem(
+                f"{at}.deletes",
+                "a stream's window never yields a delete: a window holds what arrived in it, "
+                "not all its source holds",
+                fix="remove deletes: (a stream's change tables tell inserts and updates)",
+                got=True,
+            )
+        )
+    return problems
+
+
+def _changes(i: int, entry: CollectorEntry) -> tuple[list[SourcedValue], list[Problem]]:
+    """``changes:``'s effective key, volatile fields and deletes, with where each came from;
+    and a problem when deletes are asked of a table an ``offset`` or ``page`` crawl reads,
+    whose records shift under it when the source loses one during the crawl."""
+    spec = entry.changes
+    assert spec is not None
+    at = f"collectors.{i}.changes"
+    values = [
+        SourcedValue(path=f"{at}.{key}", value=getattr(spec, key),
+                     origin="mission" if key in spec.model_fields_set else "recon")
+        for key in ("key", "volatile", "deletes")
+    ]  # fmt: skip
+    problems = []
+    if spec.deletes and entry.paginate is not None and entry.paginate.type in COUNTED:
+        problems.append(
+            Problem(
+                f"{at}.deletes",
+                f"a {entry.paginate.type} crawl of a source that loses a record while it is read "
+                "shifts the next record onto a page already read, so it is skipped, and would "
+                "be told as deleted",
+                fix="use link, cursor or header pagination if the API offers one, or set "
+                "deletes: false",
+                got=True,
+            )
+        )
+    return values, problems
 
 
 def plugin_warning(broken: BrokenPlugin) -> Problem:
@@ -1110,22 +1405,23 @@ def _credential_warnings(
     env: Mapping[str, str],
     plugins: Plugins,
 ) -> list[Problem]:
-    """A warning for each variable a used source names, as ``auth.env`` or through its kind's
-    own settings (``CollectorType.source_env``), that ``env`` does not set."""
+    """A warning for each variable a used source names, as ``auth.token: env:NAME`` or
+    through its kind's own settings (``CollectorType.source_env``), that ``env`` does not set."""
     adders = _kind_types(plugins)
     warnings = []
     for i, src in sources:
         if src.name not in used:
             continue
-        if src.auth.env and not env.get(src.auth.env):
+        named = env_name(src.auth.token)
+        if named is not None and not env.get(named):
             warnings.append(
                 Problem(
-                    f"catalog.{i}.auth.env",
-                    f"{src.auth.env} is not set; requests to {src.name!r} will be sent "
-                    "without credentials",
+                    f"catalog.{i}.auth.token",
+                    f"{named} is not set; requests to {src.name!r} will be sent without "
+                    "credentials",
                     kind="env_unset",
-                    fix=f"set {src.auth.env}, or leave it unset to send the requests without it",
-                    got=src.auth.env,
+                    fix=f"set {named}, or leave it unset to send the requests without it",
+                    got=named,
                 )
             )
         ctype = adders.get(src.type)
@@ -1143,3 +1439,101 @@ def _credential_warnings(
                     )
                 )
     return warnings
+
+
+def _unscheduled_env(
+    sources: list[tuple[int, SourceEntry]], used: set[str], plugins: Plugins
+) -> list[Problem]:
+    """A scheduled mission's warning for each ``env:NAME`` reference a used source makes, as
+    ``auth.token`` or through its kind's own settings (``CollectorType.source_env``): a tick
+    runs in the scheduler's environment, never the user's shell's, so the variable is unset
+    on every tick, however it is set where the plan runs. The fix names the forms a tick
+    resolves itself, at the key the reference is written: a ``file:`` only its owner can read
+    or, for a token, a ``headers_helper``."""
+    adders = _kind_types(plugins)
+    warnings = []
+    for i, src in sources:
+        if src.name not in used:
+            continue
+        named: dict[str, str] = {}
+        if (variable := env_name(src.auth.token)) is not None:
+            named[variable] = "auth.token"
+        ctype = adders.get(src.type)
+        if ctype is not None and ctype.source_settings is not None:
+            for variable, where in ctype.source_env(src).items():
+                named.setdefault(variable, where)
+        for variable, where in named.items():
+            helper = where.removesuffix("token") + "headers_helper"
+            instead = (
+                f"{where}: file:PATH (a file only you can read, mode 0600) or {helper} (a "
+                "command that prints the headers, from a keychain say)"
+                if where.endswith("token")
+                else f"{where}: file:PATH (a file only you can read, mode 0600)"
+            )
+            warnings.append(
+                Problem(
+                    f"catalog.{i}.{where}",
+                    f"{variable} is read from the environment, and a scheduled tick runs in "
+                    f"the scheduler's, not your shell's: {src.name!r} will be reached without "
+                    "it on every tick",
+                    kind="env_unscheduled",
+                    fix=f"name the credential as {instead}, then `recon schedule install` again",
+                    got=variable,
+                )
+            )
+    return warnings
+
+
+def _unpinned_packages(
+    runs: list[PlannedRun],
+    entries: list[tuple[int, CollectorEntry]],
+    sources: list[tuple[int, SourceEntry]],
+) -> list[Problem]:
+    """A scheduled mission's warning for each package a command it runs has a fetcher
+    (``npx``, ``uvx``, ``pnpm dlx``...: ``recon.domain.schedule.FETCHERS``) fetch without an
+    exact version (``recon.domain.schedule.unpinned``), once a path: every tick would run
+    whatever was published last. The commands are what each run's type describes
+    (``CollectorType.describe``): a server's command line as ``server`` (an ``mcp``
+    source's, at ``catalog.<i>``), shell lines as ``commands`` (a ``cli`` entry's, at
+    ``collectors.<i>``), a ``headers_helper`` (an ``mcp`` source's, at
+    ``catalog.<i>.headers_helper``), so a type of a third party's that describes its commands
+    so is held to it too; and each source's own ``auth.headers_helper``."""
+    entry_at = {entry.name: i for i, entry in entries}
+    source_at = {source.name: i for i, source in sources}
+    by_name = {source.name: source for _, source in sources}
+    found: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def judge(path: str, line: str | list[str]) -> None:
+        shown = line if isinstance(line, str) else " ".join(line)
+        for fetcher, package in unpinned(line):
+            found.setdefault((path, package), (fetcher, shown))
+
+    for run in runs:
+        at = f"catalog.{source_at[run.source]}" if run.source in source_at else None
+        server = run.detail.get("server")
+        if isinstance(server, str) and at is not None:
+            # Joined from an argument list: split back on spaces, never as a shell would.
+            judge(at, server.split())
+        source = by_name.get(run.source) if run.source is not None else None
+        own = source.auth.headers_helper if source is not None else None
+        if own and at is not None:
+            judge(f"{at}.auth.headers_helper", own)
+        helper = run.detail.get("headers_helper")
+        if isinstance(helper, str) and helper != own and at is not None:
+            judge(f"{at}.headers_helper", helper)  # a kind's own key (an mcp source's)
+        commands = run.detail.get("commands")
+        for line in commands if isinstance(commands, list) else []:
+            if isinstance(line, str) and run.collector in entry_at:
+                judge(f"collectors.{entry_at[run.collector]}", line)
+    return [
+        Problem(
+            path,
+            f"{fetcher} fetches {package!r} without an exact version every time {line!r} "
+            "starts, so every tick of the schedule runs whatever was published last",
+            kind="package_unpinned",
+            fix=f"pin it to an exact version, {pinned_form(fetcher, package)}, so each tick "
+            "runs the code you reviewed; then `recon schedule install` again",
+            got=package,
+        )
+        for (path, package), (fetcher, line) in found.items()
+    ]

@@ -4,7 +4,9 @@ An archive is one survey's output: a table per collector and source, a ``meta.ya
 survey's event log and, unless the survey finished with every table, an incomplete marker. A
 stream's window (:mod:`recon.domain.stream`) is an archive too, of one table, kept with the
 other windows of its stream rather than with the survey's archives; one writer at a time
-extends a stream, from :meth:`ArchiveStore.hold_stream` to :meth:`ArchiveStore.release_stream`.
+extends a stream, from :meth:`ArchiveStore.hold_stream` to :meth:`ArchiveStore.release_stream`,
+and one survey at a time writes a mission's archives, from :meth:`ArchiveStore.hold_mission` to
+:meth:`ArchiveStore.release_mission`.
 The marker is written when the archive is created and removed only once the survey has
 finished, so a survey that dies at any point, however it was stopped, leaves an archive
 that reads incomplete. While a survey writes its archive it holds it, from :meth:`create`
@@ -25,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Sequence
+    from collections.abc import Generator, Iterable, Iterator, Sequence
     from pathlib import Path
 
     from recon.domain.capture import CaptureLog
@@ -72,6 +74,15 @@ ArchiveState = Literal["writing", "complete", "incomplete"]
 #: survey says so as it ends, ``archive_unfinished``): never written, read from that absence,
 #: since the record that would tell the two apart is the one that is missing.
 Ended = Literal["finished", "stopped", "crashed"]
+
+#: What a table may keep beside it that is no table: ``pages``, its page log (each page's
+#: token, once a page: :mod:`recon.domain.paginate`); ``keys``, its key index (each key's
+#: content hash: :mod:`recon.domain.changes`). Written with the table once it is sealed, and
+#: gone with its archive.
+Sidecar = Literal["pages", "keys"]
+
+#: Each sidecar's suffix to its table's output name: an output named so would be one.
+SIDECARS: tuple[Sidecar, ...] = ("pages", "keys")
 
 _NOT_IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]")
 
@@ -168,6 +179,18 @@ class ArchiveStore(Protocol):
         as it is."""
         ...
 
+    def hold_mission(self, mission_dir: Path) -> None:
+        """Hold the mission for one survey until :meth:`release_mission` or its death: no
+        other survey, in this process or another on this host, can hold it meanwhile, so two
+        surveys of a mission never overlap. Raises ReconError (``busy``), naming the holder's
+        pid in ``details`` when it is known, while another holds it."""
+        ...
+
+    def release_mission(self, mission_dir: Path) -> None:
+        """Let go of a mission :meth:`hold_mission` held; one this store does not hold is
+        left as it is."""
+        ...
+
     def stream_state(self, mission_dir: Path, stream: str) -> ArchiveState | None:
         """``writing`` while a writer holds the stream; else its last window's state; None
         for a stream with no window."""
@@ -243,6 +266,30 @@ class ArchiveStore(Protocol):
         table's columns when they are known (a ``normalize:`` spec's): a table that collected
         nothing keeps them, so a query of them still binds.
         """
+        ...
+
+    def write_sidecar(
+        self, archive: Path, output: str, sidecar: Sidecar, lines: Iterable[dict[str, Any]]
+    ) -> None:
+        """Keep ``lines`` as the table ``output``'s ``sidecar``, whole or not at all, in place
+        of any it had. A sidecar is never one of :meth:`tables`, and goes with its archive.
+        Raises OSError when it cannot."""
+        ...
+
+    def read_sidecar(
+        self, archive: Path, output: str, sidecar: Sidecar
+    ) -> Iterator[dict[str, Any]] | None:
+        """The lines of the table ``output``'s ``sidecar``, in the order written; None when it
+        has none."""
+        ...
+
+    def read_table(
+        self, archive: Path, output: str, *, unsealed: bool = False
+    ) -> Iterator[dict[str, Any]] | None:
+        """The records of the sealed table ``output``, in the order written (none for a table
+        that collected nothing); None when ``archive`` has no such sealed table. With
+        ``unsealed``, a table its writer died writing gives its whole lines, its last line cut
+        short left out, and the file left as it is."""
         ...
 
     def capture_log(self, archive: Path) -> CaptureLog: ...

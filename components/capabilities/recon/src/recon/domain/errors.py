@@ -28,6 +28,7 @@ ErrorKind = Literal[
     "store",
     "query",
     "busy",
+    "stale",
     "interrupted",
 ]
 
@@ -44,6 +45,7 @@ ERROR_KINDS: tuple[ErrorKind, ...] = (
     "store",
     "query",
     "busy",
+    "stale",
     "interrupted",
 )
 
@@ -61,6 +63,7 @@ EXIT_CODES: dict[str, int] = {
     "store": 9,
     "query": 10,
     "busy": 11,
+    "stale": 12,
     "interrupted": 130,
 }
 
@@ -79,7 +82,8 @@ EXIT_MEANINGS: dict[str, str] = {
     "kept, marked incomplete",
     "store": "the survey could not finish its archive; it is kept, marked incomplete",
     "query": "the SQL failed, or reached outside the mission's archives",
-    "busy": "another recon is writing the stream; one writes a stream at a time",
+    "busy": "another recon is writing the stream, or surveying the mission",
+    "stale": "the config changed since its schedule was installed; ticks are refused",
     "interrupted": "Ctrl-C or SIGTERM stopped the command; a survey's archive reads `ended: "
     "stopped` (a stopped `recon stream` exits 0)",
 }
@@ -94,15 +98,16 @@ EXIT_NEXT: dict[str, str] = {
     "not_found": "run the command the error's `fix` names",
     "transient": "if a table's error names a `deadline:` or `timeout:`, raise it (a retry "
     "fails too); else survey again later",
-    "auth": "set the variable the failing source's auth.env names to a valid key, then "
+    "auth": "give the failing source's auth.token (or headers_helper) a valid key, then "
     "survey again",
     "conflict": "add --replace to overwrite it, or choose another mission name",
     "run_failed": "read each failed table's error and fix its cause, then plan and survey again",
     "store": "free space where the archive is, or make it writable, then survey again",
     "query": "correct the SQL as the error's `fix` says; for a missing table, it names the "
     "tables there are",
-    "busy": "let that stream run, or stop its writer as the `fix` says (`kill -TERM <pid>`, "
-    "the pid in `details`, seals its window), then stream again",
+    "busy": "let it run, or stop it as the `fix` says (`kill -TERM <pid>`, the pid in "
+    "`details`), then run the command again",
+    "stale": "read what changed, then `recon schedule install <mission>`",
     "interrupted": "run the command again",
 }
 
@@ -153,6 +158,31 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "retain_unset",
     # a query of a stream that read more windows than it is cheap to open
     "windows_many",
+    # a paginated table's crawl stopped short, so the table is truncated: at its cap of
+    # pages, at a token it had used already, or at empty pages in a row that still linked on
+    "paginate_pages",
+    "paginate_loop",
+    "paginate_empty",
+    # a deadline shorter than the least time a crawl takes at its source's rate limit
+    "deadline_short",
+    # a table's deletes asked for and not told: its crawl cut short, keyless or ambiguous records
+    "deletes_withheld",
+    # a table's changes that could not be told: the table kept, compared again next time
+    "changes_failed",
+    # a join that failed as it closed, once its change table was sealed: the rows stand
+    "join_unclosed",
+    # a mission's config changed since its schedule was installed: its ticks are refused
+    "config_changed",
+    # a scheduler that cannot keep the schedule's missed: (cron runs no missed tick)
+    "missed_ignored",
+    # ticks skipped in a row because the one before still ran: the survey outlasts every
+    "schedule_overrun",
+    # a mission's directory or file that users other than its owner can reach
+    "mission_exposed",
+    # a scheduled mission's credential named as env:NAME, which no tick's environment holds
+    "env_unscheduled",
+    # a scheduled mission's npx or uvx package with no exact version: fetched anew every tick
+    "package_unpinned",
 )
 
 

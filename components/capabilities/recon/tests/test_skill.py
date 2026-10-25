@@ -183,6 +183,66 @@ def test_the_streaming_page_is_the_skill_reference() -> None:
         assert taught in REFERENCES["streaming"], taught
 
 
+def test_the_schedules_page_is_the_skill_reference() -> None:
+    """Schedules are taught in full by ``recon --skill -r schedules``, and the skill points
+    there in one line; one text with its docs page, as streaming's is. An agent reading it
+    learns the key, each command and flag, each default, every refusal and its fix, and that
+    a tick's credentials are not its shell's."""
+    page = PACKAGE / "docs" / "reference" / "schedules.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    assert page.read_text(encoding="utf-8") == REFERENCES["schedules"]
+    assert "recon --skill -r schedules" in SKILL or "| `schedules` |" in SKILL
+    taught = REFERENCES["schedules"]
+    for said in ("every", "missed", "once", "skip", "0.8 × `every`", "provenance", "--platform",
+                 "launchd", "systemd", "cron", "Persistent=true", "/dev/null", "0600",
+                 "--config-sha256", "stale", "busy", "schedule_overrun", "config_changed",
+                 "missed_ignored", "schedule.log", "skipped_by", "late_s", "scheduled_at",
+                 "installed", "unchanged", "replaced", "removed", "absent", "next_at",
+                 "last_tick", "skips", "env_unset", "1 MiB", "env_unscheduled",
+                 "auth.token: file:", "auth.headers_helper", "chmod 600",
+                 "package_unpinned", "==<version>", "at most a day", "weekly"):  # fmt: skip
+        assert said in taught, said
+    for name in ("schedule_install", "schedule_list", "schedule_remove", "schedule_status",
+                 "schedule_tick"):  # fmt: skip
+        assert f"recon.{name}(" in taught and hasattr(recon, name), name
+
+
+def test_the_changes_page_is_the_skill_reference() -> None:
+    """Change detection is taught in full by ``recon --skill -r changes``, and the skill points
+    there in one line; one text with its docs page. An agent reading it learns each key and its
+    default, every op and when, what holds deletes back, that ``record`` is untrusted, and every
+    refusal."""
+    page = PACKAGE / "docs" / "reference" / "changes.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    assert page.read_text(encoding="utf-8") == REFERENCES["changes"]
+    assert "`changes`" in SKILL
+    for taught in ("`key`", "`volatile`", "`deletes`", "`false`", "`insert`", "`update`",
+                   "`delete`", "`rebaselined`", "ambiguous", "keyless", "untrusted",
+                   "deletes_withheld", "`page` crawl", "changes.key", "0600", ".keys.jsonl",
+                   "_changes", "baseline", "provenance", "never tells a delete",
+                   "retain:"):  # fmt: skip
+        assert taught in REFERENCES["changes"], taught
+
+
+def test_the_pagination_page_is_the_skill_reference() -> None:
+    """Pagination is taught in full by ``recon --skill -r pagination``, and the skill points
+    there in one line; one text with its docs page. An agent reading it learns each key, its
+    default, every stop and what records it, and every refusal."""
+    page = PACKAGE / "docs" / "reference" / "pagination.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    assert page.read_text(encoding="utf-8") == REFERENCES["pagination"]
+    assert "recon --skill -r pagination" in SKILL or "`pagination`" in SKILL
+    for taught in ("`link`", "`header`", "`cursor`", "`offset`", "`page`", "`pages`", "`100`",
+                   "`next`", "`param`", "truncated_by", "paginate_pages", "paginate_loop",
+                   "paginate_empty",
+                   "_position", ".pages.jsonl", "least seconds", "deadline_short", "provenance",
+                   "rate_limit", "origin", "preserve_raw", "crashed"):  # fmt: skip
+        assert taught in REFERENCES["pagination"], taught
+
+
 def test_the_skill_says_how_long_a_stream_holds_the_command() -> None:
     """Polish R3 (Ace 1-2): an agent reading only the skill learns that a stream's window,
     300 s by default, can outlast its tool call, that the dry run says when the run returns,
@@ -262,13 +322,27 @@ def test_the_exit_code_table_is_the_code_s() -> None:
 
 
 def test_the_kinds_and_schemas_listed_are_the_code_s() -> None:
-    assert "`error.kind` is one of " + ", ".join(f"`{k}`" for k in recon.ERROR_KINDS) in SKILL
-    assert (
-        "A problem's `kind` is one of " + ", ".join(f"`{k}`" for k in recon.PROBLEM_KINDS) in SKILL
-    )
+    """Every kind is listed, in the code's order, by ``recon --skill -r errors``; the skill
+    lists the error kinds in its exit-code table and points to the reference in one line."""
+    taught = REFERENCES["errors"]
+    assert "`error.kind` is one of " + ", ".join(f"`{k}`" for k in recon.ERROR_KINDS) in taught
+    first_warning = recon.PROBLEM_KINDS.index("env_unset")
+    stopping, warning = recon.PROBLEM_KINDS[:first_warning], recon.PROBLEM_KINDS[first_warning:]
+    assert "A problem's `kind` is one of " + ", ".join(f"`{k}`" for k in stopping) in taught
+    assert "A warning's `kind` is one of " + ", ".join(f"`{k}`" for k in warning) in taught
+    assert "recon --skill -r errors" in SKILL and "| `errors` |" in SKILL
     for schema in ("plan", "survey", "status", "query-rows", "templates", "mission", "capture",
                    "error", "event"):  # fmt: skip
         assert f"`recon.v1.{schema}`" in SKILL
+
+
+def test_the_errors_page_is_the_skill_reference() -> None:
+    """The kinds are taught in full by ``recon --skill -r errors``, one text with its docs
+    page, so the list an agent reads and the one a person reads cannot drift."""
+    page = PACKAGE / "docs" / "reference" / "errors.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    assert page.read_text(encoding="utf-8") == REFERENCES["errors"]
 
 
 def test_the_error_envelope_shown_is_the_one_printed(tmp_path: Path, monkeypatch: Any) -> None:

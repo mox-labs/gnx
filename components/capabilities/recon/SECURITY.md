@@ -52,32 +52,55 @@ where they connect. The child inherits recon's environment, every variable of it
 no allowlist. Declared effects are what a collector type says about itself; recon reports
 them and does not enforce them.
 
-### 2. Source entries → outbound credentials (`api` collector)
+### 2. Source entries → outbound credentials (`api` and `sse` collectors)
 
-A source entry names an environment variable holding its secret (`auth.env`), read through
-an injected `Mapping` that defaults to `os.environ`. It is sent as a header (`auth.header`),
-a query parameter (`auth.param`), or both. Two consequences:
+A source entry names where its secret is, in the one grammar every source kind uses
+(ruling A1, `recon.domain.credentials`): `auth.token: env:NAME`, a variable, read through an
+injected `Mapping` that defaults to `os.environ`; or `auth.token: file:PATH`, a file. It is
+sent as a header (`auth.header`), a query parameter (`auth.param`), or both. Or
+`auth.headers_helper` names a command, run once a survey through the shell with the
+source's `timeout`, whose standard output is a JSON object of the headers to send (a
+keychain's `security find-generic-password -w`, a cloud CLI's token). So an unattended
+survey (one an OS scheduler runs) gets its credential without a secret written into the
+scheduler's files or its environment. A `file:` its group or others can read or write is
+refused before anything is sent (`config`, with the `chmod 600` that fixes it): a credential
+every account on the host can read is not kept as one, and one another can write is theirs to
+choose. A link is refused too, never followed (`O_NOFOLLOW`): the modes judged are the file's
+read, and whoever can change a link cannot choose the file. A helper runs with recon's rights and
+environment, as a `cli` command does (boundary 1): name it by an absolute path. Consequences:
 
 - The secret is attached to requests to **whatever URL that source declares**. A config
   that points a credentialed source at an attacker's host exfiltrates the credential. The
   URL and the credential are chosen by the same file. The dry-run plan shows each URL.
 - The secret goes only to the origin of the request a collector built. A redirect to
-  another host, port or scheme is followed without the source's `auth.header`, as httpx2
-  follows one without `Authorization`; an upgrade from http to https on the same host keeps
-  it (R-9). A key sent as `auth.param` is part of the URL: a redirect carries it on only
-  when the server writes it into the new location.
+  another host, port or scheme is followed without any header the collector gave but
+  `User-Agent`, `Accept`, `Cache-Control` and `Last-Event-ID`: the source's `auth.header`,
+  and every header its helper printed, whose names recon cannot know in advance; httpx2
+  itself drops `Authorization`. An upgrade from http to https on the same host keeps them
+  (R-9). A key sent as `auth.param` is part of the URL: a redirect carries it on only when
+  the server writes it into the new location. A paginated table's next page is followed
+  only at the source's origin (its scheme, host and port); a link elsewhere fails the table.
 - TLS certificates are verified against the operating system's trust store (httpx2's
   default, through `truststore`).
 - Secrets are never written to the JSONL output and never logged. Request headers are
   never persisted. In captures, response headers are persisted with credential-bearing
   values redacted (R-2), and an `auth.param` value is redacted from the captured URL (R-4).
+  A server that writes back what it was sent puts the credential in its answer: an `api`
+  source's captured body, and an `api` or `sse` source's failed request (whose message
+  quotes the start of the answer, into `meta.yaml` and the event log), have the source's
+  token and every header its helper printed redacted, as an `mcp` source's are (round-4
+  review S5). **Table records are not redacted**: a server that echoes the credential into
+  a record it returns puts it in the table (and its change table, and a query's answer), as
+  the source's data, kept as given; only captures and error messages are redacted. Keep such
+  a field out with `normalize:` (a keep-list), and treat the archive of a source that does
+  this as secret material.
 
-An unset `auth.env` variable sends the request without credentials; the plan warns about
-it before anything is sent.
+An unset `auth.token` variable sends the request without credentials; the plan warns
+about it before anything is sent.
 
 A collector type is not handed the process environment. Its `env` holds only the
-variables the mission declares for it: the `auth.env` names of the catalog sources its
-collectors run against, and the variables those sources name through their kind's own
+variables the mission declares for it: the `auth.token: env:NAME` variables of the catalog
+sources its collectors run against, and the variables those sources name through their kind's own
 settings (an `mcp` source's `env:NAME` references). A plugin type therefore sees the secrets the config granted its
 sources and no others, and reading any other name fails the table with a config error
 that says where to declare it, rather than returning nothing (R-5). This scopes what a
@@ -94,6 +117,10 @@ Collected records are attacker-influenced data by definition. recon writes them 
 values, never as paths or commands. Output filenames come from the collector entry's
 `name` in the config, not from response content. Capture bodies are named by their own
 sha256, never by anything in the response.
+
+What recon writes is private to the user running it: each directory it makes for a mission
+(`.recon/` and everything under it) is `0700` and each file `0600`, set as the path is made, so
+the umask cannot widen it. A directory or file that was already there keeps its own mode: `recon status` warns (`mission_exposed`) of the first one in a mission open to other users, and names the `chmod -R go-rwx` that closes the mission; it changes nothing.
 
 `$markitdown` is the one built-in transform that opens a file, and the path it opens is
 a collected value. It reads only under the mission directory and the catalog's `local`
@@ -304,6 +331,57 @@ A stream runs for as long as it is told to, so what it reaches, it reaches for t
 - **One writer a stream**: a second `recon stream` of the same stream is refused
   (`busy`) by an `flock` held for the run, so two processes never write one window id.
 
+### 11. A schedule → the operating system's scheduler (`recon schedule`)
+
+A schedule runs a mission's config with nobody watching, every tick, for as long as it is
+installed: the config's commands (boundary 1) and servers (boundary 8) included. That makes
+the config a persistence vector, and the scheduler's files a place a secret could be left.
+
+- **The config a tick runs is the one installed.** `install` records the config's sha256
+  in the scheduler's file, as the tick's `--config-sha256`; a tick whose config has another
+  refuses to run (`stale`, exit 12, logged) until `recon schedule install` runs again. A change to
+  a scheduled config, by hand, by an agent or by a merge, is read before it runs. The digest
+  checked is of the bytes the tick plans and runs, read once while it holds the mission: one
+  read for the check and another to run would let a config swapped between them run
+  unattended (Dijkstra and Vector, round-4 review F4).
+- **What the files hold**: recon by the absolute path of the installation that installed
+  it, as an argument list (cron alone hands its line to `/bin/sh`: each argument is quoted
+  whole), the mission's name (checked as every mission name is), the absolute project, and
+  an explicit `PATH`: the installer's, kept to absolute directories that exist, that no
+  other user can write (owned by the user or by root, and neither group- nor world-writable:
+  an owner can change a mode) and that are not inside the project (a checkout's `bin/`,
+  `node_modules/.bin`: what a pull or a dependency put there), judged both by where an entry
+  resolves and by its own path, so a link committed in the project (`tools` to `/usr/bin`),
+  which a later pull could repoint, is left out too. Nothing else of the
+  environment: no secret, no `OTEL_EXPORTER_OTLP_HEADERS`. launchd's and cron's output go to
+  `/dev/null`.
+- **What the digest does not cover**: the config's bytes are held to the digest installed,
+  not what they name. A script a `cli` collector's `run:` calls, a `headers_helper` command,
+  a stdio server's program, and a package a fetcher (`npx`, `uvx`...) fetches can each change between
+  ticks without the config changing (the plan warns `package_unpinned` for the last). Keep
+  what a scheduled config runs where only you can write it, and name it by absolute path.
+- **Where they go**: the user's own domain alone (`~/Library/LaunchAgents`, the user's
+  systemd units, the user's crontab, in recon's marked block, every other line kept), each
+  file `0600`. No LaunchDaemon, system unit, `/etc/cron.d` or sudo.
+- **Credentials**: a tick has the scheduler's environment, not your shell's, so a
+  variable an `env:NAME` reference names is unset in it; the plan of a scheduled mission
+  warns `env_unscheduled` for each. Give it a form a tick resolves itself (`auth.token:
+  file:PATH`, a file only you can read, or `auth.headers_helper`, for every source kind;
+  boundary 2), never a secret in the config.
+- **Two ticks never overlap**: each survey holds the mission's lock; a tick that finds it
+  held is skipped and logged (`busy`).
+- **The code a tick runs**: the config is held to its digest, but `npx`, `npm exec`, `bunx`,
+  `pnpm dlx`, `uvx`, `uv tool run` and `pipx run` fetch a package anew each time unless it
+  names an exact version (a repository: a whole commit), so a server, command or helper
+  written without one runs whatever was last published, every tick, with nobody watching.
+  The plan of a scheduled mission warns `package_unpinned` for each fetcher in command
+  position, with the pinned form as its fix; it does not refuse, and a fetcher reached
+  through a variable, an alias or a script of its own is not seen.
+
+What this does **not** do: anything about who may write the config before it is
+installed, or about the scheduler's own files being changed by hand afterwards (`recon
+schedule status` reads such a schedule `installed: false`).
+
 ## Findings
 
 ### R-1 — generator cleanup silenced to satisfy the type checker (fixed 2026-08-17)
@@ -347,8 +425,8 @@ A `cli` capture records the fully-substituted commands in its `request`. That is
 (`run: curl -H 'Authorization: Bearer sk-...'`) puts that secret on disk.
 
 Not fixed, and not fixable by redaction without guessing at shell syntax and breaking
-reproducibility. **Keep credentials in environment variables referenced by a source's
-`auth.env`, never inline in a `run:` string.** If you must inline one, treat the archive
+reproducibility. **Keep credentials where a source's `auth.token` names them (a variable or
+a file only you can read), never inline in a `run:` string.** If you must inline one, treat the archive
 as secret material.
 
 ### R-4 — `auth.param` would have put the key in the captured URL (prevented, 0.9.0)
@@ -365,8 +443,8 @@ Regression: `test_param_key_never_reaches_the_capture_log` in
 
 The composition root passed `os.environ` to every collector type's factory, so installing
 a third-party collector type gave it every credential on the machine, whatever the
-mission's config named. Fixed by handing each type a mapping scoped to the `auth.env`
-names of the sources its collectors use (boundary 2). An undeclared read raises, because
+mission's config named. Fixed by handing each type a mapping scoped to the
+`auth.token: env:NAME` variables of the sources its collectors use (boundary 2). An undeclared read raises, because
 a silent "not set" would send the request without its key.
 
 Regression: `recon/tests/test_composition.py`, and
@@ -498,6 +576,48 @@ file outside the archive, against boundary 6's "nothing else". Fixed: the connec
 a query can read.
 
 Regression: `test_duckdb_s_spill_directory_is_not_readable` in `recon/tests/test_query.py`.
+
+### R-16 — an `api` source's credential could come only from the environment (fixed)
+
+An `mcp` source could take its credential from a file or a helper, an `api` source only
+from an environment variable (vector, round 4). A survey an OS scheduler runs has no
+secret-free place to get that variable from: it would go into the scheduler's file. Fixed
+by one credential grammar for every source kind, through one resolver
+(`recon.adapters._out.credentials`): `auth.token: env:NAME | file:PATH`, or
+`auth.headers_helper`, exactly as an `mcp` source has them. A `file:` its group or others
+can read is refused, for every kind. A helper's headers are each held to the request's
+origin by the requester, since it cannot know their names in advance. The plan of a
+scheduled mission warns `env_unscheduled` for each `env:NAME` reference a source it reads
+makes, since a tick's environment holds no such variable; its fix names the `file:` and
+helper forms, never a variable set in the scheduler's files.
+
+Regression: `recon/tests/test_credentials.py`,
+`recon/tests/test_schedule_config.py::TestATickSeesNoShellVariable`.
+
+### R-17 — a record's content could be recovered from its hash (prevented, change detection)
+
+Change detection keeps a hash of each record's content in a table's key index
+(`<output>.keys.jsonl`), which SQL can read. A plain hash of content with few possible values
+(a one-time code in a mail subject: a million) is recovered by hashing every guess (vector,
+round 4). The hash is a keyed BLAKE2b under the mission's own key, `.recon/<mission>/
+changes.key`, random, mode 0600 and never written anywhere else, so without that file a guess
+cannot be checked. A key file that does not hold exactly 32 bytes is refused (`config`) and
+left as it is: an empty one would unkey every hash, and one made again silently would hide that
+the file was changed. A hash appears in no change row, outcome, warning or telemetry, and a
+window `retain:` removes takes its key index with it. A large comparison joins on DuckDB in a
+directory of its own under the mission's `.joins` (0700, as every directory of a mission is),
+holding keys and hashes while it runs and removed when it ends, its spill capped at 4 GiB by
+default; one a process that died left is removed when the next join starts there; its connection runs no mission SQL,
+reads only that directory, loads no extension and reaches no network. A change row's `record` is the source's
+content, untrusted: it is data for a reader, never instructions (`docs/reference/changes.md`).
+
+Regression: `recon/tests/test_changes.py`, `recon/tests/test_changes_property.py`.
+
+### R-18 — one hostile string could leave every scheduled archive unfinished (fixed, round-4 review)
+
+A record's text is a stranger's. A lone surrogate (JSON `"\ud800"`) cannot be encoded as UTF-8, and change detection's hash, and its DuckDB join's files, encoded it so: one mail subject made every tick's survey end without finishing its archive (Vector F6). The hash now passes a surrogate through as its code point's bytes, the DuckDB join holds keys as the hex of their bytes, and any other failure of the change phase is that table's (`changes.error`, a `changes_failed` warning), never its survey's.
+
+Regression: `recon/tests/test_changes.py::TestHostileContent`.
 
 ## Not covered
 

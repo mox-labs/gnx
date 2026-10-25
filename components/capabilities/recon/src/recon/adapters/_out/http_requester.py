@@ -26,9 +26,12 @@ span message is the status, the exception class or the size refusal, never the U
 redirect httpx2 follows stays inside its attempt's span.
 
 A source's credential goes only to the origin its request was built for. httpx2 drops an
-``Authorization`` header when a redirect leaves the origin; recon drops the source's own
-``auth.header`` (``x-api-key``) by the same rule, so a redirect to another host, port or
-scheme (other than http to https on the same host) is followed without the key.
+``Authorization`` header when a redirect leaves the origin; recon drops by the same rule every
+header its caller gave but the few that carry no credential (``User-Agent``, ``Accept``,
+``Cache-Control``, ``Last-Event-ID``): the source's ``auth.header`` (``x-api-key``), and each
+header a ``headers_helper`` printed, whose names are known only once it has run. So a redirect
+to another host, port or scheme (other than http to https on the same host) is followed
+without any of them.
 
 How httpx2 (2.10) is used, each choice checked against its source:
 
@@ -125,7 +128,7 @@ def _is_retryable(exc: BaseException) -> bool:
 
 #: The next step after a failed request, by the kind :func:`classify_http_failure` gives.
 _HTTP_FIX: dict[ErrorKind, str] = {
-    "auth": "set the environment variable the source's auth.env names to a valid key",
+    "auth": "check the credential the source's auth.token or auth.headers_helper gives",
     "transient": "retry the survey later; lower the source's rate_limit if it was a 429",
     "run_failed": "check the source's url, the collector's endpoint and params against the API",
 }
@@ -186,6 +189,17 @@ class _StatusError(httpx2.HTTPStatusError):
 
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+
+#: The headers a caller gives that carry no credential, so they follow a redirect anywhere.
+#: Every other header it gives is held to the request's origin.
+_NOT_CREDENTIALS = frozenset({"user-agent", "accept", "cache-control", "last-event-id"})
+
+
+def _origin_bound(headers: dict[str, str] | None, source: SourceEntry) -> frozenset[str]:
+    """The headers held to the request's origin: each the caller gave but those of
+    :data:`_NOT_CREDENTIALS`, and the source's ``auth.header`` whether given or not."""
+    given = {name.lower() for name in headers or {}} - _NOT_CREDENTIALS
+    return frozenset(given | ({source.auth.header.lower()} if source.auth.header else set()))
 
 
 class _SendBudget:
@@ -447,9 +461,9 @@ class HttpRequester:
         self._telemetry = telemetry if telemetry is not None else Telemetry((), clock)
         self._transport = transport
         self._client: httpx2.Client | None = None
-        #: The request in hand's origin and the source's credential header, which goes to
-        #: that origin only (requests are sent one at a time).
-        self._origin: tuple[httpx2.URL, str] | None = None
+        #: The request in hand's origin and the headers that go to that origin only
+        #: (requests are sent one at a time).
+        self._origin: tuple[httpx2.URL, frozenset[str]] | None = None
         #: The send in hand: its first request, its source and its budget, which every hop
         #: of its redirects is held to.
         self._sending: tuple[httpx2.Request, SourceEntry, _SendBudget] | None = None
@@ -473,13 +487,15 @@ class HttpRequester:
         return self._client
 
     def _credential_stays_at_its_origin(self, request: httpx2.Request) -> None:
-        """A request hook: the source's ``auth.header`` is removed from any request, a
-        redirect included, sent anywhere but the origin of the one the collector built."""
+        """A request hook: each header held to the origin (:func:`_origin_bound`) is removed
+        from any request, a redirect included, sent anywhere but the origin of the one the
+        collector built."""
         if self._origin is None:
             return
-        origin, header = self._origin
-        if header and not _same_origin(request.url, origin):
-            request.headers.pop(header, None)
+        origin, held = self._origin
+        if held and not _same_origin(request.url, origin):
+            for name in held:
+                request.headers.pop(name, None)
 
     def _hop_within_budget(self, request: httpx2.Request) -> None:
         """A request hook: every hop of a send, its redirects included, is held to the send's
@@ -532,7 +548,7 @@ class HttpRequester:
         client = self._session()
         # Each request starts as one alone would: no cookie carries over from another.
         client.cookies.clear()
-        self._origin = (target, source.auth.header)
+        self._origin = (target, _origin_bound(headers, source))
 
         def attempt() -> HttpResponse:
             if self._deadline is not None:
@@ -649,7 +665,7 @@ class HttpRequester:
             ) from exc
         client = self._session()
         client.cookies.clear()
-        self._origin = (target, source.auth.header)
+        self._origin = (target, _origin_bound(headers, source))
         self._sending = None  # a stream's body has no end to hold it to
         self._rate_limiter.acquire(source, self._deadline)
         shown = reported_url(url, source.auth.param)
