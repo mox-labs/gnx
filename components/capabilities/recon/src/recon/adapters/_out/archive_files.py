@@ -373,7 +373,10 @@ class ArchiveFiles:
             shutil.rmtree(leftover, ignore_errors=True)
         # The tombstone first, appended whole in one write (only the stream's writer retires):
         # a writer that dies after it leaves the window listed, and the next retirement
-        # retires it again; a reader keeps the last tombstone of an id.
+        # retires it again; a reader keeps the last tombstone of an id. A survey's archive's
+        # tombstone keeps its index, which leaves the index record with it (N4).
+        if home.name == "archive" and tombstone.get("index") is None:
+            tombstone = {**tombstone, "index": self._given(home.parent).get(archive.name)}
         line = (json.dumps(tombstone, default=str) + "\n").encode()
         descriptor = open_file(home / RETIRED, os.O_WRONLY | os.O_APPEND)
         try:
@@ -386,6 +389,19 @@ class ArchiveFiles:
         going = home / f".{archive.name}.{os.getpid()}{RETIRING}"
         archive.rename(going)
         shutil.rmtree(going)
+        if home.name == "archive":  # a survey's archive: its index line goes with it (N4)
+            self._drop_index(home.parent, archive.name)
+
+    def _drop_index(self, mission_dir: Path, archive_id: str) -> None:
+        """The index record without ``archive_id``'s line, replaced whole; one not there, or
+        holding no such line, is left as it is."""
+        given = self._index_lines(mission_dir)
+        if given is None or archive_id not in given:
+            return
+        kept = sorted(((a, i) for a, i in given.items() if a != archive_id), key=lambda x: x[1])
+        tmp = mission_dir / f".{INDEX}.{os.getpid()}.tmp"
+        write_file(tmp, b"".join(_index_line(a, i) for a, i in kept))
+        os.replace(tmp, mission_dir / INDEX)
 
     def retired(self, mission_dir: Path, stream: str | None) -> list[dict[str, Any]]:
         home = mission_dir / "archive" if stream is None else _stream_dir(mission_dir, stream)

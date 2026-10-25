@@ -85,6 +85,21 @@ class TestAClockThatStepsBack:
         assert [stone["index"] for stone in stones] == [1, 2]
 
 
+def test_a_retired_archive_leaves_the_index_record(tmp_path: Path) -> None:
+    """Erlang N4: the record grew a line a survey for ever; retiring an archive now takes its
+    line with it, and the count goes on from the newest, which retention never removes."""
+    _mission(tmp_path, {"key": ["id"]}, retain={"archives": 1})
+    surveys = Surveys(tmp_path)
+    for messages in ((A,), (A, B), (A, B, C)):
+        surveys.survey(*messages)
+    record = tmp_path / ".recon" / "m" / "archive-index.jsonl"
+    lines = [json.loads(line) for line in record.read_text().splitlines()]
+    [kept] = ArchiveFiles(FixedClock()).archives(tmp_path / ".recon" / "m")
+    assert lines == [{"id": kept.name, "index": 3}]
+    fourth, _ = surveys.survey(A, B, C)
+    assert _meta(fourth)["index"] == 4
+
+
 class TestTheLegacyRule:
     def test_archives_with_no_index_go_first_by_time_and_the_count_goes_on(
         self, tmp_path: Path
