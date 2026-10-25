@@ -1,6 +1,6 @@
 # Changelog — recon
 
-## Unreleased
+## 0.16.0 — 2026-10-25
 
 ### A crawl that resumes: a stream of page windows
 
