@@ -35,7 +35,7 @@ collectors:
 | Key | Holds | Default |
 |---|---|---|
 | `schedule` | the mission's schedule | none: the mission runs when it is told to |
-| `schedule.every` | the seconds between ticks: at least 60, and whole minutes that divide a day (60, 120, 180, ..., 600, ..., 3600, 5400, 7200, ..., 86400), so the ticks fall on one daily grid every scheduler keeps; another value is a plan problem whose fix names the nearest two | required |
+| `schedule.every` | the seconds between ticks: at least 60, and whole minutes that divide a day (60, 120, 180, ..., 600, ..., 3600, 5400, 7200, ..., 86400), so the ticks fall on one daily grid every scheduler keeps: `every` is at most a day, so a weekly or monthly schedule cannot be written yet; another value is a plan problem whose fix names the nearest two | required |
 | `schedule.missed` | what ticks missed while the host was asleep or off become: `once`, one run when it is back (the missed ticks coalesced, never caught up one by one); `skip`, none | `once` |
 | `deadline` | a scheduled mission's survey time, so a tick ends before the next is due | 0.8 × `every` unless set |
 

@@ -201,7 +201,7 @@ def test_the_schedules_page_is_the_skill_reference() -> None:
                  "installed", "unchanged", "replaced", "removed", "absent", "next_at",
                  "last_tick", "skips", "env_unset", "1 MiB", "env_unscheduled",
                  "auth.token: file:", "auth.headers_helper", "chmod 600",
-                 "package_unpinned", "==<version>"):  # fmt: skip
+                 "package_unpinned", "==<version>", "at most a day", "weekly"):  # fmt: skip
         assert said in taught, said
     for name in ("schedule_install", "schedule_list", "schedule_remove", "schedule_status",
                  "schedule_tick"):  # fmt: skip
