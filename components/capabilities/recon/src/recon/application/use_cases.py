@@ -513,6 +513,7 @@ class Recon:
                         resolved=self._resolved(plan.config),
                         streams=streams,
                         scheduled=scheduled,
+                        index=self._archives.indexes(mission).get(archive.name),
                     )
                 finally:
                     # Whatever the survey opened (a collector's session, the requester's
@@ -588,6 +589,7 @@ class Recon:
             meta = self._archives.read_meta(archive)
             tombstone = {
                 "id": archive.name,
+                "index": meta.get("index"),
                 "started_at": meta.get("started_at"),
                 "timestamp": meta.get("timestamp"),
                 "ended": meta.get("ended"),

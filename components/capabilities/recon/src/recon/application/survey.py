@@ -189,6 +189,7 @@ class Survey:
         resolved: Mapping[str, Any] | None = None,
         streams: Collection[int] = (),
         scheduled: Mapping[str, Any] | None = None,
+        index: int | None = None,
     ) -> list[TableOutcome]:
         """Run every table into ``archive``, a new one :meth:`ArchiveStore.create` made at
         ``started``, and write its ``meta.yaml``. Returns the tables, which also land in
@@ -206,6 +207,8 @@ class Survey:
             "format_version": META_FORMAT_VERSION,
             "recon_version": self._recon_version,
             "config_sha256": config_sha256,
+            # The mission's archives in the order they were made, whatever the clock said.
+            **({} if index is None else {"index": index}),
             "started_at": started.isoformat(),
             "timestamp": None,  # when it ended: set by _meta, here so the key keeps its place
             "preserve_raw": config.preserve_raw,

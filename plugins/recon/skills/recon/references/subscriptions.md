@@ -85,12 +85,12 @@ A read is `recon.v1.changes-since`:
 | `subscription` | the subscription read, whose `match:` chose `rows`; null for `recon.changes_since`, which reads every row |
 | `rows` | `{id, archive, op, key, record}` each: `archive` is the archive (or window) whose change table holds it |
 | `count` | how many rows |
-| `cursor` | opaque: pass it, unchanged, to the next read of the same output, or ack it |
+| `cursor` | opaque: pass it, unchanged, to the next read of the same output, or ack it; it orders by archives' `index`, so an ack is later or older by the order archives were made in |
 | `more` | a bound cut the read: read again at once |
 | `state` | the last archive read's state: `writing` while a survey still writes it, whose change table may yet be sealed |
 | `retired_range` | `{first, last, count}`: the archives `retain:` removed before the cursor read them, said by the read that passes them, or null |
 
-A read is at most 1000 rows and about 1 MiB of them, at least one row when one is there. An archive whose change table is empty, or that has none, costs a read nothing: the read goes on past it. One being written holds the reader there until its survey seals it. Archive ids sort by when each survey began, so a clock set back between two surveys can give a later archive an earlier id, which a cursor past it does not read.
+A read is at most 1000 rows and about 1 MiB of them, at least one row when one is there. An archive whose change table is empty, or that has none, costs a read nothing: the read goes on past it. One being written holds the reader there until its survey seals it. Archives are read in the order they were made, by each one's `index` (its `meta.yaml`'s), never by the clock: a clock set back between two surveys gives the later archive an earlier id, and it is read after the earlier all the same. An archive made before indexes has none; those are read first, by when they began (the legacy rule).
 
 `retain:` never removes an archive (or a stream's window) holding change rows a subscription the config declares has not acked: a notification lost in silence is worse than the disk it takes. While one holds archives back, the plan and `recon status` warn `subscription_behind`, at `subscriptions.<i>`, `got` the archives it holds, with the fix: read and ack them, deliver them, or remove the subscription from `subscriptions:` (one no longer declared holds nothing). An archive retired before this rule, or while its subscription was not declared, is said by the read that passes it, `retired_range`, never in silence.
 

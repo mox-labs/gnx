@@ -11,8 +11,13 @@
 - **`retain:` keeps what a subscription has not acked** (the coordinator's ruling): no archive or stream window holding change rows a declared subscription has not acked is removed, whatever the rules say. While a subscription holds archives back, the plan and `recon status` warn `subscription_behind` (a new warning kind) at `subscriptions.<i>`, `got` the archives it holds, with the fix: ack them, deliver them, or remove the subscription.
 - **SECURITY.md, boundary 12** (ruling V1): change rows and deliveries carry untrusted content, marked by the schema (`"untrusted": true` on `recon.v1.changes-since`'s row `key` and `record`, `recon.v1.delivery`'s `key` and `fields`), never by delimiters in the text; a delivery is never handed to an agent as instructions or as a user's turn, and never starts an agent's action.
 
+### Archives in the order they were made
+
+- **Every survey's archive has an `index`** (the coordinator's ruling), one more than the mission's last, given under the mission lock as the archive is made, recorded in its `meta.yaml` and in `.recon/<mission>/archive-index.jsonl`, the name a stream's window has for its place in its chain. Archives are listed, compared (`changes:`'s previous table), retired and read (`changes_since`, subscriptions, their cursors and acks) by it, never by start time: a clock set back between two surveys no longer puts the later archive first, where a cursor past the earlier never read it and its changes were compared with nothing. An archive made before this has no index: those come first, by when they began (the legacy rule). A lost `archive-index.jsonl` is made again from the archives' `meta.yaml` by the next survey. A retired archive's tombstone keeps its `index`.
+
 ### Ports
 
+- **`ArchiveStore.indexes(mission_dir, stream=None)`** gives each archive's index, `create` gives a survey's archive the next one, and `archives` lists by it.
 - **`ArchiveStore.read_since` takes `tables=`**, the output names to read alone, and **`ArchiveStore.retired` takes `stream=None`** for the tombstones of a mission's own retired archives. A store of your own given to `root()` implements both.
 - **`root()` takes `deliverer=`**, the `Deliverer` port (`recon.domain.subscriptions`) a delivery runs through; its default is `CommandDeliverer`. A subscription's state is kept through the new `SubscriptionStore` port.
 

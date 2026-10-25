@@ -18,6 +18,7 @@
                               pid (so a writer refused is told whose); kept, emptied
     <mission>/writer.lock     locked by the mission's one survey while it runs, holding its
                               pid, as a stream's is; kept, emptied
+    <mission>/archive-index.jsonl  each archive's index, a line {id, index} as it is made
       <window id>/            each window, an archive as above, of one table
       retired.jsonl           a line for each window retain: removed: what, and why
 
@@ -37,6 +38,15 @@ stream reads that directory alone. A window's id starts with its index
 ``flock`` on its ``writer.lock``, which stays when it is let go, so no two writers ever hold
 two files of one name), so the index it gives each new window is one no other writer gives.
 The stream is ``writing`` while that lock is held, and otherwise reads as its last window.
+
+**Archives in the order they were made.** A survey's archive is given the mission's next
+index as it is made, before it has its name, a line of ``archive-index.jsonl`` beside its
+mission's ``archive/`` (so ``archive/`` holds archives, and SQL reads none of it); the survey
+records it in ``meta.yaml`` too. Archives are listed by index, so a clock set back between two
+surveys never puts the later before the earlier. One with no index (made before indexes) is
+listed first, by its id, which is when it began. A lost ``archive-index.jsonl`` is made
+again, from the archives' ``meta.yaml``, by the next archive made; until then its archives are
+listed by id.
 
 **One survey a mission.** A survey holds the mission's own ``writer.lock`` the same way from
 before it writes anything until it returns (:meth:`ArchiveFiles.hold_mission`), so two surveys
@@ -95,6 +105,7 @@ from recon.domain.archives import (
     StoredTable,
     TableEnds,
     TableRecord,
+    archive_rank,
 )
 from recon.domain.capture import CAPTURE_LOG_NAME
 from recon.domain.changes import CHANGES_SUFFIX
@@ -123,6 +134,10 @@ TORN = ".torn"
 #: suffix of a window being removed, out of every listing.
 RETIRED = "retired.jsonl"
 RETIRING = ".retiring"
+
+#: Each of a mission's archives' index, a line ``{id, index}`` an archive, in the mission's
+#: directory beside ``archive/``.
+INDEX = "archive-index.jsonl"
 
 #: The layout of an archive's tables this store writes and reads, named in ``meta.yaml``.
 TABLE_LAYOUT = 1
@@ -180,6 +195,8 @@ class ArchiveFiles:
             )
             if archive.exists():
                 raise taken
+            if stream is None:  # its index first: one that never gets its archive names nothing
+                self._give_index(mission_dir, archive_id)
             try:
                 making.rename(archive)
             except OSError as exc:  # another survey took the id since it was checked
@@ -194,6 +211,50 @@ class ArchiveFiles:
             raise
         self._held[archive] = descriptor
         return archive
+
+    def _give_index(self, mission_dir: Path, archive_id: str) -> None:
+        """Record ``archive_id`` as the mission's next archive: one more than the last index
+        given (or than the archives' ``meta.yaml`` say, when the record is lost)."""
+        home = mission_dir / "archive"
+        given = self._index_lines(mission_dir)
+        lines = b""
+        if given is None:  # lost, or never made: made again from what the archives say
+            given = {}
+            for archive in self._listed(home):
+                index = self.read_meta(archive).get("index")
+                if isinstance(index, int) and not isinstance(index, bool):
+                    given[archive.name] = index
+            lines = b"".join(
+                _index_line(a, i) for a, i in sorted(given.items(), key=lambda x: x[1])
+            )
+        lines += _index_line(archive_id, max(given.values(), default=0) + 1)
+        descriptor = open_file(mission_dir / INDEX, os.O_WRONLY | os.O_APPEND)
+        try:
+            os.write(descriptor, lines)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def indexes(self, mission_dir: Path, *, stream: str | None = None) -> dict[str, int]:
+        if stream is not None:
+            windows = self.archives(mission_dir, stream=stream)
+            return {w.name: index for w in windows if (index := window_index(w.name)) is not None}
+        return self._index_lines(mission_dir) or {}
+
+    def _index_lines(self, mission_dir: Path) -> dict[str, int] | None:
+        """The indexes the mission's ``archive-index.jsonl`` gives, by archive id (a later line
+        of an id is the one kept); None when it is not there."""
+        try:
+            raw = (mission_dir / INDEX).read_bytes()
+        except FileNotFoundError:
+            return None
+        given: dict[str, int] = {}
+        for line in raw.splitlines():
+            with contextlib.suppress(ValueError, AttributeError):
+                entry = json.loads(line)
+                if isinstance(entry.get("id"), str) and type(entry.get("index")) is int:
+                    given[entry["id"]] = entry["index"]
+        return given
 
     def release(self, archive: Path) -> None:
         descriptor = self._held.pop(archive, None)
@@ -482,10 +543,16 @@ class ArchiveFiles:
             indexed = [(window_index(d.name), d) for d in directory.iterdir()]
             windows = sorted((i, d) for i, d in indexed if i is not None)
             return [d for _, d in windows if d.is_dir()]
-        archive = mission_dir / "archive"
-        if not archive.is_dir():
+        home = mission_dir / "archive"
+        listed = self._listed(home)
+        given = self._index_lines(mission_dir) or {}
+        return sorted(listed, key=lambda a: archive_rank(a.name, given.get(a.name)))
+
+    def _listed(self, home: Path) -> list[Path]:
+        """The archives in ``home``, by id."""
+        if not home.is_dir():
             return []
-        return sorted(d for d in archive.iterdir() if d.is_dir() and _is_archive_id(d.name))
+        return sorted(d for d in home.iterdir() if d.is_dir() and _is_archive_id(d.name))
 
     def read_meta(self, archive: Path) -> dict[str, Any]:
         try:
@@ -677,6 +744,10 @@ class _Lines:
                 except OSError as exc:  # raised to the writer at its next line
                     self._failed = exc
                     return
+
+
+def _index_line(archive: str, index: int) -> bytes:
+    return (json.dumps({"id": archive, "index": index}) + "\n").encode()
 
 
 def _stream_dir(mission_dir: Path, stream: str) -> Path:

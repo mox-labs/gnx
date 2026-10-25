@@ -28,7 +28,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from recon.application.changes import canonical
-from recon.domain.archives import ARCHIVE_ID_FORMAT, READ_MAX_BYTES
+from recon.domain.archives import ARCHIVE_ID_FORMAT, READ_MAX_BYTES, archive_rank
 from recon.domain.changes import changes_output
 from recon.domain.documents import (
     ChangeRow,
@@ -73,15 +73,18 @@ class Position:
     """Where a reader of an output's change rows is: in ``archive`` (None: before the first),
     past ``row`` rows of its change table, at the store's cursor ``at`` there, and whether that
     table is ``done`` (no row of it is still to come). Positions order by archive, then row,
-    then done: an archive's id sorts by when it began (a window's, by its index)."""
+    then done: archives in the order they were made, by index, never by the clock."""
 
     archive: str | None = None
     row: int = 0
     at: str | None = None
     done: bool = False
+    #: The archive's index (:meth:`~recon.domain.archives.ArchiveStore.indexes`); None for one
+    #: made before indexes.
+    index: int | None = None
 
-    def order(self) -> tuple[str, int, bool]:
-        return (self.archive or "", self.row, self.done)
+    def order(self) -> tuple[tuple[int, int, str], int, bool]:
+        return (archive_rank(self.archive, self.index), self.row, self.done)
 
 
 @dataclass(frozen=True)
@@ -129,24 +132,26 @@ class ChangeReader:
             )
         archives = self._archives.archives(self._mission_dir, stream=self._stream)
         names = [archive.name for archive in archives]
-        stones: list[str] | None = None
+        indexes = self._archives.indexes(self._mission_dir, stream=self._stream)
+        ranks = [archive_rank(name, indexes.get(name)) for name in names]
+        stones: list[tuple[tuple[int, int, str], str]] | None = None
 
-        def retired_between(after: str | None, before: str | None) -> list[str]:
+        def retired_between(after: tuple[int, int, str] | None,
+                            before: tuple[int, int, str] | None) -> list[str]:  # fmt: skip
             nonlocal stones
             if stones is None:
-                stones = sorted(
-                    str(stone.get("id"))
-                    for stone in self._archives.retired(self._mission_dir, self._stream)
-                )
+                found = self._archives.retired(self._mission_dir, self._stream)
+                stones = sorted(_stone(stone, indexes) for stone in found)
             return [
-                s for s in stones if (after is None or s > after) and (before is None or s < before)
-            ]
+                name for rank, name in stones
+                if (after is None or rank > after) and (before is None or rank < before)
+            ]  # fmt: skip
 
         at = position or Position()
         retired: WindowRange | None = None
         if at.archive is None:
             index = 0
-            gone = retired_between(None, names[0] if names else None)
+            gone = retired_between(None, ranks[0] if ranks else None)
             retired = _range(gone)
         elif at.archive in names:
             index = names.index(at.archive)
@@ -160,13 +165,15 @@ class ChangeReader:
                     "read without one to start from the first archive",
                     details={"archive": at.archive},
                 )
-            later = [i for i, name in enumerate(names) if name > at.archive]
-            next_name = names[later[0]] if later else None
-            retired = _range(retired_between(at.archive, next_name) + [at.archive])
+            mine = archive_rank(at.archive, at.index)
+            later = [i for i, rank in enumerate(ranks) if rank > mine]
+            next_rank = ranks[later[0]] if later else None
+            retired = _range([at.archive, *retired_between(mine, next_rank)])
             if not later:
-                return ChangeRead([], Position(at.archive, at.row, at.at, True), False, None,
-                                  retired)  # fmt: skip
-            index, at = later[0], Position(names[later[0]])
+                return ChangeRead([], Position(at.archive, at.row, at.at, True, at.index), False,
+                                  None, retired)  # fmt: skip
+            index = later[0]
+            at = Position(names[index], index=indexes.get(names[index]))
         rows: list[ChangeRow] = []
         records, size = max_records, max_bytes
         more = False
@@ -185,7 +192,8 @@ class ChangeReader:
                 # written, never to be sealed: a writer that died told nothing (the next
                 # survey or window tells its rows).
                 done = self._table in read.exhausted or (not read.more and state != "writing")
-                at = Position(archive.name, at.row + len(read.records), read.cursor, done)
+                at = Position(archive.name, at.row + len(read.records), read.cursor, done,
+                              indexes.get(archive.name))  # fmt: skip
                 if read.more:
                     more = True
                     break
@@ -194,13 +202,13 @@ class ChangeReader:
             if index + 1 == len(archives):
                 break
             following = archives[index + 1]
-            gone = retired_between(archive.name, following.name)
+            gone = retired_between(ranks[index], ranks[index + 1])
             if gone and (rows or retired is not None):
                 more = True  # the next read says the gap before any row after it
                 break
             if gone:
                 retired = _range(gone)
-            index, at = index + 1, Position(following.name)
+            index, at = index + 1, Position(following.name, index=indexes.get(following.name))
             if records < 1 or size < 1:
                 more = True
                 break
@@ -217,7 +225,10 @@ class ChangeReader:
             if position.archive in names:
                 start = names.index(position.archive) + (1 if position.done else 0)
             else:  # retired: what is after it
-                start = next((i for i, n in enumerate(names) if n > position.archive), len(names))
+                indexes = self._archives.indexes(self._mission_dir, stream=self._stream)
+                mine = archive_rank(position.archive, position.index)
+                ranks = [archive_rank(name, indexes.get(name)) for name in names]
+                start = next((i for i, rank in enumerate(ranks) if rank > mine), len(names))
         unread = set()
         for archive in archives[start:]:
             rows = self._archives.read_table(archive, self._table)
@@ -257,6 +268,7 @@ class ChangeReader:
             "row": position.row,
             "at": position.at,
             "done": position.done,
+            "index": position.index,
         }
         return _CURSOR + json.dumps(body, separators=(",", ":")).encode().hex()
 
@@ -283,7 +295,8 @@ class ChangeReader:
                 fix=f"read {body['output']} of {body['mission']} with it, or {fresh}",
                 details={"mission": body["mission"], "output": body["output"]},
             )
-        return Position(body["archive"], body["row"], body["at"], body["done"])
+        return Position(body["archive"], body["row"], body["at"], body["done"],
+                        body.get("index"))  # fmt: skip
 
 
 def row_id(archive: str, output: str, row: int, op: str, key: Any) -> str:
@@ -299,11 +312,21 @@ def row_id(archive: str, output: str, row: int, op: str, key: Any) -> str:
 
 
 def _range(ids: list[str]) -> WindowRange | None:
-    """The run of archive ids ``ids`` (sorted), or None for none."""
+    """The run of archive ids ``ids``, in the order they were made, or None for none."""
     if not ids:
         return None
-    ordered = sorted(ids)
-    return WindowRange(first=ordered[0], last=ordered[-1], count=len(ordered))
+    return WindowRange(first=ids[0], last=ids[-1], count=len(ids))
+
+
+def _stone(stone: dict[str, Any], indexes: dict[str, int]) -> tuple[tuple[int, int, str], str]:
+    """A tombstone's archive's place in the order, and its id: by the index it kept, or the
+    one its mission gave it (``indexes``), or a window's in its id; else by its id (one made
+    before indexes)."""
+    name = str(stone.get("id"))
+    index = stone.get("index")
+    if type(index) is not int:
+        index = indexes.get(name, window_index(name))
+    return archive_rank(name, index), name
 
 
 def _well_formed(body: Any) -> bool:
@@ -319,6 +342,7 @@ def _well_formed(body: Any) -> bool:
         and row >= 0
         and isinstance(body.get("at"), str | None)
         and isinstance(body.get("done"), bool)
+        and (body.get("index") is None or type(body.get("index")) is int)
     )
 
 
