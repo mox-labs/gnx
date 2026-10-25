@@ -325,8 +325,14 @@ def build_plan(
     if not problems:
         deadline = raw.get("deadline")
         if schedule is not None:
-            provenance += _scheduled(schedule, raw)
-            deadline = schedule.deadline if deadline is None else deadline
+            delivering = max(
+                (s.deliver.deadline for _, s in subscriptions if s.deliver), default=0.0
+            )
+            provenance += _scheduled(schedule, raw, delivering)
+            if deadline is None:
+                deadline = schedule.deadline_beside(delivering)
+            if deadline + delivering > schedule.every:
+                warnings.append(_tick_overrun(schedule, deadline, delivering))
         config = ReconConfig(
             catalog=[src for _, src in sources],
             collectors=[entry for _, entry in entries],
@@ -633,9 +639,27 @@ def _schedule(raw: dict[Any, Any]) -> tuple[ScheduleSpec | None, list[Problem]]:
     ]
 
 
-def _scheduled(schedule: ScheduleSpec, raw: dict[Any, Any]) -> list[SourcedValue]:
+def _tick_overrun(schedule: ScheduleSpec, deadline: float, delivering: float) -> Problem:
+    """The warning for a scheduled mission whose survey's ``deadline`` and longest delivery
+    together outlast ``every``: the next tick would find the mission's last one still running.
+    The kind is ``status``'s for a schedule that did (``schedule_overrun``): one thing, one
+    word, one next step."""
+    return Problem(
+        "deadline",
+        f"a tick's survey may take {deadline:g}s (deadline:) and its delivery {delivering:g}s "
+        f"(the longest deliver.deadline), {deadline + delivering:g}s in all, longer than "
+        f"schedule.every ({schedule.every}s): the next tick would come while this one runs",
+        kind="schedule_overrun",
+        fix="raise schedule.every, or lower deadline: or deliver.deadline so the two fit in it",
+        got=deadline + delivering,
+    )
+
+
+def _scheduled(
+    schedule: ScheduleSpec, raw: dict[Any, Any], delivering: float = 0.0
+) -> list[SourcedValue]:
     """Where a scheduled mission's settings came from: its ``schedule:`` and its ``deadline``,
-    which defaults to a share of ``every``."""
+    which defaults to a share of ``every`` less what its deliveries may take."""
     given = raw["schedule"]
     values = [
         SourcedValue(path="schedule.every", value=schedule.every, origin="mission"),
@@ -651,9 +675,11 @@ def _scheduled(schedule: ScheduleSpec, raw: dict[Any, Any]) -> list[SourcedValue
     if raw.get("deadline") is None:
         note = (f"a scheduled mission's: 0.8 × schedule.every ({schedule.every} s), so a tick "
                 "ends before the next is due")  # fmt: skip
-        values.append(
-            SourcedValue(path="deadline", value=schedule.deadline, origin="recon", note=note)
-        )
+        if delivering:
+            note += (f", less the longest deliver.deadline ({delivering:g} s), at least 0.2 × "
+                     "schedule.every")  # fmt: skip
+        value = schedule.deadline_beside(delivering)
+        values.append(SourcedValue(path="deadline", value=value, origin="recon", note=note))
     else:
         values.append(SourcedValue(path="deadline", value=raw["deadline"], origin="mission"))
     return values

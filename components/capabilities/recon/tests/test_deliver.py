@@ -27,6 +27,7 @@ import yaml
 from click.testing import CliRunner
 
 from recon.adapters._in.cli import main
+from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.command_deliverer import CommandDeliverer
 from recon.adapters._out.subscription_files import SubscriptionFiles
 from recon.adapters._out.system_clock import SystemClock
@@ -487,6 +488,35 @@ class TestThePlan:
         plan = self._plan(deliver)
         assert plan.problems and all(p.path.startswith("subscriptions.0") for p in plan.problems)
 
+    def _scheduled(self, every: int, deliver: float, deadline: float | None = None) -> Any:
+        mission = {
+            "schedule": {"every": every},
+            "catalog": [{"name": "mail", "url": "https://mail.test"}],
+            "collectors": [{"name": "inbox", "type": "api", "source": "mail", "endpoint": "/m",
+                            "changes": {"key": ["id"]}, "retain": "all"}],
+            "subscriptions": [{"name": "s", "output": "inbox",
+                               "deliver": {"command": "/usr/bin/true", "deadline": deliver}}],
+            **({} if deadline is None else {"deadline": deadline}),
+        }  # fmt: skip
+        return build_plan(mission, load_plugins(), {})
+
+    def test_a_scheduled_survey_s_default_deadline_leaves_room_for_its_delivery(self) -> None:
+        """Erlang F3: a tick is its survey, then its deliveries; together within every.
+        The default survey deadline is 0.8 x every less the longest deliver.deadline, and at
+        least 0.2 x every."""
+        plan = self._scheduled(60, 30)
+        said = {value.path: (value.value, value.note) for value in plan.provenance}
+        assert said["deadline"][0] == 18 and "deliver.deadline" in said["deadline"][1]
+        assert plan.config.deadline == 18
+        assert "schedule_overrun" not in [w.kind for w in plan.warnings]
+        assert self._scheduled(60, 45).config.deadline == 12, "the floor, 0.2 x every"
+        assert self._scheduled(600, 30).config.deadline == 450
+
+    def test_a_survey_and_delivery_longer_than_every_are_warned(self) -> None:
+        for plan in (self._scheduled(60, 55), self._scheduled(60, 30, deadline=48)):
+            [warning] = [w for w in plan.warnings if w.kind == "schedule_overrun"]
+            assert warning.path == "deadline" and warning.fix and plan.valid
+
     def test_a_field_normalize_does_not_make_is_refused(self) -> None:
         plan = self._plan({"command": "x", "fields": ["subject", "body"]},
                           normalize={"id": "id", "subject": "subject"})  # fmt: skip
@@ -551,6 +581,29 @@ class TestATickDelivers:
         assert "delivery_failed" in logged[0]
         assert {"delivery_failed", "subscription_behind"} <= set(logged[1])
         assert "subscription_behind" in [w["kind"] for w in tick.warnings]
+
+    def test_its_delivery_runs_with_the_mission_let_go(self, tmp_path: Path) -> None:
+        """Erlang F3 (Vector's reading of the tick): the mission lock is released before the
+        delivery, so a slow delivery never makes the next tick's survey busy."""
+        _mission(tmp_path, {}, schedule={"every": EVERY})
+        home = tmp_path / "home"
+        home.mkdir()
+        host = Host(home, FakeRunner())
+        inbox = Inbox()
+        inbox.messages = _messages(1)
+        mission = tmp_path / ".recon" / "m"
+
+        def holds_the_mission(d: dict[str, Any]) -> Delivered:
+            other = ArchiveFiles(FixedClock())
+            other.hold_mission(mission)  # busy (raises) were the tick still holding it
+            other.release_mission(mission)
+            return Delivered(True, 0)
+
+        clock = FixedClock(SLOT + timedelta(seconds=2))
+        recon = self._root(tmp_path, host, clock, inbox, Recording(holds_the_mission))
+        digest = recon.schedule_install("m", platform="launchd").config_sha256 or ""
+        tick = recon.schedule_tick("m", config_sha256=digest)
+        assert tick.deliveries is not None and tick.deliveries.deliveries[0].delivered == 1
 
     def test_a_tick_refused_for_a_changed_config_delivers_nothing(self, tmp_path: Path) -> None:
         _mission(tmp_path, {}, schedule={"every": EVERY})
