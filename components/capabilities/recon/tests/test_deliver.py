@@ -576,7 +576,7 @@ class TestThePlan:
 
     def test_a_scheduled_survey_s_default_deadline_leaves_room_for_its_delivery(self) -> None:
         """Erlang F3: a tick is its survey, then its deliveries; together within every.
-        The default survey deadline is 0.8 x every less the longest deliver.deadline, and at
+        The default survey deadline is 0.8 x every less the deliver.deadlines summed, and at
         least 0.2 x every."""
         plan = self._scheduled(60, 30)
         said = {value.path: (value.value, value.note) for value in plan.provenance}
@@ -585,6 +585,26 @@ class TestThePlan:
         assert "schedule_overrun" not in [w.kind for w in plan.warnings]
         assert self._scheduled(60, 45).config.deadline == 12, "the floor, 0.2 x every"
         assert self._scheduled(600, 30).config.deadline == 450
+
+    def test_subscriptions_delivering_in_turn_are_budgeted_their_sum(self) -> None:
+        """Erlang, re-check: a tick's subscriptions deliver one after another, so the budget
+        is their deliver.deadlines summed, not the longest: three of 30 s on every 60 may
+        take 90 s, the default survey deadline is the floor, and the plan warns."""
+        mission = {
+            "schedule": {"every": 60},
+            "catalog": [{"name": "mail", "url": "https://mail.test"}],
+            "collectors": [{"name": "inbox", "type": "api", "source": "mail", "endpoint": "/m",
+                            "changes": {"key": ["id"]}, "retain": "all"}],
+            "subscriptions": [{"name": name, "output": "inbox",
+                               "deliver": {"command": "/usr/bin/true", "deadline": 30}}
+                              for name in ("a", "b", "c")],
+        }  # fmt: skip
+        plan = build_plan(mission, load_plugins(), {})
+        assert plan.config is not None and plan.config.deadline == 12, "the floor, 0.2 x every"
+        said = {value.path: value.note for value in plan.provenance}
+        assert "summed" in said["deadline"]
+        [warning] = [w for w in plan.warnings if w.kind == "schedule_overrun"]
+        assert warning.got == 12 + 90 and "summed" in warning.message
 
     def test_a_delivery_that_fetches_an_unpinned_package_is_warned(self) -> None:
         """Vector S2: a scheduled tick runs its deliveries unattended, so a command that has

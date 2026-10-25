@@ -118,7 +118,7 @@ To follow from an agent: `recon subscribe <mission> <name> --json`, act on the r
 recon deliver <mission> [--subscription NAME] [--json]
 ```
 
-A subscription with `deliver:` has the rows it has not acked given to its command, by `recon deliver`, and by every scheduled tick after its survey's archive is sealed (`recon --skill -r schedules`), within the config the tick checked against its installed digest. A tick refused `stale` or skipped delivers nothing. The mission is let go before the delivery, so a slow one never makes the next tick's survey `busy`; a scheduled mission's default `deadline:` leaves room for its longest `deliver.deadline`, and the plan warns `schedule_overrun` when the two together outlast `every`. A subscription with no `deliver:` is left to its subscriber; `--subscription` naming one is refused, `usage`.
+A subscription with `deliver:` has the rows it has not acked given to its command, by `recon deliver`, and by every scheduled tick after its survey's archive is sealed (`recon --skill -r schedules`), within the config the tick checked against its installed digest. A tick refused `stale` or skipped delivers nothing. The mission is let go before the delivery, so a slow one never makes the next tick's survey `busy`; a scheduled mission's default `deadline:` leaves room for its subscriptions' `deliver.deadline`s summed (they deliver in turn), and the plan warns `schedule_overrun` when the survey's and those together outlast `every`. A subscription with no `deliver:` is left to its subscriber; `--subscription` naming one is refused, `usage`.
 
 One delivery of one subscription:
 

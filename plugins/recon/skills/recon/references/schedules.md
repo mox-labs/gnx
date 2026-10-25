@@ -37,7 +37,7 @@ collectors:
 | `schedule` | the mission's schedule | none: the mission runs when it is told to |
 | `schedule.every` | the seconds between ticks: at least 60, and whole minutes that divide a day (60, 120, 180, ..., 600, ..., 3600, 5400, 7200, ..., 86400), so the ticks fall on one daily grid every scheduler keeps: `every` is at most a day, so a weekly or monthly schedule cannot be written yet; another value is a plan problem whose fix names the nearest two | required |
 | `schedule.missed` | what ticks missed while the host was asleep or off become: `once`, one run when it is back (the missed ticks coalesced, never caught up one by one); `skip`, none | `once` |
-| `deadline` | a scheduled mission's survey time, so a tick ends before the next is due | 0.8 × `every` unless set, less the longest `deliver.deadline` of its subscriptions, and at least 0.2 × `every` |
+| `deadline` | a scheduled mission's survey time, so a tick ends before the next is due | 0.8 × `every` unless set, less its subscriptions' `deliver.deadline`s summed (they deliver in turn), and at least 0.2 × `every` |
 
 `recon survey <mission> --dry-run --json` reports each value and where it came from, in `provenance`: `schedule.every` (`mission`), `schedule.missed` (`mission`, or `recon` when left out) and `deadline` (`recon`, with a note, when it is the default). The ticks fall at `offset + k × every` from local midnight, where the offset is `hash(mission) mod every` in whole minutes: missions due at the same moment are spread over the interval, the same on every host. The grid is wall-clock time, as each scheduler keeps it: across a daylight-saving change, one day's ticks shift by the hour the clock does. How late a tick is, and so whether `missed: skip` skips it, is the seconds that passed since the instant its grid time named, in UTC, never the difference of two wall-clock readings.
 
@@ -156,7 +156,7 @@ The log is bounded: at 1 MiB it becomes `schedule.log.1`, replacing the one befo
 | a package `npx`, `npm exec`, `bunx`, `pnpm dlx`, `uvx`, `uv tool run` or `pipx run` fetches with no exact version, in a stdio server, a `cli` command, a `headers_helper` or a subscription's `deliver` | `package_unpinned` warning in the plan, at `catalog.<i>`, `collectors.<i>`, the helper's key or `subscriptions.<i>.deliver.command` | pin it, `pkg@<version>` (npm's) or `pkg==<version>` (Python's), a repository by its whole commit, then install again |
 | a config changed since install | `config_changed` warning in `status` | read it, then install again |
 | two or more busy skips in a row | `schedule_overrun` warning in `status` | raise `every`, or lower `deadline:` |
-| a survey's `deadline:` and the longest `deliver.deadline` longer together than `every` | `schedule_overrun` warning in the plan, at `deadline` | raise `every`, or lower `deadline:` or `deliver.deadline` |
+| a survey's `deadline:` and its `deliver.deadline`s summed longer together than `every` | `schedule_overrun` warning in the plan, at `deadline` | raise `every`, or lower `deadline:` or `deliver.deadline` |
 
 ## In a program
 

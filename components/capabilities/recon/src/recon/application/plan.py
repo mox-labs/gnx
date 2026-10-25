@@ -325,9 +325,8 @@ def build_plan(
     if not problems:
         deadline = raw.get("deadline")
         if schedule is not None:
-            delivering = max(
-                (s.deliver.deadline for _, s in subscriptions if s.deliver), default=0.0
-            )
+            # A tick's subscriptions deliver in turn: the budget is their deadlines summed.
+            delivering = sum(s.deliver.deadline for _, s in subscriptions if s.deliver)
             provenance += _scheduled(schedule, raw, delivering)
             if deadline is None:
                 deadline = schedule.deadline_beside(delivering)
@@ -640,14 +639,15 @@ def _schedule(raw: dict[Any, Any]) -> tuple[ScheduleSpec | None, list[Problem]]:
 
 
 def _tick_overrun(schedule: ScheduleSpec, deadline: float, delivering: float) -> Problem:
-    """The warning for a scheduled mission whose survey's ``deadline`` and longest delivery
-    together outlast ``every``: the next tick would find the mission's last one still running.
+    """The warning for a scheduled mission whose survey's ``deadline`` and deliveries (in turn,
+    so summed) together outlast ``every``: the next tick would find the last one still running.
     The kind is ``status``'s for a schedule that did (``schedule_overrun``): one thing, one
     word, one next step."""
     return Problem(
         "deadline",
         f"a tick's survey may take {deadline:g}s (deadline:) and its delivery {delivering:g}s "
-        f"(the longest deliver.deadline), {deadline + delivering:g}s in all, longer than "
+        f"(each deliver.deadline summed: subscriptions deliver in turn), "
+        f"{deadline + delivering:g}s in all, longer than "
         f"schedule.every ({schedule.every}s): the next tick would come while this one runs",
         kind="schedule_overrun",
         fix="raise schedule.every, or lower deadline: or deliver.deadline so the two fit in it",
@@ -676,8 +676,8 @@ def _scheduled(
         note = (f"a scheduled mission's: 0.8 × schedule.every ({schedule.every} s), so a tick "
                 "ends before the next is due")  # fmt: skip
         if delivering:
-            note += (f", less the longest deliver.deadline ({delivering:g} s), at least 0.2 × "
-                     "schedule.every")  # fmt: skip
+            note += (f", less each deliver.deadline summed ({delivering:g} s: subscriptions "
+                     "deliver in turn), at least 0.2 × schedule.every")  # fmt: skip
         value = schedule.deadline_beside(delivering)
         values.append(SourcedValue(path="deadline", value=value, origin="recon", note=note))
     else:
