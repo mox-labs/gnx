@@ -1,6 +1,6 @@
 # Changelog — recon
 
-## Unreleased
+## 0.15.0 — 2026-10-24
 
 ### Subscriptions
 
@@ -20,16 +20,18 @@
 - **A delivery strips what hides in text** (review S3): variation selectors, zero-width characters (spaces, joiners, the word joiner, invisible operators, the byte order mark), and the line and paragraph separators, beside escapes, bidi controls and tag characters.
 - **A tick's line of `schedule.log` names its warnings' kinds** (`warning_kinds`, review F2): its survey's, its deliveries' and a subscription behind, so what a tick nobody watched warned of is read in the log; `recon.v1.tick`'s `warnings` carries `subscription_behind`. While a subscription holds archives back, the plan and `recon status` warn `subscription_behind` (a new warning kind) at `subscriptions.<i>`, `got` the archives it holds, with the fix: ack them, deliver them, or remove the subscription.
 - **SECURITY.md, boundary 12** (ruling V1): change rows and deliveries carry untrusted content, marked by the schema (`"untrusted": true` on `recon.v1.changes-since`'s row `key` and `record`, `recon.v1.delivery`'s `key` and `fields`), never by delimiters in the text; a delivery is never handed to an agent as instructions or as a user's turn, and never starts an agent's action.
+- **`root()` takes `deliverer=`**, the `Deliverer` port (`recon.domain.subscriptions`) a delivery runs through; its default is `CommandDeliverer`. A subscription's state is kept through the new `SubscriptionStore` port.
 
 ### Archives in the order they were made
 
 - **Every survey's archive has an `index`** (the coordinator's ruling), one more than the mission's last, given under the mission lock as the archive is made, recorded in its `meta.yaml` and in `.recon/<mission>/archive-index.jsonl`, the name a stream's window has for its place in its chain. Archives are listed, compared (`changes:`'s previous table), retired and read (`changes_since`, subscriptions, their cursors and acks) by it, never by start time: a clock set back between two surveys no longer puts the later archive first, where a cursor past the earlier never read it and its changes were compared with nothing. An archive made before this has no index: those come first, by when they began (the legacy rule). While `archive-index.jsonl` is lost, each archive's index is read from its `meta.yaml` (review F1), and the next survey writes the record again. A retired archive's tombstone keeps its `index`, and its line leaves `archive-index.jsonl` (review N4), so the record holds the archives kept. The next index is one past every index given, the tombstones' counted (review F′): a lost record, every sealed archive retired and the newest killed before its `meta.yaml` no longer start the count again below a subscriber's cursor.
 
-### Ports
+### Changed (breaking): the ports a store of your own implements
+
+Configs, documents and installed schedules of 0.14.0 work unchanged: `subscriptions:`, `changes_since`, the change cursor and `deliver:` are new in this release, a new field of a document has a default, and a schedule's digest is of its config's text. What breaks is a store of your own given to `root()`:
 
 - **`ArchiveStore.indexes(mission_dir, stream=None)`** gives each archive's index, `create` gives a survey's archive the next one, and `archives` lists by it.
 - **`ArchiveStore.read_since` takes `tables=`**, the output names to read alone, and **`ArchiveStore.retired` takes `stream=None`** for the tombstones of a mission's own retired archives. A store of your own given to `root()` implements both.
-- **`root()` takes `deliverer=`**, the `Deliverer` port (`recon.domain.subscriptions`) a delivery runs through; its default is `CommandDeliverer`. A subscription's state is kept through the new `SubscriptionStore` port.
 
 ## 0.14.0 — 2026-10-24
 

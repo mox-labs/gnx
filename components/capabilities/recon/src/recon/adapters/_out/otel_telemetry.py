@@ -62,7 +62,7 @@ EXPORT_VARIABLES = (
 
 #: The tag of this release, which the install fix names: recon is installed from the
 #: repository at its tag, never from a branch whose head may be another release.
-RELEASE_TAG = "recon-v0.14.0"
+RELEASE_TAG = "recon-v0.15.0"
 
 _INSTALL_FIX = (
     "reinstall recon, which depends on the OpenTelemetry SDK and its OTLP exporter: uv tool "
