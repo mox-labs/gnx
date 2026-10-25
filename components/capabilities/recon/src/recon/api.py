@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from recon.composition import Recon
     from recon.domain.documents import (
         Capture,
+        ChangesSince,
         MissionDocument,
         PlanDocument,
         QueryRows,
@@ -229,6 +230,31 @@ def watch(
         name, cursor, archive=archive, stream=stream, interval_s=interval_s,
         max_records=max_records, max_bytes=max_bytes,
     )  # fmt: skip
+
+
+def changes_since(
+    name: str,
+    output: str,
+    cursor: str | None = None,
+    *,
+    max_records: int = READ_MAX_RECORDS,
+    max_bytes: int = READ_MAX_BYTES,
+    root: Path | None = None,
+) -> ChangesSince:
+    """The change rows of ``output`` (an output whose entry has ``changes:``) told since
+    ``cursor`` (None: from the mission's first archive), across its archives, or its stream's
+    windows. ``recon.v1.changes-since``.
+
+    Each row of a change table sealed since, in archive order, once, with an ``id`` that names
+    it: read again from the same cursor, the same rows come with the same ``id``s, so a reader
+    that keeps its cursor only once it has acted on a read gets every row at least once, and
+    drops one it has seen by its ``id``. ``key`` and ``record`` are the source's content,
+    untrusted. ``retired_range`` names the archives ``retain:`` removed before the cursor
+    reached them. Raises NotFoundError for an output no entry with ``changes:`` makes, and
+    UsageError for a cursor recon did not give for this output, or a bound below 1."""
+    return _root(root).changes_since(
+        name, output, cursor, max_records=max_records, max_bytes=max_bytes
+    )
 
 
 def configure_telemetry() -> list[Problem]:

@@ -148,6 +148,9 @@ class Plan:
     skipped: list[SkippedSource] = field(default_factory=list)
     streams: list[PlannedStream] = field(default_factory=list)
     provenance: list[SourcedValue] = field(default_factory=list)
+    #: Each output whose tables are compared (its entry has ``changes:``), with the stream it
+    #: is, by name, or None for a snapshot entry's: where its change tables are.
+    changes: dict[str, str | None] = field(default_factory=dict)
 
     @property
     def valid(self) -> bool:
@@ -246,6 +249,7 @@ def build_plan(
     settings_whole = True
     streams: list[PlannedStream] = []
     provenance: list[SourcedValue] = []
+    changing: dict[str, str | None] = {}
     for i, entry in entries:
         ctype = plugins.collector_types.get(entry.type)
         found, checked = _entry_problems(i, entry, catalog, plugins, unchecked)
@@ -289,6 +293,7 @@ def build_plan(
             for key in _table_keys(output):
                 produced_by.setdefault(key, (i, output))
             if entry.changes is not None:
+                changing[output] = entry.name if is_stream else None
                 problems.extend(_change_table_problems(i, output, produced_by))
                 for key in _table_keys(changes_output(output)):
                     produced_by.setdefault(key, (i, changes_output(output)))
@@ -329,6 +334,7 @@ def build_plan(
         skipped=skipped,
         streams=streams,
         provenance=provenance,
+        changes=changing,
     )
 
 

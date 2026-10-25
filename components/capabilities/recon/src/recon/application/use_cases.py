@@ -22,6 +22,7 @@ from recon.application.collectors import confined_transforms, declared_env
 from recon.application.plan import Plan, PlannedStream, build_plan, fan_out, plugin_warning
 from recon.application.schedules import Schedules, stale
 from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun
+from recon.application.subscriptions import ChangeReader
 from recon.application.survey import CollectorError, Survey, TablePages
 from recon.domain.archives import (
     ARCHIVE_ID_FORMAT,
@@ -33,6 +34,7 @@ from recon.domain.deadline import Deadline
 from recon.domain.documents import (
     ArchiveStatus,
     BrokenPluginInfo,
+    ChangesSince,
     CollectorTypeInfo,
     InstalledPlugins,
     MissionDocument,
@@ -1280,6 +1282,53 @@ class Recon:
                 self._clock.sleep(interval_s)
             read = self._read(name, path, read.cursor, max_records, max_bytes)
             yield read
+
+    def changes_since(
+        self,
+        name: str,
+        output: str,
+        cursor: str | None = None,
+        *,
+        max_records: int = READ_MAX_RECORDS,
+        max_bytes: int = READ_MAX_BYTES,
+    ) -> ChangesSince:
+        """The change rows of ``output`` told since ``cursor`` (None: from the mission's first
+        archive), across its archives (a stream's windows), at most ``max_records`` and about
+        ``max_bytes`` of them: each row of a change table sealed since, once, with an ``id``
+        that names it. Stateless: the caller holds the cursor, and reading again from one gives
+        the same rows. Raises NotFoundError for an output no entry with ``changes:`` makes, and
+        UsageError for a cursor recon did not give for this output."""
+        reader = self._change_reader(name, output)
+        position = None if cursor is None else reader.decode(cursor)
+        read = reader.read(position, max_records=max_records, max_bytes=max_bytes)
+        return ChangesSince(
+            mission=name,
+            output=output,
+            rows=read.rows,
+            count=len(read.rows),
+            cursor=reader.encode(read.position),
+            more=read.more,
+            state=read.state,
+            retired_range=read.retired,
+        )
+
+    def _change_reader(self, name: str, output: str, plan: Plan | None = None) -> ChangeReader:
+        """The reader of ``output``'s change rows in the mission ``name``, found by its plan:
+        across its archives, or its stream's windows. Raises NotFoundError for an output no
+        entry with ``changes:`` makes."""
+        if plan is None:
+            _, plan, _ = self._prepare(name, None, False)
+        if output not in plan.changes:
+            known = sorted(plan.changes)
+            raise NotFoundError(
+                f"no output {output!r} with changes: in mission {name!r}; its outputs with "
+                f"changes: {', '.join(known) or '(none)'}",
+                fix="name one of them, or give its collector changes: {key: [<field>]} "
+                "(recon --skill -r changes)",
+                details={"value": output, "allowed": known},
+            )
+        mission = self._missions.mission_dir(name)
+        return ChangeReader(self._archives, mission, name, output, plan.changes[output])
 
     def _ended(self, archive: Path, state: ArchiveState) -> Ended | None:
         return None if state == "writing" else _ended(state, self._archives.read_meta(archive))

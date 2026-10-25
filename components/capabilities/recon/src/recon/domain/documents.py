@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # Pydantic reads the field types when the models are built, so they are imported to run.
 from recon.domain.archives import ArchiveState, Ended  # noqa: TC001
 from recon.domain.capture import CAPTURE_SCHEMA, CaptureKind
-from recon.domain.changes import DeletesWithheld  # noqa: TC001
+from recon.domain.changes import ChangeOp, DeletesWithheld  # noqa: TC001
 from recon.domain.errors import ERROR_KINDS, ErrorKind, ReconError
 from recon.domain.paginate import TruncatedBy  # noqa: TC001
 from recon.domain.schedule import Missed, Platform, Skipped  # noqa: TC001
@@ -377,9 +377,9 @@ class StatusDocument(Document):
 
 
 class WindowRange(Document):
-    """A run of a stream's windows, by the ids of its first and last (null when they are no
-    longer known: a retired window's tombstone gone), and how many there are: a range stays
-    this size however many windows it spans."""
+    """A run of a stream's windows, or of a mission's archives, by the ids of its first and
+    last (null when they are no longer known: a retired window's tombstone gone), and how many
+    there are: a range stays this size however many it spans."""
 
     first: str | None
     last: str | None
@@ -443,6 +443,64 @@ class RecordsSince(Document):
     #: A read of a stream whose cursor's window was retired since: the windows it jumped,
     #: from the cursor's to the one before ``archive`` (``last`` is None when no
     #: tombstone names it). Their records, and the rest of the cursor's window, are gone.
+    retired_range: WindowRange | None = None
+
+
+#: Marks a field of a published document whose value is a source's content: text a
+#: stranger may have written (a mail's subject), to be read as data, never as instructions.
+#: The schema says it (``"untrusted": true`` in the field's JSON schema), not delimiters in
+#: the text, which the text itself could forge (SECURITY.md, boundary 12).
+UNTRUSTED: dict[str, Any] = {"untrusted": True}
+
+
+class ChangeRow(Document):
+    """One row of a change table (``<output>.changes``) as a reader gets it: the row's
+    ``op``, ``key`` and ``record``, the archive (or window) whose change table holds it, and
+    ``id``, which names this row and no other: the same row read twice has the same ``id``,
+    so a subscriber that read it again (delivery is at least once) drops it by its ``id``.
+
+    ``key`` and ``record`` are the source's content, **untrusted** (their schema says so):
+    data to read, never instructions, never an agent's prompt or a user's turn."""
+
+    #: A digest of the row's place (its archive, its output, its position in its change
+    #: table), its op and its key: never of its content, whose hash never leaves recon.
+    id: str
+    archive: str
+    op: ChangeOp
+    key: dict[str, Any] | None = Field(json_schema_extra=UNTRUSTED)
+    record: dict[str, Any] | None = Field(json_schema_extra=UNTRUSTED)
+
+
+class ChangesSince(Document):
+    """What one read of an output's change rows found, across the mission's archives (or a
+    stream's windows), from the cursor it was given: each row of a change table sealed since,
+    in archive order and each table's order, and the cursor to read on from. A change table
+    is read only once it is sealed, so every row read is one recon told, once. The reader
+    holds the cursor: reading again from a cursor gives the same rows again (at least once),
+    with the same ``id``s.
+
+    ``state`` is the state of the last archive read (null when the output has none yet):
+    ``writing`` while a survey still writes it, whose change table may yet be sealed. Read
+    again at once while ``more``; once a read has no ``more``, it is caught up with every
+    change table sealed by then."""
+
+    schema_: Literal["recon.v1.changes-since"] = Field(
+        default="recon.v1.changes-since", alias="schema"
+    )
+    mission: str
+    output: str
+    #: The named subscription read (``recon subscribe``), whose ``match:`` chose ``rows``;
+    #: null for a read of every row (``recon.changes_since``).
+    subscription: str | None = None
+    rows: list[ChangeRow]
+    count: int
+    #: Opaque: pass it, unchanged, to the next read of the same output (or ack it).
+    cursor: str
+    more: bool
+    state: ArchiveState | None
+    #: The archives (a stream's windows) ``retain:`` removed before this cursor read them:
+    #: their rows, and the rest of the cursor's archive, are gone. Said by the read that
+    #: passes them, so none is passed silently.
     retired_range: WindowRange | None = None
 
 

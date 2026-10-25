@@ -316,8 +316,9 @@ class ArchiveFiles:
         archive.rename(going)
         shutil.rmtree(going)
 
-    def retired(self, mission_dir: Path, stream: str) -> list[dict[str, Any]]:
-        path = _stream_dir(mission_dir, stream) / RETIRED
+    def retired(self, mission_dir: Path, stream: str | None) -> list[dict[str, Any]]:
+        home = mission_dir / "archive" if stream is None else _stream_dir(mission_dir, stream)
+        path = home / RETIRED
         if not path.is_file():
             return []
         stones: dict[Any, dict[str, Any]] = {}
@@ -506,7 +507,13 @@ class ArchiveFiles:
         return {**raw, "tables": [t for t in raw.get("tables") or [] if isinstance(t, dict)]}
 
     def read_since(
-        self, archive: Path, cursor: str | None, *, max_records: int, max_bytes: int
+        self,
+        archive: Path,
+        cursor: str | None,
+        *,
+        max_records: int,
+        max_bytes: int,
+        tables: Sequence[str] | None = None,
     ) -> NewRecords:
         if max_records < 1:
             raise UsageError(
@@ -522,9 +529,12 @@ class ArchiveFiles:
             )
         positions = _decode(cursor, archive)
         files = dict(_table_files(archive))
+        if tables is not None:
+            files = {name: path for name, path in files.items() if name in tables}
         records: list[TableRecord] = []
         exhausted: list[str] = []
-        retracted = [n for n, (_, told) in positions.items() if not told and n not in files]
+        named = positions if tables is None else {n: p for n, p in positions.items() if n in tables}
+        retracted = [n for n, (_, told) in named.items() if not told and n not in files]
         budget = _Budget(max_records, max_bytes)
         for name, path in files.items():
             offset, told = positions.get(name, (0, False))

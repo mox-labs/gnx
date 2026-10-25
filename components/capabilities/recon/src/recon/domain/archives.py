@@ -217,8 +217,10 @@ class ArchiveStore(Protocol):
         holds."""
         ...
 
-    def retired(self, mission_dir: Path, stream: str) -> list[dict[str, Any]]:
-        """The tombstones of the stream's retired windows, oldest first, one per window."""
+    def retired(self, mission_dir: Path, stream: str | None) -> list[dict[str, Any]]:
+        """The tombstones of the stream's retired windows, oldest first, one per window; with
+        ``stream`` None, those of the mission's retired archives (a snapshot entry's
+        ``retain:``)."""
         ...
 
     def retired_count(self, mission_dir: Path, stream: str) -> int:
@@ -325,14 +327,21 @@ class ArchiveStore(Protocol):
         ...
 
     def read_since(
-        self, archive: Path, cursor: str | None, *, max_records: int, max_bytes: int
+        self,
+        archive: Path,
+        cursor: str | None,
+        *,
+        max_records: int,
+        max_bytes: int,
+        tables: Sequence[str] | None = None,
     ) -> NewRecords:
         """The records of ``archive`` written since ``cursor`` (None: from the start), at
         most ``max_records`` of them and ``max_bytes`` of their lines, whole records only and at
         least one, from its sealed tables and the ones being written alike, table by table
-        in output-name order; ``more`` when a bound cut it. Raises UsageError for a cursor
-        this store did not give for this archive, and for a ``max_records`` or ``max_bytes``
-        below 1."""
+        in output-name order; ``more`` when a bound cut it. With ``tables``, of the tables of
+        those output names alone (a change table: what a subscription reads). Raises
+        UsageError for a cursor this store did not give for this archive, and for a
+        ``max_records`` or ``max_bytes`` below 1."""
         ...
 
     def tables(self, archive: Path) -> list[StoredTable]:

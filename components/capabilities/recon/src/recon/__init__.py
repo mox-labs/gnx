@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from recon.api import (
     capture,
+    changes_since,
     configure_telemetry,
     init,
     plan,
@@ -34,6 +35,7 @@ from recon.api import (
 )
 from recon.domain.documents import (
     Capture,
+    ChangesSince,
     ErrorDocument,
     MissionDocument,
     PlanDocument,
@@ -96,6 +98,7 @@ __all__ = [
     "EXIT_NEXT",
     "PROBLEM_KINDS",
     "Capture",
+    "ChangesSince",
     "CollectionError",
     "ConfigError",
     "ConflictError",
@@ -121,6 +124,7 @@ __all__ = [
     "WindowOutcome",
     "__version__",
     "capture",
+    "changes_since",
     "configure_telemetry",
     "error_document",
     "init",

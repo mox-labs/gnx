@@ -314,17 +314,19 @@ class TestLibrarySurface:
         Changed requirement: the operations return typed documents, so their types are
         declared names too. Changed again (review item 6): a control an operation takes to be
         steered while it runs, ``StreamStop``, is declared too. Changed (ruling S3): the
-        ``schedule_*`` operations and the two documents they return."""
+        ``schedule_*`` operations and the two documents they return. Changed (ruling R1):
+        ``changes_since`` and its ``ChangesSince``."""
         operations = {"init", "plan", "survey", "status", "query", "templates", "capture",
                       "survey_failure", "error_document", "skill", "skill_references",
                       "configure_telemetry", "read_since", "watch", "stream",
                       "stream_failure", "schedule_install", "schedule_list",
-                      "schedule_remove", "schedule_status", "schedule_tick"}  # fmt: skip
+                      "schedule_remove", "schedule_status", "schedule_tick",
+                      "changes_since"}  # fmt: skip
         documents = {"MissionDocument", "PlanDocument", "SurveyDocument", "TableOutcome",
                      "StatusDocument", "QueryRows", "TemplatesDocument", "Capture",
                      "ErrorDocument", "RecordsSince", "StreamDocument",
                      "WindowOutcome", "ScheduleDocument", "SchedulesDocument",
-                     "TickDocument"}  # fmt: skip
+                     "TickDocument", "ChangesSince"}  # fmt: skip
         errors = {"ReconError", "UsageError", "ConfigError", "ConflictError", "NotFoundError",
                   "QueryError", "CollectionError", "Problem"}  # fmt: skip
         tables = {"ERROR_KINDS", "EXIT_CODES", "EXIT_MEANINGS", "EXIT_NEXT", "PROBLEM_KINDS",
@@ -485,4 +487,5 @@ def test_the_public_names_are_the_ones_callers_use() -> None:
         "StreamStop",
         "schedule_install", "schedule_list", "schedule_remove", "schedule_status", "schedule_tick",
         "ScheduleDocument", "SchedulesDocument", "TickDocument",
+        "changes_since", "ChangesSince",
     }  # fmt: skip
