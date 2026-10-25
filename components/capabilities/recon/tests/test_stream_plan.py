@@ -77,7 +77,7 @@ class TestTheDefaultsAreFilledAndSaid:
                 "type": "push",
                 "window": {"records": 500, "bytes": 65536},
                 "buffer": {"records": 64, "overflow": "drop_oldest"},
-                "retain": {"windows": 48},
+                "retain": {"archives": 48},
             },
             plugins,
         )
@@ -90,7 +90,7 @@ class TestTheDefaultsAreFilledAndSaid:
         assert values["collectors.0.buffer.records"] == (64, "mission")
         assert values["collectors.0.buffer.overflow"] == ("drop_oldest", "mission")
         assert values["collectors.0.buffer.bytes"][1] == "recon"
-        assert values["collectors.0.retain"] == ({"windows": 48}, "mission")
+        assert values["collectors.0.retain"] == ({"archives": 48}, "mission")
         assert not [w for w in plan.warnings if w.kind == "retain_unset"]
 
     def test_keeping_every_window_by_default_is_a_warning_with_the_growth_and_a_fix(
@@ -171,7 +171,17 @@ class TestEveryProblemHasAPathAndAFix:
 
         assert "collectors.0.buffer.max_record_bytes" in _problems(plan)
 
-    @pytest.mark.parametrize("retain", [{}, {"windows": 0}, {"seconds": -1}, "some", {"age": 30}])
+    def test_retain_counts_archives_and_windows_is_no_key_of_it(self, plugins: Plugins) -> None:
+        """The owner's ruling on review S1: every window is an archive (B3), so retain's count
+        is ``archives``, for streams and snapshots alike; ``windows`` would name two things,
+        and before 1.0 it is gone, no alias."""
+        for entry in ({"type": "pull", "retain": {"windows": 3}},
+                      {"type": "once", "retain": {"windows": 3}}):  # fmt: skip
+            problems = _problems(_plan(entry, plugins))
+            assert problems["collectors.0.retain.windows"][0] == "unknown_key", entry
+        assert not _problems(_plan({"type": "pull", "retain": {"archives": 3}}, plugins))
+
+    @pytest.mark.parametrize("retain", [{}, {"archives": 0}, {"seconds": -1}, "some", {"age": 30}])
     def test_retain_is_all_or_a_bound(self, plugins: Plugins, retain: Any) -> None:
         plan = _plan({"type": "pull", "retain": retain}, plugins)
 

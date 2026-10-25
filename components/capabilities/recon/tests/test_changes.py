@@ -1045,7 +1045,7 @@ class TestStreams:
 
     def test_retain_takes_a_window_s_key_index_with_it(self, tmp_path: Path) -> None:
         """Vector: a retired window's keys and hashes go with it."""
-        _stream_mission(tmp_path, retain={"windows": 1})
+        _stream_mission(tmp_path, retain={"archives": 1})
         recon = root({}, project=tmp_path, clock=VirtualClock(),
                      plugins=plugins_with(feed=_Feed(self.RECORDS)))  # fmt: skip
         recon.stream("m", "s", windows=3)

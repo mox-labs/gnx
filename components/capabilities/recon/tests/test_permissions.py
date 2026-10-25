@@ -47,7 +47,7 @@ def test_every_directory_is_0700_and_every_file_0600(tmp_path: Path, usual_umask
             {"name": "now", "type": "cli", "run": "echo '{\"a\": 1}'"},
             {"name": "broken", "type": "cli", "run": "echo 'no newline' >&2; exit 3"},
             {"name": "events", "type": "feed", "window": {"seconds": 10},
-             "retain": {"windows": 1}},
+             "retain": {"archives": 1}},
         ],
     }  # fmt: skip
     given = tmp_path / "mission.yaml"

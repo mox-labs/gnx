@@ -104,17 +104,17 @@ A grid time the clocks skip (02:30 on a spring-forward night) is due when the cl
 
 ## Keeping archives
 
-Each tick writes an archive holding its whole tables, and their told indexes with `changes:`, so a scheduled mission grows every tick unless it says what to keep. `retain:` on a snapshot entry has a stream's shape, with each survey's archive as a window:
+Each tick writes an archive holding its whole tables, and their told indexes with `changes:`, so a scheduled mission grows every tick unless it says what to keep. `retain:` on a snapshot entry has a stream's shape, counting archives (a stream's windows are archives too):
 
 ```yaml
 collectors:
   - name: inbox
     type: cli
     run: "..."
-    retain: {windows: 144}   # the newest 144 archives: a day of ticks, one each 600 s
+    retain: {archives: 144}  # the newest 144 archives: a day of ticks, one each 600 s
 ```
 
-`windows: N` keeps the newest N archives; `seconds: S` those that ended within S seconds of now; `bytes: B` the newest whose sizes add up to no more than B. With more than one, an archive is kept only while every one keeps it. The default is `all`: nothing is removed unless the mission says so, and the plan of a scheduled mission whose entry says nothing warns `retain_unset`, with the `windows` that keeps a day. An archive holds every entry's tables, so it is removed only when every snapshot entry lets it go: one entry that keeps `all` keeps them all.
+`archives: N` keeps the newest N archives; `seconds: S` those that ended within S seconds of now; `bytes: B` the newest whose sizes add up to no more than B. With more than one, an archive is kept only while every one keeps it. The default is `all`: nothing is removed unless the mission says so, and the plan of a scheduled mission whose entry says nothing warns `retain_unset`, with the `archives` that keeps a day. An archive holds every entry's tables, so it is removed only when every snapshot entry lets it go: one entry that keeps `all` keeps them all.
 
 After each survey, recon removes what the rules let go, oldest first, each archive whole (its tables, change tables, told indexes, page logs and captures), each leaving a line in `archive/retired.jsonl` (`id`, `started_at`, `timestamp`, `ended`, `retired_at`, `rule`). It never removes the newest archive, one being written, or the last archive a table with `changes:` was told in (what its next comparison reads). A told index that does not hold is computed again from the archives kept.
 
@@ -149,7 +149,7 @@ The log is bounded: at 1 MiB it becomes `schedule.log.1`, replacing the one befo
 | a tick's config is not the one installed | `stale` (12) | read the change, then `recon schedule install <mission>` |
 | a tick while another survey holds the mission | `busy` (11), `details.skips` | let it run; from the second skip in a row, raise `every` or lower `deadline:` |
 | `missed: once` under cron | `missed_ignored` warning | install for launchd or systemd, or write `missed: skip` |
-| a scheduled snapshot entry with no `retain:` | `retain_unset` warning in the plan, at `collectors.<i>.retain` | `retain: {windows: N}` (a day of ticks), `{seconds: ...}`, or `retain: all` to keep every archive and say so |
+| a scheduled snapshot entry with no `retain:` | `retain_unset` warning in the plan, at `collectors.<i>.retain` | `retain: {archives: N}` (a day of ticks), `{seconds: ...}`, or `retain: all` to keep every archive and say so |
 | a credential named `env:NAME` in a scheduled mission | `env_unscheduled` warning in the plan, at the reference's path | name it as `file:PATH` (mode 0600), or `headers_helper` for a token, then install again |
 | a package `npx`, `npm exec`, `bunx`, `pnpm dlx`, `uvx`, `uv tool run` or `pipx run` fetches with no exact version, in a stdio server, a `cli` command or a `headers_helper` | `package_unpinned` warning in the plan, at `catalog.<i>`, `collectors.<i>` or the helper's key | pin it, `pkg@<version>` (npm's) or `pkg==<version>` (Python's), a repository by its whole commit, then install again |
 | a config changed since install | `config_changed` warning in `status` | read it, then install again |

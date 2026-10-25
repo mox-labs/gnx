@@ -32,7 +32,7 @@ collectors:
     type: tail
     source: app
     window: {seconds: 300}
-    retain: {windows: 288}
+    retain: {archives: 288}
 ```
 
 | Key | Holds | Default |
@@ -42,13 +42,13 @@ collectors:
 | `buffer.bytes` | the most bytes of them; one more record is taken while fewer wait, so a stream holds at most `bytes` + `max_record_bytes` | 16777216 (16 MiB) |
 | `buffer.max_record_bytes` | a record larger than this is dropped as it arrives, and counted | 1048576 (1 MiB) |
 | `buffer.overflow` | what a full buffer does with one more record: `block`, `drop_newest` or `drop_oldest` | `block` for a type recon reads at its own pace (`tail`, `cli`), `drop_newest` for one whose source sends regardless (`sse`) |
-| `retain` | `all`, or `{windows?, seconds?, bytes?}`: which sealed windows to keep | `all` |
+| `retain` | `all`, or `{archives?, seconds?, bytes?}`: which sealed windows to keep (each window is an archive) | `all` |
 
 `recon survey <name> --dry-run --json` (and `recon stream ... --dry-run`) reports every one of these in `provenance`: `{path, value, origin, note}`, `origin` being `mission` (the config set it), `type` (the collector type's declaration decided it) or `recon` (recon's default). A stream that keeps every window because its entry says nothing is a `retain_unset` warning with its growth and a fix; write `retain: all` to keep every window and say so.
 
 Refused by the plan, each with its path and a fix: a `window:` with no bound, or of `seconds` under 1 (each window's end is a marker in the buffer, outside its bound); `buffer:` on an entry that is no stream (`retain:` is a snapshot entry's too: `recon --skill -r schedules`); a stream that would run against more than one source (pin one with `source:`); `deadline:` on a stream (a window ends by `window:`, as a success; a deadline would fail it); a `normalize:` column named `_position`; `max_record_bytes` above `buffer.bytes`; a `retain:` that is neither `all` nor a mapping of `windows`, `seconds`, `bytes`.
 
-`retain:` removes the oldest sealed windows its rules do not keep, after each window is sealed: `windows: N` keeps the newest N; `seconds: S` keeps those closed within S seconds of the newest's close; `bytes: B` keeps the newest whose sizes fit in B. With more than one rule, a window is kept only while every rule keeps it. The newest window is always kept, and a window never sealed (what a dead writer left) is never removed. Each removed window leaves a tombstone, a line of `retired.jsonl` beside the windows saying what it was and why it went, so a hole in the chain reads as retention, not loss.
+`retain:` removes the oldest sealed windows its rules do not keep, after each window is sealed: `archives: N` keeps the newest N; `seconds: S` keeps those closed within S seconds of the newest's close; `bytes: B` keeps the newest whose sizes fit in B. With more than one rule, a window is kept only while every rule keeps it. The newest window is always kept, and a window never sealed (what a dead writer left) is never removed. Each removed window leaves a tombstone, a line of `retired.jsonl` beside the windows saying what it was and why it went, so a hole in the chain reads as retention, not loss.
 
 ## The collector types
 

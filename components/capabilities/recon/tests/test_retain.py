@@ -44,7 +44,7 @@ class TestRules:
         assert store.retired(tmp_path, "s") == []
 
     def test_windows_keeps_the_newest_n_and_tombstones_the_rest(self, tmp_path: Path) -> None:
-        store, outcomes = _stream(tmp_path, RetainSpec(windows=2))
+        store, outcomes = _stream(tmp_path, RetainSpec(archives=2))
 
         assert len(outcomes) == 5
         assert _kept(store, tmp_path) == [3, 4]
@@ -53,7 +53,7 @@ class TestRules:
         first = tombstones[0]
         assert first["id"] == outcomes[0].id
         assert first["records"] == 10
-        assert first["rule"] == {"windows": 2}
+        assert first["rule"] == {"archives": 2}
         assert first["retired_at"]
 
     def test_seconds_keeps_the_windows_closed_within_that_long(self, tmp_path: Path) -> None:
@@ -77,7 +77,7 @@ class TestRules:
         store.release_stream(tmp_path, "s")
 
         plan = _plan(WindowSpec(seconds=10))
-        plan = type(plan)(**{**plan.__dict__, "retain": RetainSpec(windows=1)})
+        plan = type(plan)(**{**plan.__dict__, "retain": RetainSpec(archives=1)})
         timeline = [(i * 1.0, {"seq": i}) for i in range(30)]
         _run(tmp_path, clock, plan, Script(clock, timeline), store=store)
 
@@ -90,7 +90,7 @@ class TestTombstones:
     def test_tombstones_are_lines_of_one_file_beside_the_windows(self, tmp_path: Path) -> None:
         """Review item 10 (Knuth): one append-only ``retired.jsonl``, so listing a stream's
         windows costs the windows kept, and counting the retired costs no parsing."""
-        store, outcomes = _stream(tmp_path, RetainSpec(windows=1))
+        store, outcomes = _stream(tmp_path, RetainSpec(archives=1))
 
         stream = tmp_path / "streams" / "s"
         lines = (stream / "retired.jsonl").read_text().splitlines()
@@ -104,7 +104,7 @@ class TestTombstones:
         assert newest["stream"]["previous"] == outcomes[-2].id, "the chain still names it"
 
 
-@pytest.mark.parametrize("retain", [RetainSpec(windows=3), RetainSpec(seconds=1)])
+@pytest.mark.parametrize("retain", [RetainSpec(archives=3), RetainSpec(seconds=1)])
 def test_every_window_is_kept_or_has_a_tombstone(tmp_path: Path, retain: RetainSpec) -> None:
     store, outcomes = _stream(tmp_path, retain)
 

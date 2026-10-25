@@ -4,7 +4,7 @@ tick for ever. The default is ``all``: nothing is removed unless the mission say
 scheduled mission that says nothing is warned ``retain_unset``. Retention removes whole sealed
 archives, oldest first, never the newest, never one being written, never the last one a
 table's changes were told in, each with every file it holds (its sidecars too), each leaving
-a tombstone. A snapshot's ``windows`` counts its surveys' archives."""
+a tombstone. ``archives`` counts archives, a survey's or a stream's window alike."""
 
 from __future__ import annotations
 
@@ -88,12 +88,12 @@ class Surveys:
 class TestThePlan:
     def test_retain_on_a_snapshot_is_reported_with_its_origin(self, plugins: Plugins) -> None:
         mission = {"catalog": [{"name": "mail", "url": "https://mail.test"}],
-                   "collectors": [_entry(retain={"windows": 5}), _entry("other")]}  # fmt: skip
+                   "collectors": [_entry(retain={"archives": 5}), _entry("other")]}  # fmt: skip
         plan = build_plan(mission, plugins, {})
 
         assert plan.valid, plan.problems
         values = {v.path: (v.value, v.origin) for v in plan.provenance}
-        assert values["collectors.0.retain"] == ({"windows": 5}, "mission")
+        assert values["collectors.0.retain"] == ({"archives": 5}, "mission")
         assert values["collectors.1.retain"] == ("all", "recon")
         assert not [w for w in plan.warnings if w.kind == "retain_unset"], "unscheduled"
 
@@ -104,7 +104,7 @@ class TestThePlan:
 
         [warning] = [w for w in plan.warnings if w.kind == "retain_unset"]
         assert warning.path == "collectors.0.retain"
-        assert "retain: {windows: 144}" in warning.fix, "a day of ticks, one each 600s"
+        assert "retain: {archives: 144}" in warning.fix, "a day of ticks, one each 600s"
         assert "retain: all" in warning.fix
 
     def test_a_scheduled_mission_that_says_all_is_not_warned(self, plugins: Plugins) -> None:
@@ -119,7 +119,7 @@ class TestRetention:
     def test_the_newest_windows_archives_are_kept_with_a_tombstone_each(
         self, tmp_path: Path
     ) -> None:
-        _mission(tmp_path, _entry(retain={"windows": 2}, changes={"key": ["id"]}))
+        _mission(tmp_path, _entry(retain={"archives": 2}, changes={"key": ["id"]}))
         surveys = Surveys(tmp_path)
         made = []
         for _ in range(4):
@@ -128,7 +128,7 @@ class TestRetention:
 
         assert surveys.kept() == made[-2:]
         assert [t["id"] for t in surveys.tombstones()] == made[:2]
-        assert surveys.tombstones()[0]["rule"] == [{"windows": 2}]
+        assert surveys.tombstones()[0]["rule"] == [{"archives": 2}]
         home = tmp_path / ".recon" / "m" / "archive"
         assert not list(home.glob(".*")), "nothing left half removed"
         assert (home / made[-1] / "inbox.keys.jsonl").exists(), "the kept keep their sidecars"
@@ -139,7 +139,7 @@ class TestRetention:
 
     def test_an_entry_that_keeps_all_keeps_every_archive_it_shares(self, tmp_path: Path) -> None:
         """An archive holds every entry's tables: it goes only when every entry lets it go."""
-        _mission(tmp_path, _entry(retain={"windows": 1}), _entry("other"))
+        _mission(tmp_path, _entry(retain={"archives": 1}), _entry("other"))
         assert len(Surveys(tmp_path).survey(3)) == 3
 
     def test_the_newest_is_kept_whatever_the_rule(self, tmp_path: Path) -> None:
@@ -156,7 +156,7 @@ class TestRetention:
     def test_the_last_archive_a_table_was_told_in_is_kept(self, tmp_path: Path) -> None:
         """The newest archive's table failed: the told index the next survey compares with is
         the one before, which the rule would remove. It is kept, so nothing is told again."""
-        _mission(tmp_path, _entry(retain={"windows": 1}, changes={"key": ["id"]}))
+        _mission(tmp_path, _entry(retain={"archives": 1}, changes={"key": ["id"]}))
         surveys = Surveys(tmp_path)
         told = surveys.survey()[-1]
         surveys.answers.fails = True

@@ -417,11 +417,11 @@ def _retain_unset(at: str, name: str, window: WindowSpec) -> Problem:
     if window.seconds is not None:
         per_day = 86400 / window.seconds
         growth = f"up to {per_day:g} windows a day, one each {window.seconds:g}s"
-        keep = f"retain: {{windows: {max(1, int(per_day))}}} keeps a day of them"
+        keep = f"retain: {{archives: {max(1, int(per_day))}}} keeps a day of them"
     else:
         bound = f"{window.records} records" if window.records else f"{window.bytes} bytes"
         growth = f"a window each {bound}"
-        keep = "retain: {windows: 100} keeps the last 100"
+        keep = "retain: {archives: 100} keeps the last 100"
     size = f", each at most {window.bytes} bytes of records" if window.bytes else ""
     return Problem(
         f"{at}.retain",
@@ -591,9 +591,8 @@ def _snapshot_retain(
         f"collector {entry.name!r} keeps every archive a tick makes ({per_day} a day, one each "
         f"{schedule.every}s, each its whole table), and nothing removes them",
         kind="retain_unset",
-        fix=f"retain: {{windows: {per_day}}} keeps a day of them (a snapshot's windows are its "
-        "surveys' archives); retain: {seconds: 2592000} keeps 30 days; or write retain: all to "
-        "keep every archive and say so",
+        fix=f"retain: {{archives: {per_day}}} keeps a day of them; retain: {{seconds: 2592000}} "
+        "keeps 30 days; or write retain: all to keep every archive and say so",
     )
     return [value], [warning]
 

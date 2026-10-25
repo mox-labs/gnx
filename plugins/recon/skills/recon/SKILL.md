@@ -147,7 +147,7 @@ collectors:                    # what to ask; required, at least one
     paginate: {type: link}     # api: page by page; -r pagination
     changes: {key: [<field>]}  # tell what changed; -r changes
     deadline: 120              # optional: seconds each of its tables may take (> 0)
-    retain: all                # or {windows, seconds, bytes}: archives kept; -r schedules
+    retain: all                # or {archives, seconds, bytes}: archives kept; -r schedules
     # Every other key is the type's own:
     # api:     endpoint, params (the query), vars (fill {placeholders}),
     #          method (GET | POST | PUT | PATCH | DELETE), body, response_format (json | xml)

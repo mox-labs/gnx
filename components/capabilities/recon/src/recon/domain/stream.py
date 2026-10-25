@@ -94,21 +94,22 @@ class BufferSpec(BaseModel):
 
 
 class RetainSpec(BaseModel):
-    """``retain:`` on a stream's entry, when it is not ``all``: which sealed windows to keep.
-    ``windows``: the newest this many; ``seconds`` (a number of seconds): those closed within
+    """``retain:`` on an entry, when it is not ``all``: which sealed archives to keep, a
+    stream's windows or a snapshot's surveys' archives (every window is an archive, B3).
+    ``archives``: the newest this many; ``seconds`` (a number of seconds): those closed within
     this long of now; ``bytes``: the newest whose sizes add up to no more than this. With more
     than one, a window is kept only while every rule keeps it. At least one."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    windows: int | None = Field(default=None, ge=1)
+    archives: int | None = Field(default=None, ge=1)
     seconds: float | None = Field(default=None, ge=1, allow_inf_nan=False)
     bytes: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _one_rule(self) -> RetainSpec:
-        if self.windows is None and self.seconds is None and self.bytes is None:
-            raise ValueError("retain needs at least one of windows, seconds, bytes (or: all)")
+        if self.archives is None and self.seconds is None and self.bytes is None:
+            raise ValueError("retain needs at least one of archives, seconds, bytes (or: all)")
         return self
 
 

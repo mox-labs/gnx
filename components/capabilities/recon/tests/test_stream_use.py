@@ -251,7 +251,7 @@ class TestWatchAcrossWindows:
         recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 100))
         recon_.stream("m", "events", windows=1)
         read = recon_.read_since("m", stream="events")
-        _mission(tmp_path, {"window": {"seconds": 10}, "retain": {"windows": 1}})
+        _mission(tmp_path, {"window": {"seconds": 10}, "retain": {"archives": 1}})
         recon_.stream("m", "events", windows=2)  # the window the cursor is in is retired
 
         after = recon_.read_since("m", read.cursor, stream="events")

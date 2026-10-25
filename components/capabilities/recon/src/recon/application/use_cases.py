@@ -569,12 +569,12 @@ class Recon:
     def _snapshots_going(
         self, archives: list[Path], rule: RetainSpec, now: datetime, sizes: dict[str, int]
     ) -> set[str]:
-        """The archives one entry's ``retain:`` lets go: beyond its newest ``windows``, ended
+        """The archives one entry's ``retain:`` lets go: beyond its newest ``archives``, ended
         more than ``seconds`` before now, or past the newest whose sizes add up to ``bytes``.
         Any one of its rules lets an archive go, as a stream's do."""
         going: set[str] = set()
-        if rule.windows is not None:
-            going.update(archive.name for archive in archives[: -rule.windows])
+        if rule.archives is not None:
+            going.update(archive.name for archive in archives[: -rule.archives])
         if rule.seconds is not None:
             cutoff = now - timedelta(seconds=rule.seconds)
             for archive in archives:

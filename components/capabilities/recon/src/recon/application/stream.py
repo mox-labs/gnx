@@ -1015,8 +1015,8 @@ class Stream:
             return
         windows = self._archives.archives(mission_dir, stream=plan.name)
         going: set[str] = set()
-        if rule.windows is not None:
-            going.update(window.name for window in windows[: -rule.windows])
+        if rule.archives is not None:
+            going.update(window.name for window in windows[: -rule.archives])
         now = datetime.fromisoformat(sealed.closed_at)
         if rule.seconds is not None:
             cutoff = now - timedelta(seconds=rule.seconds)
