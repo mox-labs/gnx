@@ -276,6 +276,40 @@ def _new_york(at: datetime) -> datetime:
     return at.astimezone(NEW_YORK)
 
 
+class TestASpringForward:
+    """Round-4 review M2, the choice made: a tick whose grid time the clocks skipped (New
+    York's 02:22 on 2026-03-08, when 02:00 EST became 03:00 EDT) is due when the clocks
+    reached past it, 03:00 EDT, which is when a scheduler can start it: it is on time, and
+    ``missed: skip`` runs it."""
+
+    EVERY = 3600
+    #: 03:00:30 EDT, thirty seconds after the jump.
+    NOW = datetime(2026, 3, 8, 7, 0, 30, tzinfo=UTC)
+
+    def test_a_skipped_grid_time_is_due_at_the_jump_and_on_time(
+        self, tmp_path: Path, host: Host
+    ) -> None:
+        _mission(tmp_path, missed="skip")
+        config = tmp_path / ".recon" / "m" / "config.yaml"
+        config.write_text(config.read_text().replace("every: 600", f"every: {self.EVERY}"))
+        assert offset_s("m", self.EVERY) == 22 * 60, "its ticks fall at :22, 02:22 among them"
+        install = FixedClock(datetime(2026, 3, 7, 20, 0, tzinfo=UTC))
+        digest = (
+            _root(tmp_path, host, install, local=_new_york)
+            .schedule_install("m", platform="launchd")
+            .config_sha256
+            or ""
+        )
+
+        tick = _root(tmp_path, host, FixedClock(self.NOW), local=_new_york).schedule_tick(
+            "m", config_sha256=digest
+        )
+
+        assert tick.skipped_by is None and tick.survey is not None
+        assert tick.scheduled_at == "2026-03-08T03:00:00-04:00"
+        assert tick.late_s == 30.0
+
+
 class TestADaylightSavingChange:
     """Lateness, and so the missed-tick grace, is the seconds that passed: UTC epoch time,
     never the difference of two wall-clock readings. On 2026-11-01 New York's clocks fall

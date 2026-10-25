@@ -381,14 +381,28 @@ class Schedules:
 
     def _instant(self, wall: datetime, guess: datetime) -> datetime:
         """The instant the local wall-clock time ``wall`` names, found from ``guess`` (within
-        an hour of it) by moving it until the local clock reads ``wall``."""
-        at = guess
+        an hour of it) by moving it until the local clock reads ``wall``. A time the clocks
+        skipped (02:30 on a spring-forward night) names none: it is due when the clocks
+        reached past it, the first instant whose local time is later, which is when a
+        scheduler can start it (round-4 review M2). The guess is moved in UTC: in a local
+        zone, a skipped time reads as itself and would pass for one that exists."""
+        at = guess.astimezone(UTC)
         for _ in range(3):
             drift = self._local(at).replace(tzinfo=None) - wall
             if not drift:
-                break
+                return self._local(at)
             at -= drift
-        return self._local(at)
+        # Skipped: the jump is within a few hours of the guess, and local time only rises
+        # there, so the first second whose local time is later is found by halving.
+        lo = int((at - _EPOCH).total_seconds()) - 3 * 3600
+        hi = lo + 6 * 3600
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if self._local(_EPOCH + timedelta(seconds=mid)).replace(tzinfo=None) > wall:
+                hi = mid
+            else:
+                lo = mid
+        return self._local(_EPOCH + timedelta(seconds=hi))
 
     def _schedule_of(self, name: str) -> ScheduleSpec | None:
         try:
@@ -402,6 +416,10 @@ def _seconds(later: datetime, earlier: datetime) -> float:
     """The seconds from ``earlier`` to ``later``, in UTC epoch time: never the difference of
     two wall-clock readings, which a daylight-saving change between them would skew."""
     return (later.astimezone(UTC) - earlier.astimezone(UTC)).total_seconds()
+
+
+#: The epoch, for counting seconds without reading the clock.
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 def _iso(at: datetime | None) -> str | None:

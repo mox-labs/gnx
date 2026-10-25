@@ -100,6 +100,8 @@ Never put a secret in the config, or in the scheduler's files, which recon never
 
 A tick runs the config that was installed, and the commands in it run as they are written. `npx`, `npm exec`, `bunx`, `pnpm dlx`, `uvx`, `uv tool run` and `pipx run` fetch the package they are given each time they start unless it names an exact version, so a stdio server, a `cli` command or a `headers_helper` written `npx -y @scope/server` or `uvx some-server` runs, every tick, whatever was published last. The plan of a scheduled mission warns `package_unpinned` for each, with `got` the package, wherever the fetcher is the command (after variable assignments and a wrapper such as `env`; `echo npx` is no fetch); pin it, `npx -y @scope/server@1.4.2` or `uvx some-server==2025.4.7` (`uvx --from 'some-server==2025.4.7' its-command` when the command has another name), a repository by its whole commit (`git+https://github.com/o/r@<40-hex commit>`, `github:o/r#<commit>`: a branch or a tag can move), and install again.
 
+A grid time the clocks skip (02:30 on a spring-forward night) is due when the clocks reach past it, the first instant after the jump, which is when a scheduler can start it: such a tick started then is on time, and `missed: skip` runs it.
+
 ## Keeping archives
 
 Each tick writes an archive holding its whole tables, and their told indexes with `changes:`, so a scheduled mission grows every tick unless it says what to keep. `retain:` on a snapshot entry has a stream's shape, with each survey's archive as a window:
