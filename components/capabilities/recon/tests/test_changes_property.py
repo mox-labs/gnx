@@ -382,6 +382,31 @@ class TestTheComparisonIsTheOracles:
                     assert told_lines(partial(iter, edited), hasher, len(records)) is None
 
 
+def test_the_memory_join_counts_its_told_index_without_listing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round-4 review M6: the count is the union of the keys told and the table's, never a
+    sort of the whole fold to count it; and it is the fold's length, either way deletes go."""
+    from recon.application.changes import _MemoryJoined
+
+    for seed in range(200):
+        rng = random.Random(seed)
+        told = sorted({f"k{rng.randint(0, 9)}": f"{rng.randint(0, 2):032x}"
+                       for _ in range(rng.randint(0, 8))}.items())  # fmt: skip
+        new = [(i, f"k{rng.randint(0, 9)}", f"{rng.randint(0, 2):032x}")
+               for i in range(rng.randint(0, 12))]  # fmt: skip
+        for deletes in (False, True):
+            joined = MemoryJoin().join(iter(told), iter(new))
+            assert joined.told_count(deletes=deletes) == len(list(joined.told(deletes=deletes)))
+
+    def listed(self: Any, *, deletes: bool) -> Any:
+        raise AssertionError("told_count listed the told index to count it")
+
+    joined = MemoryJoin().join(iter([("k1", "0" * 32)]), iter([(0, "k2", "1" * 32)]))
+    monkeypatch.setattr(_MemoryJoined, "told", listed)
+    assert joined.told_count(deletes=False) == 2 and joined.told_count(deletes=True) == 1
+
+
 def test_the_two_joins_give_the_same_answers() -> None:
     """The DuckDB join is the in-memory join's equal on every answer, over keys with quotes,
     commas, backslashes and text beyond ASCII, which order alike in both."""

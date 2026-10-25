@@ -194,7 +194,14 @@ class _MemoryJoined:
         return iter(sorted(folded.items()))
 
     def told_count(self, *, deletes: bool) -> int:
-        return sum(1 for _ in self.told(deletes=deletes))
+        # The union of the keys told and the table's unambiguous ones, counted, never the
+        # fold sorted to count it (round-4 review M6).
+        kept = sum(1 for _, content in self._new.values() if content is not None)
+        if deletes:
+            return kept
+        return kept + sum(
+            1 for key in self._told if key not in self._new or self._new[key][1] is None
+        )
 
     def close(self) -> None:
         self._told, self._new = {}, {}
