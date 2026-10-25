@@ -395,6 +395,47 @@ class TestAcksInADelivery:
         assert run.skipped_by == "busy" and recording.given == []
         assert [w["kind"] for w in document.warnings] == ["subscription_busy"]
 
+    def test_a_delivery_that_cannot_keep_its_ack_says_so_and_never_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A tick delivers after its survey: a full disk, or a subscription redeclared for
+        another output, is that subscription's warning, never the delivery's (or the tick's)
+        end."""
+        _mission(tmp_path, {})
+        recording = Recording()
+        mail = Mail(tmp_path, recording)
+        mail.survey(*_messages(1))
+
+        def full(*args: Any, **kw: Any) -> None:
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(SubscriptionFiles, "keep", full)
+        document = mail.recon.deliver("m")
+        [run] = document.deliveries
+        assert run.more and [w["kind"] for w in document.warnings] == ["delivery_failed"]
+        assert "free space" in document.warnings[0]["fix"]
+        monkeypatch.undo()
+
+        mission = tmp_path / ".recon" / "m"
+        from recon.domain.subscriptions import SubscriptionState
+
+        SubscriptionFiles().keep(mission, "new", SubscriptionState(output="outbox", cursor="c1"))
+        document = mail.recon.deliver("m")
+        assert [w["kind"] for w in document.warnings] == ["delivery_failed"]
+        assert "unsubscribe" in document.warnings[0]["fix"]
+        SubscriptionFiles().remove(mission, "new")
+
+        from recon.application.subscriptions import ChangeReader
+        from recon.domain.errors import ReconError
+
+        def unreadable(*args: Any, **kw: Any) -> None:
+            raise ReconError("the archive went", kind="store", fix="survey again")
+
+        monkeypatch.setattr(ChangeReader, "read", unreadable)
+        document = mail.recon.deliver("m")
+        assert [w["kind"] for w in document.warnings] == ["delivery_failed"]
+        assert document.warnings[0]["fix"] == "survey again"
+
     def test_a_subscription_without_deliver_is_read_not_delivered(self, tmp_path: Path) -> None:
         _mission(tmp_path, {})
         mission = yaml.safe_load((tmp_path / ".recon" / "m" / "config.yaml").read_text())

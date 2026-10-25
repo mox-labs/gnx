@@ -521,8 +521,8 @@ class Subscriptions:
                                skipped_by="busy"), [warning]  # fmt: skip
         try:
             return _Delivery(self, name, at, spec, plan).run()
-        except (OSError, UsageError) as exc:
-            fix = (exc.fix if isinstance(exc, UsageError) else None) or (
+        except (OSError, ReconError) as exc:  # said, never the delivery's (or a tick's) end
+            fix = (exc.fix if isinstance(exc, ReconError) else None) or (
                 "free space where the mission is, or make it writable, then: recon deliver "
                 f"{name}"
             )  # fmt: skip
