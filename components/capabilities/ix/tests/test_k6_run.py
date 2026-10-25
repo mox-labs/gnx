@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -180,6 +181,14 @@ def _server(script: Path, *args: str) -> tuple[subprocess.Popen[bytes], str]:
     return server, url
 
 
+def _stats(url: str) -> dict[str, int]:
+    """What the hang server counted. No proxy variable reroutes it, as in ``answers``."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(f"{url}/stats", timeout=10) as answer:
+        found: dict[str, int] = json.loads(answer.read())
+    return found
+
+
 def _load(options: dict[str, Any]) -> dict[str, Any]:
     probe = K6Load(MatrixLauncher())
     applied = asyncio.run(probe.apply(options, Target(subject="slow"), seed=1))
@@ -223,15 +232,27 @@ def test_requests_a_subject_never_answers_are_errors(model: dict[str, Any]) -> N
     """Regression: a server that hangs on one request in four read ``error_rate`` 0. A
     request still waiting when the window closed was cut off and counted nowhere, and k6's
     60s timeout never fired inside the window. With a request timeout of 1s, every request
-    sent ends answered or timed out, and one in four is an error."""
+    sent ends answered or timed out, and every request the server hung is an error.
+
+    The server's own counts are the oracle, not a ratio of what k6 sent: on a busy machine a
+    request can fail that the server never hung (it never reached the server, or its answer
+    came after the timeout), so ``failed`` is at least, not exactly, what the server never
+    answered."""
     server, url = _server(HANG_SERVER, "--hang-every", "4")
     try:
         seen = _load({"target": f"{url}/work", "duration": "3s", "timeout": "1s", **model})
+        stats = _stats(url)
     finally:
         server.kill()
         server.wait()
-    assert seen["sent"] >= 8 and seen["requests"] > 0
-    assert abs(seen["failed"] - seen["sent"] / 4) <= 1, seen
+    assert stats["hung"] > 0 and seen["requests"] > 0, (seen, stats)
+    # Every request the server received was sent inside the window, and every one it never
+    # answered is an error: each it hung, and each that never reached it.
+    unreached = seen["sent"] - stats["received"]
+    assert unreached >= 0, (seen, stats)
+    assert seen["failed"] >= stats["hung"] + unreached, (seen, stats)
+    # And no request is both an error and an answer.
+    assert seen["failed"] + seen["requests"] <= seen["sent"], seen
     assert seen["error_rate"] == pytest.approx(
         (seen["failed"] + seen["dropped"]) / (seen["sent"] + seen["dropped"])
     )
