@@ -415,6 +415,17 @@ class TestThePathATickRunsWith:
 
         assert safe_path(path, project=project) == (str(outside),)
 
+    def test_a_link_inside_the_project_is_dropped_wherever_it_points(self, tmp_path: Path) -> None:
+        """Vector's re-check of S3: a link committed in the project (``tools`` to
+        ``/usr/bin``) resolves outside it, and a later pull can point it anywhere: an entry
+        is judged by its own path too, not only by where it resolves."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "tools").symlink_to("/usr/bin")
+        path = os.pathsep.join([str(project / "tools"), "/usr/bin"])
+
+        assert safe_path(path, project=project) == ("/usr/bin",)
+
     def test_the_root_gives_the_tick_a_path_without_the_project(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

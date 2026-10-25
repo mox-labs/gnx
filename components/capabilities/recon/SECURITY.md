@@ -346,7 +346,9 @@ the config a persistence vector, and the scheduler's files a place a secret coul
   an explicit `PATH`: the installer's, kept to absolute directories that exist, that no
   other user can write (owned by the user or by root, and neither group- nor world-writable:
   an owner can change a mode) and that are not inside the project (a checkout's `bin/`,
-  `node_modules/.bin`: what a pull or a dependency put there). Nothing else of the
+  `node_modules/.bin`: what a pull or a dependency put there), judged both by where an entry
+  resolves and by its own path, so a link committed in the project (`tools` to `/usr/bin`),
+  which a later pull could repoint, is left out too. Nothing else of the
   environment: no secret, no `OTEL_EXPORTER_OTLP_HEADERS`. launchd's and cron's output go to
   `/dev/null`.
 - **What the digest does not cover**: the config's bytes are held to the digest installed,

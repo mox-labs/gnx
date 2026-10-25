@@ -77,11 +77,16 @@ def safe_path(path: str, *, project: Path | None = None, uid: int | None = None)
     that are there, that no other user can write (neither group- nor world-writable, and
     owned by root or by ``uid``, the user's own by default: an owner may change a mode), and
     that are not inside ``project`` (a checkout's ``bin``, ``node_modules/.bin``: what a
-    dependency or a pull put there, which the config's digest does not cover), however they
-    are reached. ``.``, an empty entry and a relative one would resolve in whatever directory
-    a command is started from."""
+    dependency or a pull put there, which the config's digest does not cover), whether by
+    where they resolve or by their own path (a link committed in the project). ``.``, an
+    empty entry and a relative one would resolve in whatever directory a command is started
+    from."""
     owners = {0, os.getuid() if uid is None else uid}
-    inside = os.path.realpath(project) if project is not None else None
+    roots = (
+        {os.path.normpath(os.path.abspath(project)), os.path.realpath(project)}
+        if project is not None
+        else set()
+    )
     kept: list[str] = []
     for entry in path.split(os.pathsep):
         if not entry.startswith("/") or entry in kept:
@@ -94,8 +99,12 @@ def safe_path(path: str, *, project: Path | None = None, uid: int | None = None)
             continue
         if found.st_uid not in owners:
             continue
-        real = os.path.realpath(entry)
-        if inside is not None and (real == inside or real.startswith(inside + os.sep)):
+        # Judged by where it resolves and by its own path: a link committed in the project
+        # (tools -> /usr/bin) can be pointed anywhere by a later pull.
+        named = os.path.normpath(entry)
+        parent = os.path.join(os.path.realpath(os.path.dirname(named)), os.path.basename(named))
+        seen = {os.path.realpath(entry), named, parent}
+        if any(p == root or p.startswith(root + os.sep) for p in seen for root in roots):
             continue
         kept.append(entry)
     return tuple(kept)
