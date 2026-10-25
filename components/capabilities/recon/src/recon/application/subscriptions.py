@@ -798,7 +798,7 @@ class _Delivery:
             failing = Failing(id=row.id, attempts=attempts, error=error)
             position = before
             self._keep(position, failing)
-            self._warnings.append(self._failed(row.id, attempts, error))
+            self._warnings.append(self._failed(row.id, attempts))
             more = True
             break
         else:
@@ -879,7 +879,8 @@ class _Delivery:
                 Problem(
                     self._at,
                     f"subscription {self._spec.name}'s command failed the row counting {count} "
-                    f"more change(s): {clean(done.error, _ERROR_CHARS)}",
+                    "more change(s); what it said is not kept, as it may quote what it was "
+                    "given (Vector, re-check)",
                     kind="delivery_failed",
                     fix=f"they are counted again at the next delivery (recon deliver "
                     f"{self._name}, or the schedule's next tick); run the command by hand with "
@@ -959,8 +960,8 @@ class _Delivery:
             Problem(
                 self._at,
                 f"subscription {self._spec.name}'s command failed row {row.id} {attempts} "
-                f"time(s), so it is set aside as a dead letter and the rows after it go on: "
-                f"{error}",
+                "time(s), so it is set aside as a dead letter and the rows after it go on; "
+                "what it said is the dead letter's error, untrusted",
                 kind="delivery_dead_lettered",
                 fix="the row is kept with the subscription's dead letters (`recon status "
                 f"{self._name}` counts them; recon --skill -r subscriptions says where); fix "
@@ -969,11 +970,13 @@ class _Delivery:
             )
         )
 
-    def _failed(self, row: str, attempts: int, error: str) -> Problem:
+    def _failed(self, row: str, attempts: int) -> Problem:
+        """A row's failure, saying where what the command said is: its delivery's
+        ``failing.error``, which the schema marks untrusted, never this message (Vector)."""
         return Problem(
             self._at,
             f"subscription {self._spec.name}'s command failed row {row} (attempt {attempts} of "
-            f"{self._deliver.attempts}): {error}",
+            f"{self._deliver.attempts}); what it said is the delivery's failing.error, untrusted",
             kind="delivery_failed",
             fix=f"the row is given again at the next delivery (recon deliver {self._name}, or "
             f"the schedule's next tick) and set aside after {self._deliver.attempts} attempts; "
