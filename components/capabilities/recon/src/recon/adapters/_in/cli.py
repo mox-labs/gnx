@@ -957,7 +957,7 @@ def unsubscribe(name: str, subscription: str, as_json: bool) -> None:
 def deliver(name: str, subscription: str | None, as_json: bool) -> None:
     """Give each subscription with deliver: the rows it has not acked, to its command.
 
-    The command (deliver.command, an argument list, run by no shell) gets each row as one
+    The command (deliver.command and deliver.args, run by no shell) gets each row as one
     recon.v1.delivery JSON line on its standard input: op, output, key and the record fields
     deliver.fields names, each string cleaned and cut. At most deliver.max_per_tick rows (10)
     one at a time, each acked once the command exits 0, then the rest as one row counting

@@ -310,7 +310,7 @@ def build_plan(
     subscriptions, _ = _validate_items(
         raw.get("subscriptions"), "subscriptions", SubscriptionSpec, problems
     )
-    problems[:] = [_argument_list(problem) for problem in problems]
+    problems[:] = [_one_program(problem) for problem in problems]
     found, values = _subscription_problems(subscriptions, changing, dict(entries))
     problems += found
     provenance += values
@@ -1358,14 +1358,15 @@ def _changes(i: int, entry: CollectorEntry) -> tuple[list[SourcedValue], list[Pr
     return values, problems
 
 
-def _argument_list(problem: Problem) -> Problem:
-    """A ``deliver.command`` written as one string is a shell's line, which no delivery is
-    given to: the fix says to write it as an argument list."""
+def _one_program(problem: Problem) -> Problem:
+    """A ``deliver.command`` written as a list is an ``mcp`` server's shape half kept: the fix
+    says to write the program as ``command`` and its arguments as ``args``."""
     if problem.path.endswith(".deliver.command") and problem.kind == "wrong_shape":
         return replace(
             problem,
-            fix="write command: as an argument list, [<program>, <argument>, ...]: it runs by "
-            "no shell, so a row can never become a word of it",
+            fix="write the program as command: and its arguments as args: (command: "
+            "/usr/local/bin/notify, args: [--mail]), as an mcp source's server is written: it "
+            "runs by no shell, so a row can never become a word of it",
         )
     return problem
 
@@ -1483,6 +1484,7 @@ def _delivered(at: str, subscription: SubscriptionSpec) -> list[SourcedValue]:
         SourcedValue(path=f"{at}.deliver.command", value=deliver.command, origin="mission",
                      note=said)
     ]  # fmt: skip
+    notes = {"args": "no argument: the row goes on standard input, never in one", **notes}
     for key, note in notes.items():
         given = key in deliver.model_fields_set
         values.append(

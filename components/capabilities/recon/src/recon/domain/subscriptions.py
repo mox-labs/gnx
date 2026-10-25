@@ -60,8 +60,9 @@ MAX_CHARS = 200
 class DeliverSpec(BaseModel):
     """``deliver:`` on a subscription: give each row to ``command``.
 
-    ``command`` is the argument list run for each row (``[/usr/local/bin/notify, --mail]``),
-    as given, by no shell: the row goes on its standard input. ``fields``: the record's fields
+    ``command`` is the program run for each row and ``args`` its arguments (none by default),
+    the shape an ``mcp`` source's stdio server has: run as given, by no shell, the row on its
+    standard input and in no argument. ``fields``: the record's fields
     a delivery carries besides the row's op, output and key (none by default: no body).
     ``max_per_tick``: the most rows one delivery gives one at a time; the rest it gives as one
     row counting them. ``attempts``: how many times a row is given to a command that fails it,
@@ -71,7 +72,8 @@ class DeliverSpec(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    command: list[str] = Field(min_length=1)
+    command: str = Field(min_length=1)
+    args: list[str] = []
     fields: list[str] = []
     max_per_tick: int = Field(default=MAX_PER_TICK, ge=1)
     attempts: int = Field(default=ATTEMPTS, ge=1)
@@ -79,14 +81,24 @@ class DeliverSpec(BaseModel):
     timeout: float = Field(default=DELIVER_TIMEOUT_S, gt=0, allow_inf_nan=False)
     max_chars: int = Field(default=MAX_CHARS, ge=1)
 
-    @field_validator("command")
+    @field_validator("args")
     @classmethod
-    def _an_argument_list(cls, value: list[str]) -> list[str]:
-        if not value[0]:
-            raise ValueError("the command's first argument is the program to run, and is empty")
+    def _arguments(cls, value: list[str]) -> list[str]:
         if any("\0" in argument for argument in value):
             raise ValueError("an argument holds a NUL character, which no program is given")
         return value
+
+    @field_validator("command")
+    @classmethod
+    def _a_program(cls, value: str) -> str:
+        if "\0" in value:
+            raise ValueError("the command holds a NUL character, which names no program")
+        return value
+
+    @property
+    def argv(self) -> list[str]:
+        """The argument list each run is: ``command``, then ``args``."""
+        return [self.command, *self.args]
 
     @field_validator("fields")
     @classmethod

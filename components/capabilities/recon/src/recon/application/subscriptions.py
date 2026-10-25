@@ -489,7 +489,7 @@ class Subscriptions:
                     f"subscription {subscription} has no deliver:, so there is nothing to give "
                     "its rows to: its subscriber reads them",
                     fix=f"recon subscribe {name} {subscription}, or give it deliver: {{command: "
-                    "[<program>, ...]}",
+                    "<program>, args: [...]}",
                     details={"subscription": subscription},
                 )
             declared = [(i, s) for i, s in declared if s.name == subscription]
@@ -784,7 +784,7 @@ class _Delivery:
         payload = (json.dumps(delivery.document(), ensure_ascii=True) + "\n").encode("ascii")
         timeout = max(0.001, min(self._deliver.timeout, self._left()))
         return self._owner._deliverer.deliver(
-            self._deliver.command, payload, timeout_s=timeout, cwd=self._owner._project
+            self._deliver.argv, payload, timeout_s=timeout, cwd=self._owner._project
         )
 
     def _change(self, row: ChangeRow) -> Delivery:

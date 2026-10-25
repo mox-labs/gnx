@@ -401,9 +401,9 @@ injection channel, and, through a command, an execution one.
   mods or an agent that reads deliveries are outside it. A command the config names that passes
   a delivery to an agent must pass it as data (a tool's result), and the agent acts on what it
   decides, never on what the text says.
-- **A row never reaches a shell, an AppleScript or a URL.** The command is the config's argument
-  list, run as given with `shell=False`; the row is one ASCII JSON line on its standard input
-  and in no argument. It runs in its own session, in the project's directory, its stdout going
+- **A row never reaches a shell, an AppleScript or a URL.** The command is the config's program
+  and arguments (`command`, `args`, an `mcp` stdio server's shape), run as given with
+  `shell=False`; the row is one ASCII JSON line on its standard input and in no argument. It runs in its own session, in the project's directory, its stdout going
   nowhere, and past `deliver.timeout` it is stopped with every process it started.
 - **What can hide or reorder text is taken out** of every string a delivery carries: a
   terminal's escape sequences (CSI, OSC, DCS, SOS, PM, APC, and their one-byte C1 forms), every

@@ -69,7 +69,7 @@ def _mission(project: Path, deliver: dict[str, Any], **top: Any) -> None:
                         "extract": "items", "changes": {"key": ["id"]},
                         "normalize": {"id": "id", "subject": "subject", "from": "from"}}],
         "subscriptions": [{"name": "new", "output": "inbox", "match": {"op": "insert"},
-                           "deliver": {"command": ["/usr/bin/true"], **deliver}}],
+                           "deliver": {"command": "/usr/bin/true", **deliver}}],
         **top,
     }  # fmt: skip
     (project / ".recon" / "m").mkdir(parents=True, exist_ok=True)
@@ -138,7 +138,8 @@ class TestABurstIsAFewRuns:
         assert said[f"{at}.timeout"] == (10.0, "recon")
         assert said[f"{at}.max_chars"] == (200, "recon")
         assert said[f"{at}.fields"] == ([], "recon")
-        assert said[f"{at}.command"] == (["/usr/bin/true"], "mission")
+        assert said[f"{at}.command"] == ("/usr/bin/true", "mission")
+        assert said[f"{at}.args"] == ([], "recon")
 
 
 class TestAPoisonRow:
@@ -188,11 +189,13 @@ class TestAPoisonRow:
         assert SubscriptionFiles().dead_letters(tmp_path / ".recon" / "m", "new") == 0
 
 
-def _script(tmp_path: Path, body: str) -> list[str]:
+def _script(tmp_path: Path, body: str, *args: str) -> dict[str, Any]:
+    """``deliver:``'s command and args: this Python, running ``body`` as a script under
+    ``tmp_path``, given ``args`` after it."""
     script = tmp_path / "bin" / "deliver.py"
     script.parent.mkdir(exist_ok=True)
     script.write_text(body)
-    return [sys.executable, str(script)]
+    return {"command": sys.executable, "args": [str(script), *args]}
 
 
 class TestADeadline:
@@ -200,7 +203,7 @@ class TestADeadline:
         self, tmp_path: Path
     ) -> None:
         command = _script(tmp_path, "import sys, time\nsys.stdin.read()\ntime.sleep(0.3)\n")
-        _mission(tmp_path, {"command": command, "deadline": 1.0})
+        _mission(tmp_path, {**command, "deadline": 1.0})
         mail = Mail(tmp_path, CommandDeliverer({}), clock=SystemClock())
         mail.survey(*_messages(20))
         started = time.monotonic()
@@ -217,7 +220,7 @@ class TestADeadline:
         body = ("import os, sys, time, subprocess\nsys.stdin.read()\n"
                 f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
                 f"open({str(marker)!r}, 'w').write(str(child.pid))\ntime.sleep(60)\n")  # fmt: skip
-        _mission(tmp_path, {"command": _script(tmp_path, body), "timeout": 1.0})
+        _mission(tmp_path, {**_script(tmp_path, body), "timeout": 1.0})
         mail = Mail(tmp_path, CommandDeliverer({}), clock=SystemClock())
         mail.survey(*_messages(2))
         started = time.monotonic()
@@ -256,7 +259,7 @@ class TestAHostileSubjectStaysInert:
         body = ("import sys\n"
                 "with open(sys.argv[1], 'ab') as f:\n"
                 "    f.write(sys.stdin.buffer.read())\n")  # fmt: skip
-        _mission(tmp_path, {"command": [*_script(tmp_path, body), str(out)], **deliver})
+        _mission(tmp_path, {**_script(tmp_path, body, str(out)), **deliver})
         mail = Mail(tmp_path, CommandDeliverer({"PATH": "/usr/bin:/bin"}))
         mail.survey({"id": "x1", "subject": HOSTILE, "from": "mallory@evil.test"})
         document = mail.recon.deliver("m")
@@ -295,7 +298,7 @@ class TestAHostileSubjectStaysInert:
         out = tmp_path / "env.json"
         body = ("import json, os, sys\nsys.stdin.read()\n"
                 f"json.dump(dict(os.environ), open({str(out)!r}, 'w'))\n")  # fmt: skip
-        _mission(tmp_path, {"command": _script(tmp_path, body)})
+        _mission(tmp_path, _script(tmp_path, body))
         env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "MAIL_TOKEN": "sk-SENTINEL"}
         mail = Mail(tmp_path, CommandDeliverer(env))
         mail.survey(*_messages(1))
@@ -462,26 +465,30 @@ class TestThePlan:
         }  # fmt: skip
         return build_plan(mission, load_plugins(), {})
 
-    def test_a_command_as_one_string_is_refused_with_the_argument_list_to_write(self) -> None:
-        plan = self._plan({"command": "notify-send $subject"})
+    def test_a_command_as_a_list_is_refused_with_the_mcp_shape_to_write(self) -> None:
+        """deliver: has an mcp stdio server's shape: the program as command:, its arguments
+        as args:."""
+        plan = self._plan({"command": ["/usr/local/bin/notify", "--mail"]})
         [problem] = plan.problems
-        assert problem.path == "subscriptions.0.deliver.command"
-        assert "argument list" in problem.fix
+        assert (problem.path, problem.kind) == ("subscriptions.0.deliver.command", "wrong_shape")
+        assert "args:" in problem.fix
+        plan = self._plan({"command": "/usr/local/bin/notify", "args": ["--mail"]})
+        assert plan.valid, plan.problems
 
     @pytest.mark.parametrize(
         "deliver",
-        [{"command": []}, {"command": [""]}, {"command": ["a\0b"]},
-         {"command": ["x"], "max_per_tick": 0}, {"command": ["x"], "attempts": 0},
-         {"command": ["x"], "deadline": 0}, {"command": ["x"], "timeout": -1},
-         {"command": ["x"], "max_chars": 0}, {"command": ["x"], "fields": ["_position"]},
-         {"command": ["x"], "shell": True}],
+        [{}, {"command": ""}, {"command": "a\0b"}, {"command": "x", "args": ["a\0b"]},
+         {"command": "x", "args": "--mail"}, {"command": "x", "max_per_tick": 0},
+         {"command": "x", "attempts": 0}, {"command": "x", "deadline": 0},
+         {"command": "x", "timeout": -1}, {"command": "x", "max_chars": 0},
+         {"command": "x", "fields": ["_position"]}, {"command": "x", "shell": True}],
     )  # fmt: skip
     def test_what_deliver_may_not_say(self, deliver: dict[str, Any]) -> None:
         plan = self._plan(deliver)
         assert plan.problems and all(p.path.startswith("subscriptions.0") for p in plan.problems)
 
     def test_a_field_normalize_does_not_make_is_refused(self) -> None:
-        plan = self._plan({"command": ["x"], "fields": ["subject", "body"]},
+        plan = self._plan({"command": "x", "fields": ["subject", "body"]},
                           normalize={"id": "id", "subject": "subject"})  # fmt: skip
         [problem] = plan.problems
         assert (problem.path, problem.kind) == ("subscriptions.0.deliver.fields.1", "name_unknown")
@@ -530,7 +537,7 @@ class TestATickDelivers:
         digest = recon.schedule_install("m", platform="launchd").config_sha256 or ""
         config = tmp_path / ".recon" / "m" / "config.yaml"
         changed = yaml.safe_load(config.read_text())
-        changed["subscriptions"][0]["deliver"]["command"] = ["/tmp/evil"]
+        changed["subscriptions"][0]["deliver"]["command"] = "/tmp/evil"
         config.write_text(yaml.safe_dump(changed))
         from recon.domain.errors import ReconError
 

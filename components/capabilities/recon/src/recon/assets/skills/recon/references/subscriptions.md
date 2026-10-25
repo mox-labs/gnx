@@ -37,7 +37,8 @@ subscriptions:
     output: inbox
     match: {op: insert}
     deliver:
-      command: [/usr/local/bin/notify-mail, --title, New mail]
+      command: /usr/local/bin/notify-mail
+      args: [--title, New mail]
       fields: [from, subject]
 ```
 
@@ -49,7 +50,8 @@ subscriptions:
 | `output` | the output whose change rows it reads: a collector's output (`<name>`, or `<name>-<source>` fanned out) whose entry has `changes:` | required |
 | `match` | which rows it reads (below) | `{}`: every row |
 | `deliver` | the command each row is given to (below) | none: its subscriber reads them with `recon subscribe` |
-| `deliver.command` | the argument list run for each row, by no shell: `[program, argument, ...]` | required in the block |
+| `deliver.command` | the program run for each row, by no shell, as an `mcp` source's stdio server is | required in the block |
+| `deliver.args` | its arguments, as given: no row is ever one of them | `[]` |
 | `deliver.fields` | the record's fields a delivery carries, each a `normalize:` column when there are some | `[]`: no body, only the row's op, output and key |
 | `deliver.max_per_tick` | the most rows one delivery gives one at a time; the rest go as one row counting them | `10` |
 | `deliver.attempts` | how many deliveries give a row its command fails before it is set aside as a dead letter | `3` |
@@ -130,7 +132,7 @@ A row its command fails (an exit other than 0, a run past `timeout`, a command t
 
 ## What a command is given
 
-The command runs as its argument list says, by no shell, in the project's directory, its stdout going nowhere and the last 2 KiB of its stderr kept to say why it failed. A row is never a word of its arguments, a shell's line, an AppleScript or a URL: it is one JSON line on its standard input, ASCII, `recon.v1.delivery`:
+The command runs as its `command` and `args` say, by no shell, in the project's directory, its stdout going nowhere and the last 2 KiB of its stderr kept to say why it failed. A row is never a word of its arguments, a shell's line, an AppleScript or a URL: it is one JSON line on its standard input, ASCII, `recon.v1.delivery`:
 
 | Field | Holds |
 |---|---|
@@ -173,7 +175,7 @@ The dead letters keep 1 MiB, and the 1 MiB before them in `<name>.dead.jsonl.1`.
 | a `match:` field no change row has (`subject`, `key.<a field not in changes.key>`, `record.<not a normalize column>`) | plan problem `name_unknown`, at `subscriptions.<i>.match.<field>`, `allowed` the fields there are | match `op`, `key.<field>` or `record.<field>` |
 | `where:`, or any key the block does not have | plan problem `unknown_key` | there is no SQL filter: use `match:` |
 | a name given twice, or not one path component | plan problem `name_taken`, or `invalid_value` at `subscriptions.<i>.name` | give each its own name |
-| `command:` written as one string | plan problem `wrong_shape` at `subscriptions.<i>.deliver.command` | write it as an argument list, `[program, argument, ...]` |
+| `command:` written as a list | plan problem `wrong_shape` at `subscriptions.<i>.deliver.command` | the program as `command:`, its arguments as `args:` |
 | a `deliver.fields` entry `normalize:` does not make | plan problem `name_unknown` at `subscriptions.<i>.deliver.fields.<j>` | name a column of `normalize:` |
 | a subscription the config does not declare | `not_found` (4), `allowed` those it does | name one of them |
 | an ack before the one acked, or of a foreign cursor | `usage` (2) | ack the cursor of a later read of this subscription |
