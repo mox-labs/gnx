@@ -251,6 +251,10 @@ class ChangeReader:
                 unread.add(archive.name)
         return unread
 
+    def row_id(self, archive: str, row: int, op: str, key: Any) -> str:
+        """The ``id`` of the row at ``row`` of ``archive``'s change table (:func:`row_id`)."""
+        return row_id(self._secret, self._mission, archive, self._output, row, op, key)
+
     def known(self, position: Position) -> bool:
         """Whether ``position`` is in an archive the mission has, or had (retired), or before
         the first."""
@@ -267,7 +271,7 @@ class ChangeReader:
         record = change.get("record")
         op = change.get("op")
         return ChangeRow(
-            id=row_id(archive, self._output, row, str(op), key),
+            id=self.row_id(archive, row, str(op), key),
             archive=archive,
             op=cast("ChangeOp", op),  # recon wrote it: one of the ops
             key=key if isinstance(key, dict) else None,
@@ -336,14 +340,18 @@ def _made_at(meta: dict[str, Any]) -> datetime | None:
     return None
 
 
-def row_id(archive: str, output: str, row: int, op: str, key: Any) -> str:
-    """The ``id`` of a change row: a digest of its archive, its output, its place in its change
-    table, its op and its key. Its place is in it because one change table can tell a key's
-    update twice (a window telling an earlier one's records, ``untold``): op and key alone
-    would name two rows. Never a digest of the record's content, whose hash never leaves
-    recon."""
-    named = canonical([archive, output, row, op, key])
-    digest = hashlib.blake2b(digest_size=16, person=_ID_PERSON)
+def row_id(
+    secret: bytes, mission: str, archive: str, output: str, row: int, op: str, key: Any
+) -> str:
+    """The ``id`` of a change row: a digest, keyed with the mission's key (``secret``), of its
+    mission, its archive, its output, its place in its change table, its op and its key. Keyed,
+    because it travels with every delivery: a key of few values (a code) is not found from it
+    by hashing guesses (Vector, review N1); its mission in it, so the same row of two missions
+    is two ids (Dijkstra). Its place is in it because one change table can tell a key's update
+    twice (a window telling an earlier one's records, ``untold``): op and key alone would name
+    two rows. Never a digest of the record's content, whose hash never leaves recon."""
+    named = canonical([mission, archive, output, row, op, key])
+    digest = hashlib.blake2b(digest_size=16, key=secret, person=_ID_PERSON)
     digest.update(named.encode("utf-8", "surrogatepass"))
     return digest.hexdigest()
 

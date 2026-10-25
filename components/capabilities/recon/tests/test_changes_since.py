@@ -104,9 +104,31 @@ class TestEveryRowOnceInOrder:
         assert [row.id for row in once.rows] == [row.id for row in again.rows]
         assert len({row.id for row in once.rows}) == 2
         archive = once.rows[0].archive
-        assert once.rows[0].id == row_id(archive, "inbox", 0, "insert", {"id": "a"})
-        assert row_id(archive, "inbox", 0, "update", {"id": "a"}) != once.rows[0].id
-        assert row_id(archive, "inbox", 1, "insert", {"id": "a"}) != once.rows[0].id
+        reader = surveys.recon._change_reader("m", "inbox")  # noqa: SLF001 - the id's maker
+        assert once.rows[0].id == reader.row_id(archive, 0, "insert", {"id": "a"})
+        assert reader.row_id(archive, 0, "update", {"id": "a"}) != once.rows[0].id
+        assert reader.row_id(archive, 1, "insert", {"id": "a"}) != once.rows[0].id
+
+    def test_an_id_is_keyed_with_the_mission_s_key_and_names_its_mission(
+        self, tmp_path: Path
+    ) -> None:
+        """Vector N1, Dijkstra N1: a row's id travels with each delivery, so it is keyed with
+        the mission's key (a key with few values cannot be found from it by guessing) and it
+        names its mission (the same row of two missions has two ids)."""
+        ids = []
+        for name in ("m", "n"):
+            project = tmp_path / name
+            _mission(project, {"key": ["id"]})
+            surveys = Surveys(project)
+            surveys.survey(A)
+            [row] = surveys.recon.changes_since("m", "inbox").rows
+            ids.append(row.id)
+            key = (project / ".recon" / "m" / "changes.key").read_bytes()
+            assert row.id == row_id(key, "m", row.archive, "inbox", 0, "insert", {"id": "a"})
+            assert row.id != row_id(key, "n", row.archive, "inbox", 0, "insert", {"id": "a"})
+            assert row.id != row_id(bytes(32), "m", row.archive, "inbox", 0, "insert",
+                                    {"id": "a"})  # fmt: skip
+        assert ids[0] != ids[1], "each mission's own key"
 
     def test_no_hash_of_a_record_s_content_is_in_a_read(self, tmp_path: Path) -> None:
         """C2 holds through a read: a row's id is a digest of its place and key, never of its
@@ -176,7 +198,8 @@ class TestD1AtLeastOnceThroughACrash:
             kept = read.cursor
             if not read.more:
                 break
-        told = [row_id(a, "inbox", n, row["op"], row["key"]) for a, n, row in _told(tmp_path)]
+        reader = surveys.recon._change_reader("m", "inbox")  # noqa: SLF001 - the id's maker
+        told = [reader.row_id(a, n, row["op"], row["key"]) for a, n, row in _told(tmp_path)]
         seen: dict[str, bool] = {}
         for row, was_kept in got:
             if row in seen:

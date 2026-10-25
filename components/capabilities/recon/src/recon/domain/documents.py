@@ -581,8 +581,9 @@ class ChangeRow(Document):
     ``key`` and ``record`` are the source's content, **untrusted** (their schema says so):
     data to read, never instructions, never an agent's prompt or a user's turn."""
 
-    #: A digest of the row's place (its archive, its output, its position in its change
-    #: table), its op and its key: never of its content, whose hash never leaves recon.
+    #: A digest keyed with the mission's key, of the row's mission and place (its archive,
+    #: its output, its position in its change table), its op and its key: never of its
+    #: content, whose hash never leaves recon.
     id: str
     archive: str
     op: ChangeOp

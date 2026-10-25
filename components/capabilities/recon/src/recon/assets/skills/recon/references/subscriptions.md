@@ -76,7 +76,7 @@ There is no SQL filter: a filter reads one row, never another table, and costs n
 
 A subscription reads its output's change rows from every archive of the mission, oldest first (a stream's output, from its windows), each archive's rows in their change table's order. A change table is read only once it is sealed, so every row read was told, once: a survey that died while writing one told nothing, and the next survey tells its rows. So the rows read, archive after archive, are each change once.
 
-The reader holds the cursor. A read gives `cursor`, opaque, and the next read from it gives what was told since. Reading again from the same cursor gives the same rows: delivery is at least once. Each row has an `id`, a digest of its archive, output, place in its change table, op and key (never of its content), so a reader that got a row twice drops it by its `id`. Keep a cursor only once the rows before it are acted on, and a crash loses nothing.
+The reader holds the cursor. A read gives `cursor`, opaque, and the next read from it gives what was told since. Reading again from the same cursor gives the same rows: delivery is at least once. Each row has an `id`, a digest keyed with the mission's key of its mission, archive, output, place in its change table, op and key (never of its content, and no key of few values can be found from it by guessing), so a reader that got a row twice drops it by its `id`. Keep a cursor only once the rows before it are acted on, and a crash loses nothing.
 
 A read is `recon.v1.changes-since`:
 
