@@ -278,9 +278,11 @@ class CronScheduler:
         self._run = run
         self._crontab = crontab
 
-    def _read(self) -> tuple[list[str], dict[str, str], list[str]]:
+    def _read(self, *, edit: bool = False) -> tuple[list[str], dict[str, str], list[str]]:
         """The crontab's lines before recon's block, its entries by label, and the lines
-        after it."""
+        after it. To ``edit`` it, a block that opens and never closes is refused: where it
+        ends cannot be known, and the user's own lines after it would go with it (round-4
+        review M4)."""
         argv = [self._crontab, "-l"]
         ran = self._run(argv, None)
         if ran.code != 0 and "no crontab" not in ran.stderr.lower():
@@ -290,6 +292,14 @@ class CronScheduler:
         if CRON_BEGIN not in stripped:
             return lines, {}, []
         begin = stripped.index(CRON_BEGIN)
+        if edit and CRON_END not in stripped[begin:]:
+            raise ReconError(
+                f"the crontab has recon's line {CRON_BEGIN!r} and no {CRON_END!r} after it, so "
+                "recon cannot tell its block from your own lines, and edits none of them",
+                kind="config",
+                fix=f"run `crontab -e`, put the line {CRON_END} after recon's entries (or delete "
+                "recon's lines), then run the command again",
+            )
         end = stripped.index(CRON_END, begin) if CRON_END in stripped[begin:] else len(lines)
         entries: dict[str, str] = {}
         label = None
@@ -315,7 +325,7 @@ class CronScheduler:
             raise _refused(ran, "write the crontab", argv)
 
     def install(self, label: str, files: Sequence[ProjectedFile]) -> None:
-        before, entries, after = self._read()
+        before, entries, after = self._read(edit=True)
         entries[label] = files[0].text
         self._write(before, entries, after)
 
@@ -323,7 +333,7 @@ class CronScheduler:
         return ["crontab"]
 
     def remove(self, label: str) -> bool:
-        before, entries, after = self._read()
+        before, entries, after = self._read(edit=True)
         if entries.pop(label, None) is None:
             return False
         self._write(before, entries, after)

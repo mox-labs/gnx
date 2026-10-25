@@ -144,6 +144,7 @@ The log is bounded: at 1 MiB it becomes `schedule.log.1`, replacing the one befo
 | no such mission | `not_found` (4) | `recon init` it, or `recon schedule remove` a schedule whose mission is gone |
 | this recon is not installed as a command | `usage` (2) | install recon as a command, then install the schedule with it |
 | a path no scheduler file can hold (a line break; a `%` for cron) | `usage` (2) | move it, or choose another `--platform` |
+| a crontab with recon's `# BEGIN recon schedules` line and no `# END recon schedules` after it | `config` (3), nothing written | put the END line after recon's entries with `crontab -e` (or delete recon's lines), then run the command again |
 | the scheduler refuses (`launchctl`, `systemctl`, `crontab` exit non-zero) | `run_failed` (8), its message quoted | fix what it says; the files are in place, so `install` again loads them |
 | a tick's config is not the one installed | `stale` (12) | read the change, then `recon schedule install <mission>` |
 | a tick while another survey holds the mission | `busy` (11), `details.skips` | let it run; from the second skip in a row, raise `every` or lower `deadline:` |

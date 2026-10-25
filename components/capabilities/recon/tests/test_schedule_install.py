@@ -236,6 +236,29 @@ class TestListAndRemove:
 
         assert host.runner.crontab == mine
 
+    @pytest.mark.parametrize("edit", ["install", "remove"])
+    def test_a_block_with_no_end_is_refused_and_the_crontab_kept(
+        self, tmp_path: Path, host: Host, edit: str
+    ) -> None:
+        """Round-4 review M4: with recon's BEGIN line and no END line, every line after the
+        BEGIN read as recon's, so an edit would have taken the user's own lines with it. Such
+        a crontab is refused, with the fix, and nothing is written."""
+        from recon.adapters._out.schedulers import CRON_BEGIN
+
+        theirs = "0 3 * * * /usr/local/bin/backup --all\n"
+        broken = f"MAILTO=me@example.org\n{CRON_BEGIN}\n# recon.old.inbox: x\n* * * * * x\n{theirs}"
+        host.runner.crontab = broken
+        _mission(tmp_path, {"every": 600})
+        recon = _root(tmp_path, host)
+
+        with pytest.raises(ReconError) as raised:
+            getattr(recon, f"schedule_{edit}")("inbox", platform="cron")
+
+        assert raised.value.kind == "config"
+        assert "# END recon schedules" in (raised.value.fix or "")
+        assert host.runner.crontab == broken, "nothing written"
+        assert not [argv for argv in host.runner.ran if argv[-1] == "-"]
+
     def test_list_is_this_project_s_schedules_alone(self, tmp_path: Path, host: Host) -> None:
         for project in ("a", "b"):
             _mission(tmp_path / project, {"every": 600})
