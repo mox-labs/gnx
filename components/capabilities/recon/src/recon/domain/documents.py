@@ -343,11 +343,13 @@ class StreamStatus(Document):
 class SubscriptionFailing(Document):
     """The row a subscription's command failed last, by its ``id``: how many times, and why
     (what the command said, cleaned). It is given again at the next delivery, and set aside as
-    a dead letter once it has failed ``deliver.attempts`` times."""
+    a dead letter once it has failed ``deliver.attempts`` times. ``error`` is what the
+    command said (its stderr, cleaned), which may quote the row it was given: **untrusted**,
+    as the row is (Vector, review N2)."""
 
     id: str
     attempts: int
-    error: str
+    error: str = Field(json_schema_extra=UNTRUSTED)
 
 
 class SubscriptionStatus(Document):

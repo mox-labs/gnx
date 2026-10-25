@@ -348,6 +348,12 @@ class TestAHostileSubjectStaysInert:
         assert "untrusted" not in delivery["op"] and "untrusted" not in delivery["id"]
         row = ChangesSince.model_json_schema()["$defs"]["ChangeRow"]["properties"]
         assert row["record"]["untrusted"] is True and row["key"]["untrusted"] is True
+        # Vector N2: what a command said when it failed may quote the row it was given.
+        from recon.domain.documents import DeliverDocument, SubscriptionDocument
+
+        for document in (DeliverDocument, SubscriptionDocument):
+            failing = document.model_json_schema()["$defs"]["SubscriptionFailing"]["properties"]
+            assert failing["error"]["untrusted"] is True and "untrusted" not in failing["id"]
 
 
 #: What no file of recon's may hold raw: a control character but tab, line feed and carriage

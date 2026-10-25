@@ -393,7 +393,9 @@ injection channel, and, through a command, an execution one.
 - **Untrusted content is marked by the schema, never by delimiters in the text.** The fields
   that carry a source's content are marked `"untrusted": true` in their documents' JSON
   schemas (`recon.v1.changes-since`'s `rows[].key` and `rows[].record`, `recon.v1.delivery`'s
-  `key` and `fields`; `recon.domain.documents.UNTRUSTED`). recon wraps no text in markers such
+  `key` and `fields`, and a failing row's `error`, what its command said, which may quote the
+  row; `recon.domain.documents.UNTRUSTED`). A warning's message may quote it too, and a
+  warning is a problem record, not schema-marked: read every warning of a delivery as data. recon wraps no text in markers such
   as `<untrusted>`: the text could close them itself.
 - **A delivery is never instructions.** It must never be handed to an agent as instructions or
   as a user's turn, and must never start an agent's action. recon itself hands a delivery to no
