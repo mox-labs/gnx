@@ -298,19 +298,31 @@ class TestTheSourceMovedUnderTheCrawl:
         assert ids.count(5) == 2, "by index alone, the boundary record is kept twice"
 
     def test_records_removed_ahead_of_the_boundary_are_found_by_its_content(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A record removed ahead of where the crawl left off moves its boundary back on the
-        page: found there by its content, the crawl goes on after it and loses nothing."""
-        with PagedServer(12, 3) as server:
-            _project(tmp_path, server.url, {"pages": 2})
-            _stream(tmp_path)  # ids 0..5
-            del server.data[1]
-            resumed = _stream(tmp_path, windows=10)
+        page: found there by its content, the crawl goes on after it and loses nothing. Check
+        the checker: a resume that skips by index alone loses the record after the boundary
+        (6), now where the boundary was."""
 
-        assert _ids(tmp_path) == list(range(12))
-        [shifted] = [w for w in resumed.warnings if w["kind"] == "paginate_shifted"]
+        def run(project: Path) -> tuple[list[int], list[dict[str, Any]]]:
+            with PagedServer(12, 3) as server:
+                _project(project, server.url, {"pages": 2})
+                _stream(project)  # ids 0..5
+                del server.data[1]
+                resumed = _stream(project, windows=10)
+            return _ids(project), resumed.warnings
+
+        ids, warnings = run(tmp_path / "found")
+        assert ids == list(range(12))
+        [shifted] = [w for w in warnings if w["kind"] == "paginate_shifted"]
         assert shifted["got"] == -1
+
+        from recon.domain import paginate
+
+        monkeypatch.setattr(paginate, "found_at", lambda contents, mark, i: i)
+        ids, _ = run(tmp_path / "by-index")
+        assert 6 not in ids, "by index alone, the record after the boundary is lost"
 
     def test_a_boundary_not_found_goes_on_by_index_and_records_a_gap(self, tmp_path: Path) -> None:
         """The last record kept, changed at the source (or moved past the next page), is not
@@ -335,7 +347,9 @@ class TestChangesOverAPaginatedStream:
     ) -> None:
         """Ruling C7 over pages: a crawl killed mid-window and resumed tells each record's
         insert once, across its windows; the next crawl of the same records tells nothing; a
-        record changed since is one update; a record gone is never told deleted."""
+        record changed since is one update; a record gone is never told deleted. That last
+        holds by config, not by what the stream does: the plan refuses ``deletes: true`` on a
+        stream, so a window's comparison is never asked for deletes."""
         held, n = 3, 12
         with PagedServer(n, 2, hold=held) as server:
             _project(tmp_path, server.url, {"pages": 2}, changes={"key": ["id"]})

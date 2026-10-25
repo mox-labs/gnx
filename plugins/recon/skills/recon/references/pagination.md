@@ -128,7 +128,7 @@ recon stream m --stream issues --forever           # until the crawl's end
 - none of that page's records was kept (the run was killed asking for it): it is asked for first, by its token, and read whole;
 - some were (the window before ended within the page, or at its end): it is asked for again by its token, and read past the last record kept, which the crawl finds by its content: a page asked for again is the earlier window's, not counted in the new one's `pages`.
 
-So every record is kept once. The restart is a gap in the run's first window, `resumed: true`.
+So every record is kept once. The restart is a gap in the run's first window, `resumed: true`: it marks a restart, not a loss. A gap `resumed: false` is where records may be missing.
 
 **A page that moved under the crawl.** A page number or an offset (and a link that carries one) moves when records are added or removed ahead of it between two runs. The last record kept is looked for by its content at its index, then elsewhere on its page, then on the next page:
 
