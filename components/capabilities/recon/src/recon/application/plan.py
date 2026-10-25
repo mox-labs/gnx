@@ -47,7 +47,7 @@ from recon.domain.stream import (
 from recon.domain.subscriptions import ROW_FIELDS, SubscriptionSpec, match_field
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Mapping
+    from collections.abc import Callable, Collection, Mapping, Sequence
 
     from recon.domain.collector import BrokenPlugin, CollectorType, Plugins
     from recon.domain.documents import Origin
@@ -320,7 +320,7 @@ def build_plan(
     warnings += _credential_warnings(sources, used_sources - refused, env, plugins)
     if schedule is not None:
         warnings += _unscheduled_env(sources, used_sources - refused, plugins)
-        warnings += _unpinned_packages(runs, entries, sources)
+        warnings += _unpinned_packages(runs, entries, sources, subscriptions)
     config = None
     if not problems:
         deadline = raw.get("deadline")
@@ -1695,6 +1695,7 @@ def _unpinned_packages(
     runs: list[PlannedRun],
     entries: list[tuple[int, CollectorEntry]],
     sources: list[tuple[int, SourceEntry]],
+    subscriptions: Sequence[tuple[int, SubscriptionSpec]] = (),
 ) -> list[Problem]:
     """A scheduled mission's warning for each package a command it runs has a fetcher
     (``npx``, ``uvx``, ``pnpm dlx``...: ``recon.domain.schedule.FETCHERS``) fetch without an
@@ -1704,7 +1705,8 @@ def _unpinned_packages(
     source's, at ``catalog.<i>``), shell lines as ``commands`` (a ``cli`` entry's, at
     ``collectors.<i>``), a ``headers_helper`` (an ``mcp`` source's, at
     ``catalog.<i>.headers_helper``), so a type of a third party's that describes its commands
-    so is held to it too; and each source's own ``auth.headers_helper``."""
+    so is held to it too; each source's own ``auth.headers_helper``; and each subscription's
+    ``deliver`` argument list, at ``subscriptions.<i>.deliver.command`` (Vector, review S2)."""
     entry_at = {entry.name: i for i, entry in entries}
     source_at = {source.name: i for i, source in sources}
     by_name = {source.name: source for _, source in sources}
@@ -1732,6 +1734,9 @@ def _unpinned_packages(
         for line in commands if isinstance(commands, list) else []:
             if isinstance(line, str) and run.collector in entry_at:
                 judge(f"collectors.{entry_at[run.collector]}", line)
+    for i, subscription in subscriptions:
+        if subscription.deliver is not None:
+            judge(f"subscriptions.{i}.deliver.command", subscription.deliver.argv)
     return [
         Problem(
             path,

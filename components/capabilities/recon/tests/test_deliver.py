@@ -532,6 +532,30 @@ class TestThePlan:
         assert self._scheduled(60, 45).config.deadline == 12, "the floor, 0.2 x every"
         assert self._scheduled(600, 30).config.deadline == 450
 
+    def test_a_delivery_that_fetches_an_unpinned_package_is_warned(self) -> None:
+        """Vector S2: a scheduled tick runs its deliveries unattended, so a command that has
+        npx or uvx fetch a package with no exact version is judged as a server's is."""
+        for deliver, path in (
+            ({"command": "/usr/bin/npx", "args": ["-y", "notify-cli"]},
+             "subscriptions.0.deliver.command"),
+            ({"command": "/usr/bin/env", "args": ["uvx", "mailnotify"]},
+             "subscriptions.0.deliver.command"),
+        ):  # fmt: skip
+            mission = {
+                "schedule": {"every": 600},
+                "catalog": [{"name": "mail", "url": "https://mail.test"}],
+                "collectors": [{"name": "inbox", "type": "api", "source": "mail",
+                                "endpoint": "/m", "changes": {"key": ["id"]}, "retain": "all"}],
+                "subscriptions": [{"name": "s", "output": "inbox", "deliver": deliver}],
+            }  # fmt: skip
+            plan = build_plan(mission, load_plugins(), {})
+            [warning] = [w for w in plan.warnings if w.kind == "package_unpinned"]
+            assert warning.path == path and ("@" in warning.fix or "==" in warning.fix)
+        pinned = {"command": "/usr/bin/npx", "args": ["-y", "notify-cli@1.2.3"]}
+        mission["subscriptions"] = [{"name": "s", "output": "inbox", "deliver": pinned}]
+        plan = build_plan(mission, load_plugins(), {})
+        assert "package_unpinned" not in [w.kind for w in plan.warnings]
+
     def test_a_survey_and_delivery_longer_than_every_are_warned(self) -> None:
         for plan in (self._scheduled(60, 55), self._scheduled(60, 30, deadline=48)):
             [warning] = [w for w in plan.warnings if w.kind == "schedule_overrun"]
