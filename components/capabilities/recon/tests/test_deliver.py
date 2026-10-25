@@ -350,18 +350,46 @@ class TestAHostileSubjectStaysInert:
         assert row["record"]["untrusted"] is True and row["key"]["untrusted"] is True
 
 
-def test_recon_s_source_holds_no_raw_control_or_bidi_character() -> None:
+#: What no file of recon's may hold raw: a control character but tab, line feed and carriage
+#: return (``\x85``, ``\x1c``-``\x1e`` among them), a format character (bidi controls, zero
+#: widths, tags), and the line and paragraph separators.
+_HIDDEN = frozenset({"Cc", "Cf", "Zl", "Zp"})
+
+
+def _hidden(text: str) -> list[tuple[int, str]]:
+    """Each raw hidden character of ``text``, by its offset, scanned as the raw text, never as
+    its lines: ``splitlines`` would split on ``\x85``, ``\x1c``-``\x1e``, U+2028 and U+2029, so
+    those never stood inside a line to be found."""
+    return [(at, f"U+{ord(c):04X}") for at, c in enumerate(text)
+            if unicodedata.category(c) in _HIDDEN and c not in "\t\n\r"]  # fmt: skip
+
+
+def test_recon_s_files_hold_no_raw_hidden_character() -> None:
     """Regression: a formatter turned the stripping pattern's escapes into the raw bidi
     controls they name, which an editor shows as reordered text (Trojan Source). Every
-    character the delivery strips is written in recon's source as its escape."""
-    source = Path(__file__).resolve().parents[1] / "src" / "recon"
-    found = [
-        (file.name, number)
-        for file in sorted(source.rglob("*.py"))
-        for number, line in enumerate(file.read_text(encoding="utf-8").splitlines(), 1)
-        if any(unicodedata.category(c) in ("Cc", "Cf") and c != "\t" for c in line)
-    ]
-    assert found == []
+    character the delivery strips is written as its escape, in recon's source, its tests, its
+    scripts and its skill's text (Vector, review S5)."""
+    package = Path(__file__).resolve().parents[1]
+    files = [*sorted((package / "src" / "recon").rglob("*.py")),
+             *sorted((package / "tests").rglob("*.py")),
+             *sorted((package / "scripts").rglob("*.py")),
+             *sorted((package / "src" / "recon" / "assets").rglob("*.md")),
+             *sorted((package / "docs").rglob("*.md"))]  # fmt: skip
+    assert len(files) > 100, "the scan found the files"
+    found = {
+        str(file.relative_to(package)): hidden
+        for file in files
+        if (hidden := _hidden(file.read_text(encoding="utf-8")))
+    }
+    assert found == {}
+
+
+@pytest.mark.parametrize("planted", ["\x85", "\x1c", "\x1e", "\u2028", "\u2029", "\u202e",
+                                     "\u200b", "\ufeff", "\U000e0041"])  # fmt: skip
+def test_the_scan_finds_what_splitlines_hides(planted: str) -> None:
+    """Check the checker: each is found inside text, those ``splitlines`` breaks on included."""
+    assert _hidden(f"before{planted}after") == [(6, f"U+{ord(planted):04X}")]
+    assert _hidden("tab\tline\nreturn\r") == []
 
 
 class TestClean:
@@ -381,10 +409,10 @@ class TestClean:
             # Vector S3: what hides in text, never seen.
             ("a️b︀c", "abc"),
             ("a\U000e0100b\U000e01efc", "abc"),
-            ("z​w‌j‍x", "zwjx"),
-            ("w⁠j⁣n⁤", "wjn"),
-            ("﻿bom", "bom"),
-            ("line para end", "lineparaend"),
+            ("z" + chr(0x200B) + "w" + chr(0x200C) + "j" + chr(0x200D) + "x", "zwjx"),
+            ("w" + chr(0x2060) + "j" + chr(0x2063) + "n" + chr(0x2064), "wjn"),
+            (chr(0xFEFF) + "bom", "bom"),
+            ("line" + chr(0x2028) + "para" + chr(0x2029) + "end", "lineparaend"),
         ],
     )  # fmt: skip
     def test_what_it_strips(self, text: str, kept: str) -> None:
