@@ -368,7 +368,7 @@ def told_lines(
 class _Compared:
     """An earlier table that was compared: where, how many records it held, whether its
     deletes were told, whether it started the told index again, the one compared before it,
-    and the windows whose writer died that it told before its own records."""
+    and the windows that told nothing whose records it told before its own."""
 
     archive: Path
     records: int
@@ -376,7 +376,7 @@ class _Compared:
     rebaselined: bool
     previous: str | None
     normalize: str | None
-    crashed: tuple[str, ...] = ()
+    untold: tuple[str, ...] = ()
 
 
 @dataclass
@@ -469,23 +469,23 @@ class ChangeDetector:
         the told index, then the summary (``pending``), then the change table."""
         hasher = Hasher(spec, self._secret)
         by_name = {a.name: a for a in earlier}
-        crashed: list[Path] = []
+        untold: list[Path] = []
         if chain is None:
             previous = self._previous_snapshot(earlier, table)
             before = previous is None and self._sealed_before(earlier, table)
         else:
-            previous, crashed = self._chain(earlier, chain, table)
+            previous, untold = self._chain(earlier, chain, table)
             before = False  # a window's records are its own: nothing to flood
         rebaselined = before or (previous is not None and previous.normalize != shape)
         if rebaselined:
-            crashed = []  # what a dead window held is in the told index started again here
+            untold = []  # what an untold window held is in the told index started again here
         told = _Told(None) if rebaselined or previous is None else (
             self._told(previous, table, hasher, by_name)
         )  # fmt: skip
         dead: list[Comparison] = []
         try:
-            # What windows whose writer died held, told here, oldest first (Dijkstra F1).
-            for window in crashed:
+            # What windows that told nothing held, told here, oldest first (F1, G1).
+            for window in untold:
                 held = Comparison(
                     self._reader(window, table.name, unsealed=True),
                     told.pairs,
@@ -524,7 +524,7 @@ class ChangeDetector:
                 ambiguous=sum(c.counts.ambiguous for c in every),
                 deletes_withheld=None if rebaselined else comparison.counts.withheld,
                 deletes_told=comparison.deletes,
-                crashed=[window.name for window in crashed],
+                untold=[window.name for window in untold],
             )
 
         try:
@@ -578,8 +578,8 @@ class ChangeDetector:
             found = by_name.get(current.previous) if current.previous else None
             current = self._compared(found, table) if found is not None else None
         for compared in reversed(again):
-            # A table is folded as it was told: after what the dead windows before it held.
-            for name in () if compared.rebaselined else compared.crashed:
+            # A table is folded as it was told: after what the untold windows before it held.
+            for name in () if compared.rebaselined else compared.untold:
                 window = by_name.get(name)
                 if window is None:
                     continue
@@ -609,22 +609,27 @@ class ChangeDetector:
         self, windows: Sequence[Path], chain: str, table: TableOutcome
     ) -> tuple[_Compared | None, list[Path]]:
         """A window's previous compared window, walking back from ``chain`` (the window before
-        it), and the windows passed on the way whose writer died before it compared them,
-        oldest first, whose whole records this window tells (Dijkstra F1). A window sealed and
-        never compared (before ``changes:`` was set) ends the walk with nothing told."""
+        it), and the windows passed on the way that told nothing, oldest first, whose records
+        this window tells: one whose writer died before it compared them (Dijkstra F1), and
+        one sealed with its changes failed (G1). A window sealed and never compared (before
+        ``changes:`` was set) ends the walk with nothing told."""
         names = [window.name for window in windows]
         if chain not in names:
             return None, []
-        crashed: list[Path] = []
+        untold: list[Path] = []
         for window in reversed(windows[: names.index(chain) + 1]):
             compared = self._compared(window, table)
             if compared is not None:
-                return compared, crashed[::-1]
+                return compared, untold[::-1]
             meta = self._archives.read_meta(window)
-            if meta.get("format_version") is not None and meta.get("ended", "") is not None:
+            sealed = meta.get("format_version") is not None and meta.get("ended", "") is not None
+            entry = self._entry(window, table)
+            changes = entry.get("changes") if entry is not None else None
+            failed = isinstance(changes, dict) and bool(changes.get("error"))
+            if sealed and not failed:
                 break  # sealed, and never compared
-            crashed.append(window)
-        return None, crashed[::-1]
+            untold.append(window)
+        return None, untold[::-1]
 
     def _previous_snapshot(self, earlier: Sequence[Path], table: TableOutcome) -> _Compared | None:
         """The latest earlier table of the same name and source that was compared, however
@@ -671,11 +676,11 @@ class ChangeDetector:
             return None  # never compared, or its changes failed: it told nothing
         if self._archives.read_table(archive, changes_output(table.name)) is None:
             return None  # its summary was written, and it died before its rows were
-        crashed = changes.get("crashed") or []
+        untold = changes.get("untold") or []
         return _Compared(archive, int(entry.get("records") or 0),
                          changes.get("deletes_told") is True, bool(changes.get("rebaselined")),
                          changes.get("previous"), changes.get("normalize"),
-                         tuple(str(name) for name in crashed))  # fmt: skip
+                         tuple(str(name) for name in untold))  # fmt: skip
 
     def _ended(self, archive: Path) -> Any:
         return self._archives.read_meta(archive).get("ended")

@@ -958,7 +958,7 @@ class TestStreams:
         assert crashed == dead
         assert _window_ops(resumed) == [("update", "a"), ("insert", "c"), ("insert", "d")]
         summary = ArchiveFiles(FixedClock()).read_meta(resumed)["tables"][0]["changes"]
-        assert summary["previous"] == first.name and summary["crashed"] == [dead.name]
+        assert summary["previous"] == first.name and summary["untold"] == [dead.name]
         assert summary["rebaselined"] is False
 
         # The resumed window's told index, rebuilt, folds the dead window's records too.
@@ -967,6 +967,37 @@ class TestStreams:
         recon.stream("m", "s", windows=1)  # e1, a3
         last = _windows(tmp_path)[-1]
         assert _window_ops(last) == [("insert", "e"), ("update", "a")]
+
+    def test_a_window_whose_changes_failed_is_told_by_the_next_and_nothing_twice(
+        self, tmp_path: Path
+    ) -> None:
+        """Dijkstra G1: a window sealed with its changes failed told nothing. The next window
+        tells its records, then its own, walking back past it to the last window that told,
+        so each record is told once, none lost and none told again as new."""
+
+        class FailsFirst:
+            joins = 0
+
+            def join(self, told: Any, new: Any, **kw: Any) -> Any:
+                self.joins += 1
+                if self.joins == 1:
+                    raise RuntimeError("the join broke")
+                return MemoryJoin().join(told, new)
+
+        _stream_mission(tmp_path)
+        recon = root({}, project=tmp_path, clock=VirtualClock(), memory_keys=0,
+                     key_join=FailsFirst(),
+                     plugins=plugins_with(feed=_Feed(self.RECORDS)))  # fmt: skip
+        recon.stream("m", "s", windows=3)  # a1 b1 (failed) | a2 c1 | b1 d1
+        failed, second, third = _windows(tmp_path)
+        meta = ArchiveFiles(FixedClock()).read_meta(failed)
+        assert meta["tables"][0]["changes"]["error"] is not None
+        assert _window_ops(second) == [("insert", "a"), ("insert", "b"), ("update", "a"),
+                                       ("insert", "c")]  # fmt: skip
+        summary = ArchiveFiles(FixedClock()).read_meta(second)["tables"][0]["changes"]
+        assert summary["untold"] == [failed.name] and summary["previous"] is None
+        assert summary["rebaselined"] is False
+        assert _window_ops(third) == [("insert", "d")], "b as told, nothing told twice"
 
     def test_a_window_whose_source_failed_is_told_and_the_chain_goes_on(
         self, tmp_path: Path

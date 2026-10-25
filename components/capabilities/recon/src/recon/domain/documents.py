@@ -187,9 +187,10 @@ class ChangeSummary(Document):
     #: table, never of its survey): it has no change table, tells nothing and is no told
     #: index, so the next table of its output tells its changes too.
     error: TableError | None = None
-    #: A window's: the windows before it, since ``previous``, whose writer died before it
-    #: compared them. This window tells their whole records, oldest first, before its own.
-    crashed: list[str] = []
+    #: A window's: the windows before it, since ``previous``, that told nothing (their writer
+    #: died before it compared them, or their changes failed). This window tells their whole
+    #: records, oldest first, before its own.
+    untold: list[str] = []
 
 
 class TableOutcome(Document):
