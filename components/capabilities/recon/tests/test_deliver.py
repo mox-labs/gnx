@@ -361,41 +361,74 @@ class TestAHostileSubjectStaysInert:
 #: widths, tags), and the line and paragraph separators.
 _HIDDEN = frozenset({"Cc", "Cf", "Zl", "Zp"})
 
+#: And the variation selectors, category Mn but as unseen (Vector, re-check).
+_SELECTORS = ((0xFE00, 0xFE0F), (0xE0100, 0xE01EF))
+
+#: The files scanned, as globs from the package's root: its source, tests and scripts; the
+#: skill's text and the docs; the templates and fixtures; and the package's own pages.
+_SCANNED = ("src/**/*.py", "tests/**/*.py", "scripts/**/*.py", "src/**/*.md", "docs/**/*.md",
+            "src/**/*.yaml", "src/**/*.json", "tests/**/*.yaml", "tests/**/*.yml",
+            "tests/**/*.json", "*.md", "*.json")  # fmt: skip
+
+
+def _is_hidden(c: str) -> bool:
+    if c in "\t\n\r":
+        return False
+    return unicodedata.category(c) in _HIDDEN or any(lo <= ord(c) <= hi for lo, hi in _SELECTORS)
+
 
 def _hidden(text: str) -> list[tuple[int, str]]:
     """Each raw hidden character of ``text``, by its offset, scanned as the raw text, never as
     its lines: ``splitlines`` would split on ``\x85``, ``\x1c``-``\x1e``, U+2028 and U+2029, so
     those never stood inside a line to be found."""
-    return [(at, f"U+{ord(c):04X}") for at, c in enumerate(text)
-            if unicodedata.category(c) in _HIDDEN and c not in "\t\n\r"]  # fmt: skip
+    return [(at, f"U+{ord(c):04X}") for at, c in enumerate(text) if _is_hidden(c)]
+
+
+def _scan(package: Path) -> tuple[list[Path], dict[str, list[tuple[int, str]]]]:
+    """The files of ``package`` scanned, and the raw hidden characters found, by file."""
+    files = sorted({path for pattern in _SCANNED for path in package.glob(pattern)
+                    if path.is_file() and "__pycache__" not in path.parts})  # fmt: skip
+    found = {
+        str(file.relative_to(package)): hidden
+        for file in files
+        if (hidden := _hidden(file.read_text(encoding="utf-8")))
+    }
+    return files, found
 
 
 def test_recon_s_files_hold_no_raw_hidden_character() -> None:
     """Regression: a formatter turned the stripping pattern's escapes into the raw bidi
     controls they name, which an editor shows as reordered text (Trojan Source). Every
     character the delivery strips is written as its escape, in recon's source, its tests, its
-    scripts and its skill's text (Vector, review S5)."""
-    package = Path(__file__).resolve().parents[1]
-    files = [*sorted((package / "src" / "recon").rglob("*.py")),
-             *sorted((package / "tests").rglob("*.py")),
-             *sorted((package / "scripts").rglob("*.py")),
-             *sorted((package / "src" / "recon" / "assets").rglob("*.md")),
-             *sorted((package / "docs").rglob("*.md"))]  # fmt: skip
+    scripts, its skill's text, its templates and fixtures and its own pages (Vector, review S5
+    and re-check)."""
+    files, found = _scan(Path(__file__).resolve().parents[1])
     assert len(files) > 100, "the scan found the files"
-    found = {
-        str(file.relative_to(package)): hidden
-        for file in files
-        if (hidden := _hidden(file.read_text(encoding="utf-8")))
-    }
     assert found == {}
 
 
 @pytest.mark.parametrize("planted", ["\x85", "\x1c", "\x1e", "\u2028", "\u2029", "\u202e",
-                                     "\u200b", "\ufeff", "\U000e0041"])  # fmt: skip
+                                     "\u200b", "\ufeff", "\U000e0041", "\ufe00", "\ufe0f",
+                                     "\U000e0100", "\U000e01ef"])  # fmt: skip
 def test_the_scan_finds_what_splitlines_hides(planted: str) -> None:
-    """Check the checker: each is found inside text, those ``splitlines`` breaks on included."""
+    """Check the checker: each is found inside text, those ``splitlines`` breaks on included,
+    and the variation selectors, which are no format character."""
     assert _hidden(f"before{planted}after") == [(6, f"U+{ord(planted):04X}")]
     assert _hidden("tab\tline\nreturn\r") == []
+
+
+def test_the_scan_reads_each_kind_of_file(tmp_path: Path) -> None:
+    """Check the checker: one selector planted in each kind of file the scan must read is
+    found there (Vector, re-check: templates, fixtures and the package's pages were unread)."""
+    planted = ["src/recon/configs/t.yaml", "src/recon/assets/templates/t.json",
+               "tests/fixtures/templates/t/x.yaml", "tests/fixtures/f.json", "README.md",
+               "SECURITY.md", "layers.json", "docs/reference/r.md", "scripts/s.py"]  # fmt: skip
+    for at, name in enumerate(planted):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("a" + chr(0xFE00 + at) + "b", encoding="utf-8")
+    _, found = _scan(tmp_path)
+    assert sorted(found) == sorted(planted)
 
 
 class TestClean:
@@ -413,7 +446,7 @@ class TestClean:
             ("lone \ud83d surrogate", "lone  surrogate"),
             ("\U0001f600 kept", "\U0001f600 kept"),
             # Vector S3: what hides in text, never seen.
-            ("a️b︀c", "abc"),
+            ("a" + chr(0xFE0F) + "b" + chr(0xFE00) + "c", "abc"),
             ("a\U000e0100b\U000e01efc", "abc"),
             ("z" + chr(0x200B) + "w" + chr(0x200C) + "j" + chr(0x200D) + "x", "zwjx"),
             ("w" + chr(0x2060) + "j" + chr(0x2063) + "n" + chr(0x2064), "wjn"),
