@@ -290,6 +290,33 @@ def test_a_credential_a_server_echoes_is_in_no_archive_byte(
     assert "s3cretTokenZZ" not in json.dumps(document.document())
 
 
+def test_an_echoed_credential_in_a_record_is_kept_and_security_md_says_so(
+    tmp_path: Path,
+) -> None:
+    """Vector's re-check of S5: what is redacted, and what is not, as SECURITY.md says. A
+    record the server returns holding the credential is the source's data, kept in the table;
+    the capture of the same answer is redacted."""
+
+    class IntoRecords(PagedApi):
+        def request(self, source: SourceEntry, method: str, url: str, **kw: Any) -> Any:
+            sent = (kw.get("headers") or {}).get("Authorization", "")
+            text = json.dumps({"items": [{"id": 1, "you_sent": sent}], "meta": {"next": None}})
+            response = super().request(source, method, url, **kw)
+            return response.model_copy(update={"text": text, "body": text.encode()})
+
+    mission_dir = tmp_path / ".recon" / "m"
+    mission_dir.mkdir(parents=True)
+    _secret(mission_dir / "key.txt", "s3cretTokenZZ")
+    auth = {"token": "file:key.txt", "header": "Authorization"}
+    document = _survey(tmp_path, IntoRecords("cursor", 1, 1), auth, {}, preserve_raw=True)
+
+    archive = Path(document.path)
+    assert b"s3cretTokenZZ" in (archive / "items.jsonl").read_bytes(), "the source's data"
+    assert all(b"s3cretTokenZZ" not in p.read_bytes() for p in (archive / "raw").iterdir())
+    security = (Path(__file__).parents[1] / "SECURITY.md").read_text()
+    assert "Table records are not redacted" in security
+
+
 def test_no_secret_is_written_to_the_archive(tmp_path: Path) -> None:
     mission_dir = tmp_path / ".recon" / "m"
     mission_dir.mkdir(parents=True)

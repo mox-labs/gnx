@@ -89,7 +89,11 @@ environment, as a `cli` command does (boundary 1): name it by an absolute path. 
   source's captured body, and an `api` or `sse` source's failed request (whose message
   quotes the start of the answer, into `meta.yaml` and the event log), have the source's
   token and every header its helper printed redacted, as an `mcp` source's are (round-4
-  review S5). A record the source returns holding it is the source's data, kept as given.
+  review S5). **Table records are not redacted**: a server that echoes the credential into
+  a record it returns puts it in the table (and its change table, and a query's answer), as
+  the source's data, kept as given; only captures and error messages are redacted. Keep such
+  a field out with `normalize:` (a keep-list), and treat the archive of a source that does
+  this as secret material.
 
 An unset `auth.token` variable sends the request without credentials; the plan warns
 about it before anything is sent.
