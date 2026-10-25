@@ -7,13 +7,14 @@
     {
       "name": "domain",
       "files": ["src/recon/domain/**/*.py"],
-      "allow": ["__future__", "collections", "contextlib", "dataclasses", "datetime", "functools",
-                "html", "inspect", "pathlib", "re", "shlex", "threading", "typing", "urllib",
-                "pydantic", "recon.domain"],
+      "allow": ["__future__", "collections", "contextlib", "dataclasses", "datetime", "fnmatch",
+                "functools", "html", "inspect", "pathlib", "re", "shlex", "threading", "typing",
+                "urllib", "pydantic", "recon.domain"],
       "forbid": ["opentelemetry", "duckdb", "httpx2", "httpx", "markitdown", "yaml", "open"],
       "why": {
         "stdlib": "recon's PURE_STDLIB (tests/test_layering.py): pathlib names a location and datetime is the type the clock port returns; touching the filesystem or reading the clock through them is caught by test_layering's effect scan",
         "shlex": "splitting a command line given as a string into words, to find the packages a scheduled command fetches (domain/schedule.py's unpinned); no stream is handed it, so it reads no file",
+        "fnmatch": "fnmatchcase alone, a glob matched against a string (a subscription's match:, domain/subscriptions.py), as the capture collector's match: is; it reads no file",
         "threading": "TIMEOUT_MAX alone, the longest wait the platform's timers take, which the plan holds a source's timeout and rate to (domain/clock.py); the domain starts no thread (test_layering's LAYER_STDLIB). Accepted: owner ruling 2026-10-22",
         "pydantic": "every published document and config model is a pydantic model",
         "forbid": "the adapters' technologies, YAML, and the builtin open, which no import shows"
@@ -22,9 +23,9 @@
     {
       "name": "application",
       "files": ["src/recon/application/**/*.py"],
-      "allow": ["__future__", "collections", "contextlib", "dataclasses", "datetime", "functools",
-                "hashlib", "html", "inspect", "json", "pathlib", "re", "threading", "typing",
-                "urllib", "pydantic", "recon.domain", "recon.application"],
+      "allow": ["__future__", "collections", "contextlib", "dataclasses", "datetime", "fnmatch",
+                "functools", "hashlib", "html", "inspect", "json", "pathlib", "re", "threading",
+                "typing", "urllib", "pydantic", "recon.domain", "recon.application"],
       "forbid": ["opentelemetry", "duckdb", "httpx2", "httpx", "markitdown", "yaml", "open"],
       "why": {
         "hashlib, json": "the config's sha256 in the archive's meta, a hook payload's body, and a stream's records as the buffer holds them (test_layering's LAYER_STDLIB)",
@@ -50,7 +51,8 @@
     {
       "name": "file_store",
       "files": ["src/recon/adapters/_out/archive_files.py", "src/recon/adapters/_out/capture_files.py",
-                "src/recon/adapters/_out/event_log.py", "src/recon/adapters/_out/mission_files.py"],
+                "src/recon/adapters/_out/event_log.py", "src/recon/adapters/_out/mission_files.py",
+                "src/recon/adapters/_out/subscription_files.py"],
       "allow": ["*", "recon.domain", "recon.adapters._out.capture_files",
                 "recon.adapters._out.event_log", "recon.adapters._out.private_files",
                 "recon.adapters._out.file_locks"],

@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         SchedulesDocument,
         StatusDocument,
         StreamDocument,
+        SubscriptionDocument,
         SurveyDocument,
         TemplatesDocument,
         TickDocument,
@@ -255,6 +256,46 @@ def changes_since(
     return _root(root).changes_since(
         name, output, cursor, max_records=max_records, max_bytes=max_bytes
     )
+
+
+def subscribe(
+    name: str,
+    subscription: str,
+    cursor: str | None = None,
+    *,
+    max_records: int = READ_MAX_RECORDS,
+    max_bytes: int = READ_MAX_BYTES,
+    root: Path | None = None,
+) -> ChangesSince:
+    """One read of the subscription the mission ``name`` declares (``subscriptions:``): the
+    change rows of its output that its ``match:`` keeps, from the cursor it acked last (from the
+    first archive when it acked none), or from ``cursor``, for a subscriber that keeps its own.
+    ``recon.v1.changes-since``, its ``subscription`` named.
+
+    It acks nothing, so the same read again gives the same rows: :func:`ack` the read's
+    ``cursor`` once they are acted on. Raises NotFoundError for a subscription the config does
+    not declare, ReconError ``busy`` while another consumer holds it (one at a time), and
+    UsageError for a cursor of another output."""
+    return _root(root).subscribe(
+        name, subscription, cursor, max_records=max_records, max_bytes=max_bytes
+    )
+
+
+def ack(
+    name: str, subscription: str, cursor: str, *, root: Path | None = None
+) -> SubscriptionDocument:
+    """Keep ``cursor``, a read's, as what the subscription has acked: its next read goes on
+    from it. ``recon.v1.subscription``, ``outcome`` ``acked``, or ``unchanged`` for the cursor
+    acked already. Monotone: a cursor before the one acked is refused (UsageError), so a
+    consumer that acks late never moves it back."""
+    return _root(root).ack(name, subscription, cursor)
+
+
+def unsubscribe(name: str, subscription: str, *, root: Path | None = None) -> SubscriptionDocument:
+    """Remove what is kept of the subscription: its acked cursor and its dead letters.
+    ``recon.v1.subscription``, ``outcome`` ``removed``, or ``absent`` when nothing was kept.
+    While the config declares it, its next read starts from the first archive."""
+    return _root(root).unsubscribe(name, subscription)
 
 
 def configure_telemetry() -> list[Problem]:

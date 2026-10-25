@@ -334,6 +334,53 @@ class StreamStatus(Document):
     retired: int = 0
 
 
+class SubscriptionFailing(Document):
+    """The row a subscription's command failed last, by its ``id``: how many times, and why
+    (what the command said, cleaned). It is given again at the next delivery, and set aside as
+    a dead letter once it has failed ``deliver.attempts`` times."""
+
+    id: str
+    attempts: int
+    error: str
+
+
+class SubscriptionStatus(Document):
+    """A subscription of a mission: the ``output`` it reads, whether the config declares it
+    (one it no longer does is listed while something is kept of it, which ``recon unsubscribe``
+    removes), the cursor it acked last (null: nothing yet, so it reads from the first archive)
+    and when, the row its command failed last, and how many dead letters it keeps."""
+
+    name: str
+    output: str | None
+    declared: bool
+    cursor: str | None
+    acked_at: str | None
+    failing: SubscriptionFailing | None = None
+    dead_letters: int = 0
+
+
+#: What ``recon ack`` or ``recon unsubscribe`` did: kept a later cursor than the one acked, or
+#: found it acked already and left it; removed what was kept of a subscription, or found
+#: nothing to remove.
+SubscriptionOutcome = Literal["acked", "unchanged", "removed", "absent"]
+
+
+class SubscriptionDocument(Document):
+    """A subscription as ``ack`` or ``unsubscribe`` left it, by name (``subscription``)."""
+
+    schema_: Literal["recon.v1.subscription"] = Field(
+        default="recon.v1.subscription", alias="schema"
+    )
+    mission: str
+    subscription: str
+    outcome: SubscriptionOutcome
+    output: str | None
+    cursor: str | None
+    acked_at: str | None
+    failing: SubscriptionFailing | None = None
+    dead_letters: int = 0
+
+
 class MissionStatus(Document):
     name: str
     config: str
@@ -344,6 +391,8 @@ class MissionStatus(Document):
     #: None otherwise. Each ``id`` is what ``query --archive`` takes.
     history: list[ArchiveStatus] | None = None
     streams: list[StreamStatus] = []
+    #: Each subscription the config declares, and each one something is still kept of.
+    subscriptions: list[SubscriptionStatus] = []
 
 
 class CollectorTypeInfo(Document):

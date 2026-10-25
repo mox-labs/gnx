@@ -22,7 +22,7 @@ from recon.application.collectors import confined_transforms, declared_env
 from recon.application.plan import Plan, PlannedStream, build_plan, fan_out, plugin_warning
 from recon.application.schedules import Schedules, stale
 from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun
-from recon.application.subscriptions import ChangeReader
+from recon.application.subscriptions import ChangeReader, Subscriptions
 from recon.application.survey import CollectorError, Survey, TablePages
 from recon.domain.archives import (
     ARCHIVE_ID_FORMAT,
@@ -48,6 +48,8 @@ from recon.domain.documents import (
     StatusDocument,
     StreamDocument,
     StreamStatus,
+    SubscriptionDocument,
+    SubscriptionStatus,
     SurveyDocument,
     TableError,
     TableStatus,
@@ -91,6 +93,7 @@ if TYPE_CHECKING:
     from recon.domain.paginate import PageLog
     from recon.domain.schedule import Platform, ScheduleHost, Scheduler, ScheduleStore
     from recon.domain.stream import GapLog, RetainSpec, Stop, WindowSpec
+    from recon.domain.subscriptions import SubscriptionStore
     from recon.domain.telemetry import Channel, EventCallback, Telemetry
 
 
@@ -159,6 +162,7 @@ class Recon:
         local: Callable[[datetime], datetime] | None = None,
         key_join: KeyJoin | None = None,
         memory_keys: int = MEMORY_KEYS,
+        subscriptions: SubscriptionStore | None = None,
     ) -> None:
         """``root_found_by`` is how the composition root found the project root:
         ``argument`` (the caller named it), ``repository`` (the nearest ancestor holding
@@ -169,7 +173,9 @@ class Recon:
         through, with the ``schedule_store`` beside each mission, the ``schedule_host``'s
         recon command and PATH, and ``local``, the clock's time as the host's local time;
         without them, the ``schedule_*`` operations are refused. ``key_join`` joins a change
-        detection's comparisons of more than ``memory_keys`` keys (None: all in memory)."""
+        detection's comparisons of more than ``memory_keys`` keys (None: all in memory).
+        ``subscriptions`` keeps what each subscription acked (None: the ``subscribe``, ``ack``
+        and ``unsubscribe`` operations are refused)."""
         self._missions = missions
         self._archives = archives
         self._query = query
@@ -196,6 +202,17 @@ class Recon:
         )
         self._key_join = key_join
         self._memory_keys = memory_keys
+        self._subscriptions = (
+            None
+            if subscriptions is None
+            else Subscriptions(
+                store=subscriptions,
+                clock=clock,
+                mission_dir=missions.mission_dir,
+                prepare=lambda name: self._prepare(name, None, False)[1],
+                reader=self._change_reader,
+            )
+        )
 
     # --- init ---------------------------------------------------------------------------
 
@@ -875,6 +892,47 @@ class Recon:
             lambda scheduled: self._scheduled_survey(name, scheduled, config_sha256),
         )
 
+    # --- subscriptions ----------------------------------------------------------------
+
+    def _subscribing(self) -> Subscriptions:
+        if self._subscriptions is None:
+            raise UsageError(
+                "this recon was built with no subscription store",
+                fix="build it with recon.composition.root(), which gives it the mission's files",
+            )
+        return self._subscriptions
+
+    def subscribe(
+        self,
+        name: str,
+        subscription: str,
+        cursor: str | None = None,
+        *,
+        max_records: int = READ_MAX_RECORDS,
+        max_bytes: int = READ_MAX_BYTES,
+    ) -> ChangesSince:
+        """One read of the subscription the mission declares: the rows of its output its
+        ``match:`` keeps, from the cursor it acked last (None acked: from the first archive),
+        or from ``cursor`` for a subscriber that keeps its own. It acks nothing: :meth:`ack`
+        does, with the read's ``cursor``, once the rows are acted on. Raises NotFoundError for a
+        subscription the config does not declare, ReconError ``busy`` while another consumer
+        holds it."""
+        return self._subscribing().read(
+            name, subscription, cursor, max_records=max_records, max_bytes=max_bytes
+        )
+
+    def ack(self, name: str, subscription: str, cursor: str) -> SubscriptionDocument:
+        """Keep ``cursor`` as what the subscription has acked, so its next read goes on from
+        it. Monotone: a cursor before the one acked is refused (UsageError), the same one
+        changes nothing (``unchanged``)."""
+        return self._subscribing().ack(name, subscription, cursor)
+
+    def unsubscribe(self, name: str, subscription: str) -> SubscriptionDocument:
+        """Remove what is kept of the subscription, its acked cursor and dead letters
+        (``removed``; ``absent`` when nothing was). A subscription the config still declares
+        then reads from the first archive again."""
+        return self._subscribing().remove(name, subscription)
+
     # --- status, query, templates, capture ----------------------------------------------
 
     def status(self, mission: str | None = None) -> StatusDocument:
@@ -943,7 +1001,19 @@ class Recon:
             captures=self._missions.capture_count(name),
             history=[self._archive_status(a) for a in archives] if history else None,
             streams=[self._stream_status(mission, s) for s in self._archives.streams(mission)],
+            subscriptions=self._subscription_statuses(name),
         )
+
+    def _subscription_statuses(self, name: str) -> list[SubscriptionStatus]:
+        """The mission's subscriptions, as far as its config can be planned: one that cannot
+        lists only those something is kept of."""
+        if self._subscriptions is None:
+            return []
+        try:
+            plan: Plan | None = self._prepare(name, None, False)[1]
+        except ReconError:
+            plan = None
+        return self._subscriptions.statuses(name, plan)
 
     def _stream_status(self, mission: Path, stream: str) -> StreamStatus:
         windows = self._archives.archives(mission, stream=stream)

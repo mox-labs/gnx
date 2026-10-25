@@ -44,6 +44,7 @@ from recon.domain.stream import (
     WindowSpec,
     default_overflow,
 )
+from recon.domain.subscriptions import ROW_FIELDS, SubscriptionSpec, match_field
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping
@@ -249,7 +250,7 @@ def build_plan(
     settings_whole = True
     streams: list[PlannedStream] = []
     provenance: list[SourcedValue] = []
-    changing: dict[str, str | None] = {}
+    changing: dict[str, int] = {}
     for i, entry in entries:
         ctype = plugins.collector_types.get(entry.type)
         found, checked = _entry_problems(i, entry, catalog, plugins, unchecked)
@@ -293,7 +294,7 @@ def build_plan(
             for key in _table_keys(output):
                 produced_by.setdefault(key, (i, output))
             if entry.changes is not None:
-                changing[output] = entry.name if is_stream else None
+                changing[output] = i
                 problems.extend(_change_table_problems(i, output, produced_by))
                 for key in _table_keys(changes_output(output)):
                     produced_by.setdefault(key, (i, changes_output(output)))
@@ -305,6 +306,13 @@ def build_plan(
                 problems.extend(_run_problems(i, checked, source, ctype))
                 name = entry.name if is_stream else None
                 runs.append(_planned_run(checked, output, source, ctype, stream=name))
+
+    subscriptions, _ = _validate_items(
+        raw.get("subscriptions"), "subscriptions", SubscriptionSpec, problems
+    )
+    found, values = _subscription_problems(subscriptions, changing, dict(entries))
+    problems += found
+    provenance += values
 
     if is_directory is not None:
         problems += _directory_problems(sources, used_sources, is_directory, base)
@@ -324,6 +332,7 @@ def build_plan(
             preserve_raw=raw.get("preserve_raw", False),
             deadline=deadline,
             schedule=schedule,
+            subscriptions=[subscription for _, subscription in subscriptions],
         )
     return Plan(
         config=config,
@@ -334,7 +343,10 @@ def build_plan(
         skipped=skipped,
         streams=streams,
         provenance=provenance,
-        changes=changing,
+        changes={
+            output: next((st.name for st in streams if st.index == i), None)
+            for output, i in changing.items()
+        },
     )
 
 
@@ -1343,6 +1355,85 @@ def _changes(i: int, entry: CollectorEntry) -> tuple[list[SourcedValue], list[Pr
             )
         )
     return values, problems
+
+
+def _subscription_problems(
+    subscriptions: list[tuple[int, SubscriptionSpec]],
+    changing: Mapping[str, int],
+    entries: Mapping[int, CollectorEntry],
+) -> tuple[list[Problem], list[SourcedValue]]:
+    """What ``subscriptions:`` may not say, and each one's ``match:`` with where it came from:
+    a name given twice; an output no entry with ``changes:`` makes; a ``match:`` field no change
+    row has (ruling R2: checked against the change row's schema here, at plan time): ``op``,
+    ``key.<field>`` of the entry's ``changes.key``, or ``record.<field>``, one of its
+    ``normalize:`` columns when it has some."""
+    problems: list[Problem] = []
+    values: list[SourcedValue] = []
+    named: set[str] = set()
+    for i, subscription in subscriptions:
+        at = f"subscriptions.{i}"
+        if subscription.name in named:
+            problems.append(
+                Problem(
+                    f"{at}.name",
+                    f"subscription {subscription.name!r} is named twice",
+                    kind="name_taken",
+                    fix="give each subscription its own name",
+                    got=subscription.name,
+                )
+            )
+        named.add(subscription.name)
+        origin: Origin = "mission" if "match" in subscription.model_fields_set else "recon"
+        values.append(
+            SourcedValue(
+                path=f"{at}.match",
+                value=subscription.match,
+                origin=origin,
+                note="" if origin == "mission" else "no match: every change row of the output",
+            )
+        )
+        if subscription.output not in changing:
+            problems.append(
+                Problem(
+                    f"{at}.output",
+                    f"{subscription.output!r} is no output of a collector with changes:, so it "
+                    "has no change rows to read",
+                    kind="name_unknown",
+                    fix="name an output whose collector has changes: {key: [<field>]}",
+                    got=subscription.output,
+                    allowed=tuple(sorted(changing)),
+                )
+            )
+            continue
+        entry = entries[changing[subscription.output]]
+        assert entry.changes is not None
+        columns = tuple(entry.normalize or ())
+        allowed = (
+            *ROW_FIELDS,
+            *(f"key.{field}" for field in entry.changes.key),
+            *(f"record.{column}" for column in columns),
+        )
+        for wanted in subscription.match:
+            part, name = match_field(wanted)
+            known = (
+                part in ROW_FIELDS
+                or (part == "key" and name in entry.changes.key)
+                or (part == "record" and (not columns or name in columns))
+            )
+            if not known:
+                problems.append(
+                    Problem(
+                        f"{at}.match.{wanted}",
+                        f"{wanted} is no field of a change row of {subscription.output}: a row is "
+                        "{op, key, record}, its key the fields of changes.key"
+                        + (", its record the columns of normalize:" if columns else ""),
+                        kind="name_unknown",
+                        fix="match op, key.<field> or record.<field>, as the change row holds them",
+                        got=wanted,
+                        allowed=allowed,
+                    )
+                )
+    return problems, values
 
 
 def plugin_warning(broken: BrokenPlugin) -> Problem:

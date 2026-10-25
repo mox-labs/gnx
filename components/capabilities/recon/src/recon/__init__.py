@@ -15,6 +15,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any
 
 from recon.api import (
+    ack,
     capture,
     changes_since,
     configure_telemetry,
@@ -29,8 +30,10 @@ from recon.api import (
     schedule_tick,
     status,
     stream,
+    subscribe,
     survey,
     templates,
+    unsubscribe,
     watch,
 )
 from recon.domain.documents import (
@@ -45,6 +48,7 @@ from recon.domain.documents import (
     SchedulesDocument,
     StatusDocument,
     StreamDocument,
+    SubscriptionDocument,
     SurveyDocument,
     TableOutcome,
     TemplatesDocument,
@@ -116,6 +120,7 @@ __all__ = [
     "StatusDocument",
     "StreamDocument",
     "StreamStop",
+    "SubscriptionDocument",
     "SurveyDocument",
     "TableOutcome",
     "TemplatesDocument",
@@ -123,6 +128,7 @@ __all__ = [
     "UsageError",
     "WindowOutcome",
     "__version__",
+    "ack",
     "capture",
     "changes_since",
     "configure_telemetry",
@@ -141,8 +147,10 @@ __all__ = [
     "status",
     "stream",
     "stream_failure",
+    "subscribe",
     "survey",
     "survey_failure",
     "templates",
+    "unsubscribe",
     "watch",
 ]

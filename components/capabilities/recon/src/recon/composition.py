@@ -49,6 +49,7 @@ from recon.adapters._out.schedulers import (
     scheduler_commands,
     this_recon,
 )
+from recon.adapters._out.subscription_files import SubscriptionFiles
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.application.changes import MEMORY_KEYS
@@ -200,7 +201,8 @@ def root(
     kept to absolute directories no other user can write), ``local``, the clock's time as
     the host's local time, which every scheduler keeps its calendar in, and the join of a
     change detection's large comparisons (``key_join``, default DuckDB's), each of more than
-    ``memory_keys`` keys (200,000 by default; fewer is joined in memory).
+    ``memory_keys`` keys (200,000 by default; fewer is joined in memory). What each of a
+    mission's subscriptions acked is kept beside the mission, in its files.
     A test's root is this one with fakes given for the ports it stands in for."""
     clock = clock or SystemClock()
     process_env = os.environ if env is None else env
@@ -248,6 +250,7 @@ def root(
         local=local or _local,
         key_join=key_join if key_join is not None else DuckdbJoin(),
         memory_keys=memory_keys,
+        subscriptions=SubscriptionFiles(),
     )
 
 
