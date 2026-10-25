@@ -180,6 +180,39 @@ class TestALostRecordIsReadFromTheArchives:
         assert _rows(third) == [{"op": "insert", "key": {"id": "c"}, "record": C}]
 
 
+def test_after_a_loss_the_next_index_passes_every_retired_one(tmp_path: Path) -> None:
+    """Dijkstra F': with the record lost, the next index was one past the indexes the kept
+    archives' meta.yaml held, and retired archives' were not counted: every sealed archive
+    retired and the newest crashed, the next archive was index 1, below a subscriber's cursor
+    in a retired one, which then skipped it, and retention could remove its rows unacked."""
+    mission = {"catalog": [{"name": "mail", "url": "https://mail.test"}],
+               "collectors": [{"name": "inbox", "type": "api", "source": "mail",
+                               "endpoint": "/m", "extract": "items",
+                               "changes": {"key": ["id"]}, "retain": {"archives": 1}}],
+               "subscriptions": [{"name": "all", "output": "inbox"}]}  # fmt: skip
+    (tmp_path / ".recon" / "m").mkdir(parents=True)
+    (tmp_path / ".recon" / "m" / "config.yaml").write_text(yaml.safe_dump(mission))
+    surveys = Surveys(tmp_path)
+    surveys.survey(A)
+    surveys.survey(A, B)
+    surveys.recon.ack("m", "all", surveys.recon.subscribe("m", "all").cursor)
+    crashed, _ = surveys.survey(A, B, C)  # retention retires the two acked
+    retired = tmp_path / ".recon" / "m" / "archive" / "retired.jsonl"
+    stones = [json.loads(line)["index"] for line in retired.read_text().splitlines()]
+    assert stones == [1, 2]
+    # The newest killed in its change phase: no meta.yaml, its change table never sealed.
+    (crashed / "meta.yaml").unlink()
+    (crashed / ".incomplete").write_text("")
+    (crashed / "inbox.changes.jsonl").rename(crashed / "inbox.changes.jsonl.tmp")
+    (tmp_path / ".recon" / "m" / "archive-index.jsonl").unlink()
+    later, _ = surveys.survey(A, B, C, B | {"id": "d"})
+    assert _meta(later)["index"] > max(stones)
+    read = surveys.recon.subscribe("m", "all")
+    assert {(row.archive, row.key["id"]) for row in read.rows if row.key} >= {(later.name, "c")}
+    surveys.survey(A, B, C, B | {"id": "d"})
+    assert later.exists(), "its rows not acked: retention holds it"
+
+
 def test_a_clock_step_is_one_hour_back(tmp_path: Path) -> None:
     """The fake clock moves back as the tests above need it to."""
     clock = FixedClock()

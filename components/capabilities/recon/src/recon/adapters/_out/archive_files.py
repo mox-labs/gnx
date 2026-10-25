@@ -214,7 +214,8 @@ class ArchiveFiles:
 
     def _give_index(self, mission_dir: Path, archive_id: str) -> None:
         """Record ``archive_id`` as the mission's next archive: one more than the last index
-        given (or than the archives' ``meta.yaml`` say, when the record is lost)."""
+        given (or than the archives' ``meta.yaml`` say, when the record is lost), and than
+        every retired archive's tombstone holds (F': a lost record names only those kept)."""
         given = self._index_lines(mission_dir)
         lines = b""
         if given is None:  # lost, or never made: made again from what the archives say
@@ -222,7 +223,8 @@ class ArchiveFiles:
             lines = b"".join(
                 _index_line(a, i) for a, i in sorted(given.items(), key=lambda x: x[1])
             )
-        lines += _index_line(archive_id, max(given.values(), default=0) + 1)
+        last = max([*given.values(), *self._retired_indexes(mission_dir)], default=0)
+        lines += _index_line(archive_id, last + 1)
         descriptor = open_file(mission_dir / INDEX, os.O_WRONLY | os.O_APPEND)
         try:
             os.write(descriptor, lines)
@@ -249,6 +251,20 @@ class ArchiveFiles:
             index = self.read_meta(archive).get("index")
             if type(index) is int:
                 found[archive.name] = index
+        return found
+
+    def _retired_indexes(self, mission_dir: Path) -> list[int]:
+        """The indexes the retired archives' tombstones hold; a torn line holds none."""
+        try:
+            raw = (mission_dir / "archive" / RETIRED).read_bytes()
+        except FileNotFoundError:
+            return []
+        found: list[int] = []
+        for line in raw.splitlines():
+            with contextlib.suppress(ValueError, AttributeError):
+                index = json.loads(line).get("index")
+                if type(index) is int:
+                    found.append(index)
         return found
 
     def _index_lines(self, mission_dir: Path) -> dict[str, int] | None:
