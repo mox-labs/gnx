@@ -1,10 +1,14 @@
 # Changelog — recon
 
-## Unreleased
+## 0.14.0 — 2026-10-24
 
 ### Changed (breaking)
 
 - **`retain:` counts `archives`, not `windows`** (the owner's ruling on the round-4 review's S1): `retain: all | {archives, seconds, bytes}`, for a stream and a snapshot entry alike, since every window is an archive and `windows` would have named two things once snapshots keep archives too. A stream's `retain: {windows: N}`, released in 0.13.0, is now an unknown key, the plan's problem at `collectors.<i>.retain.windows`: write `retain: {archives: N}`. Removed before 1.0, with no alias.
+- **`auth.env: NAME` is `auth.token: env:NAME`** (ruling A1). An `api` or `sse` source names its credential as an `mcp` source does: `auth.token` is `env:NAME` (a variable) or `file:PATH` (a file, relative to the mission's directory), sent as `auth.header` and/or `auth.param` with `auth.prefix`; or `auth.headers_helper` names a command, run once a survey within the source's `timeout`, whose standard output is a JSON object of the headers to send. A token written as the secret itself, a token with a helper, and a helper with `header`, `param` or `prefix` are plan problems; `auth.env` is now an unknown key, and the problem's `allowed` names `token`. So a survey run unattended gets its credential without a secret in its environment. Removed before 1.0, with no alias.
+- **Every file and directory recon makes for a mission is private** (ruling A2): `0700` and `0600`, where the umask made them `0755` and `0644`. A tool that read a mission's archives as another user, or as a group, no longer can; `recon status` warns `mission_exposed` for a mission made before, and changes nothing.
+- **One survey of a mission at a time** (ruling S2): a survey while another holds the mission is refused `busy` (11), where two ran side by side.
+- **Ports a store or collector of your own implements change**: `ArchiveStore` gains `hold_mission`, `release_mission`, `write_sidecar`, `read_sidecar` and `read_table` (with `unsealed=`); `MissionStore` gains `exposed` and `change_key`; `KeyJoin.join` takes `scratch=`; `ApiCollector` and `SseCollector` take a `Credentials` where they took the environment.
 
 ### The skill
 
@@ -21,7 +25,6 @@
 
 ### One credential grammar for every source
 
-- **Breaking: `auth.env: NAME` is `auth.token: env:NAME`.** An `api` or `sse` source names its credential as an `mcp` source does: `auth.token` is `env:NAME` (a variable) or `file:PATH` (a file, relative to the mission's directory), sent as `auth.header` and/or `auth.param` with `auth.prefix`; or `auth.headers_helper` names a command, run once a survey within the source's `timeout`, whose standard output is a JSON object of the headers to send. A token written as the secret itself, a token with a helper, and a helper with `header`, `param` or `prefix` are plan problems; `auth.env` is now an unknown key, and the problem's `allowed` names `token`. So a survey run unattended gets its credential without a secret in its environment. Removed before 1.0, with no alias.
 - **A `file:` its group or others can read is refused**, for every source kind (an `mcp` source's `token: file:` too): the table fails as `config`, before anything is sent, with the `chmod 600` that fixes it.
 - **One resolver**: `recon.adapters._out.credentials` (`resolve_reference`, `helper_headers`, `Credentials`) is what the `api`, `sse` and `mcp` collectors use, and what a type of your own may use. `ApiCollector` and `SseCollector` take a `Credentials` where they took the environment.
 - **Every header a collector gives, but `User-Agent`, `Accept`, `Cache-Control` and `Last-Event-ID`, stays at its request's origin**: a redirect to another host, port or scheme drops it, a helper's headers included, whose names recon cannot know in advance (it dropped only the source's `auth.header`).
@@ -45,7 +48,8 @@
 - **A scheduled mission's plan warns `package_unpinned`** (a new problem kind; ruling A1's last clause) for each package a stdio MCP server or a `cli` command has `npx` or `uvx` fetch without an exact version (`npx -y pkg`, `pkg@latest`, `uvx pkg`, `uvx --from 'pkg>=1'`), at `catalog.<i>` or `collectors.<i>`, `got` the package: each tick would run whatever was published last. The fix is the pinned form, `pkg@<version>` or `pkg==<version>`, then `recon schedule install` again. The commands judged are what each run's type describes (`server`, `commands`), so a collector type of your own that describes its commands so is judged too.
 - **One survey of a mission at a time** (ruling S2): a survey holds the mission's `writer.lock` (`.recon/<mission>/writer.lock`, an `flock` holding its pid, as a stream's does) from before it writes anything until it returns, so a second survey of the mission, by hand or a scheduled tick, is refused `busy` (11), its `details` naming the `mission` and the holder's `pid` and its fix how to stop it. Only a stream refused a second writer before; two overlapping surveys each wrote an archive from the same sources. A dry run holds nothing. `busy`'s meaning and next step now cover a survey too. The `ArchiveStore` port gains `hold_mission` and `release_mission`.
 - **What recon writes for a mission is private** (ruling A2): each directory it makes under `.recon/` is `0700` and each file `0600` (the config, tables, `meta.yaml`, the event and capture logs, capture bodies, locks, tombstones, a table's page log and told index, the change key), set as each is made, whatever the umask. They were `0755` and `0644` under the usual umask. A directory or file made before keeps its mode; `recon status` warns `mission_exposed` (a new problem kind) for a mission one of whose paths other users can reach, with the fix `chmod -R go-rwx '<mission>'`, and changes nothing. The `MissionStore` port gains `exposed(name)`.
-### Fixed: the round-4 review
+
+### Fixed before release (the round-4 review)
 
 - **A change table's rows stand once it is sealed** (G3): a join that failed as it closed afterwards (a DuckDB connection or temporary directory that would not go) made the table's changes `error`, so the next table told its rows again. Now it is a `join_unclosed` warning (a new problem kind) and the summary stands.
 - **A change table is read only once sealed** (G2): `read_since` and `recon watch` served a change table's rows as it was written, and a writer that died mid-write left rows a reader had seen that the next survey told again. A change table's rows now reach a reader only once it is sealed; a table of records is still read as it is written.
