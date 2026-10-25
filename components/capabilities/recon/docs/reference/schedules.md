@@ -37,7 +37,7 @@ collectors:
 | `schedule` | the mission's schedule | none: the mission runs when it is told to |
 | `schedule.every` | the seconds between ticks: at least 60, and whole minutes that divide a day (60, 120, 180, ..., 600, ..., 3600, 5400, 7200, ..., 86400), so the ticks fall on one daily grid every scheduler keeps: `every` is at most a day, so a weekly or monthly schedule cannot be written yet; another value is a plan problem whose fix names the nearest two | required |
 | `schedule.missed` | what ticks missed while the host was asleep or off become: `once`, one run when it is back (the missed ticks coalesced, never caught up one by one); `skip`, none | `once` |
-| `deadline` | a scheduled mission's survey time, so a tick ends before the next is due | 0.8 × `every` unless set |
+| `deadline` | a scheduled mission's survey time, so a tick ends before the next is due | 0.8 × `every` unless set, less its subscriptions' `deliver.deadline`s summed (they deliver in turn), and at least 0.2 × `every` |
 
 `recon survey <mission> --dry-run --json` reports each value and where it came from, in `provenance`: `schedule.every` (`mission`), `schedule.missed` (`mission`, or `recon` when left out) and `deadline` (`recon`, with a note, when it is the default). The ticks fall at `offset + k × every` from local midnight, where the offset is `hash(mission) mod every` in whole minutes: missions due at the same moment are spread over the interval, the same on every host. The grid is wall-clock time, as each scheduler keeps it: across a daylight-saving change, one day's ticks shift by the hour the clock does. How late a tick is, and so whether `missed: skip` skips it, is the seconds that passed since the instant its grid time named, in UTC, never the difference of two wall-clock readings.
 
@@ -75,7 +75,8 @@ Each tick runs `recon schedule tick <mission> --project <project> --config-sha25
 1. **The config is the one installed.** Its sha256 must be `--config-sha256`: the digest of the very bytes the survey plans and runs, read once while the tick holds the mission, so a config swapped after an earlier read never runs. Another is refused, `stale` (exit 12), logged `skipped_by: config_changed`, and so is every tick after until `recon schedule install` runs again: a scheduled config runs its commands unattended, so a change to it is read before it runs.
 2. **A late start under `missed: skip`.** A tick that starts more than 60 s after it was due (the grid's grain) runs no survey: `skipped_by: missed`, exit 0.
 3. **One survey at a time.** The tick surveys the mission under its lock. Another survey of the mission running (a slow tick, a survey by hand) refuses it `busy` (exit 11), logged `skipped_by: busy`; `details.skips` counts the busy skips in a row, and from the second the error is an overrun: the survey takes longer than `every`, and the fix is to raise `every` or lower `deadline:`. The default `deadline:` of 0.8 × `every` bounds each survey so the next tick finds the mission free.
-4. **The survey.** As `recon survey` runs it, plus two keys in its archive's `meta.yaml`: `scheduled_at`, when the tick was due (local time), and `late_s`, how late it started. Its exit code is the survey's. It prints `recon.v1.tick`: `mission`, `scheduled_at`, `late_s`, `skipped_by`, the `survey` document, `warnings`.
+4. **The survey.** As `recon survey` runs it, plus two keys in its archive's `meta.yaml`: `scheduled_at`, when the tick was due (local time), and `late_s`, how late it started. Its exit code is the survey's.
+5. **The deliveries.** Once the survey's archive is sealed and the mission let go, each subscription with `deliver:` is given the rows it has not acked, by the config the tick checked (`recon --skill -r subscriptions`); a tick that ran no survey delivers nothing. It prints `recon.v1.tick`: `mission`, `scheduled_at`, `late_s`, `skipped_by`, the `survey` document, `warnings`, and `deliveries` (`recon.v1.deliver`, or null when no subscription has `deliver:`).
 
 ## Credentials in a tick
 
@@ -116,7 +117,7 @@ collectors:
 
 `archives: N` keeps the newest N archives; `seconds: S` those that ended within S seconds of now; `bytes: B` the newest whose sizes add up to no more than B. With more than one, an archive is kept only while every one keeps it. The default is `all`: nothing is removed unless the mission says so, and the plan of a scheduled mission whose entry says nothing warns `retain_unset`, with the `archives` that keeps a day. An archive holds every entry's tables, so it is removed only when every snapshot entry lets it go: one entry that keeps `all` keeps them all.
 
-After each survey, recon removes what the rules let go, oldest first, each archive whole (its tables, change tables, told indexes, page logs and captures), each leaving a line in `archive/retired.jsonl` (`id`, `started_at`, `timestamp`, `ended`, `retired_at`, `rule`). It never removes the newest archive, one being written, or the last archive a table with `changes:` was told in (what its next comparison reads). A told index that does not hold is computed again from the archives kept.
+After each survey, recon removes what the rules let go, oldest first, each archive whole (its tables, change tables, told indexes, page logs and captures), each leaving a line in `archive/retired.jsonl` (`id`, `index`, `started_at`, `timestamp`, `ended`, `retired_at`, `rule`). It never removes the newest archive, one being written, the last archive a table with `changes:` was told in (what its next comparison reads), or one holding change rows a subscription has not acked (`recon --skill -r subscriptions`). A told index that does not hold is computed again from the archives kept.
 
 ## The log, and status
 
@@ -130,6 +131,7 @@ Each tick is one JSON line of `.recon/<mission>/schedule.log`, `0600`:
 | `archive` | the survey's archive id; null when it wrote none |
 | `skipped_by` | why it ran no survey: `busy`, `missed` or `config_changed`; null when it ran one |
 | `late_s` | how late it started, in seconds |
+| `warning_kinds` | the kinds of what it warned of, sorted: its survey's, its deliveries' and a subscription behind (`subscription_behind`), so what an unattended tick said is read here |
 
 The log is bounded: at 1 MiB it becomes `schedule.log.1`, replacing the one before, so a schedule's log never passes 2 MiB.
 
@@ -151,9 +153,10 @@ The log is bounded: at 1 MiB it becomes `schedule.log.1`, replacing the one befo
 | `missed: once` under cron | `missed_ignored` warning | install for launchd or systemd, or write `missed: skip` |
 | a scheduled snapshot entry with no `retain:` | `retain_unset` warning in the plan, at `collectors.<i>.retain` | `retain: {archives: N}` (a day of ticks), `{seconds: ...}`, or `retain: all` to keep every archive and say so |
 | a credential named `env:NAME` in a scheduled mission | `env_unscheduled` warning in the plan, at the reference's path | name it as `file:PATH` (mode 0600), or `headers_helper` for a token, then install again |
-| a package `npx`, `npm exec`, `bunx`, `pnpm dlx`, `uvx`, `uv tool run` or `pipx run` fetches with no exact version, in a stdio server, a `cli` command or a `headers_helper` | `package_unpinned` warning in the plan, at `catalog.<i>`, `collectors.<i>` or the helper's key | pin it, `pkg@<version>` (npm's) or `pkg==<version>` (Python's), a repository by its whole commit, then install again |
+| a package `npx`, `npm exec`, `bunx`, `pnpm dlx`, `uvx`, `uv tool run` or `pipx run` fetches with no exact version, in a stdio server, a `cli` command, a `headers_helper` or a subscription's `deliver` | `package_unpinned` warning in the plan, at `catalog.<i>`, `collectors.<i>`, the helper's key or `subscriptions.<i>.deliver.command` | pin it, `pkg@<version>` (npm's) or `pkg==<version>` (Python's), a repository by its whole commit, then install again |
 | a config changed since install | `config_changed` warning in `status` | read it, then install again |
 | two or more busy skips in a row | `schedule_overrun` warning in `status` | raise `every`, or lower `deadline:` |
+| a survey's `deadline:` and its `deliver.deadline`s summed longer together than `every` | `schedule_overrun` warning in the plan, at `deadline` | raise `every`, or lower `deadline:` or `deliver.deadline` |
 
 ## In a program
 

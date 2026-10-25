@@ -47,6 +47,10 @@ EVERY_ALLOWED: tuple[int, ...] = tuple(m * 60 for m in range(1, 1441) if 1440 % 
 #: ends before the next one is due, so two ticks do not overlap (ruling S2).
 DEADLINE_SHARE = 0.8
 
+#: The least share of ``every`` a scheduled mission's default ``deadline:`` leaves its
+#: survey, however long its deliveries may take.
+DEADLINE_FLOOR = 0.2
+
 #: How late a tick may start and still be the one that was due, in seconds: the grid's own
 #: grain. Under ``missed: skip`` a later one is the scheduler catching up after sleep, and is
 #: skipped.
@@ -280,6 +284,13 @@ class ScheduleSpec(BaseModel):
     def deadline(self) -> float:
         """The ``deadline:`` a mission scheduled so has unless it sets one."""
         return DEADLINE_SHARE * self.every
+
+    def deadline_beside(self, delivering: float) -> float:
+        """The ``deadline:`` a mission scheduled so has unless it sets one, when its tick then
+        delivers for up to ``delivering`` seconds: 0.8 × ``every`` less that, so the tick's
+        survey and delivery end before the next tick is due, and never under 0.2 × ``every``
+        (Erlang, review F3)."""
+        return max(DEADLINE_FLOOR * self.every, self.deadline - delivering)
 
 
 # --- projection ---------------------------------------------------------------------------

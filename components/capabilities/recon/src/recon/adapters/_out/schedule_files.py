@@ -13,12 +13,12 @@ file they opened, so two ticks never write into a log one of them has just rotat
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
 from typing import TYPE_CHECKING, Any
 
-from recon.adapters._out.private_files import make_dirs, open_file, write_file
+from recon.adapters._out.file_locks import append_bounded
+from recon.adapters._out.private_files import make_dirs, write_file
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -55,25 +55,8 @@ class ScheduleFiles:
         return None
 
     def append(self, mission_dir: Path, tick: dict[str, Any]) -> None:
-        make_dirs(mission_dir)
-        path = mission_dir / SCHEDULE_LOG
         line = (json.dumps(tick, sort_keys=True) + "\n").encode()
-        while True:
-            descriptor = open_file(path, os.O_WRONLY | os.O_APPEND)
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX)
-                if not _is(path, descriptor):
-                    continue  # another tick rotated it while this one waited: open the new one
-                size = os.fstat(descriptor).st_size
-                # Rotated only when it holds something: a line past the cap, made room for in
-                # an empty log, would rotate for ever; it is written alone (review M1).
-                if size and size + len(line) > self._max_bytes:
-                    os.replace(path, path.with_name(f"{SCHEDULE_LOG}.1"))
-                    continue
-                os.write(descriptor, line)
-                return
-            finally:
-                os.close(descriptor)
+        append_bounded(mission_dir / SCHEDULE_LOG, line, self._max_bytes)
 
     def lines(self, mission_dir: Path) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
@@ -85,13 +68,3 @@ class ScheduleFiles:
                         if isinstance(tick, dict):
                             found.append(tick)
         return found
-
-
-def _is(path: Path, descriptor: int) -> bool:
-    """Whether ``path`` is still the file open as ``descriptor``."""
-    try:
-        named = os.stat(path)
-    except FileNotFoundError:
-        return False
-    held = os.fstat(descriptor)
-    return (named.st_dev, named.st_ino) == (held.st_dev, held.st_ino)

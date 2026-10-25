@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 from recon import __version__
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.cli_collector import PopenRunner
+from recon.adapters._out.command_deliverer import CommandDeliverer
 from recon.adapters._out.duckdb_query import DuckdbJoin, DuckdbQuery
 from recon.adapters._out.event_channel import ThreadChannel
 from recon.adapters._out.markitdown_converter import MarkitdownConverter
@@ -49,6 +50,7 @@ from recon.adapters._out.schedulers import (
     scheduler_commands,
     this_recon,
 )
+from recon.adapters._out.subscription_files import SubscriptionFiles
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.application.changes import MEMORY_KEYS
@@ -75,6 +77,7 @@ if TYPE_CHECKING:
     from recon.domain.ratelimit import RateLimiter
     from recon.domain.schedule import Platform, Scheduler
     from recon.domain.shell import ShellRunner
+    from recon.domain.subscriptions import Deliverer
     from recon.domain.telemetry import Channel, EventSink
 
 TRANSFORMS_GROUP = "recon.transforms"
@@ -185,6 +188,7 @@ def root(
     local: Callable[[datetime], datetime] | None = None,
     key_join: KeyJoin | None = None,
     memory_keys: int = MEMORY_KEYS,
+    deliverer: Deliverer | None = None,
 ) -> Recon:
     """recon wired to this process: missions under ``project`` (default: the project root of
     the working directory), and the environment ``env`` (default: the process environment).
@@ -200,7 +204,11 @@ def root(
     kept to absolute directories no other user can write), ``local``, the clock's time as
     the host's local time, which every scheduler keeps its calendar in, and the join of a
     change detection's large comparisons (``key_join``, default DuckDB's), each of more than
-    ``memory_keys`` keys (200,000 by default; fewer is joined in memory).
+    ``memory_keys`` keys (200,000 by default; fewer is joined in memory). What each of a
+    mission's subscriptions acked is kept beside the mission, in its files, and each delivery
+    is given to its ``command:`` (``deliverer``, default a :class:`CommandDeliverer` handed
+    the few variables of ``env`` a desktop notifier needs, and no other, its ``PATH`` the one a
+    scheduled tick runs with).
     A test's root is this one with fakes given for the ports it stands in for."""
     clock = clock or SystemClock()
     process_env = os.environ if env is None else env
@@ -248,6 +256,8 @@ def root(
         local=local or _local,
         key_join=key_join if key_join is not None else DuckdbJoin(),
         memory_keys=memory_keys,
+        subscriptions=SubscriptionFiles(),
+        deliverer=deliverer or CommandDeliverer(process_env, path=host.path),
     )
 
 

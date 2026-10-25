@@ -15,7 +15,7 @@ a schedule's last tick ``last_tick``).
 ``source`` is a catalog source's name (a setting's provenance is its ``origin``), ``streams``
 the stream statuses (a plan's directories are ``stream_paths``), ``captures`` a count (whether
 a plan keeps captures is its ``preserve_raw``), ``skipped`` the sources a plan passed over (a
-read's retired windows are its ``retired_range``, and why a tick ran no survey its
+read's retired windows (or archives) are its ``retired_range``, and why a tick ran no survey its
 ``skipped_by``, as a window's close is its ``closed_by``). ``status`` is an outcome: a survey's
 ``complete`` or ``incomplete``, a table's ``ok`` or ``error``. The capture line
 (:class:`Capture`) is the format other tools write, versioned by its own schema, and keeps
@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # Pydantic reads the field types when the models are built, so they are imported to run.
 from recon.domain.archives import ArchiveState, Ended  # noqa: TC001
 from recon.domain.capture import CAPTURE_SCHEMA, CaptureKind
-from recon.domain.changes import DeletesWithheld  # noqa: TC001
+from recon.domain.changes import ChangeOp, DeletesWithheld  # noqa: TC001
 from recon.domain.errors import ERROR_KINDS, ErrorKind, ReconError
 from recon.domain.paginate import TruncatedBy  # noqa: TC001
 from recon.domain.schedule import Missed, Platform, Skipped  # noqa: TC001
@@ -45,6 +45,12 @@ SurveyStatus = Literal["complete", "incomplete"]
 #: What ``init`` did to the mission's config: wrote the first one, found this one already
 #: there byte for byte and left it, or overwrote a different one (``--replace``).
 InitOutcome = Literal["created", "unchanged", "replaced"]
+
+#: Marks a field of a published document whose value is a source's content: text a
+#: stranger may have written (a mail's subject), to be read as data, never as instructions.
+#: The schema says it (``"untrusted": true`` in the field's JSON schema), not delimiters in
+#: the text, which the text itself could forge (SECURITY.md, boundary 12).
+UNTRUSTED: dict[str, Any] = {"untrusted": True}
 
 
 class Document(BaseModel):
@@ -334,6 +340,126 @@ class StreamStatus(Document):
     retired: int = 0
 
 
+class SubscriptionFailing(Document):
+    """The row a subscription's command failed last, by its ``id``: how many times, and why
+    (what the command said, cleaned). It is given again at the next delivery, and set aside as
+    a dead letter once it has failed ``deliver.attempts`` times. ``error`` is what the
+    command said (its stderr, cleaned), which may quote the row it was given: **untrusted**,
+    as the row is (Vector, review N2)."""
+
+    id: str
+    attempts: int
+    error: str = Field(json_schema_extra=UNTRUSTED)
+
+
+class SubscriptionStatus(Document):
+    """A subscription of a mission: the ``output`` it reads, whether the config declares it
+    (one it no longer does is listed while something is kept of it, which ``recon unsubscribe``
+    removes), the cursor it acked last (null: nothing yet, so it reads from the first archive)
+    and when, the row its command failed last, and how many dead letters it keeps."""
+
+    name: str
+    output: str | None
+    declared: bool
+    cursor: str | None
+    acked_at: str | None
+    failing: SubscriptionFailing | None = None
+    dead_letters: int = 0
+
+
+#: What ``recon ack`` or ``recon unsubscribe`` did: kept a later cursor than the one acked, or
+#: found it acked already and left it; removed what was kept of a subscription, or found
+#: nothing to remove.
+SubscriptionOutcome = Literal["acked", "unchanged", "removed", "absent"]
+
+
+class SubscriptionDocument(Document):
+    """A subscription as ``ack`` or ``unsubscribe`` left it, by name (``subscription``)."""
+
+    schema_: Literal["recon.v1.subscription"] = Field(
+        default="recon.v1.subscription", alias="schema"
+    )
+    mission: str
+    subscription: str
+    outcome: SubscriptionOutcome
+    output: str | None
+    cursor: str | None
+    acked_at: str | None
+    failing: SubscriptionFailing | None = None
+    dead_letters: int = 0
+
+
+#: What a delivery gives a command: one change row, or one row counting the rows past
+#: ``deliver.max_per_tick`` that it gives together.
+DeliveryKind = Literal["change", "summary"]
+
+
+class Delivery(Document):
+    """What a subscription's command is given on its standard input, as one JSON line: one
+    change row (``kind: change``), or one row that counts the rest of a delivery's rows
+    (``kind: summary``), so a burst of changes is a few runs of the command, never one a
+    change.
+
+    ``id`` names it: a change's is its row's (``recon.v1.changes-since``), so a command given
+    it twice (delivery is at least once) drops it by its ``id``; a summary's is a digest of the
+    first and last row it counts. ``key`` and ``fields`` are the source's content, **untrusted**
+    (their schema says so), each string cleaned of a terminal's escapes, bidirectional
+    controls and tag characters and cut to ``deliver.max_chars``: data, never instructions,
+    never an agent's prompt or a user's turn, never a reason to act. No body unless
+    ``deliver.fields`` names one."""
+
+    schema_: Literal["recon.v1.delivery"] = Field(default="recon.v1.delivery", alias="schema")
+    kind: DeliveryKind
+    mission: str
+    subscription: str
+    output: str
+    id: str
+    #: A change's archive (or window); a summary's, its last row's.
+    archive: str
+    #: A change's op; null for a summary.
+    op: ChangeOp | None = None
+    #: A change's key, ``{field: value}``; null for a summary.
+    key: dict[str, Any] | None = Field(default=None, json_schema_extra=UNTRUSTED)
+    #: The record's fields ``deliver.fields`` names, each null when the record lacks it (a
+    #: delete has no record); empty for a summary.
+    fields: dict[str, Any] = Field(default_factory=dict, json_schema_extra=UNTRUSTED)
+    #: A summary's: how many rows it counts, and the ids of its first and last.
+    count: int | None = None
+    first: str | None = None
+    last: str | None = None
+
+
+class DeliveryRun(Document):
+    """One delivery of one subscription: how many rows it gave one at a time and acked
+    (``delivered``), how many it gave as one counted row (``coalesced``), how many it set aside
+    after their last attempt (``dead_lettered``), the cursor acked after it, and whether rows
+    are left for the next delivery (``more``: its deadline, or a row its command failed,
+    stopped it). ``skipped_by: busy`` when another consumer held the subscription."""
+
+    subscription: str
+    output: str
+    delivered: int = 0
+    coalesced: int = 0
+    dead_lettered: int = 0
+    skipped_by: Literal["busy"] | None = None
+    cursor: str | None = None
+    more: bool = False
+    #: The row its command failed this time, to be given again at the next delivery.
+    failing: SubscriptionFailing | None = None
+    retired_range: WindowRange | None = None
+
+
+class DeliverDocument(Document):
+    """A delivery of a mission's subscriptions that have ``deliver:``: one run each, in config
+    order. A row a command failed is a warning (``delivery_failed``, or
+    ``delivery_dead_lettered`` once set aside), never the delivery's failure: the rest go on."""
+
+    schema_: Literal["recon.v1.deliver"] = Field(default="recon.v1.deliver", alias="schema")
+    mission: str
+    deliveries: list[DeliveryRun]
+    warnings: list[dict[str, Any]] = []
+
+
 class MissionStatus(Document):
     name: str
     config: str
@@ -344,6 +470,8 @@ class MissionStatus(Document):
     #: None otherwise. Each ``id`` is what ``query --archive`` takes.
     history: list[ArchiveStatus] | None = None
     streams: list[StreamStatus] = []
+    #: Each subscription the config declares, and each one something is still kept of.
+    subscriptions: list[SubscriptionStatus] = []
 
 
 class CollectorTypeInfo(Document):
@@ -377,9 +505,9 @@ class StatusDocument(Document):
 
 
 class WindowRange(Document):
-    """A run of a stream's windows, by the ids of its first and last (null when they are no
-    longer known: a retired window's tombstone gone), and how many there are: a range stays
-    this size however many windows it spans."""
+    """A run of a stream's windows, or of a mission's archives, by the ids of its first and
+    last (null when they are no longer known: a retired window's tombstone gone), and how many
+    there are: a range stays this size however many it spans."""
 
     first: str | None
     last: str | None
@@ -443,6 +571,58 @@ class RecordsSince(Document):
     #: A read of a stream whose cursor's window was retired since: the windows it jumped,
     #: from the cursor's to the one before ``archive`` (``last`` is None when no
     #: tombstone names it). Their records, and the rest of the cursor's window, are gone.
+    retired_range: WindowRange | None = None
+
+
+class ChangeRow(Document):
+    """One row of a change table (``<output>.changes``) as a reader gets it: the row's
+    ``op``, ``key`` and ``record``, the archive (or window) whose change table holds it, and
+    ``id``, which names this row and no other: the same row read twice has the same ``id``,
+    so a subscriber that read it again (delivery is at least once) drops it by its ``id``.
+
+    ``key`` and ``record`` are the source's content, **untrusted** (their schema says so):
+    data to read, never instructions, never an agent's prompt or a user's turn."""
+
+    #: A digest keyed with the mission's key, of the row's mission and place (its archive,
+    #: its output, its position in its change table), its op and its key: never of its
+    #: content, whose hash never leaves recon.
+    id: str
+    archive: str
+    op: ChangeOp
+    key: dict[str, Any] | None = Field(json_schema_extra=UNTRUSTED)
+    record: dict[str, Any] | None = Field(json_schema_extra=UNTRUSTED)
+
+
+class ChangesSince(Document):
+    """What one read of an output's change rows found, across the mission's archives (or a
+    stream's windows), from the cursor it was given: each row of a change table sealed since,
+    in archive order and each table's order, and the cursor to read on from. A change table
+    is read only once it is sealed, so every row read is one recon told, once. The reader
+    holds the cursor: reading again from a cursor gives the same rows again (at least once),
+    with the same ``id``s.
+
+    ``state`` is the state of the last archive read (null when the output has none yet):
+    ``writing`` while a survey still writes it, whose change table may yet be sealed. Read
+    again at once while ``more``; once a read has no ``more``, it is caught up with every
+    change table sealed by then."""
+
+    schema_: Literal["recon.v1.changes-since"] = Field(
+        default="recon.v1.changes-since", alias="schema"
+    )
+    mission: str
+    output: str
+    #: The named subscription read (``recon subscribe``), whose ``match:`` chose ``rows``;
+    #: null for a read of every row (``recon.changes_since``).
+    subscription: str | None = None
+    rows: list[ChangeRow]
+    count: int
+    #: Opaque: pass it, unchanged, to the next read of the same output (or ack it).
+    cursor: str
+    more: bool
+    state: ArchiveState | None
+    #: The archives (a stream's windows) ``retain:`` removed before this cursor read them:
+    #: their rows, and the rest of the cursor's archive, are gone. Said by the read that
+    #: passes them, so none is passed silently.
     retired_range: WindowRange | None = None
 
 
@@ -646,6 +826,9 @@ class TickOutcome(Document):
     archive: str | None
     skipped_by: Skipped | None
     late_s: float | None
+    #: The kinds of what the tick warned of (its survey's, its deliveries', a subscription
+    #: behind), sorted: what an unattended tick said, where it is read (Erlang, review F2).
+    warning_kinds: list[str] = []
 
 
 class TickDocument(Document):
@@ -659,7 +842,12 @@ class TickDocument(Document):
     late_s: float | None
     skipped_by: Skipped | None
     survey: SurveyDocument | None
+    #: Problem records of the tick beside its survey's and its deliveries': a subscription
+    #: behind (``subscription_behind``).
     warnings: list[dict[str, Any]] = []
+    #: The delivery of the mission's subscriptions that have ``deliver:``, run after the survey
+    #: sealed its archive; null when it has none, or ran no survey.
+    deliveries: DeliverDocument | None = None
 
 
 class ScheduleStatus(Document):

@@ -2,10 +2,10 @@
 name: recon
 description: "Writes, plans and runs recon missions: one YAML file that names sources (HTTP APIs, shell commands, web pages, MCP servers, capture logs) and what to ask them; recon collects the answers into timestamped JSONL archives and answers SQL over them with DuckDB. This skill should be used when the user asks to \"collect data from an API\", \"build a dataset from several sources\", \"mine a codebase with ripgrep or git log\", \"snapshot an API over time\", \"normalize API responses\", \"query collected records with SQL\", \"collect from an MCP server\", \"capture MCP tool results\", \"write a recon mission\", \"watch a survey as it runs\", or runs recon survey, recon query, recon watch or recon init."
 metadata:
-  version: "0.14.0"
+  version: "0.15.0"
 ---
 
-# recon 0.14.0: collect from many sources into tables SQL can query
+# recon 0.15.0: collect from many sources into tables SQL can query
 
 recon runs a mission: one YAML file that lists sources (the catalog) and what to ask each of them (the collectors). recon checks the file and shows every request, command and MCP call it would make, then fetches, runs or calls them, reshapes each answer into records with a declarative `normalize:` spec, and writes one JSONL table per collector and source into a timestamped archive. `recon query` answers SQL over an archive, so a large result is read a few rows at a time instead of loaded whole. recon uses no model: it runs exactly the file you wrote.
 
@@ -24,7 +24,7 @@ Do not use recon:
 The plugin carries this text; the `recon` command is a separate Python package. Check with `recon --version`. Install with:
 
 ```
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.14.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.15.0#subdirectory=components/capabilities/recon"
 ```
 
 If `recon` is missing, say so; do not improvise it with curl and jq, because the archive layout and the query surface are what make the output reusable. A `cli` collector runs whatever program its command names (`rg`, `git`, `gh`), which must be installed too.
@@ -105,7 +105,7 @@ Act on the exit code, then on the error's `fix`:
 | 8 | `run_failed` | a table failed, and not only on credentials or transiently; the archive is kept, marked incomplete | read each failed table's error and fix its cause, then plan and survey again |
 | 9 | `store` | the survey could not finish its archive; it is kept, marked incomplete | free space where the archive is, or make it writable, then survey again |
 | 10 | `query` | the SQL failed, or reached outside the mission's archives | correct the SQL as the error's `fix` says; for a missing table, it names the tables there are |
-| 11 | `busy` | another recon is writing the stream, or surveying the mission | let it run, or stop it as the `fix` says (`kill -TERM <pid>`, the pid in `details`), then run the command again |
+| 11 | `busy` | another recon is writing the stream, surveying the mission, or reading the subscription | let it run, or stop it as the `fix` says (`kill -TERM <pid>`, the pid in `details`), then run the command again |
 | 12 | `stale` | the config changed since its schedule was installed; ticks are refused | read what changed, then `recon schedule install <mission>` |
 | 130 | `interrupted` | Ctrl-C or SIGTERM stopped the command; a survey's archive reads `ended: stopped` (a stopped `recon stream` exits 0) | run the command again |
 
@@ -126,6 +126,7 @@ Documents name their shape in `schema`: `recon.v1.plan`, `recon.v1.survey`, `rec
 preserve_raw: false            # true: keep every fetched body in the archive's capture log
 deadline: 600                  # optional: seconds the whole survey may take (> 0)
 schedule: {every: 600, missed: once}   # optional: the OS scheduler runs it
+subscriptions: [{name, output, match, deliver}]  # who is told what changed; -r subscriptions
 catalog:                       # where to look; optional
   - name: <source>             # required, unique
     type: api                  # api | web | local | mcp, or a kind an installed type adds

@@ -87,6 +87,15 @@ SIDECARS: tuple[Sidecar, ...] = ("pages", "keys")
 _NOT_IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]")
 
 
+def archive_rank(archive: str | None, index: int | None) -> tuple[int, int, str]:
+    """Where an archive (or a window) stands in its mission's order: an indexed one by its
+    index, after every one made before indexes, which stand by their ids (when they began);
+    none (before the first) before all."""
+    if archive is None:
+        return (-1, 0, "")
+    return (0, 0, archive) if index is None else (1, index, "")
+
+
 def table_name(output: str) -> str:
     """The name SQL knows an output's table by: every character but an ASCII letter, a digit
     or ``_`` becomes ``_`` (``oa-works`` is ``oa_works``). SQL matches it without regard to
@@ -161,10 +170,18 @@ class NewRecords:
 class ArchiveStore(Protocol):
     def create(self, mission_dir: Path, archive_id: str, *, stream: str | None = None) -> Path:
         """A new archive of the mission, named ``archive_id``, holding only the incomplete
-        marker, and held by this writer until :meth:`release`: its state is ``writing``. With
-        ``stream``, a window of that stream (``archive_id`` is a window's id), which this
-        writer holds (:meth:`hold_stream`). Raises ReconError (``store``) when the id is
-        taken."""
+        marker, and held by this writer until :meth:`release`: its state is ``writing``. A
+        survey's archive is given the mission's next index (:meth:`indexes`), one more than the
+        last given, before it has its name: a survey holds the mission as it creates it, so the
+        indexes are given one at a time. With ``stream``, a window of that stream
+        (``archive_id`` is a window's id, its index in it), which this writer holds
+        (:meth:`hold_stream`). Raises ReconError (``store``) when the id is taken."""
+        ...
+
+    def indexes(self, mission_dir: Path, *, stream: str | None = None) -> dict[str, int]:
+        """The index of each of the mission's archives that has one, by id: the order they
+        were made in, whatever the clock said. An archive made before indexes has none. With
+        ``stream``, each window's index in its stream."""
         ...
 
     def hold_stream(self, mission_dir: Path, stream: str) -> None:
@@ -217,8 +234,10 @@ class ArchiveStore(Protocol):
         holds."""
         ...
 
-    def retired(self, mission_dir: Path, stream: str) -> list[dict[str, Any]]:
-        """The tombstones of the stream's retired windows, oldest first, one per window."""
+    def retired(self, mission_dir: Path, stream: str | None) -> list[dict[str, Any]]:
+        """The tombstones of the stream's retired windows, oldest first, one per window; with
+        ``stream`` None, those of the mission's retired archives (a snapshot entry's
+        ``retain:``)."""
         ...
 
     def retired_count(self, mission_dir: Path, stream: str) -> int:
@@ -313,9 +332,11 @@ class ArchiveStore(Protocol):
         ...
 
     def archives(self, mission_dir: Path, *, stream: str | None = None) -> list[Path]:
-        """The mission's archives, oldest first: its directories named by
-        :data:`ARCHIVE_ID_FORMAT`, and no other. With ``stream``, that stream's windows
-        instead, by index, at the cost of that stream's windows alone."""
+        """The mission's archives, in the order they were made: its directories named by
+        :data:`ARCHIVE_ID_FORMAT`, and no other, by index (:meth:`indexes`); those with none
+        (made before indexes), first, by when they began, as their ids say (the legacy rule).
+        With ``stream``, that stream's windows instead, by index, at the cost of that stream's
+        windows alone."""
         ...
 
     def read_meta(self, archive: Path) -> dict[str, Any]:
@@ -325,14 +346,21 @@ class ArchiveStore(Protocol):
         ...
 
     def read_since(
-        self, archive: Path, cursor: str | None, *, max_records: int, max_bytes: int
+        self,
+        archive: Path,
+        cursor: str | None,
+        *,
+        max_records: int,
+        max_bytes: int,
+        tables: Sequence[str] | None = None,
     ) -> NewRecords:
         """The records of ``archive`` written since ``cursor`` (None: from the start), at
         most ``max_records`` of them and ``max_bytes`` of their lines, whole records only and at
         least one, from its sealed tables and the ones being written alike, table by table
-        in output-name order; ``more`` when a bound cut it. Raises UsageError for a cursor
-        this store did not give for this archive, and for a ``max_records`` or ``max_bytes``
-        below 1."""
+        in output-name order; ``more`` when a bound cut it. With ``tables``, of the tables of
+        those output names alone (a change table: what a subscription reads). Raises
+        UsageError for a cursor this store did not give for this archive, and for a
+        ``max_records`` or ``max_bytes`` below 1."""
         ...
 
     def tables(self, archive: Path) -> list[StoredTable]:

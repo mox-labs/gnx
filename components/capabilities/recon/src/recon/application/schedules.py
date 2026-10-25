@@ -35,12 +35,12 @@ from recon.domain.errors import (
 from recon.domain.schedule import MISSED_GRACE_S, OVERRUN_SKIPS, ScheduledRun, due, project
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
     from recon.application.plan import Plan
     from recon.domain.clock import Clock
-    from recon.domain.documents import ScheduleOutcome, SurveyDocument
+    from recon.domain.documents import DeliverDocument, ScheduleOutcome, SurveyDocument
     from recon.domain.missions import ConfigFile, MissionStore
     from recon.domain.schedule import (
         Platform,
@@ -290,7 +290,10 @@ class Schedules:
         self,
         name: str,
         config_sha256: str,
-        survey: Callable[[dict[str, Any]], SurveyDocument],
+        survey: Callable[
+            [dict[str, Any]],
+            tuple[SurveyDocument, DeliverDocument | None, Sequence[dict[str, Any]]],
+        ],
     ) -> TickDocument:
         """One tick of the mission's schedule, logged: refused (``stale``) when the config
         is not the one installed; skipped when ``missed: skip`` and it started more than
@@ -328,7 +331,7 @@ class Schedules:
         try:
             # The survey checks the digest again, of the bytes it plans and runs, read once
             # under the mission lock: a config swapped since the check above is refused.
-            document = survey({"scheduled_at": _iso(slot), "late_s": late_s})
+            document, delivered, said = survey({"scheduled_at": _iso(slot), "late_s": late_s})
         except ReconError as error:
             skipped: Skipped | None = _SKIPPED_BY.get(error.kind)
             self._log(mission, slot, started, error.kind, None, skipped)
@@ -342,10 +345,13 @@ class Schedules:
             raise
         failure = survey_failure(document)
         kind = failure.kind if failure is not None else "ok"
-        self._log(mission, slot, started, kind, document.archive, None)
+        warned = [*document.warnings, *(delivered.warnings if delivered else []), *said]
+        kinds = sorted({str(w.get("kind")) for w in warned})
+        self._log(mission, slot, started, kind, document.archive, None, kinds)
         return TickDocument(
-            mission=name, scheduled_at=_iso(slot), late_s=late_s, skipped_by=None, survey=document
-        )
+            mission=name, scheduled_at=_iso(slot), late_s=late_s, skipped_by=None, survey=document,
+            deliveries=delivered, warnings=list(said),
+        )  # fmt: skip
 
     def _log(
         self,
@@ -355,6 +361,7 @@ class Schedules:
         kind: str,
         archive: str | None,
         skipped: Skipped | None,
+        kinds: Sequence[str] = (),
     ) -> None:
         """Log one tick: when it was due, started and ended, how it ended, and why it ran no
         survey, if it ran none."""
@@ -367,6 +374,7 @@ class Schedules:
             archive=archive,
             skipped_by=skipped,
             late_s=_seconds(started, slot) if slot is not None else None,
+            warning_kinds=list(kinds),
         )
         self._store.append(mission, line.document())
 

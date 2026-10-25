@@ -18,6 +18,7 @@
                               pid (so a writer refused is told whose); kept, emptied
     <mission>/writer.lock     locked by the mission's one survey while it runs, holding its
                               pid, as a stream's is; kept, emptied
+    <mission>/archive-index.jsonl  each archive's index, a line {id, index} as it is made
       <window id>/            each window, an archive as above, of one table
       retired.jsonl           a line for each window retain: removed: what, and why
 
@@ -37,6 +38,15 @@ stream reads that directory alone. A window's id starts with its index
 ``flock`` on its ``writer.lock``, which stays when it is let go, so no two writers ever hold
 two files of one name), so the index it gives each new window is one no other writer gives.
 The stream is ``writing`` while that lock is held, and otherwise reads as its last window.
+
+**Archives in the order they were made.** A survey's archive is given the mission's next
+index as it is made, before it has its name, a line of ``archive-index.jsonl`` beside its
+mission's ``archive/`` (so ``archive/`` holds archives, and SQL reads none of it); the survey
+records it in ``meta.yaml`` too. Archives are listed by index, so a clock set back between two
+surveys never puts the later before the earlier. One with no index (made before indexes) is
+listed first, by its id, which is when it began. While ``archive-index.jsonl`` is lost, the
+indexes are read from each archive's ``meta.yaml`` instead (Dijkstra F1), and the next archive
+made writes the record again from them.
 
 **One survey a mission.** A survey holds the mission's own ``writer.lock`` the same way from
 before it writes anything until it returns (:meth:`ArchiveFiles.hold_mission`), so two surveys
@@ -72,7 +82,6 @@ from __future__ import annotations
 import base64
 import binascii
 import contextlib
-import fcntl
 import json
 import os
 import shutil
@@ -84,6 +93,7 @@ import yaml
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.event_log import EventLog
+from recon.adapters._out.file_locks import alive, hold, hold_naming_pid, holder, let_go, locked
 from recon.adapters._out.private_files import DIR_MODE, make_dirs, open_file, write_file
 from recon.domain.archives import (
     ARCHIVE_ID_FORMAT,
@@ -95,6 +105,7 @@ from recon.domain.archives import (
     StoredTable,
     TableEnds,
     TableRecord,
+    archive_rank,
 )
 from recon.domain.capture import CAPTURE_LOG_NAME
 from recon.domain.changes import CHANGES_SUFFIX
@@ -123,6 +134,10 @@ TORN = ".torn"
 #: suffix of a window being removed, out of every listing.
 RETIRED = "retired.jsonl"
 RETIRING = ".retiring"
+
+#: Each of a mission's archives' index, a line ``{id, index}`` an archive, in the mission's
+#: directory beside ``archive/``.
+INDEX = "archive-index.jsonl"
 
 #: The layout of an archive's tables this store writes and reads, named in ``meta.yaml``.
 TABLE_LAYOUT = 1
@@ -168,7 +183,7 @@ class ArchiveFiles:
         # never seen without its lock and marker, whenever its writer dies.
         making = archive.with_name(f".{archive_id}.{os.getpid()}.making")
         making.mkdir(mode=DIR_MODE)
-        descriptor = _hold(making / WRITER_LOCK)
+        descriptor = hold(making / WRITER_LOCK)
         try:
             write_file(making / INCOMPLETE_MARKER, b"")
             taken = ReconError(
@@ -180,6 +195,8 @@ class ArchiveFiles:
             )
             if archive.exists():
                 raise taken
+            if stream is None:  # its index first: one that never gets its archive names nothing
+                self._give_index(mission_dir, archive_id)
             try:
                 making.rename(archive)
             except OSError as exc:  # another survey took the id since it was checked
@@ -194,6 +211,76 @@ class ArchiveFiles:
             raise
         self._held[archive] = descriptor
         return archive
+
+    def _give_index(self, mission_dir: Path, archive_id: str) -> None:
+        """Record ``archive_id`` as the mission's next archive: one more than the last index
+        given (or than the archives' ``meta.yaml`` say, when the record is lost), and than
+        every retired archive's tombstone holds (F': a lost record names only those kept)."""
+        given = self._index_lines(mission_dir)
+        lines = b""
+        if given is None:  # lost, or never made: made again from what the archives say
+            given = self._meta_indexes(mission_dir)
+            lines = b"".join(
+                _index_line(a, i) for a, i in sorted(given.items(), key=lambda x: x[1])
+            )
+        last = max([*given.values(), *self._retired_indexes(mission_dir)], default=0)
+        lines += _index_line(archive_id, last + 1)
+        descriptor = open_file(mission_dir / INDEX, os.O_WRONLY | os.O_APPEND)
+        try:
+            os.write(descriptor, lines)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def indexes(self, mission_dir: Path, *, stream: str | None = None) -> dict[str, int]:
+        if stream is not None:
+            windows = self.archives(mission_dir, stream=stream)
+            return {w.name: index for w in windows if (index := window_index(w.name)) is not None}
+        return self._given(mission_dir)
+
+    def _given(self, mission_dir: Path) -> dict[str, int]:
+        """The archives' indexes: the record's, or, while it is lost, what each archive's
+        ``meta.yaml`` says (read, never written: the next archive made writes the record)."""
+        given = self._index_lines(mission_dir)
+        return self._meta_indexes(mission_dir) if given is None else given
+
+    def _meta_indexes(self, mission_dir: Path) -> dict[str, int]:
+        """The index each archive's ``meta.yaml`` holds, by id; none for one with none."""
+        found: dict[str, int] = {}
+        for archive in self._listed(mission_dir / "archive"):
+            index = self.read_meta(archive).get("index")
+            if type(index) is int:
+                found[archive.name] = index
+        return found
+
+    def _retired_indexes(self, mission_dir: Path) -> list[int]:
+        """The indexes the retired archives' tombstones hold; a torn line holds none."""
+        try:
+            raw = (mission_dir / "archive" / RETIRED).read_bytes()
+        except FileNotFoundError:
+            return []
+        found: list[int] = []
+        for line in raw.splitlines():
+            with contextlib.suppress(ValueError, AttributeError):
+                index = json.loads(line).get("index")
+                if type(index) is int:
+                    found.append(index)
+        return found
+
+    def _index_lines(self, mission_dir: Path) -> dict[str, int] | None:
+        """The indexes the mission's ``archive-index.jsonl`` gives, by archive id (a later line
+        of an id is the one kept); None when it is not there."""
+        try:
+            raw = (mission_dir / INDEX).read_bytes()
+        except FileNotFoundError:
+            return None
+        given: dict[str, int] = {}
+        for line in raw.splitlines():
+            with contextlib.suppress(ValueError, AttributeError):
+                entry = json.loads(line)
+                if isinstance(entry.get("id"), str) and type(entry.get("index")) is int:
+                    given[entry["id"]] = entry["index"]
+        return given
 
     def release(self, archive: Path) -> None:
         descriptor = self._held.pop(archive, None)
@@ -210,9 +297,9 @@ class ArchiveFiles:
         if directory in self._streams:
             return
         try:
-            descriptor = _hold_naming_pid(directory / WRITER_LOCK)
+            descriptor = hold_naming_pid(directory / WRITER_LOCK)
         except OSError as exc:
-            pid = _holder(directory / WRITER_LOCK)
+            pid = holder(directory / WRITER_LOCK)
             if pid == os.getpid():
                 stop = "this process already writes it: stream it once the run there returns"
             elif pid is not None:
@@ -231,7 +318,7 @@ class ArchiveFiles:
         self._streams[directory] = descriptor
 
     def release_stream(self, mission_dir: Path, stream: str) -> None:
-        _let_go(self._streams.pop(_stream_dir(mission_dir, stream), None))
+        let_go(self._streams.pop(_stream_dir(mission_dir, stream), None))
 
     def hold_mission(self, mission_dir: Path) -> None:
         lock = mission_dir / WRITER_LOCK
@@ -239,9 +326,9 @@ class ArchiveFiles:
             if mission_dir in self._missions:  # a survey's hold is that survey's alone
                 raise BlockingIOError(lock)
             make_dirs(mission_dir)
-            descriptor = _hold_naming_pid(lock)
+            descriptor = hold_naming_pid(lock)
         except OSError as exc:
-            pid = _holder(lock)
+            pid = holder(lock)
             if pid == os.getpid():
                 stop = "this process is surveying it now: survey again once that survey returns"
             elif pid is not None:
@@ -260,10 +347,10 @@ class ArchiveFiles:
         self._missions[mission_dir] = descriptor
 
     def release_mission(self, mission_dir: Path) -> None:
-        _let_go(self._missions.pop(mission_dir, None))
+        let_go(self._missions.pop(mission_dir, None))
 
     def stream_state(self, mission_dir: Path, stream: str) -> ArchiveState | None:
-        if _locked(_stream_dir(mission_dir, stream) / WRITER_LOCK):
+        if locked(_stream_dir(mission_dir, stream) / WRITER_LOCK):
             return "writing"
         windows = self.archives(mission_dir, stream=stream)
         return self.state(windows[-1]) if windows else None
@@ -302,7 +389,10 @@ class ArchiveFiles:
             shutil.rmtree(leftover, ignore_errors=True)
         # The tombstone first, appended whole in one write (only the stream's writer retires):
         # a writer that dies after it leaves the window listed, and the next retirement
-        # retires it again; a reader keeps the last tombstone of an id.
+        # retires it again; a reader keeps the last tombstone of an id. A survey's archive's
+        # tombstone keeps its index, which leaves the index record with it (N4).
+        if home.name == "archive" and tombstone.get("index") is None:
+            tombstone = {**tombstone, "index": self._given(home.parent).get(archive.name)}
         line = (json.dumps(tombstone, default=str) + "\n").encode()
         descriptor = open_file(home / RETIRED, os.O_WRONLY | os.O_APPEND)
         try:
@@ -315,9 +405,23 @@ class ArchiveFiles:
         going = home / f".{archive.name}.{os.getpid()}{RETIRING}"
         archive.rename(going)
         shutil.rmtree(going)
+        if home.name == "archive":  # a survey's archive: its index line goes with it (N4)
+            self._drop_index(home.parent, archive.name)
 
-    def retired(self, mission_dir: Path, stream: str) -> list[dict[str, Any]]:
-        path = _stream_dir(mission_dir, stream) / RETIRED
+    def _drop_index(self, mission_dir: Path, archive_id: str) -> None:
+        """The index record without ``archive_id``'s line, replaced whole; one not there, or
+        holding no such line, is left as it is."""
+        given = self._index_lines(mission_dir)
+        if given is None or archive_id not in given:
+            return
+        kept = sorted(((a, i) for a, i in given.items() if a != archive_id), key=lambda x: x[1])
+        tmp = mission_dir / f".{INDEX}.{os.getpid()}.tmp"
+        write_file(tmp, b"".join(_index_line(a, i) for a, i in kept))
+        os.replace(tmp, mission_dir / INDEX)
+
+    def retired(self, mission_dir: Path, stream: str | None) -> list[dict[str, Any]]:
+        home = mission_dir / "archive" if stream is None else _stream_dir(mission_dir, stream)
+        path = home / RETIRED
         if not path.is_file():
             return []
         stones: dict[Any, dict[str, Any]] = {}
@@ -346,7 +450,7 @@ class ArchiveFiles:
 
     def state(self, archive: Path) -> ArchiveState:
         lock = archive / WRITER_LOCK
-        if _locked(lock):
+        if locked(lock):
             return "writing"
         if (archive / INCOMPLETE_MARKER).exists():
             return "incomplete"
@@ -468,7 +572,7 @@ class ArchiveFiles:
                     and parts[3] == "making"
                     and (_is_archive_id(parts[1]) or window_index(parts[1]) is not None)
                     and parts[2].isdigit()
-                    and not _alive(int(parts[2]))
+                    and not alive(int(parts[2]))
                 ):
                     left.append(path)
         return left
@@ -481,10 +585,16 @@ class ArchiveFiles:
             indexed = [(window_index(d.name), d) for d in directory.iterdir()]
             windows = sorted((i, d) for i, d in indexed if i is not None)
             return [d for _, d in windows if d.is_dir()]
-        archive = mission_dir / "archive"
-        if not archive.is_dir():
+        home = mission_dir / "archive"
+        listed = self._listed(home)
+        given = self._given(mission_dir)
+        return sorted(listed, key=lambda a: archive_rank(a.name, given.get(a.name)))
+
+    def _listed(self, home: Path) -> list[Path]:
+        """The archives in ``home``, by id."""
+        if not home.is_dir():
             return []
-        return sorted(d for d in archive.iterdir() if d.is_dir() and _is_archive_id(d.name))
+        return sorted(d for d in home.iterdir() if d.is_dir() and _is_archive_id(d.name))
 
     def read_meta(self, archive: Path) -> dict[str, Any]:
         try:
@@ -506,7 +616,13 @@ class ArchiveFiles:
         return {**raw, "tables": [t for t in raw.get("tables") or [] if isinstance(t, dict)]}
 
     def read_since(
-        self, archive: Path, cursor: str | None, *, max_records: int, max_bytes: int
+        self,
+        archive: Path,
+        cursor: str | None,
+        *,
+        max_records: int,
+        max_bytes: int,
+        tables: Sequence[str] | None = None,
     ) -> NewRecords:
         if max_records < 1:
             raise UsageError(
@@ -522,9 +638,12 @@ class ArchiveFiles:
             )
         positions = _decode(cursor, archive)
         files = dict(_table_files(archive))
+        if tables is not None:
+            files = {name: path for name, path in files.items() if name in tables}
         records: list[TableRecord] = []
         exhausted: list[str] = []
-        retracted = [n for n, (_, told) in positions.items() if not told and n not in files]
+        named = positions if tables is None else {n: p for n, p in positions.items() if n in tables}
+        retracted = [n for n, (_, told) in named.items() if not told and n not in files]
         budget = _Budget(max_records, max_bytes)
         for name, path in files.items():
             offset, told = positions.get(name, (0, False))
@@ -667,6 +786,10 @@ class _Lines:
                 except OSError as exc:  # raised to the writer at its next line
                     self._failed = exc
                     return
+
+
+def _index_line(archive: str, index: int) -> bytes:
+    return (json.dumps({"id": archive, "index": index}) + "\n").encode()
 
 
 def _stream_dir(mission_dir: Path, stream: str) -> Path:
@@ -909,75 +1032,6 @@ def _is_empty_sentinel(line: bytes) -> bool:
     except ValueError:
         return False
     return isinstance(parsed, dict) and parsed.get("_empty") is True
-
-
-def _hold(path: Path) -> int:
-    """Hold an exclusive lock on ``path``, made if need be, until the descriptor is closed.
-    It is made in an archive no reader lists yet, so none can test it as it is taken."""
-    descriptor = open_file(path, os.O_WRONLY)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        os.close(descriptor)
-        raise
-    return descriptor
-
-
-def _hold_naming_pid(path: Path) -> int:
-    """Hold the lock on ``path`` (:func:`_hold`) and write this process's pid in it, so one
-    refused can name the holder; :func:`_let_go` clears it before letting go."""
-    descriptor = _hold(path)
-    os.ftruncate(descriptor, 0)
-    os.pwrite(descriptor, f"{os.getpid()}\n".encode(), 0)
-    return descriptor
-
-
-def _let_go(descriptor: int | None) -> None:
-    """Let go of a lock :func:`_hold_naming_pid` took, its pid cleared; the file stays."""
-    if descriptor is not None:
-        with contextlib.suppress(OSError):
-            os.ftruncate(descriptor, 0)  # no pid of a writer that has let go
-        os.close(descriptor)  # closing releases the lock
-
-
-def _holder(path: Path) -> int | None:
-    """The pid the holder of a stream's or a mission's lock wrote in it, when it is a process
-    alive on this host; None when it has not written it yet, or the file says something else."""
-    try:
-        said = path.read_text().strip()
-    except OSError:
-        return None
-    if not said.isdigit():
-        return None
-    pid = int(said)
-    return pid if _alive(pid) else None
-
-
-def _alive(pid: int) -> bool:
-    """Whether a process ``pid`` runs on this host. A pid reused since reads alive, so what
-    it made is not reported: the error is on the side of saying nothing."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:  # another user's
-        return True
-    return True
-
-
-def _locked(path: Path) -> bool:
-    """True while some process, this one included, holds the lock on ``path``."""
-    try:
-        descriptor = os.open(path, os.O_RDONLY)
-    except FileNotFoundError:
-        return False
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
-    except BlockingIOError:
-        return True
-    finally:
-        os.close(descriptor)  # closing releases a lock this call took
-    return False
 
 
 def _empty_table_columns(path: Path) -> list[str] | None:

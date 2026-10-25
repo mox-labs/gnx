@@ -21,7 +21,8 @@ from recon.application.changes import MEMORY_KEYS, ChangeDetector
 from recon.application.collectors import confined_transforms, declared_env
 from recon.application.plan import Plan, PlannedStream, build_plan, fan_out, plugin_warning
 from recon.application.schedules import Schedules, stale
-from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun
+from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun, windows_going
+from recon.application.subscriptions import ChangeReader, Subscriptions
 from recon.application.survey import CollectorError, Survey, TablePages
 from recon.domain.archives import (
     ARCHIVE_ID_FORMAT,
@@ -33,7 +34,9 @@ from recon.domain.deadline import Deadline
 from recon.domain.documents import (
     ArchiveStatus,
     BrokenPluginInfo,
+    ChangesSince,
     CollectorTypeInfo,
+    DeliverDocument,
     InstalledPlugins,
     MissionDocument,
     MissionStatus,
@@ -46,6 +49,8 @@ from recon.domain.documents import (
     StatusDocument,
     StreamDocument,
     StreamStatus,
+    SubscriptionDocument,
+    SubscriptionStatus,
     SurveyDocument,
     TableError,
     TableStatus,
@@ -89,6 +94,7 @@ if TYPE_CHECKING:
     from recon.domain.paginate import PageLog
     from recon.domain.schedule import Platform, ScheduleHost, Scheduler, ScheduleStore
     from recon.domain.stream import GapLog, RetainSpec, Stop, WindowSpec
+    from recon.domain.subscriptions import Deliverer, SubscriptionStore
     from recon.domain.telemetry import Channel, EventCallback, Telemetry
 
 
@@ -157,6 +163,8 @@ class Recon:
         local: Callable[[datetime], datetime] | None = None,
         key_join: KeyJoin | None = None,
         memory_keys: int = MEMORY_KEYS,
+        subscriptions: SubscriptionStore | None = None,
+        deliverer: Deliverer | None = None,
     ) -> None:
         """``root_found_by`` is how the composition root found the project root:
         ``argument`` (the caller named it), ``repository`` (the nearest ancestor holding
@@ -167,7 +175,10 @@ class Recon:
         through, with the ``schedule_store`` beside each mission, the ``schedule_host``'s
         recon command and PATH, and ``local``, the clock's time as the host's local time;
         without them, the ``schedule_*`` operations are refused. ``key_join`` joins a change
-        detection's comparisons of more than ``memory_keys`` keys (None: all in memory)."""
+        detection's comparisons of more than ``memory_keys`` keys (None: all in memory).
+        ``subscriptions`` keeps what each subscription acked (None: the ``subscribe``, ``ack``,
+        ``unsubscribe`` and ``deliver`` operations are refused); ``deliverer`` gives a
+        subscription's deliveries to its ``command:`` (None: ``deliver`` is refused)."""
         self._missions = missions
         self._archives = archives
         self._query = query
@@ -194,6 +205,19 @@ class Recon:
         )
         self._key_join = key_join
         self._memory_keys = memory_keys
+        self._subscriptions = (
+            None
+            if subscriptions is None or deliverer is None
+            else Subscriptions(
+                store=subscriptions,
+                clock=clock,
+                mission_dir=missions.mission_dir,
+                prepare=lambda name: self._prepare(name, None, False)[1],
+                reader=self._change_reader,
+                deliverer=deliverer,
+                project=missions.project,
+            )
+        )
 
     # --- init ---------------------------------------------------------------------------
 
@@ -299,6 +323,7 @@ class Recon:
         elif plan.streams:
             provenance.append(_survey_returns(plan.config, plan.streams))
         requirements, said, broken = self._preflight(mission, plan.config)
+        broken += self._behind(name, plan)
         return PlanDocument(
             mission=name,
             valid=plan.valid,
@@ -390,18 +415,26 @@ class Recon:
 
     def _scheduled_survey(
         self, name: str, scheduled: dict[str, Any], config_sha256: str
-    ) -> SurveyDocument:
+    ) -> tuple[SurveyDocument, DeliverDocument | None, list[dict[str, Any]]]:
         """:meth:`survey` as a tick runs it, its archive's ``meta.yaml`` saying when the tick
         was due and how late it started (``scheduled``). The mission is held first; then its
         config is read once, and those bytes are what is checked against ``config_sha256``,
-        planned and run, so no config swapped after a check runs (Dijkstra, Vector F4)."""
+        planned and run, so no config swapped after a check runs (Dijkstra, Vector F4). Then,
+        the archive sealed and the mission let go, the delivery of its subscriptions that have
+        ``deliver:`` (ruling R4), by the same config's plan; None when it has none."""
         mission = self._missions.mission_dir(name)
         self._archives.hold_mission(mission)
         try:
             source, plan, _ = self._prepare(name, None, False, expect_sha256=config_sha256)
-            return self._survey(name, source, plan, None, None, scheduled=scheduled)
+            document = self._survey(name, source, plan, None, None, scheduled=scheduled)
         finally:
             self._archives.release_mission(mission)
+        assert plan.config is not None
+        delivering = any(s.deliver is not None for s in plan.config.subscriptions)
+        delivered = None
+        if self._subscriptions is not None and delivering:
+            delivered = self._subscriptions.deliver(name, plan=plan)
+        return document, delivered, [w.document() for w in self._behind(name, plan)]
 
     def _survey(
         self,
@@ -481,6 +514,7 @@ class Recon:
                         resolved=self._resolved(plan.config),
                         streams=streams,
                         scheduled=scheduled,
+                        index=self._archives.indexes(mission).get(archive.name),
                     )
                 finally:
                     # Whatever the survey opened (a collector's session, the requester's
@@ -505,12 +539,12 @@ class Recon:
             warnings += _dropped(telemetry) + _undelivered(channel)
         finally:
             self._archives.release(archive)
-        self._retain_snapshots(mission, plan.config, streams)
+        self._retain_snapshots(name, mission, plan, streams)
         stream_windows: list[WindowOutcome] = []
         for stream in plan.streams:
             run, found = self._run_stream(
                 mission, plan.config, stream, sha256, windows=1, until=None, on_event=caller,
-                name=name,
+                name=name, plan=plan,
             )  # fmt: skip
             warnings += found
             stream_windows += [run.last] if run.last is not None else []
@@ -525,37 +559,38 @@ class Recon:
             stream_windows=stream_windows,
         )
 
-    def _retain_snapshots(self, mission: Path, config: ReconConfig, streams: set[int]) -> None:
+    def _retain_snapshots(self, name: str, mission: Path, plan: Plan, streams: set[int]) -> None:
         """Retire the archives every snapshot entry's ``retain:`` lets go (Knuth, round-4
         review S1), oldest first, once the survey's archive is sealed, the mission still held:
         never the newest, never one being written, never the last one a table with
         ``changes:`` was told in (the told index the next comparison reads). An archive holds
         every entry's tables, so it goes only when every snapshot entry lets it go; one that
-        keeps ``all`` (the default) keeps every archive. Each leaves a tombstone in
-        ``archive/retired.jsonl``; a retirement that fails is tried again by the next."""
+        keeps ``all`` (the default) keeps every archive. Nor one holding change rows a
+        subscription the config declares has not acked: a notification lost in silence is
+        worse than the disk it takes. Each leaves a tombstone in ``archive/retired.jsonl``; a
+        retirement that fails is tried again by the next."""
+        assert plan.config is not None
+        config = plan.config
         entries = [entry for i, entry in enumerate(config.collectors) if i not in streams]
         rules = [entry.retain for entry in entries]
-        if not entries or any(rule is None or isinstance(rule, str) for rule in rules):
+        going = self._snapshots_letting_go(mission, config, streams)
+        if not going:
             return
+        held = self._subscriptions.held(name, plan, None) if (
+            self._subscriptions is not None
+        ) else {}  # fmt: skip
+        kept = set().union(*(archives for _, archives in held.values()))
         archives = self._archives.archives(mission)
-        if len(archives) < 2:
-            return
         now = self._clock.now()
-        sizes: dict[str, int] = {}
-        going: set[str] | None = None
-        for rule in rules:
-            assert rule is not None and not isinstance(rule, str)
-            lets_go = self._snapshots_going(archives, rule, now, sizes)
-            going = lets_go if going is None else going & lets_go
-        kept = {archives[-1].name} | self._told_in(archives, entries)
         for archive in archives[:-1]:
-            if archive.name not in (going or set()) or archive.name in kept:
+            if archive.name not in going or archive.name in kept:
                 continue
             if self._archives.state(archive) == "writing":
                 continue
             meta = self._archives.read_meta(archive)
             tombstone = {
                 "id": archive.name,
+                "index": meta.get("index"),
                 "started_at": meta.get("started_at"),
                 "timestamp": meta.get("timestamp"),
                 "ended": meta.get("ended"),
@@ -565,6 +600,77 @@ class Recon:
             }  # fmt: skip
             with contextlib.suppress(OSError):  # left listed: the next survey retires it
                 self._archives.retire(archive, tombstone)
+
+    def _snapshots_letting_go(
+        self, mission: Path, config: ReconConfig, streams: set[int]
+    ) -> set[str]:
+        """The archives the snapshot entries' ``retain:`` lets go now: those every entry's
+        rules let go, but the newest and the last one each table with ``changes:`` was told
+        in; none when an entry keeps ``all``."""
+        entries = [entry for i, entry in enumerate(config.collectors) if i not in streams]
+        rules = [entry.retain for entry in entries]
+        if not entries or any(rule is None or isinstance(rule, str) for rule in rules):
+            return set()
+        archives = self._archives.archives(mission)
+        if len(archives) < 2:
+            return set()
+        now = self._clock.now()
+        sizes: dict[str, int] = {}
+        going: set[str] | None = None
+        for rule in rules:
+            assert rule is not None and not isinstance(rule, str)
+            lets_go = self._snapshots_going(archives, rule, now, sizes)
+            going = lets_go if going is None else going & lets_go
+        kept = {archives[-1].name} | self._told_in(archives, entries)
+        return (going or set()) - kept
+
+    def _behind(self, name: str, plan: Plan | None = None) -> list[Problem]:
+        """A ``subscription_behind`` warning for each declared subscription holding back
+        archives (or a stream's windows) ``retain:`` would let go: its change rows there are
+        not acked. None when the config cannot be planned."""
+        if self._subscriptions is None:
+            return []
+        if plan is None:
+            try:
+                plan = self._prepare(name, None, False)[1]
+            except ReconError:
+                return []
+        if plan.config is None or not plan.config.subscriptions:
+            return []
+        mission = self._missions.mission_dir(name)
+        streams = {stream.index for stream in plan.streams}
+        letting: dict[str | None, set[str]] = {
+            None: self._snapshots_letting_go(mission, plan.config, streams)
+        }
+        for stream in plan.streams:
+            windows = self._archives.archives(mission, stream=stream.name)
+            if isinstance(stream.retain, str) or len(windows) < 2:
+                continue
+            going = windows_going(self._archives, windows, stream.retain, self._clock.now(), {})
+            letting[stream.name] = going - {windows[-1].name}
+        problems = []
+        for location, going in letting.items():
+            if not going:
+                continue
+            for index, (subscription, archives) in self._subscriptions.held(
+                name, plan, location
+            ).items():
+                count = len(archives & going)
+                if not count:
+                    continue
+                problems.append(
+                    Problem(
+                        f"subscriptions.{index}",
+                        f"subscription {subscription} has not acked change rows in {count} "
+                        f"archive(s) retain: would remove, so they are kept until it does",
+                        kind="subscription_behind",
+                        fix=f"read and ack them (recon subscribe {name} {subscription}, then "
+                        f"recon ack), deliver them (recon deliver {name}), or remove the "
+                        "subscription from subscriptions: if nobody reads it",
+                        got=count,
+                    )
+                )
+        return problems
 
     def _snapshots_going(
         self, archives: list[Path], rule: RetainSpec, now: datetime, sizes: dict[str, int]
@@ -657,7 +763,7 @@ class Recon:
                 on_event = None
         run, found = self._run_stream(
             mission, plan.config, planned, sha256, windows=windows, until=until,
-            on_event=on_event, stop=stop, name=name,
+            on_event=on_event, stop=stop, name=name, plan=plan,
         )  # fmt: skip
         found = started + found
         return StreamDocument(
@@ -687,6 +793,7 @@ class Recon:
         on_event: EventCallback | None,
         stop: Stop | None = None,
         name: str,
+        plan: Plan,
     ) -> tuple[StreamRun, list[Problem]]:
         """Run one stream of ``config`` through the window writer, over a collector built for
         it alone (its ``close()`` is what stops a source that would not); the run, and what it
@@ -724,7 +831,10 @@ class Recon:
                 telemetry=partial(self._window_telemetry, on_event=on_event, warnings=warnings),
                 changes=self._changes(name, subset),
             )  # fmt: skip
-            plan = StreamPlan(
+            held = None if self._subscriptions is None else partial(
+                _held, self._subscriptions, name, plan, planned.name
+            )  # fmt: skip
+            plan_ = StreamPlan(
                 name=planned.name,
                 at=f"collectors.{planned.index}",
                 entry=target,
@@ -735,10 +845,11 @@ class Recon:
                 columns=tuple(entry.normalize or ()),
                 retain=planned.retain,
                 package=self._plugins.collector_packages.get(entry.type),
+                held=held,
             )
             run = engine.run(
                 mission,
-                plan,
+                plan_,
                 partial(_collect, collector, target, source),
                 normalize,
                 close=close,
@@ -873,6 +984,56 @@ class Recon:
             lambda scheduled: self._scheduled_survey(name, scheduled, config_sha256),
         )
 
+    # --- subscriptions ----------------------------------------------------------------
+
+    def _subscribing(self) -> Subscriptions:
+        if self._subscriptions is None:
+            raise UsageError(
+                "this recon was built with no subscription store",
+                fix="build it with recon.composition.root(), which gives it the mission's files",
+            )
+        return self._subscriptions
+
+    def subscribe(
+        self,
+        name: str,
+        subscription: str,
+        cursor: str | None = None,
+        *,
+        max_records: int = READ_MAX_RECORDS,
+        max_bytes: int = READ_MAX_BYTES,
+    ) -> ChangesSince:
+        """One read of the subscription the mission declares: the rows of its output its
+        ``match:`` keeps, from the cursor it acked last (None acked: from the first archive),
+        or from ``cursor`` for a subscriber that keeps its own. It acks nothing: :meth:`ack`
+        does, with the read's ``cursor``, once the rows are acted on. Raises NotFoundError for a
+        subscription the config does not declare, ReconError ``busy`` while another consumer
+        holds it."""
+        return self._subscribing().read(
+            name, subscription, cursor, max_records=max_records, max_bytes=max_bytes
+        )
+
+    def ack(self, name: str, subscription: str, cursor: str) -> SubscriptionDocument:
+        """Keep ``cursor`` as what the subscription has acked, so its next read goes on from
+        it. Monotone: a cursor before the one acked is refused (UsageError), the same one
+        changes nothing (``unchanged``)."""
+        return self._subscribing().ack(name, subscription, cursor)
+
+    def unsubscribe(self, name: str, subscription: str) -> SubscriptionDocument:
+        """Remove what is kept of the subscription, its acked cursor and dead letters
+        (``removed``; ``absent`` when nothing was). A subscription the config still declares
+        then reads from the first archive again."""
+        return self._subscribing().remove(name, subscription)
+
+    def deliver(self, name: str, *, subscription: str | None = None) -> DeliverDocument:
+        """Give each subscription with ``deliver:`` (or the one named) the rows it has not
+        acked, to its command: at most ``max_per_tick`` one at a time, the rest as one row
+        counting them, all within its ``deadline``. A row a command fails is given again next
+        time and set aside after ``attempts``, each said as a warning, never raised. Raises
+        NotFoundError for a subscription the config does not declare, UsageError for one with
+        no ``deliver:``."""
+        return self._subscribing().deliver(name, subscription)
+
     # --- status, query, templates, capture ----------------------------------------------
 
     def status(self, mission: str | None = None) -> StatusDocument:
@@ -895,7 +1056,9 @@ class Recon:
             missions=[self._mission_status(name, history=mission is not None) for name in names],
             plugins=_installed(self._plugins),
             warnings=[
-                w.document() for name in names for w in self._abandoned(name) + self._exposed(name)
+                w.document()
+                for name in names
+                for w in self._abandoned(name) + self._exposed(name) + self._behind(name)
             ],
         )
 
@@ -941,7 +1104,19 @@ class Recon:
             captures=self._missions.capture_count(name),
             history=[self._archive_status(a) for a in archives] if history else None,
             streams=[self._stream_status(mission, s) for s in self._archives.streams(mission)],
+            subscriptions=self._subscription_statuses(name),
         )
+
+    def _subscription_statuses(self, name: str) -> list[SubscriptionStatus]:
+        """The mission's subscriptions, as far as its config can be planned: one that cannot
+        lists only those something is kept of."""
+        if self._subscriptions is None:
+            return []
+        try:
+            plan: Plan | None = self._prepare(name, None, False)[1]
+        except ReconError:
+            plan = None
+        return self._subscriptions.statuses(name, plan)
 
     def _stream_status(self, mission: Path, stream: str) -> StreamStatus:
         windows = self._archives.archives(mission, stream=stream)
@@ -1281,6 +1456,54 @@ class Recon:
             read = self._read(name, path, read.cursor, max_records, max_bytes)
             yield read
 
+    def changes_since(
+        self,
+        name: str,
+        output: str,
+        cursor: str | None = None,
+        *,
+        max_records: int = READ_MAX_RECORDS,
+        max_bytes: int = READ_MAX_BYTES,
+    ) -> ChangesSince:
+        """The change rows of ``output`` told since ``cursor`` (None: from the mission's first
+        archive), across its archives (a stream's windows), at most ``max_records`` and about
+        ``max_bytes`` of them: each row of a change table sealed since, once, with an ``id``
+        that names it. Stateless: the caller holds the cursor, and reading again from one gives
+        the same rows. Raises NotFoundError for an output no entry with ``changes:`` makes, and
+        UsageError for a cursor recon did not give for this output."""
+        reader = self._change_reader(name, output)
+        position = None if cursor is None else reader.decode(cursor)
+        read = reader.read(position, max_records=max_records, max_bytes=max_bytes)
+        return ChangesSince(
+            mission=name,
+            output=output,
+            rows=read.rows,
+            count=len(read.rows),
+            cursor=reader.encode(read.position),
+            more=read.more,
+            state=read.state,
+            retired_range=read.retired,
+        )
+
+    def _change_reader(self, name: str, output: str, plan: Plan | None = None) -> ChangeReader:
+        """The reader of ``output``'s change rows in the mission ``name``, found by its plan:
+        across its archives, or its stream's windows. Raises NotFoundError for an output no
+        entry with ``changes:`` makes."""
+        if plan is None:
+            _, plan, _ = self._prepare(name, None, False)
+        if output not in plan.changes:
+            known = sorted(plan.changes)
+            raise NotFoundError(
+                f"no output {output!r} with changes: in mission {name!r}; its outputs with "
+                f"changes: {', '.join(known) or '(none)'}",
+                fix="name one of them, or give its collector changes: {key: [<field>]} "
+                "(recon --skill -r changes)",
+                details={"value": output, "allowed": known},
+            )
+        mission = self._missions.mission_dir(name)
+        return ChangeReader(self._archives, mission, name, output, plan.changes[output],
+                            self._missions.change_key(name))  # fmt: skip
+
     def _ended(self, archive: Path, state: ArchiveState) -> Ended | None:
         return None if state == "writing" else _ended(state, self._archives.read_meta(archive))
 
@@ -1320,6 +1543,12 @@ class Recon:
             return record_hook_payload(self._missions.capture_log(name), payload)
         except ConfigError as exc:
             raise ConfigError(str(exc), fix="run recon capture from a PostToolUse hook") from exc
+
+
+def _held(subscriptions: Subscriptions, name: str, plan: Plan, stream: str) -> set[str]:
+    """The windows of ``stream`` holding change rows a declared subscription has not acked."""
+    held = subscriptions.held(name, plan, stream)
+    return set().union(*(windows for _, windows in held.values()))
 
 
 def _stream_bound(

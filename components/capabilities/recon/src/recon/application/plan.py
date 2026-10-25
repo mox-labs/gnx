@@ -44,9 +44,10 @@ from recon.domain.stream import (
     WindowSpec,
     default_overflow,
 )
+from recon.domain.subscriptions import ROW_FIELDS, SubscriptionSpec, match_field
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Mapping
+    from collections.abc import Callable, Collection, Mapping, Sequence
 
     from recon.domain.collector import BrokenPlugin, CollectorType, Plugins
     from recon.domain.documents import Origin
@@ -148,6 +149,9 @@ class Plan:
     skipped: list[SkippedSource] = field(default_factory=list)
     streams: list[PlannedStream] = field(default_factory=list)
     provenance: list[SourcedValue] = field(default_factory=list)
+    #: Each output whose tables are compared (its entry has ``changes:``), with the stream it
+    #: is, by name, or None for a snapshot entry's: where its change tables are.
+    changes: dict[str, str | None] = field(default_factory=dict)
 
     @property
     def valid(self) -> bool:
@@ -246,6 +250,7 @@ def build_plan(
     settings_whole = True
     streams: list[PlannedStream] = []
     provenance: list[SourcedValue] = []
+    changing: dict[str, int] = {}
     for i, entry in entries:
         ctype = plugins.collector_types.get(entry.type)
         found, checked = _entry_problems(i, entry, catalog, plugins, unchecked)
@@ -289,6 +294,7 @@ def build_plan(
             for key in _table_keys(output):
                 produced_by.setdefault(key, (i, output))
             if entry.changes is not None:
+                changing[output] = i
                 problems.extend(_change_table_problems(i, output, produced_by))
                 for key in _table_keys(changes_output(output)):
                     produced_by.setdefault(key, (i, changes_output(output)))
@@ -301,24 +307,38 @@ def build_plan(
                 name = entry.name if is_stream else None
                 runs.append(_planned_run(checked, output, source, ctype, stream=name))
 
+    subscriptions, _ = _validate_items(
+        raw.get("subscriptions"), "subscriptions", SubscriptionSpec, problems
+    )
+    problems[:] = [_one_program(problem) for problem in problems]
+    found, values = _subscription_problems(subscriptions, changing, dict(entries))
+    problems += found
+    provenance += values
+
     if is_directory is not None:
         problems += _directory_problems(sources, used_sources, is_directory, base)
     warnings += _credential_warnings(sources, used_sources - refused, env, plugins)
     if schedule is not None:
         warnings += _unscheduled_env(sources, used_sources - refused, plugins)
-        warnings += _unpinned_packages(runs, entries, sources)
+        warnings += _unpinned_packages(runs, entries, sources, subscriptions)
     config = None
     if not problems:
         deadline = raw.get("deadline")
         if schedule is not None:
-            provenance += _scheduled(schedule, raw)
-            deadline = schedule.deadline if deadline is None else deadline
+            # A tick's subscriptions deliver in turn: the budget is their deadlines summed.
+            delivering = sum(s.deliver.deadline for _, s in subscriptions if s.deliver)
+            provenance += _scheduled(schedule, raw, delivering)
+            if deadline is None:
+                deadline = schedule.deadline_beside(delivering)
+            if deadline + delivering > schedule.every:
+                warnings.append(_tick_overrun(schedule, deadline, delivering))
         config = ReconConfig(
             catalog=[src for _, src in sources],
             collectors=[entry for _, entry in entries],
             preserve_raw=raw.get("preserve_raw", False),
             deadline=deadline,
             schedule=schedule,
+            subscriptions=[subscription for _, subscription in subscriptions],
         )
     return Plan(
         config=config,
@@ -329,6 +349,10 @@ def build_plan(
         skipped=skipped,
         streams=streams,
         provenance=provenance,
+        changes={
+            output: next((st.name for st in streams if st.index == i), None)
+            for output, i in changing.items()
+        },
     )
 
 
@@ -614,9 +638,28 @@ def _schedule(raw: dict[Any, Any]) -> tuple[ScheduleSpec | None, list[Problem]]:
     ]
 
 
-def _scheduled(schedule: ScheduleSpec, raw: dict[Any, Any]) -> list[SourcedValue]:
+def _tick_overrun(schedule: ScheduleSpec, deadline: float, delivering: float) -> Problem:
+    """The warning for a scheduled mission whose survey's ``deadline`` and deliveries (in turn,
+    so summed) together outlast ``every``: the next tick would find the last one still running.
+    The kind is ``status``'s for a schedule that did (``schedule_overrun``): one thing, one
+    word, one next step."""
+    return Problem(
+        "deadline",
+        f"a tick's survey may take {deadline:g}s (deadline:) and its delivery {delivering:g}s "
+        f"(each deliver.deadline summed: subscriptions deliver in turn), "
+        f"{deadline + delivering:g}s in all, longer than "
+        f"schedule.every ({schedule.every}s): the next tick would come while this one runs",
+        kind="schedule_overrun",
+        fix="raise schedule.every, or lower deadline: or deliver.deadline so the two fit in it",
+        got=deadline + delivering,
+    )
+
+
+def _scheduled(
+    schedule: ScheduleSpec, raw: dict[Any, Any], delivering: float = 0.0
+) -> list[SourcedValue]:
     """Where a scheduled mission's settings came from: its ``schedule:`` and its ``deadline``,
-    which defaults to a share of ``every``."""
+    which defaults to a share of ``every`` less what its deliveries may take."""
     given = raw["schedule"]
     values = [
         SourcedValue(path="schedule.every", value=schedule.every, origin="mission"),
@@ -632,9 +675,11 @@ def _scheduled(schedule: ScheduleSpec, raw: dict[Any, Any]) -> list[SourcedValue
     if raw.get("deadline") is None:
         note = (f"a scheduled mission's: 0.8 × schedule.every ({schedule.every} s), so a tick "
                 "ends before the next is due")  # fmt: skip
-        values.append(
-            SourcedValue(path="deadline", value=schedule.deadline, origin="recon", note=note)
-        )
+        if delivering:
+            note += (f", less each deliver.deadline summed ({delivering:g} s: subscriptions "
+                     "deliver in turn), at least 0.2 × schedule.every")  # fmt: skip
+        value = schedule.deadline_beside(delivering)
+        values.append(SourcedValue(path="deadline", value=value, origin="recon", note=note))
     else:
         values.append(SourcedValue(path="deadline", value=raw["deadline"], origin="mission"))
     return values
@@ -1339,6 +1384,168 @@ def _changes(i: int, entry: CollectorEntry) -> tuple[list[SourcedValue], list[Pr
     return values, problems
 
 
+def _one_program(problem: Problem) -> Problem:
+    """A ``deliver.command`` written as a list is an ``mcp`` server's shape half kept: the fix
+    says to write the program as ``command`` and its arguments as ``args``."""
+    if problem.path.endswith(".deliver.command") and problem.kind == "wrong_shape":
+        return replace(
+            problem,
+            fix="write the program as command: and its arguments as args: (command: "
+            "/usr/local/bin/notify, args: [--mail]), as an mcp source's server is written: it "
+            "runs by no shell, so a row can never become a word of it",
+        )
+    return problem
+
+
+def _subscription_problems(
+    subscriptions: list[tuple[int, SubscriptionSpec]],
+    changing: Mapping[str, int],
+    entries: Mapping[int, CollectorEntry],
+) -> tuple[list[Problem], list[SourcedValue]]:
+    """What ``subscriptions:`` may not say, and each one's ``match:`` with where it came from:
+    a name given twice; an output no entry with ``changes:`` makes; a ``match:`` field no change
+    row has (ruling R2: checked against the change row's schema here, at plan time): ``op``,
+    ``key.<field>`` of the entry's ``changes.key``, or ``record.<field>``, one of its
+    ``normalize:`` columns when it has some."""
+    problems: list[Problem] = []
+    values: list[SourcedValue] = []
+    named: set[str] = set()
+    for i, subscription in subscriptions:
+        at = f"subscriptions.{i}"
+        if subscription.name in named:
+            problems.append(
+                Problem(
+                    f"{at}.name",
+                    f"subscription {subscription.name!r} is named twice",
+                    kind="name_taken",
+                    fix="give each subscription its own name",
+                    got=subscription.name,
+                )
+            )
+        named.add(subscription.name)
+        origin: Origin = "mission" if "match" in subscription.model_fields_set else "recon"
+        values.append(
+            SourcedValue(
+                path=f"{at}.match",
+                value=subscription.match,
+                origin=origin,
+                note="" if origin == "mission" else "no match: every change row of the output",
+            )
+        )
+        lagging = "max_lag" in subscription.model_fields_set
+        values.append(
+            SourcedValue(
+                path=f"{at}.max_lag",
+                value=subscription.max_lag,
+                origin="mission" if lagging else "recon",
+                note="" if lagging else "30 days: retain: keeps what it has not acked that long",
+            )
+        )
+        if subscription.output not in changing:
+            problems.append(
+                Problem(
+                    f"{at}.output",
+                    f"{subscription.output!r} is no output of a collector with changes:, so it "
+                    "has no change rows to read",
+                    kind="name_unknown",
+                    fix="name an output whose collector has changes: {key: [<field>]}",
+                    got=subscription.output,
+                    allowed=tuple(sorted(changing)),
+                )
+            )
+            continue
+        entry = entries[changing[subscription.output]]
+        assert entry.changes is not None
+        columns = tuple(entry.normalize or ())
+        if subscription.deliver is not None:
+            values += _delivered(at, subscription)
+            if not subscription.deliver.command.startswith("/"):
+                problems.append(
+                    Problem(
+                        f"{at}.deliver.command",
+                        f"{subscription.deliver.command!r} is not an absolute path: it would be "
+                        "found on PATH, or in the project, the command's directory, where a pull "
+                        "or a dependency can put another program of that name",
+                        kind="invalid_value",
+                        fix="name the program by its absolute path (command: "
+                        "/usr/local/bin/notify-mail; `command -v <name>` finds it)",
+                        got=subscription.deliver.command,
+                    )
+                )
+            for position, wanted in enumerate(subscription.deliver.fields):
+                if columns and wanted not in columns:
+                    problems.append(
+                        Problem(
+                            f"{at}.deliver.fields.{position}",
+                            f"{wanted} is not a column normalize: makes, so no record has it",
+                            kind="name_unknown",
+                            fix="name a column of normalize: in deliver.fields",
+                            got=wanted,
+                            allowed=columns,
+                        )
+                    )
+        allowed = (
+            *ROW_FIELDS,
+            *(f"key.{field}" for field in entry.changes.key),
+            *(f"record.{column}" for column in columns),
+        )
+        for wanted in subscription.match:
+            part, name = match_field(wanted)
+            known = (
+                part in ROW_FIELDS
+                or (part == "key" and name in entry.changes.key)
+                or (part == "record" and (not columns or name in columns))
+            )
+            if not known:
+                problems.append(
+                    Problem(
+                        f"{at}.match.{wanted}",
+                        f"{wanted} is no field of a change row of {subscription.output}: a row is "
+                        "{op, key, record}, its key the fields of changes.key"
+                        + (", its record the columns of normalize:" if columns else ""),
+                        kind="name_unknown",
+                        fix="match op, key.<field> or record.<field>, as the change row holds them",
+                        got=wanted,
+                        allowed=allowed,
+                    )
+                )
+    return problems, values
+
+
+def _delivered(at: str, subscription: SubscriptionSpec) -> list[SourcedValue]:
+    """``deliver:``'s effective settings, each with where it came from: the command and the
+    fields it is given, how many rows one delivery gives one at a time, the attempts before a
+    row is set aside, the seconds a delivery and each run may take, and the characters a
+    string keeps."""
+    deliver = subscription.deliver
+    assert deliver is not None
+    notes = {
+        "fields": "no record field: a delivery carries the row's op, output and key, no body",
+        "max_per_tick": "rows given one at a time a delivery; the rest as one row counting them",
+        "attempts": "times a row is given to a command that fails it before it is set aside",
+        "deadline": "seconds one delivery of the subscription may take, every run included",
+        "timeout": "seconds one run of the command may take",
+        "max_chars": "characters each string of a row keeps",
+    }
+    said = "run as given, by no shell, the row on its standard input"
+    values = [
+        SourcedValue(path=f"{at}.deliver.command", value=deliver.command, origin="mission",
+                     note=said)
+    ]  # fmt: skip
+    notes = {"args": "no argument: the row goes on standard input, never in one", **notes}
+    for key, note in notes.items():
+        given = key in deliver.model_fields_set
+        values.append(
+            SourcedValue(
+                path=f"{at}.deliver.{key}",
+                value=getattr(deliver, key),
+                origin="mission" if given else "recon",
+                note="" if given else note,
+            )
+        )
+    return values
+
+
 def plugin_warning(broken: BrokenPlugin) -> Problem:
     """The warning for a plugin that failed to load or to build."""
     return Problem(
@@ -1488,6 +1695,7 @@ def _unpinned_packages(
     runs: list[PlannedRun],
     entries: list[tuple[int, CollectorEntry]],
     sources: list[tuple[int, SourceEntry]],
+    subscriptions: Sequence[tuple[int, SubscriptionSpec]] = (),
 ) -> list[Problem]:
     """A scheduled mission's warning for each package a command it runs has a fetcher
     (``npx``, ``uvx``, ``pnpm dlx``...: ``recon.domain.schedule.FETCHERS``) fetch without an
@@ -1497,7 +1705,8 @@ def _unpinned_packages(
     source's, at ``catalog.<i>``), shell lines as ``commands`` (a ``cli`` entry's, at
     ``collectors.<i>``), a ``headers_helper`` (an ``mcp`` source's, at
     ``catalog.<i>.headers_helper``), so a type of a third party's that describes its commands
-    so is held to it too; and each source's own ``auth.headers_helper``."""
+    so is held to it too; each source's own ``auth.headers_helper``; and each subscription's
+    ``deliver`` argument list, at ``subscriptions.<i>.deliver.command`` (Vector, review S2)."""
     entry_at = {entry.name: i for i, entry in entries}
     source_at = {source.name: i for i, source in sources}
     by_name = {source.name: source for _, source in sources}
@@ -1525,6 +1734,9 @@ def _unpinned_packages(
         for line in commands if isinstance(commands, list) else []:
             if isinstance(line, str) and run.collector in entry_at:
                 judge(f"collectors.{entry_at[run.collector]}", line)
+    for i, subscription in subscriptions:
+        if subscription.deliver is not None:
+            judge(f"subscriptions.{i}.deliver.command", subscription.deliver.argv)
     return [
         Problem(
             path,

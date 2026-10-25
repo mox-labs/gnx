@@ -52,7 +52,7 @@ index, where the names `matrix` and `ix` belong to other projects:
 ```
 uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.8.0#subdirectory=components/capabilities/matrix"
 uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.7.0#subdirectory=components/capabilities/ix"
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.14.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.15.0#subdirectory=components/capabilities/recon"
 uv tool install "git+https://github.com/mox-labs/gnx@hardline-v0.2.0#subdirectory=components/capabilities/hardline"
 ```
 

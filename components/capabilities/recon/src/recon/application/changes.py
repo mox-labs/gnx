@@ -431,7 +431,9 @@ class ChangeDetector:
         given the table with its summary (its rows not yet counted) once its told index is
         written and before its change table is, so the summary is in ``meta.yaml`` before any
         row can be read (Dijkstra F3)."""
-        archives = [a for a in self._archives.archives(self._mission_dir) if a.name < archive.name]
+        listed = self._archives.archives(self._mission_dir)  # in the order they were made
+        names = [a.name for a in listed]
+        archives = listed[: names.index(archive.name)] if archive.name in names else listed
         return self._compare(archive, table, spec, normalize_digest(normalize), archives,
                              None, whole=not table.truncated, pending=pending)  # fmt: skip
 

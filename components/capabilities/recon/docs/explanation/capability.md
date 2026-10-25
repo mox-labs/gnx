@@ -68,7 +68,7 @@ Reach for recon when:
 Reach for something else when:
 
 - You need one-off ad-hoc exploration — `curl` piped into the chat is faster
-- You need records pushed to subscribers as they arrive — a survey or a stream writes its records into archives, which a reader follows (`recon watch`); nothing is pushed
+- You need records pushed to subscribers as they arrive — a survey or a stream writes its records into archives, which a reader follows (`recon watch`); what changed is read by a subscription, or given to a command after each survey (`recon deliver`), never pushed as it arrives
 - You need to act on each event within milliseconds of it — a stream's records reach its window's file in whole lines up to a quarter-second late, and a stream is collected for reasoning over, not for reacting to
 - You want an autonomous research agent that decides what to fetch — recon runs the config you wrote, it doesn't decide
 
