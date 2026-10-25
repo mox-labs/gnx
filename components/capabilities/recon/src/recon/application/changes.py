@@ -31,6 +31,7 @@ window never tells a delete.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -413,6 +414,7 @@ class ChangeDetector:
         self._secret = secret
         self._large = large
         self._memory_keys = memory_keys
+        self._unclosed: list[tuple[str, Exception]] = []
 
     def snapshot(
         self,
@@ -541,10 +543,26 @@ class ChangeDetector:
             written = self._archives.write_table(
                 archive, changes_output(table.name), _generator(rows), columns=CHANGE_COLUMNS
             )
-        finally:
+        except BaseException:
             for c in every:
+                with contextlib.suppress(Exception):  # the write's failure is the one said
+                    c.close()
+            raise
+        # Sealed: its rows were told, whatever the cleanup after it does. A join that fails
+        # as it closes is said, never the table's changes (Dijkstra G3); what it left is swept
+        # by the next join.
+        for c in every:
+            try:
                 c.close()
+            except Exception as exc:
+                self._unclosed.append((table.name, exc))
         return table.model_copy(update={"changes": summary(written)})
+
+    def unclosed(self) -> list[tuple[str, Exception]]:
+        """The joins that failed as they closed, after their change tables were sealed, by
+        output, since this was last asked; each one's table told what it holds."""
+        taken, self._unclosed = self._unclosed, []
+        return taken
 
     def _join(self, *sizes: int) -> KeyJoin:
         if self._large is not None and max(sizes) > self._memory_keys:
@@ -708,6 +726,21 @@ def failed(table: TableOutcome, exc: Exception) -> TableOutcome:
                                                  f"{exc}", fix=fix),
     )  # fmt: skip
     return table.model_copy(update={"changes": summary})
+
+
+def join_unclosed(at: str, output: str, exc: Exception) -> Problem:
+    """The warning for a join that failed as it closed, once ``output``'s change table was
+    sealed: its rows were told and stand; what the join left (a DuckDB connection's files)
+    is removed when the next join starts."""
+    return Problem(
+        f"{at}.changes",
+        f"{output}'s changes were told, and its join could not be closed: "
+        f"{type(exc).__name__}: {exc}",
+        kind="join_unclosed",
+        fix="nothing to do for the table; what the join left under the mission's .joins is "
+        "removed by the next large comparison (or remove it by hand); if this repeats, free "
+        "space there or report it",
+    )
 
 
 def changes_failed(at: str, output: str, exc: Exception) -> Problem:

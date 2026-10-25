@@ -68,7 +68,7 @@ import contextlib
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
-from recon.application.changes import changes_failed, failed
+from recon.application.changes import changes_failed, failed, join_unclosed
 from recon.application.plan import fan_out
 from recon.domain.archives import META_FORMAT_VERSION
 from recon.domain.deadline import Deadline, DeadlineExceededError
@@ -282,6 +282,8 @@ class Survey:
                 tables[position] = failed(table, exc)
                 self._warn(table.name, changes_failed(f"collectors.{index}", table.name, exc))
                 continue
+            for output, unclosed in self._changes.unclosed():
+                self._warn(output, join_unclosed(f"collectors.{index}", output, unclosed))
             with contextlib.suppress(OSError):  # its counts; the survey's end writes them too
                 progress(position, compared)
             tables[position] = compared

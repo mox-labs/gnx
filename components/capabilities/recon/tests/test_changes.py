@@ -526,6 +526,60 @@ class TestHostileContent:
         assert _ops(again) == [("insert", "a")], "told by the next survey, once"
 
 
+class _ClosesBadly:
+    """A KeyJoin in memory whose every join fails as it is closed, as a DuckDB join can when
+    its connection or its directory will not go."""
+
+    def join(self, told: Any, new: Any, **kw: Any) -> Any:
+        joined = MemoryJoin().join(told, new)
+
+        def close() -> None:
+            raise OSError(39, "Directory not empty: the join's directory")
+
+        joined.close = close  # type: ignore[method-assign]
+        return joined
+
+
+class TestAJoinThatWillNotClose:
+    """Dijkstra G3: once a change table is sealed, its rows were told, whatever the cleanup
+    after it does. A join that fails as it closes is a warning, ``join_unclosed``; the summary
+    stands, so the next table is compared with what this one told and tells nothing twice."""
+
+    def test_a_snapshot_s_rows_stand_and_the_warning_is_said(self, tmp_path: Path) -> None:
+        _mission(tmp_path, {"key": ["id"]})
+        surveys = Surveys(tmp_path)
+        surveys.recon = root(
+            {},
+            project=tmp_path,
+            clock=surveys.clock,
+            memory_keys=0,
+            key_join=_ClosesBadly(),
+            requester=lambda t, d, r: surveys.inbox,
+        )
+        # fmt: skip
+        first, document = surveys.survey(A, B)
+        assert _ops(first) == [("insert", "a"), ("insert", "b")]
+        summary = document.tables[0].changes
+        assert summary is not None and summary.error is None and summary.inserts == 2
+        [warning] = [w for w in document.warnings if w["kind"] == "join_unclosed"]
+        assert warning["path"] == "collectors.0.changes" and warning["fix"]
+        assert document.status == "complete"
+        again, _ = surveys.survey(A, B)
+        assert _ops(again) == [], "nothing told twice"
+
+    def test_a_window_s_rows_stand_and_the_warning_is_said(self, tmp_path: Path) -> None:
+        _stream_mission(tmp_path)
+        recon = root({}, project=tmp_path, clock=VirtualClock(), memory_keys=0,
+                     key_join=_ClosesBadly(),
+                     plugins=plugins_with(feed=_Feed(TestStreams.RECORDS)))  # fmt: skip
+        document = recon.stream("m", "s", windows=3)
+        first, second, third = _windows(tmp_path)
+        assert _window_ops(first) == [("insert", "a"), ("insert", "b")]
+        assert _window_ops(second) == [("update", "a"), ("insert", "c")]
+        assert _window_ops(third) == [("insert", "d")], "nothing told twice"
+        assert "join_unclosed" in [w["kind"] for w in document.warnings]
+
+
 class _Counting:
     """A KeyJoin that counts its joins and makes them on DuckDB."""
 

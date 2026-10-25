@@ -50,7 +50,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
-from recon.application.changes import changes_failed, failed
+from recon.application.changes import changes_failed, failed, join_unclosed
 from recon.application.survey import PROGRESS_S
 from recon.domain.archives import META_FORMAT_VERSION
 from recon.domain.documents import TableError, TableOutcome, WindowOutcome
@@ -961,6 +961,9 @@ class Stream:
                 warning = changes_failed(plan.at, table.name, exc)
                 self.warnings = [w for w in self.warnings if w.kind != warning.kind] + [warning]
                 table = failed(table, exc)
+            for output, unclosed in self._changes.unclosed():
+                warning = join_unclosed(plan.at, output, unclosed)
+                self.warnings = [w for w in self.warnings if w.kind != warning.kind] + [warning]
         self._archives.write_meta(
             window.archive, document(table, "stopped" if closed_by == "stopped" else "finished")
         )

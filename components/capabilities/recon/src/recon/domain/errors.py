@@ -169,6 +169,8 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "deletes_withheld",
     # a table's changes that could not be told: the table kept, compared again next time
     "changes_failed",
+    # a join that failed as it closed, once its change table was sealed: the rows stand
+    "join_unclosed",
     # a mission's config changed since its schedule was installed: its ticks are refused
     "config_changed",
     # a scheduler that cannot keep the schedule's missed: (cron runs no missed tick)
