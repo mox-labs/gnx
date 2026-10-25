@@ -120,6 +120,51 @@ class TestTheLegacyRule:
         assert listed[-1].name == third.name
 
 
+class TestALostRecordIsReadFromTheArchives:
+    """Dijkstra F1: with ``archive-index.jsonl`` gone, the order falls back to what each
+    archive's ``meta.yaml`` says, on every read, before any survey makes the record again: the
+    clock step, a subscriber's unread archives and retention all stand as they did."""
+
+    def _stepped(self, tmp_path: Path) -> tuple[Surveys, Path, Path]:
+        mission = {"catalog": [{"name": "mail", "url": "https://mail.test"}],
+                   "collectors": [{"name": "inbox", "type": "api", "source": "mail",
+                                   "endpoint": "/m", "extract": "items",
+                                   "changes": {"key": ["id"]}, "retain": {"archives": 1}}],
+                   "subscriptions": [{"name": "all", "output": "inbox"}]}  # fmt: skip
+        (tmp_path / ".recon" / "m").mkdir(parents=True)
+        (tmp_path / ".recon" / "m" / "config.yaml").write_text(yaml.safe_dump(mission))
+        surveys = Surveys(tmp_path)
+        first, _ = surveys.survey(A)
+        surveys.clock.advance(-3600)
+        second, _ = surveys.survey(A, B)
+        (tmp_path / ".recon" / "m" / "archive-index.jsonl").unlink()
+        return surveys, first, second
+
+    def test_the_order_is_the_order_made_while_the_record_is_gone(self, tmp_path: Path) -> None:
+        surveys, first, second = self._stepped(tmp_path)
+        listed = ArchiveFiles(FixedClock()).archives(tmp_path / ".recon" / "m")
+        assert [a.name for a in listed] == [first.name, second.name]
+        assert ArchiveFiles(FixedClock()).indexes(tmp_path / ".recon" / "m") == {
+            first.name: 1, second.name: 2,
+        }  # fmt: skip
+        assert not (tmp_path / ".recon" / "m" / "archive-index.jsonl").exists(), "it wrote nothing"
+
+    def test_a_subscriber_s_unread_archives_are_still_held(self, tmp_path: Path) -> None:
+        surveys, first, second = self._stepped(tmp_path)
+        read = surveys.recon.subscribe("m", "all")
+        assert [row.key for row in read.rows] == [{"id": "a"}, {"id": "b"}]
+        warnings = [w["kind"] for w in surveys.recon.status("m").warnings]
+        assert "subscription_behind" in warnings
+        assert first.exists() and second.exists()
+
+    def test_the_previous_table_is_the_one_made_before(self, tmp_path: Path) -> None:
+        surveys, first, second = self._stepped(tmp_path)
+        third, document = surveys.survey(A, B, C)  # its clock is still the hour back
+        assert document.tables[0].changes is not None
+        assert document.tables[0].changes.previous == second.name
+        assert _rows(third) == [{"op": "insert", "key": {"id": "c"}, "record": C}]
+
+
 def test_a_clock_step_is_one_hour_back(tmp_path: Path) -> None:
     """The fake clock moves back as the tests above need it to."""
     clock = FixedClock()

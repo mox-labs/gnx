@@ -44,9 +44,9 @@ index as it is made, before it has its name, a line of ``archive-index.jsonl`` b
 mission's ``archive/`` (so ``archive/`` holds archives, and SQL reads none of it); the survey
 records it in ``meta.yaml`` too. Archives are listed by index, so a clock set back between two
 surveys never puts the later before the earlier. One with no index (made before indexes) is
-listed first, by its id, which is when it began. A lost ``archive-index.jsonl`` is made
-again, from the archives' ``meta.yaml``, by the next archive made; until then its archives are
-listed by id.
+listed first, by its id, which is when it began. While ``archive-index.jsonl`` is lost, the
+indexes are read from each archive's ``meta.yaml`` instead (Dijkstra F1), and the next archive
+made writes the record again from them.
 
 **One survey a mission.** A survey holds the mission's own ``writer.lock`` the same way from
 before it writes anything until it returns (:meth:`ArchiveFiles.hold_mission`), so two surveys
@@ -215,15 +215,10 @@ class ArchiveFiles:
     def _give_index(self, mission_dir: Path, archive_id: str) -> None:
         """Record ``archive_id`` as the mission's next archive: one more than the last index
         given (or than the archives' ``meta.yaml`` say, when the record is lost)."""
-        home = mission_dir / "archive"
         given = self._index_lines(mission_dir)
         lines = b""
         if given is None:  # lost, or never made: made again from what the archives say
-            given = {}
-            for archive in self._listed(home):
-                index = self.read_meta(archive).get("index")
-                if isinstance(index, int) and not isinstance(index, bool):
-                    given[archive.name] = index
+            given = self._meta_indexes(mission_dir)
             lines = b"".join(
                 _index_line(a, i) for a, i in sorted(given.items(), key=lambda x: x[1])
             )
@@ -239,7 +234,22 @@ class ArchiveFiles:
         if stream is not None:
             windows = self.archives(mission_dir, stream=stream)
             return {w.name: index for w in windows if (index := window_index(w.name)) is not None}
-        return self._index_lines(mission_dir) or {}
+        return self._given(mission_dir)
+
+    def _given(self, mission_dir: Path) -> dict[str, int]:
+        """The archives' indexes: the record's, or, while it is lost, what each archive's
+        ``meta.yaml`` says (read, never written: the next archive made writes the record)."""
+        given = self._index_lines(mission_dir)
+        return self._meta_indexes(mission_dir) if given is None else given
+
+    def _meta_indexes(self, mission_dir: Path) -> dict[str, int]:
+        """The index each archive's ``meta.yaml`` holds, by id; none for one with none."""
+        found: dict[str, int] = {}
+        for archive in self._listed(mission_dir / "archive"):
+            index = self.read_meta(archive).get("index")
+            if type(index) is int:
+                found[archive.name] = index
+        return found
 
     def _index_lines(self, mission_dir: Path) -> dict[str, int] | None:
         """The indexes the mission's ``archive-index.jsonl`` gives, by archive id (a later line
@@ -545,7 +555,7 @@ class ArchiveFiles:
             return [d for _, d in windows if d.is_dir()]
         home = mission_dir / "archive"
         listed = self._listed(home)
-        given = self._index_lines(mission_dir) or {}
+        given = self._given(mission_dir)
         return sorted(listed, key=lambda a: archive_rank(a.name, given.get(a.name)))
 
     def _listed(self, home: Path) -> list[Path]:
