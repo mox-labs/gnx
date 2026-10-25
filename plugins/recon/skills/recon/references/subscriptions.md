@@ -92,7 +92,7 @@ A read is `recon.v1.changes-since`:
 
 A read is at most 1000 rows and about 1 MiB of them, at least one row when one is there. An archive whose change table is empty, or that has none, costs a read nothing: the read goes on past it. One being written holds the reader there until its survey seals it. Archive ids sort by when each survey began, so a clock set back between two surveys can give a later archive an earlier id, which a cursor past it does not read.
 
-`retain:` deletes data: an archive it removed before a subscription read its rows takes those rows with it. The read that passes it says so, `retired_range`, never in silence; keep archives longer than a subscription lags (`retain: {archives: N}`).
+`retain:` never removes an archive (or a stream's window) holding change rows a subscription the config declares has not acked: a notification lost in silence is worse than the disk it takes. While one holds archives back, the plan and `recon status` warn `subscription_behind`, at `subscriptions.<i>`, `got` the archives it holds, with the fix: read and ack them, deliver them, or remove the subscription from `subscriptions:` (one no longer declared holds nothing). An archive retired before this rule, or while its subscription was not declared, is said by the read that passes it, `retired_range`, never in silence.
 
 ## A named subscription: subscribe and ack
 
@@ -185,6 +185,7 @@ The dead letters keep 1 MiB, and the 1 MiB before them in `<name>.dead.jsonl.1`.
 | a row set aside after its last attempt | `delivery_dead_lettered` warning | give it again by hand from its dead letter, once the command is fixed |
 | a subscription held when a delivery came to it | `subscription_busy` warning | nothing: the next delivery gives its rows |
 | archives `retain:` removed before their rows were delivered | `changes_retired` warning | raise `retain:`, or deliver more often |
+| a subscription holding back archives `retain:` would remove | `subscription_behind` warning in the plan and `status`, at `subscriptions.<i>`, `got` the archives | ack them, deliver them, or remove the subscription |
 
 ## In a program
 

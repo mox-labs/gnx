@@ -117,7 +117,7 @@ collectors:
 
 `archives: N` keeps the newest N archives; `seconds: S` those that ended within S seconds of now; `bytes: B` the newest whose sizes add up to no more than B. With more than one, an archive is kept only while every one keeps it. The default is `all`: nothing is removed unless the mission says so, and the plan of a scheduled mission whose entry says nothing warns `retain_unset`, with the `archives` that keeps a day. An archive holds every entry's tables, so it is removed only when every snapshot entry lets it go: one entry that keeps `all` keeps them all.
 
-After each survey, recon removes what the rules let go, oldest first, each archive whole (its tables, change tables, told indexes, page logs and captures), each leaving a line in `archive/retired.jsonl` (`id`, `started_at`, `timestamp`, `ended`, `retired_at`, `rule`). It never removes the newest archive, one being written, or the last archive a table with `changes:` was told in (what its next comparison reads). A told index that does not hold is computed again from the archives kept.
+After each survey, recon removes what the rules let go, oldest first, each archive whole (its tables, change tables, told indexes, page logs and captures), each leaving a line in `archive/retired.jsonl` (`id`, `started_at`, `timestamp`, `ended`, `retired_at`, `rule`). It never removes the newest archive, one being written, the last archive a table with `changes:` was told in (what its next comparison reads), or one holding change rows a subscription has not acked (`recon --skill -r subscriptions`). A told index that does not hold is computed again from the archives kept.
 
 ## The log, and status
 

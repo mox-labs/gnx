@@ -81,6 +81,7 @@ if TYPE_CHECKING:
         ClosedBy,
         Overflow,
         Retain,
+        RetainSpec,
         SealReason,
         Stop,
         WindowSpec,
@@ -121,6 +122,9 @@ class StreamPlan:
     columns: tuple[str, ...] = ()
     retain: Retain = "all"
     package: str | None = None
+    #: The windows retention must keep whatever ``retain`` says: those holding change rows a
+    #: subscription has not acked (asked after each window is sealed).
+    held: Callable[[], set[str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -1017,27 +1021,11 @@ class Stream:
         if isinstance(rule, str):
             return
         windows = self._archives.archives(mission_dir, stream=plan.name)
-        going: set[str] = set()
-        if rule.archives is not None:
-            going.update(window.name for window in windows[: -rule.archives])
         now = datetime.fromisoformat(sealed.closed_at)
-        if rule.seconds is not None:
-            cutoff = now - timedelta(seconds=rule.seconds)
-            for window, after in zip(windows, windows[1:], strict=False):
-                closed = window_opened(after.name)  # a window closes as the next opens
-                if closed is not None and closed < cutoff:
-                    going.add(window.name)
-        if rule.bytes is not None:
-            held = 0
-            for at, window in enumerate(reversed(windows)):
-                if window.name not in sizes:
-                    sizes[window.name] = self._archives.size(window)
-                held += sizes[window.name]
-                if held > rule.bytes and at > 0:
-                    going.update(w.name for w in windows[: len(windows) - at])
-                    break
+        going = windows_going(self._archives, windows, rule, now, sizes)
+        held = plan.held() if plan.held is not None and going else set()
         for window in windows[:-1]:
-            if window.name not in going:
+            if window.name not in going or window.name in held:
                 continue
             meta = self._archives.read_meta(window)
             stream = _stream_meta(meta)
@@ -1223,3 +1211,34 @@ def _time(value: Any) -> datetime | None:
         return datetime.fromisoformat(value) if isinstance(value, str) else None
     except ValueError:
         return None
+
+
+def windows_going(
+    archives: ArchiveStore,
+    windows: list[Path],
+    rule: RetainSpec,
+    now: datetime,
+    sizes: dict[str, int],
+) -> set[str]:
+    """The windows of a stream (oldest first) ``rule`` lets go at ``now``: each that
+    ``archives`` leaves out, that closed more than ``seconds`` before it, or that the newest
+    windows' ``bytes`` leave no room for. Each window's size is read once into ``sizes``."""
+    going: set[str] = set()
+    if rule.archives is not None:
+        going.update(window.name for window in windows[: -rule.archives])
+    if rule.seconds is not None:
+        cutoff = now - timedelta(seconds=rule.seconds)
+        for window, after in zip(windows, windows[1:], strict=False):
+            closed = window_opened(after.name)  # a window closes as the next opens
+            if closed is not None and closed < cutoff:
+                going.add(window.name)
+    if rule.bytes is not None:
+        held = 0
+        for at, window in enumerate(reversed(windows)):
+            if window.name not in sizes:
+                sizes[window.name] = archives.size(window)
+            held += sizes[window.name]
+            if held > rule.bytes and at > 0:
+                going.update(w.name for w in windows[: len(windows) - at])
+                break
+    return going

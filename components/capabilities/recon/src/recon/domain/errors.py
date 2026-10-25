@@ -191,6 +191,8 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "delivery_dead_lettered",
     "subscription_busy",
     "changes_retired",
+    # a subscription whose unacked change rows hold back archives retain: would remove
+    "subscription_behind",
 )
 
 

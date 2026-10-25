@@ -206,6 +206,25 @@ class ChangeReader:
                 break
         return ChangeRead(rows, at, more, state, retired)
 
+    def unread(self, position: Position | None) -> set[str]:
+        """The archives (a stream's windows) whose sealed change table holds a row
+        ``position`` has not passed (None: none passed): the one it is in, unless its table is
+        done, and each after it whose change table is not empty."""
+        archives = self._archives.archives(self._mission_dir, stream=self._stream)
+        names = [archive.name for archive in archives]
+        start = 0
+        if position is not None and position.archive is not None:
+            if position.archive in names:
+                start = names.index(position.archive) + (1 if position.done else 0)
+            else:  # retired: what is after it
+                start = next((i for i, n in enumerate(names) if n > position.archive), len(names))
+        unread = set()
+        for archive in archives[start:]:
+            rows = self._archives.read_table(archive, self._table)
+            if rows is not None and next(iter(rows), None) is not None:
+                unread.add(archive.name)
+        return unread
+
     def known(self, position: Position) -> bool:
         """Whether ``position`` is in an archive the mission has, or had (retired), or before
         the first."""
@@ -464,6 +483,25 @@ class Subscriptions:
                 )
             )
         return listed
+
+    def held(self, name: str, plan: Plan, stream: str | None) -> dict[int, tuple[str, set[str]]]:
+        """For each subscription ``plan`` declares on an output of ``stream`` (None: a snapshot
+        entry's), by its position in ``subscriptions:``: its name, and the archives (windows)
+        holding change rows it has not acked, which retention keeps. What it keeps that is not
+        of this output, or does not read, holds everything: nothing it acked can be trusted."""
+        assert plan.config is not None
+        mission = self._mission_dir(name)
+        held: dict[int, tuple[str, set[str]]] = {}
+        for index, spec in enumerate(plan.config.subscriptions):
+            if spec.output not in plan.changes or plan.changes[spec.output] != stream:
+                continue
+            reader = self._reader(name, spec.output, plan)
+            try:
+                position = _acked(reader, self._store.state(mission, spec.name), name, spec)
+            except UsageError:
+                position = None
+            held[index] = (spec.name, reader.unread(position))
+        return held
 
     def _dead(self, name: str, spec: SubscriptionSpec) -> int:
         return self._store.dead_letters(self._mission_dir(name), spec.name)

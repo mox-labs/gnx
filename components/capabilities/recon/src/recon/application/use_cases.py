@@ -21,7 +21,7 @@ from recon.application.changes import MEMORY_KEYS, ChangeDetector
 from recon.application.collectors import confined_transforms, declared_env
 from recon.application.plan import Plan, PlannedStream, build_plan, fan_out, plugin_warning
 from recon.application.schedules import Schedules, stale
-from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun
+from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun, windows_going
 from recon.application.subscriptions import ChangeReader, Subscriptions
 from recon.application.survey import CollectorError, Survey, TablePages
 from recon.domain.archives import (
@@ -323,6 +323,7 @@ class Recon:
         elif plan.streams:
             provenance.append(_survey_returns(plan.config, plan.streams))
         requirements, said, broken = self._preflight(mission, plan.config)
+        broken += self._behind(name, plan)
         return PlanDocument(
             mission=name,
             valid=plan.valid,
@@ -536,12 +537,12 @@ class Recon:
             warnings += _dropped(telemetry) + _undelivered(channel)
         finally:
             self._archives.release(archive)
-        self._retain_snapshots(mission, plan.config, streams)
+        self._retain_snapshots(name, mission, plan, streams)
         stream_windows: list[WindowOutcome] = []
         for stream in plan.streams:
             run, found = self._run_stream(
                 mission, plan.config, stream, sha256, windows=1, until=None, on_event=caller,
-                name=name,
+                name=name, plan=plan,
             )  # fmt: skip
             warnings += found
             stream_windows += [run.last] if run.last is not None else []
@@ -556,31 +557,31 @@ class Recon:
             stream_windows=stream_windows,
         )
 
-    def _retain_snapshots(self, mission: Path, config: ReconConfig, streams: set[int]) -> None:
+    def _retain_snapshots(self, name: str, mission: Path, plan: Plan, streams: set[int]) -> None:
         """Retire the archives every snapshot entry's ``retain:`` lets go (Knuth, round-4
         review S1), oldest first, once the survey's archive is sealed, the mission still held:
         never the newest, never one being written, never the last one a table with
         ``changes:`` was told in (the told index the next comparison reads). An archive holds
         every entry's tables, so it goes only when every snapshot entry lets it go; one that
-        keeps ``all`` (the default) keeps every archive. Each leaves a tombstone in
-        ``archive/retired.jsonl``; a retirement that fails is tried again by the next."""
+        keeps ``all`` (the default) keeps every archive. Nor one holding change rows a
+        subscription the config declares has not acked: a notification lost in silence is
+        worse than the disk it takes. Each leaves a tombstone in ``archive/retired.jsonl``; a
+        retirement that fails is tried again by the next."""
+        assert plan.config is not None
+        config = plan.config
         entries = [entry for i, entry in enumerate(config.collectors) if i not in streams]
         rules = [entry.retain for entry in entries]
-        if not entries or any(rule is None or isinstance(rule, str) for rule in rules):
+        going = self._snapshots_letting_go(mission, config, streams)
+        if not going:
             return
+        held = self._subscriptions.held(name, plan, None) if (
+            self._subscriptions is not None
+        ) else {}  # fmt: skip
+        kept = set().union(*(archives for _, archives in held.values()))
         archives = self._archives.archives(mission)
-        if len(archives) < 2:
-            return
         now = self._clock.now()
-        sizes: dict[str, int] = {}
-        going: set[str] | None = None
-        for rule in rules:
-            assert rule is not None and not isinstance(rule, str)
-            lets_go = self._snapshots_going(archives, rule, now, sizes)
-            going = lets_go if going is None else going & lets_go
-        kept = {archives[-1].name} | self._told_in(archives, entries)
         for archive in archives[:-1]:
-            if archive.name not in (going or set()) or archive.name in kept:
+            if archive.name not in going or archive.name in kept:
                 continue
             if self._archives.state(archive) == "writing":
                 continue
@@ -596,6 +597,77 @@ class Recon:
             }  # fmt: skip
             with contextlib.suppress(OSError):  # left listed: the next survey retires it
                 self._archives.retire(archive, tombstone)
+
+    def _snapshots_letting_go(
+        self, mission: Path, config: ReconConfig, streams: set[int]
+    ) -> set[str]:
+        """The archives the snapshot entries' ``retain:`` lets go now: those every entry's
+        rules let go, but the newest and the last one each table with ``changes:`` was told
+        in; none when an entry keeps ``all``."""
+        entries = [entry for i, entry in enumerate(config.collectors) if i not in streams]
+        rules = [entry.retain for entry in entries]
+        if not entries or any(rule is None or isinstance(rule, str) for rule in rules):
+            return set()
+        archives = self._archives.archives(mission)
+        if len(archives) < 2:
+            return set()
+        now = self._clock.now()
+        sizes: dict[str, int] = {}
+        going: set[str] | None = None
+        for rule in rules:
+            assert rule is not None and not isinstance(rule, str)
+            lets_go = self._snapshots_going(archives, rule, now, sizes)
+            going = lets_go if going is None else going & lets_go
+        kept = {archives[-1].name} | self._told_in(archives, entries)
+        return (going or set()) - kept
+
+    def _behind(self, name: str, plan: Plan | None = None) -> list[Problem]:
+        """A ``subscription_behind`` warning for each declared subscription holding back
+        archives (or a stream's windows) ``retain:`` would let go: its change rows there are
+        not acked. None when the config cannot be planned."""
+        if self._subscriptions is None:
+            return []
+        if plan is None:
+            try:
+                plan = self._prepare(name, None, False)[1]
+            except ReconError:
+                return []
+        if plan.config is None or not plan.config.subscriptions:
+            return []
+        mission = self._missions.mission_dir(name)
+        streams = {stream.index for stream in plan.streams}
+        letting: dict[str | None, set[str]] = {
+            None: self._snapshots_letting_go(mission, plan.config, streams)
+        }
+        for stream in plan.streams:
+            windows = self._archives.archives(mission, stream=stream.name)
+            if isinstance(stream.retain, str) or len(windows) < 2:
+                continue
+            going = windows_going(self._archives, windows, stream.retain, self._clock.now(), {})
+            letting[stream.name] = going - {windows[-1].name}
+        problems = []
+        for location, going in letting.items():
+            if not going:
+                continue
+            for index, (subscription, archives) in self._subscriptions.held(
+                name, plan, location
+            ).items():
+                count = len(archives & going)
+                if not count:
+                    continue
+                problems.append(
+                    Problem(
+                        f"subscriptions.{index}",
+                        f"subscription {subscription} has not acked change rows in {count} "
+                        f"archive(s) retain: would remove, so they are kept until it does",
+                        kind="subscription_behind",
+                        fix=f"read and ack them (recon subscribe {name} {subscription}, then "
+                        f"recon ack), deliver them (recon deliver {name}), or remove the "
+                        "subscription from subscriptions: if nobody reads it",
+                        got=count,
+                    )
+                )
+        return problems
 
     def _snapshots_going(
         self, archives: list[Path], rule: RetainSpec, now: datetime, sizes: dict[str, int]
@@ -688,7 +760,7 @@ class Recon:
                 on_event = None
         run, found = self._run_stream(
             mission, plan.config, planned, sha256, windows=windows, until=until,
-            on_event=on_event, stop=stop, name=name,
+            on_event=on_event, stop=stop, name=name, plan=plan,
         )  # fmt: skip
         found = started + found
         return StreamDocument(
@@ -718,6 +790,7 @@ class Recon:
         on_event: EventCallback | None,
         stop: Stop | None = None,
         name: str,
+        plan: Plan,
     ) -> tuple[StreamRun, list[Problem]]:
         """Run one stream of ``config`` through the window writer, over a collector built for
         it alone (its ``close()`` is what stops a source that would not); the run, and what it
@@ -755,7 +828,10 @@ class Recon:
                 telemetry=partial(self._window_telemetry, on_event=on_event, warnings=warnings),
                 changes=self._changes(name, subset),
             )  # fmt: skip
-            plan = StreamPlan(
+            held = None if self._subscriptions is None else partial(
+                _held, self._subscriptions, name, plan, planned.name
+            )  # fmt: skip
+            plan_ = StreamPlan(
                 name=planned.name,
                 at=f"collectors.{planned.index}",
                 entry=target,
@@ -766,10 +842,11 @@ class Recon:
                 columns=tuple(entry.normalize or ()),
                 retain=planned.retain,
                 package=self._plugins.collector_packages.get(entry.type),
+                held=held,
             )
             run = engine.run(
                 mission,
-                plan,
+                plan_,
                 partial(_collect, collector, target, source),
                 normalize,
                 close=close,
@@ -976,7 +1053,9 @@ class Recon:
             missions=[self._mission_status(name, history=mission is not None) for name in names],
             plugins=_installed(self._plugins),
             warnings=[
-                w.document() for name in names for w in self._abandoned(name) + self._exposed(name)
+                w.document()
+                for name in names
+                for w in self._abandoned(name) + self._exposed(name) + self._behind(name)
             ],
         )
 
@@ -1460,6 +1539,12 @@ class Recon:
             return record_hook_payload(self._missions.capture_log(name), payload)
         except ConfigError as exc:
             raise ConfigError(str(exc), fix="run recon capture from a PostToolUse hook") from exc
+
+
+def _held(subscriptions: Subscriptions, name: str, plan: Plan, stream: str) -> set[str]:
+    """The windows of ``stream`` holding change rows a declared subscription has not acked."""
+    held = subscriptions.held(name, plan, stream)
+    return set().union(*(windows for _, windows in held.values()))
 
 
 def _stream_bound(
