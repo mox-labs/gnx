@@ -64,7 +64,10 @@ class ScheduleFiles:
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
                 if not _is(path, descriptor):
                     continue  # another tick rotated it while this one waited: open the new one
-                if os.fstat(descriptor).st_size + len(line) > self._max_bytes:
+                size = os.fstat(descriptor).st_size
+                # Rotated only when it holds something: a line past the cap, made room for in
+                # an empty log, would rotate for ever; it is written alone (review M1).
+                if size and size + len(line) > self._max_bytes:
                     os.replace(path, path.with_name(f"{SCHEDULE_LOG}.1"))
                     continue
                 os.write(descriptor, line)

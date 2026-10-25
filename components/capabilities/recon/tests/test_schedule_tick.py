@@ -414,6 +414,25 @@ class TestTheLogIsBounded:
         assert lines[-1]["late_s"] == 9999.0, "the newest kept, in order"
         assert [line["late_s"] for line in lines] == sorted(line["late_s"] for line in lines)
 
+    def test_a_line_longer_than_the_cap_is_written_alone_never_rotated_for_ever(
+        self, tmp_path: Path
+    ) -> None:
+        """Round-4 review M1: a line past the cap rotated an empty log to make room, and again,
+        for ever. A log is rotated only when it holds something; a line too long for any log
+        is written alone into a fresh one."""
+        store = ScheduleFiles(max_bytes=64)
+        store.append(tmp_path, {"n": 1})
+        done = threading.Event()
+
+        def append() -> None:
+            store.append(tmp_path, {**self.LINE, "n": 2})
+            done.set()
+
+        threading.Thread(target=append, daemon=True).start()
+        assert done.wait(5), "the append returned"
+        assert [line.get("n") for line in store.lines(tmp_path)] == [1, 2]
+        assert (tmp_path / SCHEDULE_LOG).stat().st_size > 64, "the long line, alone"
+
     def test_the_check_fails_a_log_with_no_cap(self, tmp_path: Path) -> None:
         """Check the checker: the same ticks, uncapped, pass 2 MiB."""
         store = ScheduleFiles(max_bytes=1 << 40)
