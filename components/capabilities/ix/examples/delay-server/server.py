@@ -8,7 +8,8 @@ two are identical; start one with a longer delay and it is slower by a known amo
 ``GET /healthz`` answers at once, so a harness can tell when the server is up. Every other
 path sleeps ``--delay-ms`` and then answers ``ok``. With ``--capacity N`` it serves at most N
 such requests at once and the rest wait their turn, as a service with N workers does; with
-none, every request is served at once.
+none, every request is served at once. Either way every connection is accepted, up to 128
+arriving at once, so a request waits in the server, never refused by the kernel.
 """
 
 from __future__ import annotations
@@ -18,6 +19,14 @@ import threading
 import time
 from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    # Connections waiting to be accepted. With the default of 5, a connection past them is
+    # dropped and the client tries again a second later, which a load tool reads as the
+    # server's latency; --capacity queues requests in the server instead.
+    request_queue_size = 128
 
 
 def handler(delay_s: float, capacity: int = 0) -> type[BaseHTTPRequestHandler]:
@@ -55,9 +64,7 @@ def main() -> None:
     )
     arguments = parser.parse_args()
     serves = handler(arguments.delay_ms / 1000, arguments.capacity)
-    server = ThreadingHTTPServer(("127.0.0.1", arguments.port), serves)
-    server.daemon_threads = True
-    server.serve_forever()
+    Server(("127.0.0.1", arguments.port), serves).serve_forever()
 
 
 if __name__ == "__main__":

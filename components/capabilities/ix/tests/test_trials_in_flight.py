@@ -16,6 +16,7 @@ import json
 import random
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -1323,6 +1324,48 @@ def test_the_delay_server_queues_what_it_has_no_capacity_for() -> None:
             server.wait()
         assert took >= at_least, (args, took)
         assert under is None or took < under, (args, took)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_the_delay_server_accepts_every_connection_and_queues_past_its_capacity() -> None:
+    """The control's P runs open 16 connections at once against a server of capacity 4.
+    Each must be accepted, and the requests past the capacity wait in the server: a
+    connection the kernel's listen queue (5 by default) has no room for is dropped, and the
+    client's retry a second later would read as the subject's latency. The server is
+    stopped while they connect, so each connection made is one its listen queue held."""
+    server, url = _served("--delay-ms", "100", "--capacity", "4")
+    port = int(url.rsplit(":", 1)[1])
+    clients: list[socket.socket] = []
+    try:
+        server.send_signal(signal.SIGSTOP)
+        for _ in range(16):
+            try:
+                clients.append(socket.create_connection(("127.0.0.1", port), timeout=2))
+            except TimeoutError:
+                pytest.fail(f"{len(clients)} of 16 connections accepted")
+        for client in clients:
+            client.sendall(b"GET /work HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        began = time.monotonic()
+        server.send_signal(signal.SIGCONT)
+        replies: list[bytes] = []
+        for client in clients:
+            client.settimeout(10)
+            reply = b""
+            while not reply.endswith(b"ok\n"):
+                found = client.recv(4096)
+                assert found, reply
+                reply += found
+            replies.append(reply)
+        took = time.monotonic() - began
+    finally:
+        server.send_signal(signal.SIGCONT)
+        for client in clients:
+            client.close()
+        server.terminate()
+        server.wait()
+    assert all(reply.startswith(b"HTTP/1.1 200") for reply in replies)
+    # Four at a time, 100ms each: four turns.
+    assert took >= 0.4, took
 
 
 def test_the_live_slice_is_what_its_protocol_says(tmp_path: Path) -> None:
