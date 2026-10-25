@@ -1,5 +1,21 @@
 # Changelog — recon
 
+## Unreleased
+
+### A crawl that resumes: a stream of page windows
+
+- **`paginate:` on a stream** (ruling P4): an `api` entry with `paginate:` and `window:` crawls its source across its windows, and a run goes on where the last left off, after a stop, a crash or the end of `--windows`. The crawl's end (a page that names no next one, or a crawl cut short, its table `truncated`) seals the window `eof` and ends the stream; a run after it crawls again from the first page. A snapshot table that paginates stays all or nothing. The contract: `docs/reference/pagination.md`, "A crawl that resumes".
+- **`window: {pages: N}`**, beside `seconds`, `records` and `bytes`: a window holds N pages of its crawl and is sealed `closed_by: pages` (a new `closed_by`). No default: a window needs one bound written. Refused on an entry without `paginate:`. The plan reports `paginate.pages` for a stream (the most pages one crawl reads, across its windows and runs) and, on `window.pages`, the least seconds a window of them takes at the source's rate limit.
+- **Each window keeps its page log** (`<output>.pages.jsonl`), a page added as the crawl is about to ask for it, after the records before it are written; a run goes on from the last page it names, asked for by its token: read whole when none of its records was kept (ixian's P7: killed asking for page k+1, the next run's first request is page k+1's), read past the last record kept otherwise, which is found by its content at its index, on its page or on the next.
+- **A page that moved under the crawl** (a record inserted or removed ahead of it) is found by its last record kept, so nothing is kept twice: warned `paginate_shifted` (a new warning kind), `got` the shift; not found, the crawl goes on by index, with a gap `resumed: false` and `got` null.
+- **A token the source no longer takes** (an expired cursor: a status neither a retry's nor a credential's) begins the crawl again from its first page, with a gap `resumed: false` and a `paginate_restarted` warning (a new kind) with its fix; the stream goes on.
+- **Change detection over such a stream** follows C7: each record of a crawl told once across a crash and its resume, a later crawl telling only what changed, never a delete.
+
+### Changed (breaking): the extension API
+
+- **`PageLog.page` says whether the page is wanted** (`-> bool`), and is said before the page is asked for: a crawl asks for no page past the first `False`. `PageLog` gains `restarted(index)` and `shifted(index, by)`. A type that `paginates` takes `collect(..., after=)`: a `recon.domain.paginate.Resume`'s document, `{page, token, i, boundary}`; `Seek` finds where it left off. `Crawl` takes `pages=` and `offset=` to start at a resumed page.
+- **`ArchiveStore.append_sidecar(archive, output, sidecar, line)`**: a line added to a table's sidecar while the table is written, after the lines given before it; `read_sidecar` gives no last line cut short.
+
 ## 0.15.0 — 2026-10-24
 
 ### Subscriptions

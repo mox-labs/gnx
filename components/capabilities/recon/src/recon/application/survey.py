@@ -116,17 +116,26 @@ class CollectorError(CollectionError):
 class TablePages:
     """The page log of a survey's tables (``recon.domain.paginate.PageLog``), one table at a
     time, as tables run: :meth:`begin` starts a table's, and :meth:`end` hands it over. Each
-    page is one entry, ``{"page", "token"}``, so it holds a crawl's ``pages`` entries at most."""
+    page is one entry, ``{"page", "token"}``, so it holds a crawl's ``pages`` entries at most.
+    Every page is wanted, and a snapshot's crawl never resumes, so it is never restarted or
+    shifted."""
 
     def __init__(self) -> None:
         self.pages: list[dict[str, Any]] = []
         self.truncated_by: TruncatedBy | None = None
 
-    def page(self, index: int, token: Any) -> None:
+    def page(self, index: int, token: Any) -> bool:
         self.pages.append({"page": index, "token": token})
+        return True
 
     def truncated(self, by: TruncatedBy) -> None:
         self.truncated_by = by
+
+    def restarted(self, index: int) -> None:
+        return None
+
+    def shifted(self, index: int, by: int | None) -> None:
+        return None
 
     def begin(self) -> None:
         self.pages, self.truncated_by = [], None
@@ -424,7 +433,8 @@ class Survey:
             self._keep_pages(archive, output, pages)
         if truncated_by is not None:
             update |= {"truncated": True, "truncated_by": truncated_by}
-            self._warn(output, _truncated(index, entry, output, truncated_by, len(pages)))
+            entry_at = f"collectors.{index}"
+            self._warn(output, crawl_truncated(entry_at, entry, output, truncated_by, len(pages)))
         return table.model_copy(update=update)
 
     def _keep_pages(self, archive: Path, output: str, pages: list[dict[str, Any]]) -> None:
@@ -590,11 +600,12 @@ def _withheld(index: int, entry: CollectorEntry, output: str, why: DeletesWithhe
     )
 
 
-def _truncated(
-    index: int, entry: CollectorEntry, output: str, by: TruncatedBy, pages: int
+def crawl_truncated(
+    entry_at: str, entry: CollectorEntry, output: str, by: TruncatedBy, pages: int
 ) -> Problem:
-    """The warning for a table whose crawl ``by`` cut short after ``pages`` pages."""
-    at = f"collectors.{index}.paginate"
+    """The warning for a table (or a stream's crawl) whose crawl ``by`` cut short after
+    ``pages`` pages; ``entry_at`` is the entry's path (``collectors.<i>``)."""
+    at = f"{entry_at}.paginate"
     whole = "so it is not a whole snapshot of its source"
     if by == "pages":
         return Problem(

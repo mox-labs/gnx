@@ -295,11 +295,21 @@ class ArchiveStore(Protocol):
         Raises OSError when it cannot."""
         ...
 
+    def append_sidecar(
+        self, archive: Path, output: str, sidecar: Sidecar, line: dict[str, Any]
+    ) -> None:
+        """Add ``line`` to the table ``output``'s ``sidecar`` while the table is written (a
+        stream's window keeps its page log so: :mod:`recon.domain.paginate`), in one write,
+        once every record given to the table before it is written: a sidecar line is never
+        kept without the records before it, so a window its writer died in says no more than
+        it holds. Raises OSError when it cannot."""
+        ...
+
     def read_sidecar(
         self, archive: Path, output: str, sidecar: Sidecar
     ) -> Iterator[dict[str, Any]] | None:
         """The lines of the table ``output``'s ``sidecar``, in the order written; None when it
-        has none."""
+        has none. A last line a writer that died cut short is no line of it."""
         ...
 
     def read_table(

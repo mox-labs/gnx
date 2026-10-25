@@ -86,7 +86,7 @@ A survey with failed tables still writes its archive, marked incomplete, and lis
 
 **Watch.** `recon watch <name> --json` follows an archive as a survey writes it, a `recon.v1.records-since` line per read, and returns when the survey ends: `--stream` of a `--forever` stream never returns. To follow, poll: `--once` reads once and returns, and the next call passes the `cursor` it printed as `--cursor` (with `--archive`, or `--stream`). Records of a table later `retracted` are void. Flags, defaults, refusals, `state`, `ended` and the library calls: `recon --skill -r live-reading`.
 
-**Streams.** A source that never ends (`tail` a file, `sse` events) is a stream, sealed in windows: `recon stream <name> --stream <c>` runs one window and blocks until it ends, 300 s by default, which can outlast a tool call: run it with `--dry-run --json` first and read `stream.returns` (seconds), then set a shorter `window:` or run it in the background. `--windows N`, `--until`, `--forever` run more. A survey runs one window of each stream, in turn, after its tables: its dry run says `survey.returns`. All: `recon --skill -r streaming`.
+**Streams.** A source that never ends (`tail` a file, `sse` events) is a stream, sealed in windows: `recon stream <name> --stream <c>` runs one window and blocks until it ends, 300 s by default, which can outlast a tool call: run it with `--dry-run --json` first and read `stream.returns` (seconds), then set a shorter `window:` or run it in the background. `--windows N`, `--until`, `--forever` run more. A survey runs one window of each stream, in turn, after its tables: its dry run says `survey.returns`. All: `recon --skill -r streaming`. A long crawl is one too (`paginate:`, `window: {pages: N}`): a run goes on where the last left off, the last page ends it: `-r pagination`.
 
 ## Errors and exit codes
 
@@ -238,7 +238,7 @@ Each prints with `recon --skill -r <name>`:
 | `capture-format` | the `recon.v1.capture` line format and how a `capture` collector reads it |
 | `telemetry` | the event log, every span and attribute, exporting through OpenTelemetry |
 | `streaming` | stream keys, defaults, refusals; `tail`, `sse`; `--stream` |
-| `pagination` | `paginate:` keys, defaults, stops, refusals |
+| `pagination` | `paginate:` keys, defaults, stops, refusals; crawls that resume |
 | `changes` | `changes:` keys, defaults, ops, refusals |
 | `live-reading` | `recon watch` and `recon.read_since`: archive states, sealing, the cursor, every flag, default and refusal |
 | `schedules` | `schedule:`, `recon schedule`, ticks |

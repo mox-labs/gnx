@@ -413,10 +413,40 @@ class TestThePlan:
         problem = _problems(mission, plugins)["collectors.0.paginate"]
         assert problem.kind == "unknown_key" and "paginate" in problem.fix
 
-    def test_a_stream_takes_no_paginate_yet(self, plugins: Plugins) -> None:
-        mission = _mission(PAGINATE["link"], window={"seconds": 60})
-        problem = _problems(mission, plugins)["collectors.0.paginate"]
-        assert "stream" in problem.message and problem.fix
+    def test_a_stream_reads_its_source_page_by_page(self, plugins: Plugins) -> None:
+        """Ruling P4: ``paginate:`` on a stream is a crawl across its windows. The plan takes
+        it, and says the crawl's cap (``paginate.pages``, 100 unless written: the most pages
+        one crawl reads, across its windows) and each window's ``pages``, with the least time
+        a window of them takes at the source's rate limit."""
+        mission = _mission(PAGINATE["link"], window={"pages": 20}, retain="all")
+        mission["catalog"][0]["rate_limit"] = {"rps": 2, "burst": 4}
+        plan = build_plan(mission, plugins, {})
+
+        assert plan.valid, plan.problems
+        values = {v.path: v for v in plan.provenance}
+        cap = values["collectors.0.paginate.pages"]
+        assert (cap.value, cap.origin) == (100, "recon")
+        assert "crawl" in cap.note and "window" in cap.note
+        window = values["collectors.0.window.pages"]
+        assert (window.value, window.origin) == (20, "mission")
+        assert "at least 8s" in window.note
+        [stream] = plan.streams
+        assert stream.window.pages == 20
+
+    def test_pages_bounds_only_the_window_of_an_entry_that_paginates(
+        self, plugins: Plugins
+    ) -> None:
+        """A window of a source read in one request, or one whose records do not end, never
+        reaches a page: ``window: {pages}`` there would never close it."""
+        mission = _mission(PAGINATE["link"], window={"pages": 2})
+        del mission["collectors"][0]["paginate"]
+        problem = _problems(mission, plugins)["collectors.0.window.pages"]
+        assert "paginate" in problem.message and "records" in problem.fix
+
+    def test_a_stream_takes_no_deletes_whatever_it_pages_by(self, plugins: Plugins) -> None:
+        mission = _mission(PAGINATE["cursor"], window={"pages": 2},
+                           changes={"key": ["id"], "deletes": True})  # fmt: skip
+        assert "collectors.0.changes.deletes" in _problems(mission, plugins)
 
     def test_a_column_named_position_is_refused(self, plugins: Plugins) -> None:
         mission = _mission(PAGINATE["link"], normalize={"_position": "id"})

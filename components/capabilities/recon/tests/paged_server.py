@@ -4,8 +4,10 @@ picks.
 
 ``GET /items?cursor=<n>`` answers page ``n`` (the first page without one) of ``records``
 records, ``size`` to a page, as ``{"items": [...], "meta": {"next": <n + 1 or null>}}``. It
-records each page asked for in ``asked`` (None for the first) and counts every request in
-``hits``. ``refuse`` maps a page to the statuses its first requests get (``429`` with a
+records each page asked for in ``asked`` (None for the first), each page it was sent a request
+for in ``tried`` (refused ones too), and counts every request in ``hits``. ``data`` is the list
+it serves, which a test may change between two requests (a record inserted ahead of a page
+shifts it). ``refuse`` maps a page to the statuses its first requests get (``429`` with a
 ``Retry-After`` of ``retry_after`` seconds, say) before it is answered. ``hold`` is a page whose
 request waits on ``release`` before it is answered; ``holding`` is set once one waits.
 """
@@ -37,6 +39,7 @@ class PagedServer:
         self.release = threading.Event()
         self.holding = threading.Event()
         self.asked: list[int | None] = []
+        self.tried: list[int | None] = []
         self.hits = 0
         served = self
 
@@ -49,6 +52,7 @@ class PagedServer:
                     return
                 cursor = dict(parse_qsl(parts.query)).get("cursor")
                 page = int(cursor) if cursor is not None else 0
+                served.tried.append(None if cursor is None else page)
                 refused = served.refuse.get(page)
                 if refused:
                     self.send_response(refused.pop(0))
