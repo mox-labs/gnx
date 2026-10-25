@@ -17,14 +17,23 @@ fails the table: the source's credential would go with it), with the source's cr
 parameter and no other query; a ``cursor``, ``offset`` or ``page`` crawl sends ``params`` and
 the token as ``paginate.param`` (a ``page`` crawl its first page's number too). How it stops
 is :class:`~recon.domain.paginate.Crawl`'s. Each record carries ``_position``, ``{page, i}``;
-each page, with its token (a URL as recon reports one, its credential parameter redacted), and
-a crawl cut short are said through the page log (``CollectorContext.pages``).
+each page, with its token (a URL as recon reports one, its credential parameter redacted), is
+said through the page log (``CollectorContext.pages``) before it is asked for, and not asked
+for when the page log does not want it; a crawl cut short is said there too.
+
+In a stream (ruling P4), ``collect``'s ``after`` is a :class:`~recon.domain.paginate.Resume`'s
+document: the crawl asks for that page again, by its token, and keeps what follows the last
+record kept from it, found by :class:`~recon.domain.paginate.Seek` (a page that moved is said
+through the page log's ``shifted``). A resumed token the source refuses (a status that is
+neither a retry's nor a credential's: an expired cursor, a page gone) begins the crawl again
+from its first page, said through the page log's ``restarted``.
 
 Registered as the built-in collector type ``api`` (entry-point group ``recon.collectors``).
 """
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
@@ -44,7 +53,18 @@ from recon.domain.collector import CollectorType
 from recon.domain.errors import CollectionError, Problem
 from recon.domain.http import reported_url
 from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, resolve_path, to_records
-from recon.domain.paginate import COUNTED, FIRST_PAGE, Crawl, NoPages, Stop, next_link, position
+from recon.domain.paginate import (
+    COUNTED,
+    FIRST_PAGE,
+    Crawl,
+    NoPages,
+    Resume,
+    Seek,
+    Stop,
+    content,
+    next_link,
+    position,
+)
 from recon.domain.stream import POSITION_FIELD
 from recon.domain.substitution import find_unresolved, substitute
 
@@ -104,14 +124,19 @@ class ApiCollector:
         source: SourceEntry | None,
         *,
         captures: CaptureLog | None = None,
+        after: Any = None,
     ) -> Iterator[dict[str, Any]]:
+        """The source's records. ``after``, for a stream's crawl, is where to go on from (a
+        :class:`~recon.domain.paginate.Resume`'s document); one entry without ``paginate:``
+        makes one request, and has nowhere to go on from."""
         settings = _settings(entry)
         # The plan holds both: the type requires a source, and _check an endpoint.
         assert source is not None and settings.endpoint is not None
         url = build_url(source.url, settings.endpoint, settings.vars)
         body = substitute(settings.body, settings.vars) if settings.body else None
         if entry.paginate is not None:
-            yield from self._crawl(entry, source, settings, (url, body), captures)
+            resume = Resume.of(after)
+            yield from self._crawl(entry, source, settings, (url, body), captures, resume)
             return
         data, _ = self._fetch(entry, source, settings, (url, _params(settings)), body, captures)
         for record in to_records(data, entry.extract):
@@ -126,38 +151,60 @@ class ApiCollector:
         settings: ApiSettings,
         first: tuple[str, dict[str, Any] | None],
         captures: CaptureLog | None,
+        resume: Resume | None = None,
     ) -> Iterator[dict[str, Any]]:
-        """Every page, until the crawl stops; each record with its ``_position``."""
+        """Every page, until the crawl stops or the page log wants no more; each record with
+        its ``_position``. From ``resume``, its page first, by its token."""
         spec = entry.paginate
         assert spec is not None
         url, body = first
         linked = spec.type in ("link", "header")
-        crawl = Crawl(spec, first=url if linked else None)
-        token: Any = None
-        target = (url, _params(settings))
-        if spec.type == "page":
-            assert spec.param is not None  # PaginateSpec holds it for page
-            token = FIRST_PAGE
-            target = (url, {**_params(settings), spec.param: str(token)})
         page = 0
+        token: Any = FIRST_PAGE if spec.type == "page" else None
+        crawl = Crawl(spec, first=url if linked else None)
+        seek = None
+        if resume is not None:
+            page, token, seek = resume.page, resume.token, Seek(resume)
+            offset = token if spec.type == "offset" and isinstance(token, int) else 0
+            asked = url if token is None else token  # the first page's URL is its token
+            crawl = Crawl(spec, first=asked if linked else None, pages=page, offset=offset)
         while True:
-            data, resp = self._fetch(entry, source, settings, target, body, captures, page=page)
             said = reported_url(token, source.auth.param) if linked and token else token
-            self._pages.page(page, said)
-            records = to_records(data, entry.extract)
-            for index, record in enumerate(records):
-                yield {**self._shaped(entry, record), POSITION_FIELD: position(page, index)}
+            if not self._pages.page(page, said):
+                return
+            target = _target(spec, source, settings, url, token)
+            try:
+                data, resp = self._fetch(entry, source, settings, target, body, captures,
+                                         page=page)  # fmt: skip
+            except CollectionError as exc:
+                if not _refused(resume, page, token, exc):
+                    raise
+                self._pages.restarted(page)  # the token went stale: the crawl begins again
+                yield from self._crawl(entry, source, settings, first, captures)
+                return
+            records = [self._shaped(entry, record) for record in to_records(data, entry.extract)]
+            kept = [(page, index, record) for index, record in enumerate(records)]
+            if seek is not None and not seek.done:
+                kept = seek.kept(page, records, _contents(records))
+                self._said_shifted(seek, resume)
+            resume = resume if seek is not None and not seek.done else None
+            for at, index, record in kept:
+                yield {**record, POSITION_FIELD: position(at, index)}
             step = crawl.after(len(records), _found(spec, data, resp))
             if isinstance(step, Stop):
+                if seek is not None and not seek.done:  # the resumed page was the last
+                    for at, index, record in seek.end():
+                        yield {**record, POSITION_FIELD: position(at, index)}
+                    self._said_shifted(seek, resume)
                 if step.truncated_by is not None:
                     self._pages.truncated(step.truncated_by)
                 return
             token, page = step.token, page + 1
-            if linked:
-                target = (_on_the_source(source, token), {})
-            else:
-                assert spec.param is not None  # PaginateSpec holds it for the others
-                target = (url, {**_params(settings), spec.param: str(token)})
+
+    def _said_shifted(self, seek: Seek, resume: Resume | None) -> None:
+        """Once the boundary of the resumed page is settled, say it moved, if it did."""
+        if seek.done and seek.by != 0 and resume is not None:
+            self._pages.shifted(resume.page, seek.by)
 
     def _fetch(
         self,
@@ -234,6 +281,39 @@ def _without(body: bytes, secrets: list[str]) -> bytes:
     text = body.decode("utf-8", "surrogateescape")
     kept = redact_credentials(text, secrets)
     return body if kept == text else kept.encode("utf-8", "surrogateescape")
+
+
+def _target(
+    spec: PaginateSpec, source: SourceEntry, settings: ApiSettings, url: str, token: Any
+) -> tuple[str, dict[str, str]]:
+    """The URL and query a page is asked for with: the first page's (no token) with
+    ``params``; a ``link`` or ``header`` crawl's next at its own URL, on the source's origin;
+    the others with ``params`` and the token as ``paginate.param``."""
+    if token is None:
+        return url, _params(settings)
+    if spec.type in ("link", "header"):
+        return _on_the_source(source, token), {}
+    assert spec.param is not None  # PaginateSpec holds it for the others
+    return url, {**_params(settings), spec.param: str(token)}
+
+
+def _refused(resume: Resume | None, page: int, token: Any, exc: CollectionError) -> bool:
+    """Whether a request failed as a resumed page's token the source no longer takes: the
+    crawl's first request of a run that goes on (a page past the first, so it has a token),
+    refused with neither a retry's nor a credential's status (``run_failed``)."""
+    return (
+        resume is not None
+        and page == resume.page
+        and token == resume.token
+        and token is not None
+        and exc.kind == "run_failed"
+    )
+
+
+def _contents(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each record's content as the store keeps it (written as JSON and read back), so a
+    record asked for again compares with the one kept."""
+    return [content(json.loads(json.dumps(record, default=str))) for record in records]
 
 
 def _found(spec: PaginateSpec, data: Any, resp: HttpResponse) -> Any:

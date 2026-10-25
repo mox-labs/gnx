@@ -77,7 +77,10 @@ class Collector(Protocol):
     value from which the source can go on (a file's inode and offset, a server-sent event's
     id). A type whose records carry one takes a keyword ``after`` too: a stream resumed after
     a stop calls ``collect(entry, source, captures=None, after=<the last position kept>)``,
-    and the collector yields the records after it, so nothing is collected twice. Its
+    and the collector yields the records after it, so nothing is collected twice. A type that
+    ``paginates`` is handed where its crawl goes on instead, a
+    :class:`~recon.domain.paginate.Resume`'s document (the page to ask for again, by its
+    token, and the last record kept from it). Its
     ``close()`` ends a read in progress, from another thread, so a stream stops promptly. It
     reports a stretch when its source was not read through ``CollectorContext.gaps``, and
     opens no telemetry span (the stream's telemetry is its writer's thread's).
@@ -127,9 +130,9 @@ class CollectorContext:
     or before reconnecting waits on, so a test's clock decides it. ``gaps`` is where a
     stream's collector says when its source was not read (:class:`~recon.domain.stream.Gap`);
     a snapshot survey's keeps none. ``pages`` is where a collector that reads its source page
-    by page (an entry's ``paginate:``) says each page it read and why its crawl stopped short
-    (:class:`~recon.domain.paginate.PageLog`), for the table being collected; a stream's keeps
-    none.
+    by page (an entry's ``paginate:``) says each page before it asks for it, and why its crawl
+    stopped short (:class:`~recon.domain.paginate.PageLog`), for the table or the stream being
+    collected; a stream's may refuse a page (it has ended), which is then not asked for.
 
     ``env`` is not the process environment. It holds only the variables the mission
     declares for this type: the ``auth.token: env:NAME`` variables of the catalog sources its
@@ -239,7 +242,10 @@ class CollectorType:
       and only such a type takes ``paginate:``: it follows the stopping rules of
       :class:`~recon.domain.paginate.Crawl`, gives each record ``_position`` ``{page, i}``, and
       says each page and a crawl cut short through ``CollectorContext.pages``. The plan reports
-      the cap and the least time the crawl takes at the source's rate limit.
+      the cap and the least time the crawl takes at the source's rate limit. In a stream it
+      goes on from ``after`` (a :class:`~recon.domain.paginate.Resume`), finds where it left
+      off as :class:`~recon.domain.paginate.Seek` does, and says a refused token
+      (``restarted``) and a page that moved (``shifted``) through the page log.
     """
 
     create: Callable[[CollectorContext], Collector]

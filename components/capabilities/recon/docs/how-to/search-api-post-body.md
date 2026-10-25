@@ -9,7 +9,7 @@ This walkthrough uses **Exa** (neural search) because the auth is simple and the
 Install recon from the gnx repository (see [first-survey.md](./first-survey.md) for an editable install from a checkout):
 
 ```bash
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.15.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.16.0#subdirectory=components/capabilities/recon"
 recon --version
 ```
 

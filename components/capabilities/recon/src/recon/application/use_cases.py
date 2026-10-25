@@ -21,7 +21,14 @@ from recon.application.changes import MEMORY_KEYS, ChangeDetector
 from recon.application.collectors import confined_transforms, declared_env
 from recon.application.plan import Plan, PlannedStream, build_plan, fan_out, plugin_warning
 from recon.application.schedules import Schedules, stale
-from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun, windows_going
+from recon.application.stream import (
+    Stream,
+    StreamGaps,
+    StreamPages,
+    StreamPlan,
+    StreamRun,
+    windows_going,
+)
 from recon.application.subscriptions import ChangeReader, Subscriptions
 from recon.application.survey import CollectorError, Survey, TablePages
 from recon.domain.archives import (
@@ -805,11 +812,11 @@ class Recon:
         target = entry if output == entry.name else entry.model_copy(update={"name": output})
         subset = config.model_copy(update={"collectors": [entry]})
         warnings: list[Problem] = []
-        gaps = StreamGaps()
+        gaps, pages = StreamGaps(), StreamPages()
         # The collector's own telemetry, used on the stream's pump thread alone.
         telemetry = self._telemetry(None, None)
         built = self._build_collectors(mission, subset, telemetry, Deadline(self._clock),
-                                       gaps=gaps)  # fmt: skip
+                                       gaps=gaps, pages=pages)  # fmt: skip
         warnings += [plugin_warning(broken) for broken in built.failed]
 
         def close() -> None:
@@ -854,6 +861,7 @@ class Recon:
                 normalize,
                 close=close,
                 gaps=gaps,
+                pages=pages,
                 windows=windows,
                 until=until,
                 preserve_raw=config.preserve_raw,
@@ -1646,13 +1654,14 @@ def _returns(
         limits.append(max(0.0, (until - now).total_seconds()))
     if not limits:
         return None, (
-            f"after {bound} window(s), each ended by its records or bytes: when the source has "
-            "sent them, or it ends, or the stream is stopped"
+            f"after {bound} window(s), each ended by its records, bytes or pages: when the "
+            "source has sent them, or it ends, or the stream is stopped"
         )
     most = min(limits)
     return most, (
-        f"returns within {most:g}s; sooner when its source ends or a window's records or bytes "
-        "end it first. To not wait: a shorter window: seconds, or run it in the background"
+        f"returns within {most:g}s; sooner when its source ends or a window's records, bytes "
+        "or pages end it first. To not wait: a shorter window: seconds, or run it in the "
+        "background"
     )
 
 
@@ -1678,7 +1687,9 @@ def _survey_returns(config: ReconConfig, streams: list[PlannedStream]) -> Source
             else "which no deadline: bounds: set deadline: to bound them"
         )
     if None in spans:
-        note += "; a window with no seconds: ends on its records or bytes, or its source's end"
+        note += (
+            "; a window with no seconds: ends on its records, bytes or pages, or its source's end"
+        )
     timed = [span for span in spans if span is not None]
     value = None if first is None or len(timed) < len(spans) else first + sum(timed)
     return SourcedValue(path="survey.returns", value=value, origin="recon", note=note)

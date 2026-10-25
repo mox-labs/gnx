@@ -272,6 +272,8 @@ def build_plan(
             if ctype is not None:
                 stream, values, unset = _stream(i, entry, ctype)
                 streams.append(stream)
+                if entry.paginate is not None:
+                    values = _crawled(i, entry, targets, values)
                 provenance += values
                 warnings += unset
         else:
@@ -484,16 +486,33 @@ def _stream_problems(
             )
         )
     problems += _position_problems(i, entry)
-    if entry.paginate is not None:
+    if entry.window is not None and entry.window.pages is not None and entry.paginate is None:
         problems.append(
             Problem(
-                f"{at}.paginate",
-                "a stream does not read its source page by page yet: paginate: is a snapshot "
-                "table's",
-                fix="remove window: to survey it as a snapshot table, or remove paginate:",
+                f"{at}.window.pages",
+                f"window: {{pages}} ends a window after the pages a crawl reads, and collector "
+                f"{entry.name!r} reads none (it has no paginate:): its windows would never end "
+                "by pages",
+                fix="bound its windows by records, seconds or bytes, or add paginate: to read "
+                "its source page by page (recon --skill -r pagination)",
+                got=entry.window.pages,
             )
         )
     buffer = entry.buffer
+    dropping = buffer is not None and buffer.overflow in ("drop_newest", "drop_oldest")
+    if dropping and entry.paginate is not None:
+        assert buffer is not None
+        problems.append(
+            Problem(
+                f"{at}.buffer.overflow",
+                f"overflow: {buffer.overflow} drops records a crawl read, and a crawl that "
+                "reads its source page by page (paginate:) goes on past a page its page log "
+                "names, so a record dropped from it is never read again",
+                fix="overflow: block (the default for api): the crawl waits for room, and its "
+                "source is asked for no page sooner than the windows are written",
+                got=buffer.overflow,
+            )
+        )
     if buffer is not None and buffer.max_record_bytes > buffer.bytes:
         problems.append(
             Problem(
@@ -505,6 +524,41 @@ def _stream_problems(
             )
         )
     return problems
+
+
+def _crawled(
+    i: int,
+    entry: CollectorEntry,
+    targets: list[tuple[SourceEntry | None, str]],
+    values: list[SourcedValue],
+) -> list[SourcedValue]:
+    """A stream that crawls (ruling P4): its crawl's cap, ``paginate.pages`` (the most pages
+    one crawl reads, across its windows and runs, which ends the stream as its last page
+    does), and on its window's ``pages``, the least seconds a window of them takes at its
+    source's rate limit (``(pages - burst) / rps``), as a snapshot's crawl says it against
+    its deadline."""
+    spec = entry.paginate
+    assert spec is not None
+    origin: Origin = "mission" if "pages" in spec.model_fields_set else "recon"
+    note = (
+        "the most pages one crawl reads, across its windows and runs; its end, or this cap "
+        "(truncated, paginate_pages), ends the stream, and a run after it crawls again"
+    )
+    cap = SourcedValue(path=f"collectors.{i}.paginate.pages", value=spec.pages, origin=origin,
+                       note=note)  # fmt: skip
+    [(source, _)] = targets or [(None, entry.name)]
+    window = entry.window.pages if entry.window is not None else None
+    if source is None or window is None:
+        return [*values, cap]
+    rate = source.rate_limit
+    floor = crawl_floor_s(window, burst=rate.burst, rps=rate.rps)
+    said = (
+        f"each window of {window} page(s) takes at least {floor:g}s at source "
+        f"{source.name!r}'s rate_limit ({rate.rps:g} rps, burst {rate.burst})"
+    )
+    path = f"collectors.{i}.window.pages"
+    noted = [v.model_copy(update={"note": said}) if v.path == path else v for v in values]
+    return [*noted, cap]
 
 
 def _position_problems(i: int, entry: CollectorEntry) -> list[Problem]:

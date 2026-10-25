@@ -377,7 +377,9 @@ def stream(
     """Collect a stream: a source that does not end, into windows, each sealed as an archive.
 
     Each window ends when the first of its entry's window: bounds is reached (seconds,
-    records, bytes). It runs one window unless told otherwise, so it returns, but it holds
+    records, bytes, or pages of a paginate: crawl, which ends the stream at its last page
+    and goes on where it left off when run again). It runs one window unless told
+    otherwise, so it returns, but it holds
     the command until then: a window of the default 300 s is five minutes, longer than a
     tool call may wait. Run --dry-run first and read stream.returns, the seconds the run
     lasts at most; when that is too long, set a shorter window: or run it in the background.

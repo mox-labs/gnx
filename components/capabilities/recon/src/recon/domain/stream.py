@@ -5,11 +5,12 @@ collected window by window. Each window is an ordinary archive (``meta.yaml``, i
 lock, its state, its one table, its query), sealed when the window ends, and chained to the one
 before it through ``meta.yaml``'s ``stream``. A window ends when the first of its bounds is
 reached (:class:`WindowSpec`): ``seconds`` from its open, half-open, ``[open, open + seconds)``;
-or ``records`` records; or ``bytes`` bytes of them.
+or ``records`` records; or ``bytes`` bytes of them; or, for a source read page by page
+(``paginate:``), ``pages`` pages.
 
 Which window an arrival falls in is a pure function of its order of arrival, its stamp on the
-clock port and the window spec (:class:`Windowing`), so a window replays the same from the
-arrivals it recorded, whatever clock replays it.
+clock port, the page marks before it and the window spec (:class:`Windowing`), so a window
+replays the same from the arrivals it recorded, whatever clock replays it.
 """
 
 from __future__ import annotations
@@ -25,14 +26,15 @@ from recon.domain.archives import ARCHIVE_ID_FORMAT
 from recon.domain.clock import LONGEST_WAIT
 
 #: Why a window ended, when it ended well: the bound of ``window:`` it reached, named by its
-#: key (``seconds``, ``records``, ``bytes``), its source ended, the stream was stopped on
-#: request (``stopped``: a signal, or a ``StreamStop`` asked), or it reached its ``until``.
-SealReason = Literal["seconds", "records", "bytes", "eof", "stopped", "until"]
+#: key (``seconds``, ``records``, ``bytes``, ``pages``), its source ended, the stream was
+#: stopped on request (``stopped``: a signal, or a ``StreamStop`` asked), or it reached its
+#: ``until``.
+SealReason = Literal["seconds", "records", "bytes", "pages", "eof", "stopped", "until"]
 
 #: How a window was closed, as ``meta.yaml``'s ``stream.closed_by`` says it: a
 #: :data:`SealReason`, or ``error`` for a window its source's fatal error ended, which keeps
 #: the records it got.
-ClosedBy = Literal["seconds", "records", "bytes", "eof", "stopped", "until", "error"]
+ClosedBy = Literal["seconds", "records", "bytes", "pages", "eof", "stopped", "until", "error"]
 
 #: What a full buffer does with one more record (:class:`BufferSpec`). There is no ``fail``:
 #: a burst would cost the whole stream.
@@ -57,18 +59,21 @@ class WindowSpec(BaseModel):
     """``window:`` on a collector entry: what ends each window, the first of these reached.
     ``seconds`` (a number of seconds, as ``deadline:`` is, at least 1: each window's end is an
     event in the buffer outside its bound, so the floor bounds those) from the window's open;
-    ``records`` records; ``bytes`` bytes of records. At least one."""
+    ``records`` records; ``bytes`` bytes of records; ``pages`` pages of a crawl, for an entry
+    that reads its source page by page (``paginate:``). At least one."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     seconds: float | None = Field(default=None, ge=1, allow_inf_nan=False)
     records: int | None = Field(default=None, ge=1)
     bytes: int | None = Field(default=None, ge=1)
+    pages: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _one_bound_the_clock_can_time(self) -> WindowSpec:
-        if self.seconds is None and self.records is None and self.bytes is None:
-            raise ValueError("a window needs at least one of seconds, records, bytes")
+        bounds = (self.seconds, self.records, self.bytes, self.pages)
+        if all(bound is None for bound in bounds):
+            raise ValueError("a window needs at least one of seconds, records, bytes, pages")
         if self.seconds is not None and self.seconds > LONGEST_WAIT:
             raise ValueError(
                 f"{self.seconds:g}s is longer than this platform's timers take ({LONGEST_WAIT:g}s)"
@@ -192,7 +197,7 @@ class Stop(Protocol):
 class WindowEnd:
     """A window that ended: its index, why, and its span ``[opened, closed)`` on the clock's
     monotonic time. A window ended by its records or bytes closes at its last arrival's stamp,
-    and the next opens there."""
+    one ended by its pages at the mark of the page after them, and the next opens there."""
 
     index: int
     reason: SealReason
@@ -207,7 +212,9 @@ class Windowing:
 
     A window ended by time closes at ``open + seconds`` and the next opens there, so windows of
     a quiet stretch fall on one grid; a window ended by ``records`` or ``bytes`` closes at the
-    stamp of the arrival that reached the bound, and the next opens at that stamp."""
+    stamp of the arrival that reached the bound, and the next opens at that stamp. A crawl
+    marks each page as it is about to ask for it (:meth:`page`): a window of ``pages`` pages
+    ends at the mark of the next page, which falls in the window after it."""
 
     def __init__(
         self,
@@ -227,6 +234,7 @@ class Windowing:
         self.opened = opened
         self.records = 0
         self.bytes = 0
+        self.pages = 0
         #: True once ``until`` has passed or the ``last`` window has ended: no arrival falls in
         #: any window after it.
         self.ended = False
@@ -268,6 +276,25 @@ class Windowing:
             after.append(self._end("bytes", stamp))
         return before, window, after
 
+    def page(self, stamp: float, *, counted: bool = True) -> tuple[list[WindowEnd], int | None]:
+        """A crawl's mark at ``stamp`` of a page it is about to ask for: the windows that ended
+        before it (by time, or by ``pages``: this would be one page too many), and the window
+        it falls in (None once the stream has ended). A page not ``counted`` is one a run
+        asks for again to find where an earlier one left off: it is that earlier window's."""
+        before = self.advance(stamp)
+        full = self._spec.pages is not None and self.pages >= self._spec.pages
+        if not self.ended and counted and full:
+            before.append(self._end("pages", stamp))
+        if self.ended:
+            return before, None
+        self.pages += counted
+        return before, self.index
+
+    def unmark(self) -> None:
+        """The page last marked, counted, was refused by its source (a crawl begun again):
+        it is no page of the window."""
+        self.pages = max(0, self.pages - 1)
+
     def _end(self, reason: SealReason, closed: float) -> WindowEnd:
         end = WindowEnd(self.index, reason, self.opened, closed)
         self.ended = self.index == self._last
@@ -275,6 +302,7 @@ class Windowing:
         self.opened = closed
         self.records = 0
         self.bytes = 0
+        self.pages = 0
         return end
 
 

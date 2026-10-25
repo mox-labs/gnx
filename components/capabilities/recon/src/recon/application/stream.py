@@ -38,6 +38,19 @@ replays it. A window that dropped records cannot be replayed from its capture, a
 the stream chains its first window to it (``previous``), and resumes its source after the
 position of the last whole record kept (a record's ``_position``): exactly once for a source
 that has positions. Every restart is recorded as a gap, ``resumed`` when it went on from one.
+
+**Crawls** (ruling P4). An entry that reads its source page by page (``paginate:``) crawls it
+across its windows. Its collector marks each page before it asks for it (the stream's page
+log, :class:`StreamPages`), and the mark goes through the buffer in order with the records, so
+the writer adds it to the window's page log (``<output>.pages.jsonl``) after the records before
+it are written, and a window of ``pages`` pages ends at the mark of the page after them. A
+mark the stream will not keep (it has ended) is refused, and the page is not asked for. A run
+goes on from where the last left off by :func:`crawl_resume`: the last page the page logs name
+and the last record kept from it, so a page none of whose records was kept is asked for first,
+and one whose records were is asked for again and read past them. The crawl's end (a page that
+names no next one, or a crawl cut short) ends the stream (``eof``), and a run after it crawls
+again from the first page. A crawl that began again, and a page that moved under it, are each
+recorded and warned (``paginate_restarted``, ``paginate_shifted``).
 """
 
 from __future__ import annotations
@@ -51,10 +64,11 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
 from recon.application.changes import changes_failed, failed, join_unclosed
-from recon.application.survey import PROGRESS_S
+from recon.application.survey import PROGRESS_S, crawl_truncated
 from recon.domain.archives import META_FORMAT_VERSION
 from recon.domain.documents import TableError, TableOutcome, WindowOutcome
 from recon.domain.errors import ErrorKind, Problem, ReconError
+from recon.domain.paginate import Resume, content
 from recon.domain.stream import (
     POSITION_FIELD,
     Gap,
@@ -76,6 +90,7 @@ if TYPE_CHECKING:
     from recon.domain.capture import CaptureLog
     from recon.domain.clock import Clock
     from recon.domain.models import CollectorEntry, SourceEntry
+    from recon.domain.paginate import TruncatedBy
     from recon.domain.stream import (
         BufferSpec,
         ClosedBy,
@@ -178,6 +193,10 @@ class _Ledger:
     gaps: list[Gap] = field(default_factory=list)
     first: int | None = None
     last: int | None = None
+    #: The page marks that fell in it, and what its crawl said moved: ``("restarted", page,
+    #: None)``, or ``("shifted", page, by)``.
+    pages: int = 0
+    moved: list[tuple[str, int, int | None]] = field(default_factory=list)
 
     @property
     def admitted(self) -> int:
@@ -196,16 +215,28 @@ class _Arrival:
 
 
 @dataclass(frozen=True)
+class _Page:
+    """A crawl's mark of a page it is about to ask for: the window it fell in, the page's
+    ordinal in its crawl and the token that asks for it, as the page log keeps them."""
+
+    window: int
+    index: int
+    token: Any
+
+
+@dataclass(frozen=True)
 class _End:
     """The stream's last event: its source ended (``eof``), it was stopped on request
-    (``stopped``), or its source failed (``error``)."""
+    (``stopped``), or its source failed (``error``). A crawl that ended cut short says what
+    cut it (``truncated_by``)."""
 
     reason: SealReason | None
     stamp: float
     error: BaseException | None = None
+    truncated_by: TruncatedBy | None = None
 
 
-type _Event = _Arrival | WindowEnd | _End
+type _Event = _Arrival | _Page | WindowEnd | _End
 
 
 class Arrivals:
@@ -215,8 +246,16 @@ class Arrivals:
     events in is the order of their stamps."""
 
     def __init__(
-        self, clock: Clock, windowing: Windowing, buffer: BufferSpec, overflow: Overflow
+        self,
+        clock: Clock,
+        windowing: Windowing,
+        buffer: BufferSpec,
+        overflow: Overflow,
+        *,
+        again: int | None = None,
     ) -> None:
+        """``again``: the page a resumed crawl asks for again to read past what was kept of
+        it, whose first mark is the earlier window's page, not counted in this one's."""
         self._clock = clock
         self._windowing = windowing
         self._buffer = buffer
@@ -233,6 +272,15 @@ class Arrivals:
         self._writing = windowing.index
         #: The stops asked so far (:meth:`interrupt`).
         self._stops = 0
+        self._again = again
+        #: A crawl begun again counts no page up to the one it had reached (Erlang's
+        #: starvation case): -1 until it is begun again.
+        self._through = -1
+        #: The last page marked, and whether it was counted.
+        self._marked: tuple[int, bool] | None = None
+        self._truncated_by: TruncatedBy | None = None
+        #: The pages the crawl has marked so far, in its run: its last mark's ordinal + 1.
+        self.crawled = 0
 
     # --- the pump's side ---
 
@@ -280,6 +328,51 @@ class Arrivals:
             if self._advance():
                 self._ledger(self._windowing.index).gaps.append(gap)
 
+    def page(self, index: int, token: Any) -> bool:
+        """A crawl's mark of page ``index``, about to be asked for by ``token``: in the window
+        open now, which ends first when it holds its ``pages`` already. False once the stream
+        has ended, when the page is not asked for."""
+        with self._cond:
+            if not self._advance():
+                return False
+            counted = index != self._again and index > self._through
+            self._again = None
+            before, window = self._windowing.page(self._clock.monotonic(), counted=counted)
+            self._events.extend(before)
+            if window is None:
+                self._admitting = False
+                self._cond.notify_all()
+                return False
+            self._events.append(_Page(window, index, token))
+            self._marked = (index, counted)
+            self._ledger(window).pages += 1
+            self.crawled = index + 1
+            self._cond.notify_all()
+            return True
+
+    def truncated(self, by: TruncatedBy) -> None:
+        """The crawl stopped short, cut by ``by``: said by the stream's end."""
+        with self._cond:
+            self._truncated_by = by
+
+    def moved(self, what: str, index: int, by: int | None) -> None:
+        """The crawl said its resumed page ``index`` moved under it (``what``: ``restarted``,
+        or ``shifted`` by ``by``), in the window open now; a crawl that could not go on from
+        where it was (restarted, or its boundary not found) is a gap there that did not
+        resume."""
+        with self._cond:
+            if self._advance():
+                ledger = self._ledger(self._windowing.index)
+                ledger.moved.append((what, index, by))
+                if what == "restarted":
+                    # Begun again: no page up to the one it had reached counts, so a window
+                    # bounded by pages still reads past it (the refused page included).
+                    self._through = max(self._through, index)
+                    if self._marked == (index, True):
+                        self._windowing.unmark()
+                if what == "restarted" or by is None:
+                    ledger.gaps.append(Gap(None, self._clock.now(), resumed=False))
+
     def dropped_early(self) -> None:
         """Count a record its collector dropped before handing it on (one too large), in the
         window open now, as one the buffer refused."""
@@ -294,7 +387,8 @@ class Arrivals:
             if self._admitting:
                 self._admitting = False
                 reason: SealReason | None = "eof" if error is None else None
-                self._events.append(_End(reason, self._clock.monotonic(), error))
+                cut = self._truncated_by if error is None else None
+                self._events.append(_End(reason, self._clock.monotonic(), error, cut))
                 self._cond.notify_all()
 
     # --- the ticker's side ---
@@ -371,6 +465,7 @@ class Arrivals:
                     ledger.oversize += gone.oversize
                     ledger.overflow += gone.overflow
                     ledger.gaps += gone.gaps
+                    ledger.moved += gone.moved
             else:
                 discarded = sum(gone.admitted + gone.refused for gone in self._ledgers.values())
                 self._ledgers.clear()
@@ -397,7 +492,7 @@ class Arrivals:
         with self._cond:
             ledger = self._ledgers.get(window)
             return ledger is not None and bool(
-                ledger.admitted or ledger.refused or ledger.dropped or ledger.gaps
+                ledger.admitted or ledger.refused or ledger.dropped or ledger.gaps or ledger.pages
             )
 
     # --- under the lock ---
@@ -458,6 +553,35 @@ class StreamGaps:
         to = self._to
         if to is not None:
             to.dropped_early()
+
+
+class StreamPages:
+    """The :class:`~recon.domain.paginate.PageLog` a stream's collector is handed
+    (``CollectorContext.pages``): each page it marks goes to the buffer, in order with its
+    records, and into the window being filled; a mark the stream will not keep is refused, so
+    the page is not asked for."""
+
+    def __init__(self) -> None:
+        self._to: Arrivals | None = None
+
+    def page(self, index: int, token: Any) -> bool:
+        to = self._to
+        return True if to is None else to.page(index, token)
+
+    def truncated(self, by: TruncatedBy) -> None:
+        to = self._to
+        if to is not None:
+            to.truncated(by)
+
+    def restarted(self, index: int) -> None:
+        to = self._to
+        if to is not None:
+            to.moved("restarted", index, None)
+
+    def shifted(self, index: int, by: int | None) -> None:
+        to = self._to
+        if to is not None:
+            to.moved("shifted", index, by)
 
 
 class StreamStop:
@@ -543,12 +667,17 @@ class _Window:
 @dataclass(frozen=True)
 class _Start:
     """Where a run of a stream begins: the index of its first window, the window it follows,
-    the position its source resumes after, and the gap since that window."""
+    what its source is asked to resume after (``after``: a position, or a crawl's
+    :class:`~recon.domain.paginate.Resume`), the position its first window carries until it
+    holds a record of its own, the gap since that window, and the page a resumed crawl asks
+    for again (``again``)."""
 
     index: int
     previous: str | None
     after: Any
     gap: Gap | None
+    carried: Any = None
+    again: int | None = None
 
 
 class Stream:
@@ -593,6 +722,7 @@ class Stream:
         *,
         close: Callable[[], object],
         gaps: StreamGaps | None = None,
+        pages: StreamPages | None = None,
         windows: int | None = None,
         until: datetime | None = None,
         preserve_raw: bool = False,
@@ -608,12 +738,13 @@ class Stream:
         dropped. An interrupt that lands in the store's write seals the window at once.
         ``collect(after)`` starts the source after the position ``after`` (None: from its
         start); ``normalize`` shapes each record; ``close`` ends the collector, which ends a
-        source that would not. Raises
-        ReconError (``busy``) when another writer holds the stream."""
+        source that would not; ``gaps`` and ``pages`` are the gap log and the page log its
+        collector was built with. Raises ReconError (``busy``) when another writer holds the
+        stream."""
         self._archives.hold_stream(mission_dir, plan.name)
         try:
             return self._run(
-                mission_dir, plan, collect, normalize, close, gaps, windows, until,
+                mission_dir, plan, collect, normalize, close, gaps, pages, windows, until,
                 preserve_raw, config_sha256, dict(resolved or {}), on_window, stop,
             )  # fmt: skip
         finally:
@@ -627,6 +758,7 @@ class Stream:
         normalize: Callable[[dict[str, Any]], dict[str, Any]],
         close: Callable[[], object],
         gaps: StreamGaps | None,
+        pages: StreamPages | None,
         windows: int | None,
         until: datetime | None,
         preserve_raw: bool,
@@ -644,11 +776,14 @@ class Stream:
         last = None if windows is None else start.index + windows - 1
         until_at = None if until is None else opened + (until - opened_wall).total_seconds()
         windowing = Windowing(plan.window, opened, until=until_at, index=start.index, last=last)
-        arrivals = Arrivals(self._clock, windowing, plan.buffer, plan.overflow)
+        arrivals = Arrivals(self._clock, windowing, plan.buffer, plan.overflow,
+                            again=start.again)  # fmt: skip
         if start.gap is not None:
             arrivals.gap(start.gap)
         if gaps is not None:
             gaps._to = arrivals
+        if pages is not None:
+            pages._to = arrivals
         pump = threading.Thread(
             target=_pump, args=(collect, start.after, arrivals), name="recon-stream-pump",
             daemon=True,
@@ -669,7 +804,7 @@ class Stream:
         sizes: dict[str, int] = {}  # each window's size, read once, for retain: {bytes}
         first: str | None = None
         outcome: WindowOutcome | None = None
-        previous, carried = start.previous, start.after
+        previous, carried = start.previous, start.carried
         index, window_opened = start.index, opened
         try:
             while True:
@@ -788,6 +923,9 @@ class Stream:
                 if ends.last is not None and POSITION_FIELD in ends.last:
                     window.last = ends.last[POSITION_FIELD]
                 window_dropped = _drops(plan.name, window.index, ledger, ends.records)
+                cut = window.end.truncated_by if isinstance(window.end, _End) else None
+                if cut is not None:
+                    table = table.model_copy(update={"truncated": True, "truncated_by": cut})
                 span.set("recon.records", window.records)
                 span.set("recon.dropped", window_dropped)
                 error = window.error or (window.end.error if isinstance(window.end, _End) else None)
@@ -813,6 +951,14 @@ class Stream:
                     "fix": None if outcome.table.error is None else outcome.table.error.fix,
                 }
             )
+            if cut is not None:
+                pages = arrivals.crawled
+                warning = crawl_truncated(plan.at, plan.entry, plan.entry.name, cut, pages)
+                self._warn(plan, warning, emit)
+            for what, page, by in ledger.moved:
+                self._warn(plan, _moved(plan, what, page, by), emit)
+            if _starved(self._archives, window, ledger):
+                self._warn(plan, _starved_warning(plan, _restarted(ledger)), emit)
             if window_dropped:
                 halted = window_dropped - ledger.oversize - ledger.overflow
                 causes = {"overflow": ledger.overflow, "oversize": ledger.oversize,
@@ -844,6 +990,11 @@ class Stream:
                 if arrivals.interrupt():  # a second: seal now
                     window.end = _End("stopped", self._clock.monotonic())
                     return
+                continue
+            if isinstance(event, _Page):
+                arrivals.pop()
+                line = {"page": event.index, "token": event.token}
+                self._archives.append_sidecar(window.archive, output, "pages", line)
                 continue
             if not isinstance(event, _Arrival):
                 arrivals.pop()
@@ -922,6 +1073,8 @@ class Stream:
             if ledger.first is None
             else {"first": ledger.first, "last": ledger.last},
         }
+        if (restarted := _restarted(ledger)) is not None:
+            source["restarted"] = restarted  # the page its crawl was begun again at
 
         def document(table: TableOutcome, ended: Literal["finished", "stopped"] | None) -> Any:
             return {
@@ -988,7 +1141,8 @@ class Stream:
 
     def _resume(self, mission_dir: Path, plan: StreamPlan) -> _Start:
         """Where this run begins: after the stream's last window, resuming its source after
-        the last position kept; a fresh stream at window 0."""
+        the last position kept (a crawl's from :func:`crawl_resume`); a fresh stream at
+        window 0."""
         windows = self._archives.archives(mission_dir, stream=plan.name)
         if not windows:
             return _Start(0, None, None, None)
@@ -1004,10 +1158,15 @@ class Stream:
                 before = _stream_meta(self._archives.read_meta(windows[-2]))
                 after = _carried(before) if before is not None else None
             since = None
+        carried, again = after, None
+        if plan.entry.paginate is not None:
+            resume = crawl_resume(self._archives, windows, plan.entry.name)
+            after = None if resume is None else resume.document()
+            again = None if resume is None or resume.i < 0 else resume.page
         # Every restart is a stretch no process read, recorded in the chain: resumed from a
         # position when there is one (and a source that does not honour it shows where).
         gap = Gap(since, self._clock.now(), resumed=after is not None)
-        return _Start(index, last.name, after, gap)
+        return _Start(index, last.name, after, gap, carried, again)
 
     def _retain(
         self, mission_dir: Path, plan: StreamPlan, sealed: WindowOutcome, sizes: dict[str, int]
@@ -1073,6 +1232,12 @@ class Stream:
             emit({"kind": "table_warning", "name": plan.entry.name, "reason": str(warning),
                   "fix": warning.fix})  # fmt: skip
 
+    def _warn(self, plan: StreamPlan, warning: Problem, emit: EventCallback) -> None:
+        """A warning of the run about its crawl, one of each kind, the latest kept."""
+        self.warnings = [w for w in self.warnings if w.kind != warning.kind] + [warning]
+        emit({"kind": "table_warning", "name": plan.entry.name, "reason": str(warning),
+              "fix": warning.fix})  # fmt: skip
+
     def _warn_stuck(self, plan: StreamPlan) -> None:
         """One ``source_stuck`` warning, whose fix says whose the type is: recon's own is a
         bug in recon; another's is its package's, to report there or upgrade."""
@@ -1119,6 +1284,121 @@ _DROP_CAUSES: dict[str, tuple[str, str, str]] = {
         "written; if a window failed, its meta.yaml has the error",
     ),
 }
+
+
+def crawl_resume(archives: ArchiveStore, windows: list[Path], output: str) -> Resume | None:
+    """Where a stream's crawl goes on (ruling P4): the last page its windows' page logs name,
+    newest window first, asked for again by its token, and the last record kept from that
+    page, if one was. None when the crawl ended (its last window sealed ``eof``: the next run
+    crawls again from its first page) or no page log is left (``retain:`` removed them), so
+    the crawl begins again; a window sealed ``eof`` ends the search, as what is before it is
+    a crawl that ended."""
+    mark: dict[str, Any] | None = None
+    record: dict[str, Any] | None = None
+    for window in reversed(windows):
+        stream = _stream_meta(archives.read_meta(window))
+        if stream is not None and stream.get("closed_by") == "eof":
+            break
+        if record is None:
+            record = archives.last_record(window, output)
+        if mark is None:
+            for line in archives.read_sidecar(window, output, "pages") or ():
+                mark = line
+        if mark is not None and record is not None:
+            break
+    if mark is None or not isinstance(mark.get("page"), int):
+        return None
+    page, token = mark["page"], mark.get("token")
+    at = record.get(POSITION_FIELD) if record is not None else None
+    if record is not None and isinstance(at, dict) and at.get("page") == page:
+        i = at.get("i")
+        if isinstance(i, int) and i >= 0:
+            return Resume(page, token, i, content(record))
+    return Resume(page, token)
+
+
+def _restarted(ledger: _Ledger) -> int | None:
+    """The page a window's crawl was begun again at (its resumed page's token refused), if
+    it was."""
+    pages = [page for what, page, _ in ledger.moved if what == "restarted"]
+    return pages[-1] if pages else None
+
+
+def _starved(archives: ArchiveStore, window: _Window, ledger: _Ledger) -> bool:
+    """Whether a window's crawl was begun again at the same page as the window before it:
+    each run reads the same pages again and gets no further."""
+    restarted = _restarted(ledger)
+    if restarted is None or window.previous is None:
+        return False
+    before = _stream_meta(archives.read_meta(window.archive.parent / window.previous))
+    sources = before.get("sources") if before is not None else None
+    if not isinstance(sources, list) or not sources or not isinstance(sources[0], dict):
+        return False
+    return bool(sources[0].get("restarted") == restarted)
+
+
+def _starved_warning(plan: StreamPlan, page: int | None) -> Problem:
+    """The warning for a crawl begun again at one page in two windows in a row."""
+    return Problem(
+        f"{plan.at}.paginate",
+        f"stream {plan.name}: its crawl was begun again at page {page} in two windows in a row "
+        "(the source refused the token each run went on from): each run reads the same pages "
+        "again and its window ends before the crawl gets past them, so later pages are never "
+        "read",
+        kind="paginate_starved",
+        fix="set window.pages to paginate.pages or more, so one window crawls the whole list, "
+        "or schedule every below the source's token lifetime, so a token is used before it "
+        "expires",
+        got=page,
+    )
+
+
+def _moved(plan: StreamPlan, what: str, page: int, by: int | None) -> Problem:
+    """The warning for a resumed crawl whose page moved under it: its token refused, so the
+    crawl began again (``restarted``), or its last record kept found ``by`` records off, or
+    not found (``shifted``)."""
+    at = f"{plan.at}.paginate"
+    if what == "restarted":
+        return Problem(
+            at,
+            f"stream {plan.name}: the source refused the token of page {page}, where the crawl "
+            "went on from (an expired cursor, or a page gone), so the crawl began again from "
+            "its first page: what it reads again is beside what earlier windows hold, and the "
+            "window's gaps say where",
+            kind="paginate_restarted",
+            fix="nothing kept is lost; set changes: {key: [...]} to be told only what changed, "
+            "or crawl in one run (recon stream --windows N or --forever) so no token waits "
+            "between runs to expire",
+            got=page,
+        )
+    if by is None:
+        return Problem(
+            at,
+            f"stream {plan.name}: the last record kept from page {page} was not found on it or "
+            "the next page when the crawl went on (it changed, or moved further), so the "
+            "crawl went on by its index: records about it may be missing or read twice, and "
+            "the window's gaps say where",
+            kind="paginate_shifted",
+            fix="page by a cursor or a link where the API has one: a page number or an offset "
+            "moves when records are added or removed ahead of it",
+            got=None,
+        )
+    moved = "inserted" if by > 0 else "removed"
+    return Problem(
+        at,
+        f"stream {plan.name}: page {page} moved since the crawl left off: its last record "
+        f"kept was {abs(by)} record(s) {'later' if by > 0 else 'earlier'}, {moved} ahead of it, "
+        "found by its content, so the crawl went on after it and kept nothing twice"
+        + (
+            ": those inserted are not in this crawl, and the next crawl reads them"
+            if by > 0
+            else ""
+        ),
+        kind="paginate_shifted",
+        fix="page by a cursor or a link where the API has one: a page number or an offset "
+        "moves when records are added or removed ahead of it",
+        got=by,
+    )
 
 
 def _pump(

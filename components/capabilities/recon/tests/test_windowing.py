@@ -100,6 +100,46 @@ class TestCountWindows:
         ]
 
 
+class TestPageWindows:
+    """``window: {pages: N}`` (ruling P4): a paginated crawl's page marks, each stamped as it is
+    said, before the page is asked for. A window holds N pages: the mark of page N + 1 ends it,
+    there, and falls in the next."""
+
+    def test_the_mark_of_page_n_plus_1_ends_a_window_of_n_pages(self) -> None:
+        windows = Windowing(WindowSpec(pages=2), 0.0)
+        placed: list[int | None] = []
+        ends: list[WindowEnd] = []
+        for stamp, what in [(0.0, "page"), (1.0, 10), (2.0, "page"), (3.0, 10), (4.0, "page"),
+                            (5.0, 10), (6.0, "page")]:  # fmt: skip
+            if what == "page":
+                before, window = windows.page(stamp)
+            else:
+                before, window, after = windows.arrive(stamp, 10)
+                assert after == [], "a record never ends a window of pages"
+            ends += before
+            placed.append(window)
+
+        assert placed == [0, 0, 0, 0, 1, 1, 1]
+        assert [(e.index, e.reason, e.opened, e.closed) for e in ends] == [(0, "pages", 0.0, 4.0)]
+
+    def test_a_page_gone_back_to_is_no_page_of_the_window(self) -> None:
+        """A run that goes on from an earlier one asks again for the page it left off in, to
+        find where: that page is the earlier window's, and is not counted again, so a window
+        of one page still moves the crawl on."""
+        windows = Windowing(WindowSpec(pages=1), 0.0)
+
+        assert windows.page(0.0, counted=False) == ([], 0)
+        assert windows.page(1.0) == ([], 0)
+        before, window = windows.page(2.0)
+        assert ([(e.index, e.reason) for e in before], window) == ([(0, "pages")], 1)
+
+    def test_the_last_window_s_end_takes_no_more_marks(self) -> None:
+        windows = Windowing(WindowSpec(pages=1), 0.0, last=0)
+        windows.page(0.0)
+        before, window = windows.page(1.0)
+        assert ([e.reason for e in before], window, windows.ended) == (["pages"], None, True)
+
+
 class TestTheAssignmentIsAPureFunction:
     def test_the_same_arrivals_give_the_same_windows(self) -> None:
         arrivals = [(i * 0.7, 10 + i % 7) for i in range(200)]
@@ -136,11 +176,12 @@ class TestTheSpec:
         assert set(WindowSpec.model_fields) <= set(get_args(SealReason))
 
     def test_a_window_needs_one_bound(self) -> None:
-        with pytest.raises(ValidationError, match="at least one of seconds, records, bytes"):
+        with pytest.raises(ValidationError, match="at least one of seconds, records, bytes, pages"):
             WindowSpec()
 
     @pytest.mark.parametrize(
-        "bad", [{"seconds": 0}, {"seconds": float("inf")}, {"records": 0}, {"bytes": -1}]
+        "bad",
+        [{"seconds": 0}, {"seconds": float("inf")}, {"records": 0}, {"bytes": -1}, {"pages": 0}],
     )
     def test_each_bound_is_above_zero_and_finite(self, bad: dict[str, float]) -> None:
         with pytest.raises(ValidationError):

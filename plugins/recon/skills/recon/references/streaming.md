@@ -18,7 +18,7 @@ A file that keeps growing, or a server that keeps sending events, never finishes
 
 ## When to use a stream
 
-Use one for a source whose records do not end: a log file followed as it grows (`tail`), server-sent events (`sse`), a command that never exits (`cli` with `window:`). Use a survey for a source that answers and is done. Every stream is followed exactly as a survey's archive is: `recon watch`, `recon query`, `recon status`.
+Use one for a source whose records do not end: a log file followed as it grows (`tail`), server-sent events (`sse`), a command that never exits (`cli` with `window:`). Use one too for a crawl of an API too long for one survey (`api` with `paginate:` and `window: {pages: N}`): its windows go on where the last left off, and it ends with the crawl (`recon --skill -r pagination`). Use a survey for a source that answers and is done. Every stream is followed exactly as a survey's archive is: `recon watch`, `recon query`, `recon status`.
 
 ## A stream's entry
 
@@ -37,7 +37,7 @@ collectors:
 
 | Key | Holds | Default |
 |---|---|---|
-| `window` | `{seconds?, records?, bytes?}`: a window ends when the first is reached. `seconds` is a bare number of seconds, as `deadline:` is, at least 1; a time window is half-open, `[open, open + seconds)`, from the window's open | `{seconds: 300}` for a type that never ends; at least one bound when written |
+| `window` | `{seconds?, records?, bytes?, pages?}`: a window ends when the first is reached. `seconds` is a bare number of seconds, as `deadline:` is, at least 1; a time window is half-open, `[open, open + seconds)`, from the window's open. `pages` is for an entry with `paginate:`: the pages of its crawl a window holds | `{seconds: 300}` for a type that never ends; at least one bound when written; `pages` none |
 | `buffer.records` | the most records that wait between the source and the window being written | 10000 |
 | `buffer.bytes` | the most bytes of them; one more record is taken while fewer wait, so a stream holds at most `bytes` + `max_record_bytes` | 16777216 (16 MiB) |
 | `buffer.max_record_bytes` | a record larger than this is dropped as it arrives, and counted | 1048576 (1 MiB) |
@@ -46,7 +46,7 @@ collectors:
 
 `recon survey <name> --dry-run --json` (and `recon stream ... --dry-run`) reports every one of these in `provenance`: `{path, value, origin, note}`, `origin` being `mission` (the config set it), `type` (the collector type's declaration decided it) or `recon` (recon's default). A stream that keeps every window because its entry says nothing is a `retain_unset` warning with its growth and a fix; write `retain: all` to keep every window and say so.
 
-Refused by the plan, each with its path and a fix: a `window:` with no bound, or of `seconds` under 1 (each window's end is a marker in the buffer, outside its bound); `buffer:` on an entry that is no stream (`retain:` is a snapshot entry's too: `recon --skill -r schedules`); a stream that would run against more than one source (pin one with `source:`); `deadline:` on a stream (a window ends by `window:`, as a success; a deadline would fail it); a `normalize:` column named `_position`; `max_record_bytes` above `buffer.bytes`; a `retain:` that is neither `all` nor a mapping of `windows`, `seconds`, `bytes`.
+Refused by the plan, each with its path and a fix: a `window:` with no bound, or of `seconds` under 1, or with `pages` on an entry without `paginate:` (its windows would never end by pages); `overflow: drop_newest` or `drop_oldest` on an entry with `paginate:` (a record dropped from a crawl's page is never read again: `overflow: block`) (each window's end is a marker in the buffer, outside its bound); `buffer:` on an entry that is no stream (`retain:` is a snapshot entry's too: `recon --skill -r schedules`); a stream that would run against more than one source (pin one with `source:`); `deadline:` on a stream (a window ends by `window:`, as a success; a deadline would fail it); a `normalize:` column named `_position`; `max_record_bytes` above `buffer.bytes`; a `retain:` that is neither `all` nor a mapping of `windows`, `seconds`, `bytes`.
 
 `retain:` removes the oldest sealed windows its rules do not keep, after each window is sealed: `archives: N` keeps the newest N; `seconds: S` keeps those closed within S seconds of the newest's close; `bytes: B` keeps the newest whose sizes fit in B. With more than one rule, a window is kept only while every rule keeps it. The newest window is always kept, a window never sealed (what a dead writer left) is never removed, and nor is one holding change rows a subscription has not acked (`recon --skill -r subscriptions`). Each removed window leaves a tombstone, a line of `retired.jsonl` beside the windows saying what it was and why it went, so a hole in the chain reads as retention, not loss.
 
@@ -90,8 +90,8 @@ A window outcome (in `recon.v1.stream`'s `last_window` and `recon.v1.survey`'s `
 
 | `closed_by` | Means | `status` |
 |---|---|---|
-| `seconds`, `records`, `bytes` | the window's own bound was reached, named by its key in `window:` | `ok` |
-| `eof` | the source ended | `ok` |
+| `seconds`, `records`, `bytes`, `pages` | the window's own bound was reached, named by its key in `window:` | `ok` |
+| `eof` | the source ended (a crawl's last page; a crawl cut short says so in `table.truncated`) | `ok` |
 | `stopped` | the stream was stopped on request (Ctrl-C, SIGTERM, a `StreamStop` asked); its `meta.yaml` says `ended: stopped` | `ok` |
 | `until` | the stream reached `--until` | `ok` |
 | `error` | the source failed (or reconnects ran out): the window **keeps the records it got**, since a source that sends cannot be asked again, and reads `incomplete` | `error` |
@@ -104,7 +104,7 @@ The source is read on a thread of the stream's own into the buffer, and each win
 
 ## Stopping, crashing and resuming
 
-A stream killed mid-window (SIGKILL, a crash) leaves that window unsealed: it reads `incomplete`, `ended: crashed`, and keeps every whole line it had; it is never changed, but a torn last line (a write the kill cut short) is moved aside to `<table>.jsonl.tmp.torn`. The next run chains its first window to it (`previous`) and resumes the source after the position of the last whole record kept: exactly once for a source with positions (`tail`, and `sse` whose server honours `Last-Event-ID`). Every restart is recorded as a gap in the first window of the run, from the last window's close (unknown after a crash) to the restart: `resumed: true` when the source was asked to go on from a position, so a source that does not honour it shows where; `resumed: false` for a source without positions (`cli`), which cannot go on from where it was.
+A stream killed mid-window (SIGKILL, a crash) leaves that window unsealed: it reads `incomplete`, `ended: crashed`, and keeps every whole line it had; it is never changed, but a torn last line (a write the kill cut short) is moved aside to `<table>.jsonl.tmp.torn`. The next run chains its first window to it (`previous`) and resumes the source after the position of the last whole record kept: exactly once for a source with positions (`tail`, and `sse` whose server honours `Last-Event-ID`). Every restart is recorded as a gap in the first window of the run, from the last window's close (unknown after a crash) to the restart: `resumed: true` when the source was asked to go on from a position, which marks a restart, not a loss (a source that does not honour it shows where); `resumed: false` for a source without positions (`cli`), which cannot go on from where it was, and for a crawl that ended, which a run after it begins again. A crawl goes on from the last page its windows' page logs name, read past the records kept from it, exactly once; a page that moved under it, and a token its source no longer takes, are each a warning, and a gap `resumed: false` where the crawl could not go on from where it was (`recon --skill -r pagination`).
 
 ## Reading a stream
 
@@ -125,7 +125,7 @@ A window's id is its index, then when it opened (`00000003-2026-10-24-010203-456
 | `name`, `index`, `previous` | the stream, the window's index, and the window before it (null for the first) |
 | `opened_at`, `closed_at`, `closed_by` | the window's span and how it was closed |
 | `window` | the window spec in effect |
-| `sources` | one entry: `source`, `output`, `first` and `last` (the positions of its first and last record; `last` carries the one before through a window with no record), `records`, `dropped`, `gaps` (`{from, to, resumed}` each), `arrivals` (`{first, last}`: the order of its first and last record admitted) |
+| `sources` | one entry: `source`, `output`, `first` and `last` (the positions of its first and last record; `last` carries the one before through a window with no record), `records`, `dropped`, `gaps` (`{from, to, resumed}` each), `arrivals` (`{first, last}`: the order of its first and last record admitted), and `restarted`, for a crawl begun again in it, the page it was begun again at |
 | `reproducible` | true when the window kept a capture and dropped nothing |
 
 Every record written carries `_position` when its source gives one, in the same line, so a stream resumes from its last whole line. With `preserve_raw: true`, each window keeps one capture of kind `stream` (`recon --skill -r capture-format`): each record as its collector gave it, before `normalize:`, with its order and its offset from the window's open, from which the window replays to the same bytes. The same arrivals give the same windows and the same `meta.yaml` and event log, whatever thread wrote them.
@@ -152,6 +152,6 @@ rows = recon.query("my-feed", "SELECT count(*) AS n FROM log", stream="log")
 A type registers through the `recon.collectors` entry-point group, as `tail` and `sse` do, its contract in `recon.domain.collector`. A type whose records do not end declares `unbounded=True` on its `CollectorType`, and `paced_by="source"` when its source sends whether recon is ready or not (the default, `"recon"`, is for one recon reads at its own pace): the plan then makes each of its entries a stream, with the default window and overflow those declare. Its collector:
 
 - yields records from `collect` for as long as the stream runs, on the stream's own thread, and opens no telemetry span;
-- puts each record's position, when it has one, under `_position` (any JSON value), and takes a keyword `after` in `collect`: the position of the last record kept, to go on after it;
+- puts each record's position, when it has one, under `_position` (any JSON value), and takes a keyword `after` in `collect`: the position of the last record kept, to go on after it. A type that declares `paginates` is handed instead where its crawl goes on, `{page, token, i, boundary}` (`recon.domain.paginate.Resume`): ask for page `page` by `token`, and keep its records after the last kept, `boundary` (that record's content, found as `recon.domain.paginate.Seek` finds it; `i` its index, -1 when none was kept). It says each page to `ctx.pages.page(index, token)` before asking for it, and asks for none past the first `False`; it says `ctx.pages.restarted(index)` when its source refuses the resumed token and it begins again, and `ctx.pages.shifted(index, by)` when the boundary moved;
 - reports a stretch when its source was not read through `ctx.gaps.gap(Gap(start, end, resumed=...))`, and waits on `ctx.clock`;
 - has a `close()` that ends a read in progress from another thread, so a stream stops promptly. A source that has not returned its next record within 5 seconds of the stream stopping is a `source_stuck` warning, and its thread is left. The warning's `got` is the type, and its fix says whose the type is: for `tail` and `sse`, recon's own, a bug to report in recon; for yours, your package, by the distribution name its entry point was installed with.

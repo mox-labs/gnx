@@ -2,10 +2,10 @@
 name: recon
 description: "Writes, plans and runs recon missions: one YAML file that names sources (HTTP APIs, shell commands, web pages, MCP servers, capture logs) and what to ask them; recon collects the answers into timestamped JSONL archives and answers SQL over them with DuckDB. This skill should be used when the user asks to \"collect data from an API\", \"build a dataset from several sources\", \"mine a codebase with ripgrep or git log\", \"snapshot an API over time\", \"normalize API responses\", \"query collected records with SQL\", \"collect from an MCP server\", \"capture MCP tool results\", \"write a recon mission\", \"watch a survey as it runs\", or runs recon survey, recon query, recon watch or recon init."
 metadata:
-  version: "0.15.0"
+  version: "0.16.0"
 ---
 
-# recon 0.15.0: collect from many sources into tables SQL can query
+# recon 0.16.0: collect from many sources into tables SQL can query
 
 recon runs a mission: one YAML file that lists sources (the catalog) and what to ask each of them (the collectors). recon checks the file and shows every request, command and MCP call it would make, then fetches, runs or calls them, reshapes each answer into records with a declarative `normalize:` spec, and writes one JSONL table per collector and source into a timestamped archive. `recon query` answers SQL over an archive, so a large result is read a few rows at a time instead of loaded whole. recon uses no model: it runs exactly the file you wrote.
 
@@ -24,7 +24,7 @@ Do not use recon:
 The plugin carries this text; the `recon` command is a separate Python package. Check with `recon --version`. Install with:
 
 ```
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.15.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.16.0#subdirectory=components/capabilities/recon"
 ```
 
 If `recon` is missing, say so; do not improvise it with curl and jq, because the archive layout and the query surface are what make the output reusable. A `cli` collector runs whatever program its command names (`rg`, `git`, `gh`), which must be installed too.
@@ -86,7 +86,7 @@ A survey with failed tables still writes its archive, marked incomplete, and lis
 
 **Watch.** `recon watch <name> --json` follows an archive as a survey writes it, a `recon.v1.records-since` line per read, and returns when the survey ends: `--stream` of a `--forever` stream never returns. To follow, poll: `--once` reads once and returns, and the next call passes the `cursor` it printed as `--cursor` (with `--archive`, or `--stream`). Records of a table later `retracted` are void. Flags, defaults, refusals, `state`, `ended` and the library calls: `recon --skill -r live-reading`.
 
-**Streams.** A source that never ends (`tail` a file, `sse` events) is a stream, sealed in windows: `recon stream <name> --stream <c>` runs one window and blocks until it ends, 300 s by default, which can outlast a tool call: run it with `--dry-run --json` first and read `stream.returns` (seconds), then set a shorter `window:` or run it in the background. `--windows N`, `--until`, `--forever` run more. A survey runs one window of each stream, in turn, after its tables: its dry run says `survey.returns`. All: `recon --skill -r streaming`.
+**Streams.** A source that never ends (`tail` a file, `sse` events) is a stream, sealed in windows: `recon stream <name> --stream <c>` runs one window and blocks until it ends, 300 s by default, which can outlast a tool call: run it with `--dry-run --json` first and read `stream.returns` (seconds), then set a shorter `window:` or run it in the background. `--windows N`, `--until`, `--forever` run more. A survey runs one window of each stream, in turn, after its tables: its dry run says `survey.returns`. All: `recon --skill -r streaming`. A long crawl is one too (`paginate:`, `window: {pages: N}`): a run goes on where the last left off, the last page ends it: `-r pagination`.
 
 ## Errors and exit codes
 
@@ -238,7 +238,7 @@ Each prints with `recon --skill -r <name>`:
 | `capture-format` | the `recon.v1.capture` line format and how a `capture` collector reads it |
 | `telemetry` | the event log, every span and attribute, exporting through OpenTelemetry |
 | `streaming` | stream keys, defaults, refusals; `tail`, `sse`; `--stream` |
-| `pagination` | `paginate:` keys, defaults, stops, refusals |
+| `pagination` | `paginate:` keys, defaults, stops, refusals; crawls that resume |
 | `changes` | `changes:` keys, defaults, ops, refusals |
 | `live-reading` | `recon watch` and `recon.read_since`: archive states, sealing, the cursor, every flag, default and refusal |
 | `schedules` | `schedule:`, `recon schedule`, ticks |

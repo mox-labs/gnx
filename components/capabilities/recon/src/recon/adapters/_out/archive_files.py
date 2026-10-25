@@ -4,7 +4,8 @@
 
     <mission>/archive/<archive id>/
       <output>.jsonl          one table per collector and source, one record per line
-      <output>.pages.jsonl    a paginated table's page log, each page's token: no table
+      <output>.pages.jsonl    a paginated table's page log, each page's token: no table (a
+                              window's is added to as its pages are read)
       meta.yaml               recon version, config sha256, times, and per table: type_url,
                               records, status, seconds, error {kind, message[, fix]}
       telemetry.jsonl         the survey's recon.v1.event lines, as they happened
@@ -174,6 +175,9 @@ class ArchiveFiles:
         #: The lock held on each mission a survey through this store is writing, by its
         #: directory.
         self._missions: dict[Path, int] = {}
+        #: The lines of each table being written, by its ``.tmp`` path, so a line added to its
+        #: sidecar is written after them.
+        self._writing: dict[Path, _Lines] = {}
 
     def create(self, mission_dir: Path, archive_id: str, *, stream: str | None = None) -> Path:
         home = mission_dir / "archive" if stream is None else _stream_dir(mission_dir, stream)
@@ -475,6 +479,7 @@ class ArchiveFiles:
             # closing() is what runs the collector's own cleanup (a subprocess killed, a
             # client closed) when writing stops early.
             with contextlib.closing(records), _Lines(tmp, self._flush_bytes, self._flush_s) as f:
+                self._writing[tmp] = f
                 try:
                     for record in records:
                         f.write(json.dumps(record, default=str) + "\n")
@@ -485,6 +490,8 @@ class ArchiveFiles:
                     if not keep_on_error:
                         raise
                     kept = exc  # raised once what was written is sealed
+                finally:
+                    self._writing.pop(tmp, None)
                 if count == 0:
                     empty = (
                         {**EMPTY_SENTINEL, "_columns": list(columns)} if columns else EMPTY_SENTINEL
@@ -514,6 +521,20 @@ class ArchiveFiles:
             with contextlib.suppress(OSError):
                 tmp.unlink()
             raise
+
+    def append_sidecar(
+        self, archive: Path, output: str, sidecar: Sidecar, line: dict[str, Any]
+    ) -> None:
+        lines = self._writing.get(archive / f"{output}{_LIVE}")
+        if lines is not None:
+            lines.flush()  # the table's lines given before this one reach the file first
+        data = (json.dumps(line, default=str) + "\n").encode()
+        descriptor = open_file(archive / f"{output}.{sidecar}.jsonl", os.O_WRONLY | os.O_APPEND)
+        try:
+            if os.write(descriptor, data) != len(data):
+                raise OSError(f"wrote part of a line to {output}'s {sidecar}")
+        finally:
+            os.close(descriptor)
 
     def read_sidecar(
         self, archive: Path, output: str, sidecar: Sidecar
@@ -755,6 +776,14 @@ class _Lines:
                 self._write_waiting()
             self._waiting_bytes = 0
 
+    def flush(self) -> None:
+        """Write what waits, without flushing the file to the disk: what follows it in another
+        file is then written after it."""
+        with self._lock:
+            if self._failed is not None:
+                raise self._failed
+            self._write_waiting()
+
     def sync(self) -> None:
         """Write what waits, then flush the file to the disk."""
         with self._lock:
@@ -848,8 +877,11 @@ _LIVE = ".jsonl.tmp"
 
 
 def _sidecar_lines(path: Path) -> Iterator[dict[str, Any]]:
+    """A sidecar's lines; one a writer that died cut short (no newline) is none of them."""
     with path.open(encoding="utf-8") as f:
         for line in f:
+            if not line.endswith("\n"):
+                return
             yield json.loads(line)
 
 

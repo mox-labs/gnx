@@ -4,10 +4,14 @@ picks.
 
 ``GET /items?cursor=<n>`` answers page ``n`` (the first page without one) of ``records``
 records, ``size`` to a page, as ``{"items": [...], "meta": {"next": <n + 1 or null>}}``. It
-records each page asked for in ``asked`` (None for the first) and counts every request in
-``hits``. ``refuse`` maps a page to the statuses its first requests get (``429`` with a
+records each page asked for in ``asked`` (None for the first), each page it was sent a request
+for in ``tried`` (refused ones too), and counts every request in ``hits``. ``data`` is the list
+it serves, which a test may change between two requests (a record inserted ahead of a page
+shifts it). ``refuse`` maps a page to the statuses its first requests get (``429`` with a
 ``Retry-After`` of ``retry_after`` seconds, say) before it is answered. ``hold`` is a page whose
-request waits on ``release`` before it is answered; ``holding`` is set once one waits.
+request waits on ``release`` before it is answered; ``holding`` is set once one waits. With
+``expiring``, a cursor lasts one ``generation``: one it gave before :meth:`expire` is refused
+``400``, as an API whose cursors expire between two runs refuses them.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ class PagedServer:
         refuse: dict[int, list[int]] | None = None,
         retry_after: int = 2,
         hold: int | None = None,
+        expiring: bool = False,
     ) -> None:
         self.data = [{"id": n, "title": f"t{n}"} for n in range(records)]
         self.size = size
@@ -37,7 +42,12 @@ class PagedServer:
         self.release = threading.Event()
         self.holding = threading.Event()
         self.asked: list[int | None] = []
+        self.tried: list[int | None] = []
         self.hits = 0
+        self.expiring = expiring
+        self.generation = 0
+        #: The generation each cursor was given in.
+        self.given: dict[int, int] = {}
         served = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -49,6 +59,10 @@ class PagedServer:
                     return
                 cursor = dict(parse_qsl(parts.query)).get("cursor")
                 page = int(cursor) if cursor is not None else 0
+                served.tried.append(None if cursor is None else page)
+                stale = cursor is not None and served.given.get(page, -1) < served.generation
+                if served.expiring and stale:
+                    served.refuse.setdefault(page, []).insert(0, 400)
                 refused = served.refuse.get(page)
                 if refused:
                     self.send_response(refused.pop(0))
@@ -81,7 +95,13 @@ class PagedServer:
     def page(self, page: int) -> dict[str, Any]:
         rows = self.data[page * self.size : (page + 1) * self.size]
         more = (page + 1) * self.size < len(self.data)
+        if more:
+            self.given[page + 1] = self.generation
         return {"items": rows, "meta": {"next": page + 1 if more else None}}
+
+    def expire(self) -> None:
+        """Every cursor given so far expires."""
+        self.generation += 1
 
     def __enter__(self) -> PagedServer:
         self._thread.start()

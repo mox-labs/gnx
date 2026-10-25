@@ -282,6 +282,22 @@ def test_the_pagination_page_is_the_skill_reference() -> None:
         assert taught in REFERENCES["pagination"], taught
 
 
+def test_the_skill_teaches_a_crawl_that_resumes() -> None:
+    """Ruling P4, by the completion checklist: an agent reading only the skill finds a long
+    crawl's stream (``window: {pages}``), that its end ends the stream, how a run goes on, what
+    a moved page and a refused token do, each warning with its fix, and the refusal."""
+    assert "window: {pages: N}" in SKILL and "-r pagination" in SKILL
+    for taught in ("window: {pages: N}", "closed_by: pages", "closed_by: eof", "`--windows N`",
+                   "`--forever`", "`--until TIME`", "paginate_shifted", "paginate_restarted",
+                   "paginate_starved",
+                   "resumed: false", "fix", "`window: {pages}` on an entry without `paginate:`",
+                   "`recon --skill -r schedules`"):  # fmt: skip
+        assert taught in REFERENCES["pagination"], taught
+    assert "`pages`" in REFERENCES["streaming"] and "-r pagination" in REFERENCES["streaming"]
+    for kind in ("paginate_shifted", "paginate_restarted", "paginate_starved"):
+        assert kind in REFERENCES["errors"], kind
+
+
 def test_the_skill_says_how_long_a_stream_holds_the_command() -> None:
     """Polish R3 (Ace 1-2): an agent reading only the skill learns that a stream's window,
     300 s by default, can outlast its tool call, that the dry run says when the run returns,
