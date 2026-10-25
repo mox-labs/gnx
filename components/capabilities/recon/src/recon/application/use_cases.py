@@ -415,7 +415,7 @@ class Recon:
 
     def _scheduled_survey(
         self, name: str, scheduled: dict[str, Any], config_sha256: str
-    ) -> tuple[SurveyDocument, DeliverDocument | None]:
+    ) -> tuple[SurveyDocument, DeliverDocument | None, list[dict[str, Any]]]:
         """:meth:`survey` as a tick runs it, its archive's ``meta.yaml`` saying when the tick
         was due and how late it started (``scheduled``). The mission is held first; then its
         config is read once, and those bytes are what is checked against ``config_sha256``,
@@ -431,9 +431,10 @@ class Recon:
             self._archives.release_mission(mission)
         assert plan.config is not None
         delivering = any(s.deliver is not None for s in plan.config.subscriptions)
-        if self._subscriptions is None or not delivering:
-            return document, None
-        return document, self._subscriptions.deliver(name, plan=plan)
+        delivered = None
+        if self._subscriptions is not None and delivering:
+            delivered = self._subscriptions.deliver(name, plan=plan)
+        return document, delivered, [w.document() for w in self._behind(name, plan)]
 
     def _survey(
         self,

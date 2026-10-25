@@ -131,6 +131,7 @@ Each tick is one JSON line of `.recon/<mission>/schedule.log`, `0600`:
 | `archive` | the survey's archive id; null when it wrote none |
 | `skipped_by` | why it ran no survey: `busy`, `missed` or `config_changed`; null when it ran one |
 | `late_s` | how late it started, in seconds |
+| `warning_kinds` | the kinds of what it warned of, sorted: its survey's, its deliveries' and a subscription behind (`subscription_behind`), so what an unattended tick said is read here |
 
 The log is bounded: at 1 MiB it becomes `schedule.log.1`, replacing the one before, so a schedule's log never passes 2 MiB.
 

@@ -111,8 +111,9 @@ class TestATick:
         assert document.survey.status == "complete"
         assert document.scheduled_at == SLOT.isoformat() and document.late_s == 2.0
         [line] = _log(mission)
+        # Changed requirement (review F2): the line also names its tick's warning kinds.
         assert set(line) == {"scheduled", "started", "ended", "exit", "kind", "archive",
-                             "skipped_by", "late_s"}  # fmt: skip
+                             "skipped_by", "late_s", "warning_kinds"}  # fmt: skip
         assert (line["exit"], line["kind"], line["skipped_by"]) == (0, "ok", None)
         assert line["archive"] == document.survey.archive and line["late_s"] == 2.0
         meta = yaml.safe_load((Path(document.survey.path) / "meta.yaml").read_text())

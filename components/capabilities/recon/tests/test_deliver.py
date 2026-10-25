@@ -524,6 +524,34 @@ class TestATickDelivers:
         assert tick.deliveries.deliveries[0].delivered == 2
         assert tick.document()["deliveries"]["schema"] == "recon.v1.deliver"
 
+    def test_a_tick_s_log_line_names_its_warnings_kinds(self, tmp_path: Path) -> None:
+        """Erlang F2: nobody watches a tick, so its line of schedule.log names the kinds of
+        what it warned of (a subscription behind, a delivery that failed), where they are seen
+        unattended."""
+        _mission(tmp_path, {}, schedule={"every": EVERY})
+        config = tmp_path / ".recon" / "m" / "config.yaml"
+        mission = yaml.safe_load(config.read_text())
+        mission["collectors"][0]["retain"] = {"archives": 1}
+        config.write_text(yaml.safe_dump(mission))
+        home = tmp_path / "home"
+        home.mkdir()
+        host = Host(home, FakeRunner())
+        inbox = Inbox()
+        inbox.messages = _messages(1)
+        failing = Recording(lambda d: Delivered(False, 1, "the notifier is down"))
+        clock = FixedClock(SLOT + timedelta(seconds=2))
+        recon = self._root(tmp_path, host, clock, inbox, failing)
+        digest = recon.schedule_install("m", platform="launchd").config_sha256 or ""
+        recon.schedule_tick("m", config_sha256=digest)
+        clock.advance(EVERY)
+        inbox.messages = _messages(2)
+        tick = recon.schedule_tick("m", config_sha256=digest)
+        lines = (tmp_path / ".recon" / "m" / "schedule.log").read_text().splitlines()
+        logged = [json.loads(line)["warning_kinds"] for line in lines]
+        assert "delivery_failed" in logged[0]
+        assert {"delivery_failed", "subscription_behind"} <= set(logged[1])
+        assert "subscription_behind" in [w["kind"] for w in tick.warnings]
+
     def test_a_tick_refused_for_a_changed_config_delivers_nothing(self, tmp_path: Path) -> None:
         _mission(tmp_path, {}, schedule={"every": EVERY})
         home = tmp_path / "home"

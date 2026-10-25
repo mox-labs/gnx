@@ -823,6 +823,9 @@ class TickOutcome(Document):
     archive: str | None
     skipped_by: Skipped | None
     late_s: float | None
+    #: The kinds of what the tick warned of (its survey's, its deliveries', a subscription
+    #: behind), sorted: what an unattended tick said, where it is read (Erlang, review F2).
+    warning_kinds: list[str] = []
 
 
 class TickDocument(Document):
@@ -836,6 +839,8 @@ class TickDocument(Document):
     late_s: float | None
     skipped_by: Skipped | None
     survey: SurveyDocument | None
+    #: Problem records of the tick beside its survey's and its deliveries': a subscription
+    #: behind (``subscription_behind``).
     warnings: list[dict[str, Any]] = []
     #: The delivery of the mission's subscriptions that have ``deliver:``, run after the survey
     #: sealed its archive; null when it has none, or ran no survey.
