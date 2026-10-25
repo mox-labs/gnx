@@ -432,6 +432,10 @@ injection channel, and, through a command, an execution one.
   one edited however plausibly (a row past its table's end), or one naming an archive the
   mission never had is refused (`usage`); it names an archive only to be matched against the archives the store lists,
   never made into a path. An ack is monotone: one before the one acked is refused.
+  Losing or replacing `changes.key` refuses every cursor, the acked ones too (the fix
+  is `recon unsubscribe`), and changes every row's `id`: a subscription started again
+  replays its rows under new ids, the first delivery bounded by `max_per_tick` and the one
+  row counting the rest. Back the key up with the mission.
 
 What this does **not** do: anything about what the text means. A cleaned subject can still say
 "ignore your instructions"; the schema says it is untrusted, and it is the reader's to treat it

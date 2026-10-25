@@ -666,7 +666,9 @@ def _acked(
     reader: ChangeReader, state: SubscriptionState | None, name: str, spec: SubscriptionSpec
 ) -> Position | None:
     """Where the subscription acked last; None when nothing is acked. Raises UsageError when
-    what is kept is of another output than the config's: the subscription was redeclared."""
+    what is kept is of another output than the config's (the subscription was redeclared), or
+    not signed with the mission's key (``changes.key`` lost or replaced since, or the kept
+    cursor edited): never read on from, and the step that starts again said (Vector)."""
     if state is None or state.cursor is None:
         return None
     if state.output != spec.output:
@@ -677,7 +679,17 @@ def _acked(
             f"{spec.output} from its first archive; or name it as it was",
             details={"subscription": spec.name, "acked_output": state.output},
         )
-    return reader.decode(state.cursor)
+    try:
+        return reader.decode(state.cursor)
+    except UsageError as exc:
+        raise UsageError(
+            f"subscription {spec.name}'s acked cursor is not signed with mission {name}'s key: "
+            f".recon/{name}/changes.key was lost or replaced since it acked (or the kept "
+            "cursor was edited), so it is not read on from",
+            fix=f"`recon unsubscribe {name} {spec.name}` removes what it acked, so it reads "
+            f"{spec.output} from its first archive: its rows are given again, with new ids",
+            details={"subscription": spec.name},
+        ) from exc
 
 
 def _change(row: ChangeRow) -> dict[str, Any]:

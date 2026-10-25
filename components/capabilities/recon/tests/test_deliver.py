@@ -580,6 +580,36 @@ class TestAcksInADelivery:
         assert [w["kind"] for w in document.warnings] == ["delivery_failed"]
         assert document.warnings[0]["fix"] == "survey again"
 
+    def test_a_lost_mission_key_refuses_what_was_acked_and_says_how_to_start_again(
+        self, tmp_path: Path
+    ) -> None:
+        """Vector, re-check: cursors are signed with ``changes.key``, and row ids keyed with
+        it. Lost, the acked cursor is refused, never read on from, each delivery and read saying
+        so with the step that starts again; once taken, the rows are given again under new ids,
+        bounded as any delivery is (``max_per_tick``, then one row counting the rest)."""
+        _mission(tmp_path, {"max_per_tick": 2})
+        recording = Recording()
+        mail = Mail(tmp_path, recording)
+        mail.survey(*_messages(5))
+        mail.recon.deliver("m")
+        before = {d["id"] for d in recording.given}
+        (tmp_path / ".recon" / "m" / "changes.key").unlink()
+        recording.given.clear()
+        document = mail.recon.deliver("m")
+        [warning] = document.warnings
+        assert recording.given == [] and warning["kind"] == "delivery_failed"
+        assert "changes.key" in warning["message"] and "recon unsubscribe m new" in warning["fix"]
+        from recon.domain.errors import UsageError
+
+        with pytest.raises(UsageError) as refused:
+            mail.recon.subscribe("m", "new")
+        assert "recon unsubscribe m new" in (refused.value.fix or "")
+        mail.recon.unsubscribe("m", "new")
+        mail.recon.deliver("m")
+        assert [d["kind"] for d in recording.given] == ["change", "change", "summary"]
+        assert recording.given[-1]["count"] == 3
+        assert not before & {d["id"] for d in recording.given}, "new ids: a replay"
+
     def test_a_subscription_without_deliver_is_read_not_delivered(self, tmp_path: Path) -> None:
         _mission(tmp_path, {})
         mission = yaml.safe_load((tmp_path / ".recon" / "m" / "config.yaml").read_text())
