@@ -874,8 +874,9 @@ class TestAnArchiveSaysWhetherItIsBeingWritten:
             "import os, sys\n"
             "from pathlib import Path\n"
             "import recon.adapters._out.archive_files as files\n"
+            "import recon.adapters._out.file_locks as locks\n"
             "from recon.adapters._out.system_clock import SystemClock\n"
-            "files.fcntl = type('F', (), {'flock': staticmethod(lambda *a: os._exit(9)),\n"
+            "locks.fcntl = type('F', (), {'flock': staticmethod(lambda *a: os._exit(9)),\n"
             "                             'LOCK_EX': 2, 'LOCK_NB': 4})\n"
             "files.ArchiveFiles(SystemClock()).create(Path(sys.argv[1]), sys.argv[2])\n"
         )
@@ -938,7 +939,7 @@ class TestAnArchiveSaysWhetherItIsBeingWritten:
         stand_in = types.ModuleType("fcntl")
         stand_in.__dict__.update(fcntl.__dict__)
         stand_in.__dict__["flock"] = flock
-        monkeypatch.setattr("recon.adapters._out.archive_files.fcntl", stand_in)
+        monkeypatch.setattr("recon.adapters._out.file_locks.fcntl", stand_in)
         store = ArchiveFiles(SystemClock())
         try:
             archive = store.create(tmp_path, "2026-01-02-030405-000001")

@@ -72,7 +72,6 @@ from __future__ import annotations
 import base64
 import binascii
 import contextlib
-import fcntl
 import json
 import os
 import shutil
@@ -84,6 +83,7 @@ import yaml
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.event_log import EventLog
+from recon.adapters._out.file_locks import alive, hold, hold_naming_pid, holder, let_go, locked
 from recon.adapters._out.private_files import DIR_MODE, make_dirs, open_file, write_file
 from recon.domain.archives import (
     ARCHIVE_ID_FORMAT,
@@ -168,7 +168,7 @@ class ArchiveFiles:
         # never seen without its lock and marker, whenever its writer dies.
         making = archive.with_name(f".{archive_id}.{os.getpid()}.making")
         making.mkdir(mode=DIR_MODE)
-        descriptor = _hold(making / WRITER_LOCK)
+        descriptor = hold(making / WRITER_LOCK)
         try:
             write_file(making / INCOMPLETE_MARKER, b"")
             taken = ReconError(
@@ -210,9 +210,9 @@ class ArchiveFiles:
         if directory in self._streams:
             return
         try:
-            descriptor = _hold_naming_pid(directory / WRITER_LOCK)
+            descriptor = hold_naming_pid(directory / WRITER_LOCK)
         except OSError as exc:
-            pid = _holder(directory / WRITER_LOCK)
+            pid = holder(directory / WRITER_LOCK)
             if pid == os.getpid():
                 stop = "this process already writes it: stream it once the run there returns"
             elif pid is not None:
@@ -231,7 +231,7 @@ class ArchiveFiles:
         self._streams[directory] = descriptor
 
     def release_stream(self, mission_dir: Path, stream: str) -> None:
-        _let_go(self._streams.pop(_stream_dir(mission_dir, stream), None))
+        let_go(self._streams.pop(_stream_dir(mission_dir, stream), None))
 
     def hold_mission(self, mission_dir: Path) -> None:
         lock = mission_dir / WRITER_LOCK
@@ -239,9 +239,9 @@ class ArchiveFiles:
             if mission_dir in self._missions:  # a survey's hold is that survey's alone
                 raise BlockingIOError(lock)
             make_dirs(mission_dir)
-            descriptor = _hold_naming_pid(lock)
+            descriptor = hold_naming_pid(lock)
         except OSError as exc:
-            pid = _holder(lock)
+            pid = holder(lock)
             if pid == os.getpid():
                 stop = "this process is surveying it now: survey again once that survey returns"
             elif pid is not None:
@@ -260,10 +260,10 @@ class ArchiveFiles:
         self._missions[mission_dir] = descriptor
 
     def release_mission(self, mission_dir: Path) -> None:
-        _let_go(self._missions.pop(mission_dir, None))
+        let_go(self._missions.pop(mission_dir, None))
 
     def stream_state(self, mission_dir: Path, stream: str) -> ArchiveState | None:
-        if _locked(_stream_dir(mission_dir, stream) / WRITER_LOCK):
+        if locked(_stream_dir(mission_dir, stream) / WRITER_LOCK):
             return "writing"
         windows = self.archives(mission_dir, stream=stream)
         return self.state(windows[-1]) if windows else None
@@ -346,7 +346,7 @@ class ArchiveFiles:
 
     def state(self, archive: Path) -> ArchiveState:
         lock = archive / WRITER_LOCK
-        if _locked(lock):
+        if locked(lock):
             return "writing"
         if (archive / INCOMPLETE_MARKER).exists():
             return "incomplete"
@@ -468,7 +468,7 @@ class ArchiveFiles:
                     and parts[3] == "making"
                     and (_is_archive_id(parts[1]) or window_index(parts[1]) is not None)
                     and parts[2].isdigit()
-                    and not _alive(int(parts[2]))
+                    and not alive(int(parts[2]))
                 ):
                     left.append(path)
         return left
@@ -909,75 +909,6 @@ def _is_empty_sentinel(line: bytes) -> bool:
     except ValueError:
         return False
     return isinstance(parsed, dict) and parsed.get("_empty") is True
-
-
-def _hold(path: Path) -> int:
-    """Hold an exclusive lock on ``path``, made if need be, until the descriptor is closed.
-    It is made in an archive no reader lists yet, so none can test it as it is taken."""
-    descriptor = open_file(path, os.O_WRONLY)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        os.close(descriptor)
-        raise
-    return descriptor
-
-
-def _hold_naming_pid(path: Path) -> int:
-    """Hold the lock on ``path`` (:func:`_hold`) and write this process's pid in it, so one
-    refused can name the holder; :func:`_let_go` clears it before letting go."""
-    descriptor = _hold(path)
-    os.ftruncate(descriptor, 0)
-    os.pwrite(descriptor, f"{os.getpid()}\n".encode(), 0)
-    return descriptor
-
-
-def _let_go(descriptor: int | None) -> None:
-    """Let go of a lock :func:`_hold_naming_pid` took, its pid cleared; the file stays."""
-    if descriptor is not None:
-        with contextlib.suppress(OSError):
-            os.ftruncate(descriptor, 0)  # no pid of a writer that has let go
-        os.close(descriptor)  # closing releases the lock
-
-
-def _holder(path: Path) -> int | None:
-    """The pid the holder of a stream's or a mission's lock wrote in it, when it is a process
-    alive on this host; None when it has not written it yet, or the file says something else."""
-    try:
-        said = path.read_text().strip()
-    except OSError:
-        return None
-    if not said.isdigit():
-        return None
-    pid = int(said)
-    return pid if _alive(pid) else None
-
-
-def _alive(pid: int) -> bool:
-    """Whether a process ``pid`` runs on this host. A pid reused since reads alive, so what
-    it made is not reported: the error is on the side of saying nothing."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:  # another user's
-        return True
-    return True
-
-
-def _locked(path: Path) -> bool:
-    """True while some process, this one included, holds the lock on ``path``."""
-    try:
-        descriptor = os.open(path, os.O_RDONLY)
-    except FileNotFoundError:
-        return False
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
-    except BlockingIOError:
-        return True
-    finally:
-        os.close(descriptor)  # closing releases a lock this call took
-    return False
 
 
 def _empty_table_columns(path: Path) -> list[str] | None:
