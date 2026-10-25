@@ -125,7 +125,7 @@ A window's id is its index, then when it opened (`00000003-2026-10-24-010203-456
 | `name`, `index`, `previous` | the stream, the window's index, and the window before it (null for the first) |
 | `opened_at`, `closed_at`, `closed_by` | the window's span and how it was closed |
 | `window` | the window spec in effect |
-| `sources` | one entry: `source`, `output`, `first` and `last` (the positions of its first and last record; `last` carries the one before through a window with no record), `records`, `dropped`, `gaps` (`{from, to, resumed}` each), `arrivals` (`{first, last}`: the order of its first and last record admitted) |
+| `sources` | one entry: `source`, `output`, `first` and `last` (the positions of its first and last record; `last` carries the one before through a window with no record), `records`, `dropped`, `gaps` (`{from, to, resumed}` each), `arrivals` (`{first, last}`: the order of its first and last record admitted), and `restarted`, for a crawl begun again in it, the page it was begun again at |
 | `reproducible` | true when the window kept a capture and dropped nothing |
 
 Every record written carries `_position` when its source gives one, in the same line, so a stream resumes from its last whole line. With `preserve_raw: true`, each window keeps one capture of kind `stream` (`recon --skill -r capture-format`): each record as its collector gave it, before `normalize:`, with its order and its offset from the window's open, from which the window replays to the same bytes. The same arrivals give the same windows and the same `meta.yaml` and event log, whatever thread wrote them.

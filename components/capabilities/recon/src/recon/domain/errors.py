@@ -168,6 +168,8 @@ PROBLEM_KINDS: tuple[str, ...] = (
     # refused the resumed page's token, so it began again; or that page moved under it
     "paginate_restarted",
     "paginate_shifted",
+    # a stream's crawl begun again at one page in two windows in a row: it gets no further
+    "paginate_starved",
     # a deadline shorter than the least time a crawl takes at its source's rate limit
     "deadline_short",
     # a table's deletes asked for and not told: its crawl cut short, keyless or ambiguous records

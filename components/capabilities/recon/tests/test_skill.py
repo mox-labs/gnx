@@ -289,11 +289,12 @@ def test_the_skill_teaches_a_crawl_that_resumes() -> None:
     assert "window: {pages: N}" in SKILL and "-r pagination" in SKILL
     for taught in ("window: {pages: N}", "closed_by: pages", "closed_by: eof", "`--windows N`",
                    "`--forever`", "`--until TIME`", "paginate_shifted", "paginate_restarted",
+                   "paginate_starved",
                    "resumed: false", "fix", "`window: {pages}` on an entry without `paginate:`",
                    "`recon --skill -r schedules`"):  # fmt: skip
         assert taught in REFERENCES["pagination"], taught
     assert "`pages`" in REFERENCES["streaming"] and "-r pagination" in REFERENCES["streaming"]
-    for kind in ("paginate_shifted", "paginate_restarted"):
+    for kind in ("paginate_shifted", "paginate_restarted", "paginate_starved"):
         assert kind in REFERENCES["errors"], kind
 
 

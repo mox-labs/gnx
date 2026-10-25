@@ -290,6 +290,11 @@ class Windowing:
         self.pages += counted
         return before, self.index
 
+    def unmark(self) -> None:
+        """The page last marked, counted, was refused by its source (a crawl begun again):
+        it is no page of the window."""
+        self.pages = max(0, self.pages - 1)
+
     def _end(self, reason: SealReason, closed: float) -> WindowEnd:
         end = WindowEnd(self.index, reason, self.opened, closed)
         self.ended = self.index == self._last

@@ -273,6 +273,11 @@ class Arrivals:
         #: The stops asked so far (:meth:`interrupt`).
         self._stops = 0
         self._again = again
+        #: A crawl begun again counts no page up to the one it had reached (Erlang's
+        #: starvation case): -1 until it is begun again.
+        self._through = -1
+        #: The last page marked, and whether it was counted.
+        self._marked: tuple[int, bool] | None = None
         self._truncated_by: TruncatedBy | None = None
         #: The pages the crawl has marked so far, in its run: its last mark's ordinal + 1.
         self.crawled = 0
@@ -330,7 +335,8 @@ class Arrivals:
         with self._cond:
             if not self._advance():
                 return False
-            counted, self._again = index != self._again, None
+            counted = index != self._again and index > self._through
+            self._again = None
             before, window = self._windowing.page(self._clock.monotonic(), counted=counted)
             self._events.extend(before)
             if window is None:
@@ -338,6 +344,7 @@ class Arrivals:
                 self._cond.notify_all()
                 return False
             self._events.append(_Page(window, index, token))
+            self._marked = (index, counted)
             self._ledger(window).pages += 1
             self.crawled = index + 1
             self._cond.notify_all()
@@ -357,6 +364,12 @@ class Arrivals:
             if self._advance():
                 ledger = self._ledger(self._windowing.index)
                 ledger.moved.append((what, index, by))
+                if what == "restarted":
+                    # Begun again: no page up to the one it had reached counts, so a window
+                    # bounded by pages still reads past it (the refused page included).
+                    self._through = max(self._through, index)
+                    if self._marked == (index, True):
+                        self._windowing.unmark()
                 if what == "restarted" or by is None:
                     ledger.gaps.append(Gap(None, self._clock.now(), resumed=False))
 
@@ -944,6 +957,8 @@ class Stream:
                 self._warn(plan, warning, emit)
             for what, page, by in ledger.moved:
                 self._warn(plan, _moved(plan, what, page, by), emit)
+            if _starved(self._archives, window, ledger):
+                self._warn(plan, _starved_warning(plan, _restarted(ledger)), emit)
             if window_dropped:
                 halted = window_dropped - ledger.oversize - ledger.overflow
                 causes = {"overflow": ledger.overflow, "oversize": ledger.oversize,
@@ -1058,6 +1073,8 @@ class Stream:
             if ledger.first is None
             else {"first": ledger.first, "last": ledger.last},
         }
+        if (restarted := _restarted(ledger)) is not None:
+            source["restarted"] = restarted  # the page its crawl was begun again at
 
         def document(table: TableOutcome, ended: Literal["finished", "stopped"] | None) -> Any:
             return {
@@ -1298,6 +1315,42 @@ def crawl_resume(archives: ArchiveStore, windows: list[Path], output: str) -> Re
         if isinstance(i, int) and i >= 0:
             return Resume(page, token, i, content(record))
     return Resume(page, token)
+
+
+def _restarted(ledger: _Ledger) -> int | None:
+    """The page a window's crawl was begun again at (its resumed page's token refused), if
+    it was."""
+    pages = [page for what, page, _ in ledger.moved if what == "restarted"]
+    return pages[-1] if pages else None
+
+
+def _starved(archives: ArchiveStore, window: _Window, ledger: _Ledger) -> bool:
+    """Whether a window's crawl was begun again at the same page as the window before it:
+    each run reads the same pages again and gets no further."""
+    restarted = _restarted(ledger)
+    if restarted is None or window.previous is None:
+        return False
+    before = _stream_meta(archives.read_meta(window.archive.parent / window.previous))
+    sources = before.get("sources") if before is not None else None
+    if not isinstance(sources, list) or not sources or not isinstance(sources[0], dict):
+        return False
+    return bool(sources[0].get("restarted") == restarted)
+
+
+def _starved_warning(plan: StreamPlan, page: int | None) -> Problem:
+    """The warning for a crawl begun again at one page in two windows in a row."""
+    return Problem(
+        f"{plan.at}.paginate",
+        f"stream {plan.name}: its crawl was begun again at page {page} in two windows in a row "
+        "(the source refused the token each run went on from): each run reads the same pages "
+        "again and its window ends before the crawl gets past them, so later pages are never "
+        "read",
+        kind="paginate_starved",
+        fix="set window.pages to paginate.pages or more, so one window crawls the whole list, "
+        "or schedule every below the source's token lifetime, so a token is used before it "
+        "expires",
+        got=page,
+    )
 
 
 def _moved(plan: StreamPlan, what: str, page: int, by: int | None) -> Problem:

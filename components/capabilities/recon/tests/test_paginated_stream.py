@@ -246,24 +246,27 @@ class TestTheSourceMovedUnderTheCrawl:
         """Owner decision (3): a resumed page whose token the source refuses (an expired
         cursor: 400) is no failure. The crawl begins again from its first page, the window
         records the restart as a gap that did not resume, and the run warns
-        ``paginate_restarted`` with a fix. The next run resumes as usual."""
+        ``paginate_restarted`` with a fix. The pages it reads again, up to the one it had
+        reached, are none of the window's ``pages`` (Erlang: else a schedule whose tokens
+        expire reads the same pages every tick), so it reads two more. The next run resumes
+        as usual."""
         with PagedServer(12, 2) as server:
             _project(tmp_path, server.url, {"pages": 2})
             _stream(tmp_path)
             server.refuse = {1: [400]}
             since = len(server.tried)
             restarted = _stream(tmp_path)
-            assert server.tried[since:] == [1, None, 1], "page 1's token, refused; then page 1"
+            assert server.tried[since:] == [1, None, 1, 2, 3], "page 1's token refused; again"
             _stream(tmp_path)
 
         first, second, third = _windows(tmp_path)
         assert restarted.last_window is not None
         assert restarted.last_window.table.status == "ok"
-        assert [r["id"] for r in _rows(second)] == [0, 1, 2, 3], "read again, from the start"
+        assert [r["id"] for r in _rows(second)] == list(range(8)), "again, then two pages on"
         assert [gap["resumed"] for gap in _gaps(second)] == [True, False]
         [warning] = [w for w in restarted.warnings if w["kind"] == "paginate_restarted"]
         assert warning["path"] == "collectors.0.paginate" and warning["fix"]
-        assert [r["id"] for r in _rows(third)] == [4, 5, 6, 7], "then on from where it was"
+        assert [r["id"] for r in _rows(third)] == [8, 9, 10, 11], "then on from where it was"
 
     def test_records_inserted_ahead_of_the_boundary_are_found_by_its_content(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -359,3 +362,73 @@ def _told(project: Path) -> list[tuple[str, int]]:
         for window in _windows(project)
         for row in _lines(window / "items.changes.jsonl")
     ]
+
+
+class TestTicksWhoseTokensExpire:
+    """Erlang's starvation case: a schedule whose source's cursors expire between ticks. Each
+    tick's crawl is refused its resumed token and begins again from the first page; a crawl
+    begun again reads past the page it had reached before the window's ``pages`` count, so
+    every tick reads further than the last and the crawl ends. When it cannot (a window cut
+    by its records before then), two windows in a row begun again at the same page warn
+    ``paginate_starved``, which the tick's log line carries."""
+
+    def _ticks(
+        self, tmp_path: Path, window: dict[str, Any], ticks: int
+    ) -> tuple[list[Any], list[list[str]]]:
+        from datetime import UTC, datetime, timedelta
+
+        from recon.adapters._out.schedule_files import SCHEDULE_LOG
+        from recon.application.schedules import offset_s
+        from recon.domain.schedule import ScheduleHost
+        from tests.test_schedule_install import FakeRunner, Host
+
+        every = 600
+        home = tmp_path / "home"
+        home.mkdir()
+        host = Host(home, FakeRunner())
+        at = datetime(2026, 10, 24, 10, 0, tzinfo=UTC) + timedelta(seconds=offset_s("m", every))
+        clock = FixedClock(at + timedelta(seconds=2))
+        documents = []
+        with PagedServer(12, 2, expiring=True) as server:
+            _project(tmp_path, server.url, window)
+            config = tmp_path / ".recon" / "m" / "config.yaml"
+            mission = yaml.safe_load(config.read_text())
+            config.write_text(yaml.safe_dump({**mission, "schedule": {"every": every}}))
+            scheduled = ScheduleHost("/opt/recon/bin/recon", ("/usr/bin", "/bin"))
+            recon = root({"PATH": "/usr/bin:/bin"}, project=tmp_path, clock=clock,
+                         schedulers=host.scheduler, schedule_host=scheduled)  # fmt: skip
+            digest = recon.schedule_install("m", platform="launchd").config_sha256 or ""
+            for _ in range(ticks):
+                documents.append(recon.schedule_tick("m", config_sha256=digest))
+                server.expire()
+                clock.advance(every)
+        log = (tmp_path / ".recon" / "m" / SCHEDULE_LOG).read_text().splitlines()
+        return documents, [json.loads(line)["warning_kinds"] for line in log]
+
+    def test_a_crawl_begun_again_each_tick_still_reads_past_n_pages_and_ends(
+        self, tmp_path: Path
+    ) -> None:
+        """Windows of two pages, every cursor expired by the next tick: tick 1 reads pages 0
+        and 1; tick 2 is refused page 1's cursor, reads 0 and 1 again (no page of its count),
+        then 2 and 3; tick 3 reads on to page 5, the last, and the crawl ends (``eof``)."""
+        documents, _ = self._ticks(tmp_path, {"pages": 2}, 3)
+
+        windows = _windows(tmp_path)
+        assert [_meta(w)["stream"]["closed_by"] for w in windows] == ["pages", "pages", "eof"]
+        assert set(_ids(tmp_path)) == set(range(12)), "every record read, the last page too"
+        assert [r["id"] for r in _rows(windows[1])] == [0, 1, 2, 3, 4, 5, 6, 7]
+        kinds = [[w["kind"] for w in d.survey.warnings] for d in documents]
+        assert "paginate_restarted" in kinds[1] and "paginate_starved" not in kinds[1] + kinds[2]
+
+    def test_two_windows_in_a_row_begun_again_at_one_page_warn_starved(
+        self, tmp_path: Path
+    ) -> None:
+        """A window cut by its records before the crawl passes where it was: each tick begins
+        again at page 1, reads four records and seals, never past page 1. The second such
+        window warns ``paginate_starved`` with its fix, and the tick's log line names it."""
+        documents, logged = self._ticks(tmp_path, {"records": 4}, 3)
+
+        [starved] = [w for w in documents[2].survey.warnings if w["kind"] == "paginate_starved"]
+        assert starved["got"] == 1 and "window.pages" in starved["fix"]
+        assert "every" in starved["fix"]
+        assert "paginate_starved" in logged[2] and "paginate_starved" not in logged[1]
