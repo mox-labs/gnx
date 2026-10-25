@@ -249,10 +249,12 @@ def content(record: dict[str, Any]) -> dict[str, Any]:
 
 def found_at(contents: list[dict[str, Any]], mark: dict[str, Any], i: int) -> int | None:
     """Where on a page (its records' :func:`content`) the record ``mark`` is: at ``i`` when it
-    is there, else its first place, else None."""
+    is there, else its one place; None when it is not there, or is there more than once
+    (Dijkstra F: of two records alike, which is the boundary cannot be told, and going on
+    after the wrong one keeps records twice)."""
     if 0 <= i < len(contents) and contents[i] == mark:
         return i
-    return contents.index(mark) if mark in contents else None
+    return contents.index(mark) if contents.count(mark) == 1 else None
 
 
 #: One record a resumed crawl keeps: its page's ordinal, its index there, and the record.
@@ -269,8 +271,10 @@ class Seek:
     inserted ahead of it moves it later, onto the next page once it was a page's last, and a
     record removed moves it earlier. Found, the crawl keeps what follows it, and ``by`` is how
     far it moved (0: where it was); not found on either page, the crawl keeps what follows its
-    index, and ``by`` is None. ``done`` once it is settled. A resume with no boundary (none of
-    its page's records was kept, ``i`` -1) keeps what follows its index at once."""
+    index, and ``by`` is None: so too when it is off its index and its content is on the page
+    more than once, as no one of them can be told for it. ``done`` once it is settled. A
+    resume with no boundary (none of its page's records was kept, ``i`` -1) keeps what follows
+    its index at once."""
 
     def __init__(self, resume: Resume) -> None:
         self._resume = resume
@@ -291,6 +295,9 @@ class Seek:
             return _after(page, records, i)
         if self._held is None:  # the resumed page
             at = found_at(contents, mark, i)
+            if at is None and mark in contents:  # alike records: not to be told apart
+                self.done, self.by = True, None
+                return _after(page, records, i)
             if at is None:
                 self._held = (page, records)
                 return []

@@ -14,6 +14,8 @@ from recon.domain.paginate import (
     Crawl,
     Next,
     PaginateSpec,
+    Resume,
+    Seek,
     Stop,
     crawl_floor_s,
     next_link,
@@ -171,3 +173,40 @@ class TestTheFloor:
     def test_the_floor_is_the_pages_past_the_burst_at_the_rate(self) -> None:
         assert crawl_floor_s(100, burst=3, rps=10.0) == pytest.approx(9.7)
         assert crawl_floor_s(2, burst=3, rps=10.0) == 0.0
+
+
+def _seek(i: int, pages: list[list[str]]) -> tuple[list[tuple[int, int, str]], Any]:
+    """What a crawl resumed at page 0, its boundary record ``A`` at index ``i``, keeps of
+    ``pages`` (each record its title alone), and how far ``Seek`` says the boundary moved."""
+    seek = Seek(Resume(page=0, token=None, i=i, boundary={"t": "A"}))
+    kept: list[tuple[int, int, str]] = []
+    for page, titles in enumerate(pages):
+        records = [{"t": title} for title in titles]
+        kept += [(p, n, r["t"]) for p, n, r in seek.kept(page, records, records)]
+    kept += [(p, n, r["t"]) for p, n, r in seek.end()]
+    return kept, seek.by
+
+
+class TestTheBoundary:
+    """Where a resumed crawl left off (ruling P4's boundary check; ixian P8), found among the
+    records it reads again: pure, so tested here with titles for records."""
+
+    def test_in_place_it_keeps_what_follows(self) -> None:
+        assert _seek(2, [["A", "B", "A", "C"]]) == ([(0, 3, "C")], 0)
+
+    def test_moved_and_alone_on_its_page_it_is_found(self) -> None:
+        assert _seek(1, [["X", "Y", "A", "C"]]) == ([(0, 3, "C")], 1)
+        assert _seek(3, [["Y", "Z", "W", "V"], ["A", "C"]]) == ([(1, 1, "C")], 1)
+
+    def test_moved_where_its_content_is_twice_on_the_page_it_is_not_found(self) -> None:
+        """Dijkstra F: a page of [A, B, A], the second A kept, then X inserted ahead: [X, A, B,
+        A]. The first A is no boundary; going on after it would keep B and A twice while
+        saying the boundary was found. Content twice on a page, off its index, is not found:
+        the crawl goes on by index, and says so (``by`` None)."""
+        kept, by = _seek(2, [["X", "A", "B", "A"]])
+        assert (kept, by) == ([(0, 3, "A")], None)
+
+    def test_twice_on_the_next_page_it_is_not_found_either(self) -> None:
+        kept, by = _seek(2, [["X", "Y", "Z"], ["A", "B", "A"]])
+        assert by is None
+        assert kept == [(1, 0, "A"), (1, 1, "B"), (1, 2, "A")], "by index: page 0 past 2, all of 1"

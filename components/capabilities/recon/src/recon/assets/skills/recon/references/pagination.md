@@ -136,7 +136,7 @@ So every record is kept once. The restart is a gap in the run's first window, `r
 |---|---|---|
 | at its index | goes on after it | nothing |
 | elsewhere (records were inserted ahead of it, or removed) | goes on after it, so nothing is kept twice and nothing after it is lost; records inserted ahead of it are not in this crawl, and the next crawl reads them | `paginate_shifted`, `got` how far it moved (negative: earlier) |
-| nowhere (it changed at the source, or moved past the next page) | goes on after its index: records about it may be missing or kept twice | `paginate_shifted`, `got` null, and a gap, `resumed: false` |
+| nowhere (it changed at the source, or moved past the next page), or off its index on a page that holds its content more than once, so which is the boundary cannot be told | goes on after its index: records about it may be missing or kept twice | `paginate_shifted`, `got` null, and a gap, `resumed: false` |
 
 The warning is at `collectors.<i>.paginate`, its fix to page by a cursor or a link where the API has one. A record's `_position` says where it was when it was read, so after a shift two records may give the same one.
 
