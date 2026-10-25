@@ -412,7 +412,10 @@ injection channel, and, through a command, an execution one.
   unless `deliver.fields` names one.
 - **The command gets no credential of recon's**: not recon's environment, but the few variables
   a desktop notifier needs (`recon --skill -r subscriptions` lists them), so a token an `env:`
-  reference names does not reach it.
+  reference names does not reach it. Its `PATH` is a scheduled tick's, by hand too: absolute
+  directories no other user can write and none inside the project (boundary 11). Its program is
+  named by an absolute path, which the plan requires, so neither `PATH` nor the project (its
+  working directory) chooses it (Vector, review S1).
 - **A command the config names is a program the config runs** (boundary 1): reviewing a
   subscription's `deliver:` is reviewing what it runs. A scheduled config's digest covers its
   `command:`, so a changed one is refused until the schedule is installed again (boundary 11);

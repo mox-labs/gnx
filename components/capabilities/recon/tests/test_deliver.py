@@ -308,6 +308,26 @@ class TestAHostileSubjectStaysInert:
         assert "MAIL_TOKEN" not in given and "sk-SENTINEL" not in out.read_text()
         assert given.get("PATH") == "/usr/bin:/bin"
 
+    def test_a_manual_delivery_runs_its_command_with_the_tick_s_safe_path(
+        self, tmp_path: Path
+    ) -> None:
+        """Vector S1: ``recon deliver`` by hand ran its command with recon's PATH as given, a
+        directory inside the project included; every delivery now has the PATH a tick has."""
+        out = tmp_path / "env.json"
+        body = ("import json, os, sys\nsys.stdin.read()\n"
+                f"json.dump(dict(os.environ), open({str(out)!r}, 'w'))\n")  # fmt: skip
+        _mission(tmp_path, _script(tmp_path, body))
+        inside = tmp_path / "node_modules" / ".bin"
+        inside.mkdir(parents=True)
+        inbox = Inbox()
+        inbox.messages = _messages(1)
+        recon = root({"PATH": f"{inside}:/usr/bin:/bin"}, project=tmp_path, clock=FixedClock(),
+                     requester=lambda t, d, r: inbox)  # fmt: skip
+        recon.survey("m")
+        recon.deliver("m")
+        path = json.loads(out.read_text())["PATH"].split(":")
+        assert str(inside) not in path and "/usr/bin" in path
+
     def test_the_schema_marks_what_is_untrusted(self) -> None:
         """V1: untrusted content is marked by the schema, never by delimiters in the text."""
         delivery = Delivery.model_json_schema()["properties"]
@@ -478,11 +498,11 @@ class TestThePlan:
 
     @pytest.mark.parametrize(
         "deliver",
-        [{}, {"command": ""}, {"command": "a\0b"}, {"command": "x", "args": ["a\0b"]},
-         {"command": "x", "args": "--mail"}, {"command": "x", "max_per_tick": 0},
-         {"command": "x", "attempts": 0}, {"command": "x", "deadline": 0},
-         {"command": "x", "timeout": -1}, {"command": "x", "max_chars": 0},
-         {"command": "x", "fields": ["_position"]}, {"command": "x", "shell": True}],
+        [{}, {"command": ""}, {"command": "a\0b"}, {"command": "/x", "args": ["a\0b"]},
+         {"command": "/x", "args": "--mail"}, {"command": "/x", "max_per_tick": 0},
+         {"command": "/x", "attempts": 0}, {"command": "/x", "deadline": 0},
+         {"command": "/x", "timeout": -1}, {"command": "/x", "max_chars": 0},
+         {"command": "/x", "fields": ["_position"]}, {"command": "/x", "shell": True}],
     )  # fmt: skip
     def test_what_deliver_may_not_say(self, deliver: dict[str, Any]) -> None:
         plan = self._plan(deliver)
@@ -517,8 +537,17 @@ class TestThePlan:
             [warning] = [w for w in plan.warnings if w.kind == "schedule_overrun"]
             assert warning.path == "deadline" and warning.fix and plan.valid
 
+    @pytest.mark.parametrize("command", ["notify-send", "./bin/notify", "bin/notify", "."])
+    def test_a_command_not_named_by_its_absolute_path_is_refused(self, command: str) -> None:
+        """Vector S1: a relative command resolves on PATH, or inside the project (the
+        command's working directory), which a pull or a dependency can change."""
+        plan = self._plan({"command": command})
+        [problem] = plan.problems
+        assert (problem.path, problem.kind) == ("subscriptions.0.deliver.command", "invalid_value")
+        assert "absolute" in problem.fix
+
     def test_a_field_normalize_does_not_make_is_refused(self) -> None:
-        plan = self._plan({"command": "x", "fields": ["subject", "body"]},
+        plan = self._plan({"command": "/x", "fields": ["subject", "body"]},
                           normalize={"id": "id", "subject": "subject"})  # fmt: skip
         [problem] = plan.problems
         assert (problem.path, problem.kind) == ("subscriptions.0.deliver.fields.1", "name_unknown")

@@ -1459,6 +1459,19 @@ def _subscription_problems(
         columns = tuple(entry.normalize or ())
         if subscription.deliver is not None:
             values += _delivered(at, subscription)
+            if not subscription.deliver.command.startswith("/"):
+                problems.append(
+                    Problem(
+                        f"{at}.deliver.command",
+                        f"{subscription.deliver.command!r} is not an absolute path: it would be "
+                        "found on PATH, or in the project, the command's directory, where a pull "
+                        "or a dependency can put another program of that name",
+                        kind="invalid_value",
+                        fix="name the program by its absolute path (command: "
+                        "/usr/local/bin/notify-mail; `command -v <name>` finds it)",
+                        got=subscription.deliver.command,
+                    )
+                )
             for position, wanted in enumerate(subscription.deliver.fields):
                 if columns and wanted not in columns:
                     problems.append(

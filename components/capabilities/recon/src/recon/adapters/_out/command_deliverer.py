@@ -39,9 +39,14 @@ _STDERR_KEPT = 2048
 
 
 class CommandDeliverer:
-    def __init__(self, env: Mapping[str, str]) -> None:
-        """``env`` is recon's environment, of which a command is given :data:`PASSED_ENV`."""
+    def __init__(self, env: Mapping[str, str], *, path: Sequence[str] | None = None) -> None:
+        """``env`` is recon's environment, of which a command is given :data:`PASSED_ENV`;
+        ``path``, the directories its ``PATH`` is, in place of ``env``'s: the composition root
+        gives the ones a scheduled tick runs with, no other user's to write and none inside the
+        project, for every delivery, by hand or by a tick (Vector, review S1)."""
         self._env = {name: env[name] for name in PASSED_ENV if name in env}
+        if path is not None:
+            self._env["PATH"] = ":".join(path)
 
     def deliver(
         self, argv: Sequence[str], payload: bytes, *, timeout_s: float, cwd: Path

@@ -51,7 +51,7 @@ subscriptions:
 | `match` | which rows it reads (below) | `{}`: every row |
 | `deliver` | the command each row is given to (below) | none: its subscriber reads them with `recon subscribe` |
 | `max_lag` | the seconds it keeps `retain:` from removing an archive whose rows it has not acked; past that, the archive goes and the subscriber is told | `2592000` (30 days) |
-| `deliver.command` | the program run for each row, by no shell, as an `mcp` source's stdio server is | required in the block |
+| `deliver.command` | the program run for each row, by its absolute path, by no shell, as an `mcp` source's stdio server is | required in the block |
 | `deliver.args` | its arguments, as given: no row is ever one of them | `[]` |
 | `deliver.fields` | the record's fields a delivery carries, each a `normalize:` column when there are some | `[]`: no body, only the row's op, output and key |
 | `deliver.max_per_tick` | the most rows one delivery gives one at a time; the rest go as one row counting them | `10` |
@@ -148,7 +148,7 @@ The command runs as its `command` and `args` say, by no shell, in the project's 
 
 There is no body unless `deliver.fields` names one. Every string of a row is cleaned before it is given: a terminal's escape sequences taken out whole (CSI, OSC, DCS, SOS, PM and APC, and their one-byte forms), every other control character but tab and line feed, every bidirectional control (marks, embeddings, overrides, isolates), every Unicode tag character and every lone surrogate; then cut to `max_chars` characters, its last `…` when it was cut. A list or an object is given as its JSON text, cleaned and cut the same.
 
-The command is not given recon's environment, which can hold a source's credential: only `HOME`, `PATH`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `LANG`, `LC_ALL`, `TMPDIR`, `DISPLAY`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR`, as recon has them, what a desktop notifier needs. A scheduled tick's `PATH` is the one installed, so name the command by its absolute path.
+The command is not given recon's environment, which can hold a source's credential: only `HOME`, `PATH`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `LANG`, `LC_ALL`, `TMPDIR`, `DISPLAY`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR`, as recon has them, what a desktop notifier needs; its `PATH` is the one a scheduled tick has, by hand too: recon's own, kept to absolute directories no other user can write and none inside the project. The command is named by its absolute path, so neither `PATH` nor the project chooses it.
 
 ## Untrusted content
 
@@ -176,6 +176,7 @@ The dead letters keep 1 MiB, and the 1 MiB before them in `<name>.dead.jsonl.1`.
 | a `match:` field no change row has (`subject`, `key.<a field not in changes.key>`, `record.<not a normalize column>`) | plan problem `name_unknown`, at `subscriptions.<i>.match.<field>`, `allowed` the fields there are | match `op`, `key.<field>` or `record.<field>` |
 | `where:`, or any key the block does not have | plan problem `unknown_key` | there is no SQL filter: use `match:` |
 | a name given twice, or not one path component | plan problem `name_taken`, or `invalid_value` at `subscriptions.<i>.name` | give each its own name |
+| a `command:` that is not an absolute path (`notify-send`, `./bin/notify`) | plan problem `invalid_value` at `subscriptions.<i>.deliver.command` | its absolute path (`command -v <name>` finds it) |
 | `command:` written as a list | plan problem `wrong_shape` at `subscriptions.<i>.deliver.command` | the program as `command:`, its arguments as `args:` |
 | a `deliver.fields` entry `normalize:` does not make | plan problem `name_unknown` at `subscriptions.<i>.deliver.fields.<j>` | name a column of `normalize:` |
 | a subscription the config does not declare | `not_found` (4), `allowed` those it does | name one of them |

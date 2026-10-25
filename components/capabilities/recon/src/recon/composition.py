@@ -207,7 +207,8 @@ def root(
     ``memory_keys`` keys (200,000 by default; fewer is joined in memory). What each of a
     mission's subscriptions acked is kept beside the mission, in its files, and each delivery
     is given to its ``command:`` (``deliverer``, default a :class:`CommandDeliverer` handed
-    the few variables of ``env`` a desktop notifier needs, and no other).
+    the few variables of ``env`` a desktop notifier needs, and no other, its ``PATH`` the one a
+    scheduled tick runs with).
     A test's root is this one with fakes given for the ports it stands in for."""
     clock = clock or SystemClock()
     process_env = os.environ if env is None else env
@@ -256,7 +257,7 @@ def root(
         key_join=key_join if key_join is not None else DuckdbJoin(),
         memory_keys=memory_keys,
         subscriptions=SubscriptionFiles(),
-        deliverer=deliverer or CommandDeliverer(process_env),
+        deliverer=deliverer or CommandDeliverer(process_env, path=host.path),
     )
 
 
