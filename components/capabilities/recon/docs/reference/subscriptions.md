@@ -107,7 +107,7 @@ recon unsubscribe <mission> <name> [--json]
 
 - **The cursor moves only on an ack.** A subscriber that read rows and crashed before it acked reads the same rows, with the same ids, again.
 - **Acks are monotone.** A cursor before the one acked is refused, `usage` (exit 2), its `details` naming the `acked` and `got` positions; the one acked again changes nothing (`outcome: unchanged`); a later one is `acked`.
-- **One consumer a name.** While one `recon subscribe`, `recon ack`, `recon unsubscribe` or delivery holds a subscription, another is refused `busy` (exit 11), its `details` naming the holder's `pid`.
+- **One consumer a name.** While one `recon subscribe`, `recon ack`, `recon unsubscribe` or delivery holds a subscription, another is refused `busy` (exit 11), its `details` naming the holder's `pid`. The hold is per call: a read and its ack are two calls, and another consumer between them reads the same rows again (at least once) and cannot move the cursor back, since acks are monotone.
 - **A foreign cursor is refused**, `usage`: one of another mission or output, one a `recon watch` read gave, one recon did not give, one naming an archive the mission never had. A cursor is signed with the mission's key, so one edited, however plausible (a real archive, a row past its change table's end), is refused, never read on from.
 
 To follow from an agent: `recon subscribe <mission> <name> --json`, act on the rows, `recon ack <mission> <name> <cursor>`, and read again at once while the read says `more`.

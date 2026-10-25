@@ -13,6 +13,7 @@
 - **A delivery's command is named by its absolute path, and runs with a tick's `PATH`** (review S1): a relative `deliver.command` is a plan problem; every delivery, by hand or by a tick, has the `PATH` a tick has, no directory inside the project.
 - **`package_unpinned` judges a subscription's `deliver` argument list** (review S2), at `subscriptions.<i>.deliver.command`, as a stdio server's.
 - **A failing row's `error`, what its command said, is marked untrusted in its schema** (review N2).
+- **One consumer a name holds per call** (review N3, said in the reference): not across a read and its ack; monotone acks keep a second consumer between them harmless.
 - **A row's `id` is keyed with the mission's key and names its mission** (review N1): a key of few values cannot be found from an id by guessing, and the same row of two missions has two ids.
 - **A change cursor is signed with the mission's key** (review S4): one edited, however plausible, is refused (`usage`), never read on from.
 - **A delivery strips what hides in text** (review S3): variation selectors, zero-width characters (spaces, joiners, the word joiner, invisible operators, the byte order mark), and the line and paragraph separators, beside escapes, bidi controls and tag characters.
