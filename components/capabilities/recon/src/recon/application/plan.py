@@ -36,7 +36,7 @@ from recon.domain.errors import Problem
 from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
 from recon.domain.normalize import path_problem, spec_problems
 from recon.domain.paginate import COUNTED, crawl_floor_s
-from recon.domain.schedule import ScheduleSpec, every_fix, pinned_form, unpinned
+from recon.domain.schedule import DAY_S, ScheduleSpec, every_fix, pinned_form, unpinned
 from recon.domain.stream import (
     DEFAULT_WINDOW_S,
     POSITION_FIELD,
@@ -271,6 +271,9 @@ def build_plan(
                 warnings += unset
         else:
             problems.extend(_not_a_stream(i, entry))
+            values, unset = _snapshot_retain(i, entry, schedule)
+            provenance += values
+            warnings += unset
             if entry.paginate is not None:
                 problems.extend(_position_problems(i, entry))
                 values, short = _paginate(i, entry, targets, raw.get("deadline"))
@@ -551,17 +554,48 @@ def _paginate(
 
 
 def _not_a_stream(i: int, entry: CollectorEntry) -> list[Problem]:
-    """``buffer:`` and ``retain:`` on an entry that is no stream: they would do nothing."""
+    """``buffer:`` on an entry that is no stream: it would do nothing."""
+    if entry.buffer is None:
+        return []
     return [
         Problem(
-            f"collectors.{i}.{key}",
-            f"{key}: is a stream's, and collector {entry.name!r} is not one: its type's records "
-            "end, and it sets no window:",
-            fix=f"add window: to collect it as a stream, or remove {key}:",
+            f"collectors.{i}.buffer",
+            f"buffer: is a stream's, and collector {entry.name!r} is not one: its type's "
+            "records end, and it sets no window:",
+            fix="add window: to collect it as a stream, or remove buffer:",
         )
-        for key, value in (("buffer", entry.buffer), ("retain", entry.retain))
-        if value is not None
     ]
+
+
+def _snapshot_retain(
+    i: int, entry: CollectorEntry, schedule: ScheduleSpec | None
+) -> tuple[list[SourcedValue], list[Problem]]:
+    """A snapshot entry's ``retain:`` (Knuth, round-4 review S1), with where it came from, and
+    the warning for a scheduled mission whose entry keeps every archive by default: each tick
+    adds a whole table, and its told index, for ever."""
+    at = f"collectors.{i}"
+    unset = entry.retain is None
+    retain: Retain = entry.retain if entry.retain is not None else "all"
+    shown = retain if isinstance(retain, str) else retain.model_dump(exclude_none=True)
+    value = SourcedValue(
+        path=f"{at}.retain",
+        value=shown,
+        origin="recon" if unset else "mission",
+        note="no archive is removed unless the mission says so" if unset else "",
+    )
+    if not unset or schedule is None:
+        return [value], []
+    per_day = max(1, DAY_S // schedule.every)
+    warning = Problem(
+        f"{at}.retain",
+        f"collector {entry.name!r} keeps every archive a tick makes ({per_day} a day, one each "
+        f"{schedule.every}s, each its whole table), and nothing removes them",
+        kind="retain_unset",
+        fix=f"retain: {{windows: {per_day}}} keeps a day of them (a snapshot's windows are its "
+        "surveys' archives); retain: {seconds: 2592000} keeps 30 days; or write retain: all to "
+        "keep every archive and say so",
+    )
+    return [value], [warning]
 
 
 def _schedule(raw: dict[Any, Any]) -> tuple[ScheduleSpec | None, list[Problem]]:

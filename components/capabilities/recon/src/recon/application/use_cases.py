@@ -12,7 +12,7 @@ import contextlib
 import hashlib
 import json
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -88,7 +88,7 @@ if TYPE_CHECKING:
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
     from recon.domain.paginate import PageLog
     from recon.domain.schedule import Platform, ScheduleHost, Scheduler, ScheduleStore
-    from recon.domain.stream import GapLog, Stop, WindowSpec
+    from recon.domain.stream import GapLog, RetainSpec, Stop, WindowSpec
     from recon.domain.telemetry import Channel, EventCallback, Telemetry
 
 
@@ -505,6 +505,7 @@ class Recon:
             warnings += _dropped(telemetry) + _undelivered(channel)
         finally:
             self._archives.release(archive)
+        self._retain_snapshots(mission, plan.config, streams)
         stream_windows: list[WindowOutcome] = []
         for stream in plan.streams:
             run, found = self._run_stream(
@@ -523,6 +524,88 @@ class Recon:
             warnings=[w.document() for w in warnings],
             stream_windows=stream_windows,
         )
+
+    def _retain_snapshots(self, mission: Path, config: ReconConfig, streams: set[int]) -> None:
+        """Retire the archives every snapshot entry's ``retain:`` lets go (Knuth, round-4
+        review S1), oldest first, once the survey's archive is sealed, the mission still held:
+        never the newest, never one being written, never the last one a table with
+        ``changes:`` was told in (the told index the next comparison reads). An archive holds
+        every entry's tables, so it goes only when every snapshot entry lets it go; one that
+        keeps ``all`` (the default) keeps every archive. Each leaves a tombstone in
+        ``archive/retired.jsonl``; a retirement that fails is tried again by the next."""
+        entries = [entry for i, entry in enumerate(config.collectors) if i not in streams]
+        rules = [entry.retain for entry in entries]
+        if not entries or any(rule is None or isinstance(rule, str) for rule in rules):
+            return
+        archives = self._archives.archives(mission)
+        if len(archives) < 2:
+            return
+        now = self._clock.now()
+        sizes: dict[str, int] = {}
+        going: set[str] | None = None
+        for rule in rules:
+            assert rule is not None and not isinstance(rule, str)
+            lets_go = self._snapshots_going(archives, rule, now, sizes)
+            going = lets_go if going is None else going & lets_go
+        kept = {archives[-1].name} | self._told_in(archives, entries)
+        for archive in archives[:-1]:
+            if archive.name not in (going or set()) or archive.name in kept:
+                continue
+            if self._archives.state(archive) == "writing":
+                continue
+            meta = self._archives.read_meta(archive)
+            tombstone = {
+                "id": archive.name,
+                "started_at": meta.get("started_at"),
+                "timestamp": meta.get("timestamp"),
+                "ended": meta.get("ended"),
+                "retired_at": now.isoformat(),
+                "rule": [rule.model_dump(exclude_none=True) for rule in rules
+                         if rule is not None and not isinstance(rule, str)],
+            }  # fmt: skip
+            with contextlib.suppress(OSError):  # left listed: the next survey retires it
+                self._archives.retire(archive, tombstone)
+
+    def _snapshots_going(
+        self, archives: list[Path], rule: RetainSpec, now: datetime, sizes: dict[str, int]
+    ) -> set[str]:
+        """The archives one entry's ``retain:`` lets go: beyond its newest ``windows``, ended
+        more than ``seconds`` before now, or past the newest whose sizes add up to ``bytes``.
+        Any one of its rules lets an archive go, as a stream's do."""
+        going: set[str] = set()
+        if rule.windows is not None:
+            going.update(archive.name for archive in archives[: -rule.windows])
+        if rule.seconds is not None:
+            cutoff = now - timedelta(seconds=rule.seconds)
+            for archive in archives:
+                ended = _when(self._archives.read_meta(archive).get("timestamp"), archive.name)
+                if ended is not None and ended < cutoff:
+                    going.add(archive.name)
+        if rule.bytes is not None:
+            held = 0
+            for at, archive in enumerate(reversed(archives)):
+                if archive.name not in sizes:
+                    sizes[archive.name] = self._archives.size(archive)
+                held += sizes[archive.name]
+                if held > rule.bytes and at > 0:
+                    going.update(a.name for a in archives[: len(archives) - at])
+                    break
+        return going
+
+    def _told_in(self, archives: list[Path], entries: list[CollectorEntry]) -> set[str]:
+        """The last archive each table of an entry with ``changes:`` was told in: what its next
+        comparison reads, kept whatever a rule says."""
+        changing = {entry.name for entry in entries if entry.changes is not None}
+        found: dict[tuple[Any, Any], str] = {}
+        for archive in reversed(archives):
+            for table in self._archives.read_meta(archive).get("tables") or []:
+                told = table.get("changes")
+                if table.get("collector") not in changing or not isinstance(told, dict):
+                    continue
+                if told.get("error"):
+                    continue
+                found.setdefault((table.get("name"), table.get("source")), archive.name)
+        return set(found.values())
 
     def stream(
         self,
@@ -1466,6 +1549,17 @@ def _meeting(windows: list[Path], since: datetime | None, until: datetime | None
             continue
         kept.append(window)
     return kept
+
+
+def _when(stamp: Any, archive_id: str) -> datetime | None:
+    """When an archive ended, as its ``meta.yaml`` says, else when it started, as its id
+    says; None when neither can be read."""
+    if isinstance(stamp, str):
+        with contextlib.suppress(ValueError):
+            return datetime.fromisoformat(stamp)
+    with contextlib.suppress(ValueError):
+        return datetime.strptime(archive_id, ARCHIVE_ID_FORMAT).replace(tzinfo=UTC)
+    return None
 
 
 def _ended(state: ArchiveState, meta: Mapping[str, Any]) -> Ended | None:
