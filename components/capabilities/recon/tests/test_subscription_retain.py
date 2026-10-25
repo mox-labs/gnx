@@ -151,6 +151,22 @@ class TestTheHoldIsBounded:
         self._surveyed(tmp_path, max_lag=1000)
         assert len(_archives(tmp_path)) == 3
 
+    def test_an_archive_that_says_no_time_is_past_the_lag(self, tmp_path: Path) -> None:
+        """Erlang, re-check: an archive whose meta.yaml says no time was held whatever its
+        age, so one such archive held a mission's retention for ever. It is now past the lag."""
+        _mission(tmp_path, [{"name": "all", "output": "inbox", "max_lag": 1000,
+                             "deliver": {"command": "/usr/bin/true"}}])  # fmt: skip
+        surveys = Surveys(tmp_path)
+        first, _ = surveys.survey(A)
+        second, _ = surveys.survey(A, B)
+        meta = yaml.safe_load((first / "meta.yaml").read_text())
+        meta.pop("timestamp")
+        (first / "meta.yaml").write_text(yaml.safe_dump(meta))
+        third, _ = surveys.survey(A, B, C)
+        assert _archives(tmp_path) == sorted([second.name, third.name]), (
+            "the first, saying no time, went; the second, within max_lag, is held"
+        )
+
     def test_the_default_is_30_days_and_the_plan_says_so(self, tmp_path: Path) -> None:
         _mission(tmp_path, [{"name": "all", "output": "inbox"}])
         plan = Surveys(tmp_path).recon.plan("m")

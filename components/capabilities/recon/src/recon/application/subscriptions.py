@@ -228,8 +228,8 @@ class ChangeReader:
         """The archives (a stream's windows) whose sealed change table holds a row
         ``position`` has not passed (None: none passed): the one it is in, unless its table is
         done, and each after it whose change table is not empty. With ``within``, those
-        written to their end no more than ``within`` seconds before ``now`` alone (one that does
-        not say when is counted in)."""
+        written to their end no more than ``within`` seconds before ``now`` alone: one that does
+        not say when is past it, so it never holds retention for ever (Erlang, re-check)."""
         archives = self._archives.archives(self._mission_dir, stream=self._stream)
         names = [archive.name for archive in archives]
         start = 0
@@ -246,8 +246,11 @@ class ChangeReader:
             rows = self._archives.read_table(archive, self._table)
             if rows is None or next(iter(rows), None) is None:
                 continue
-            made = None if within is None else _made_at(self._archives.read_meta(archive))
-            if made is None or now is None or (now - made).total_seconds() <= (within or 0):
+            if within is None or now is None:
+                unread.add(archive.name)
+                continue
+            made = _made_at(self._archives.read_meta(archive))
+            if made is not None and (now - made).total_seconds() <= within:
                 unread.add(archive.name)
         return unread
 
