@@ -194,19 +194,25 @@ _ESCAPES = re.compile(
 
 # What is left of control characters (but tab and line feed), bidirectional controls (marks,
 # embeddings, overrides, isolates), Unicode tag characters (which can spell text no reader
-# sees), and lone surrogates (no character at all).
+# sees), variation selectors, zero-width characters (spaces, joiners, the word joiner and the
+# invisible operators, the byte order mark), the line and paragraph separators (Vector, review
+# S3), and lone surrogates (no character at all).
 _STRIPPED = re.compile(
     r"[\x00-\x08\x0b-\x1f\x7f-\x9f"
     r"\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069"
     r"\U000e0000-\U000e007f"
+    r"\ufe00-\ufe0f\U000e0100-\U000e01ef"
+    r"\u200b-\u200d\u2060-\u2064\ufeff"
+    r"\u2028\u2029"
     r"\ud800-\udfff]"
 )
 
 
 def clean(text: str, max_chars: int) -> str:
     """``text`` with every escape sequence of a terminal, every control character but tab and
-    line feed, every bidirectional control, every Unicode tag character and every lone
-    surrogate taken out, then cut to ``max_chars`` characters, its last ``…`` when it was
+    line feed, every bidirectional control, every Unicode tag character, variation selector and
+    zero-width character, the line and paragraph separators and every lone surrogate taken
+    out, then cut to ``max_chars`` characters, its last ``…`` when it was
     cut."""
     kept = _STRIPPED.sub("", _ESCAPES.sub("", text))
     if len(kept) <= max_chars:

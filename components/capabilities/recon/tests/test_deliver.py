@@ -365,6 +365,13 @@ class TestClean:
             ("hi\U000e0068\U000e0069", "hi"),
             ("lone \ud83d surrogate", "lone  surrogate"),
             ("\U0001f600 kept", "\U0001f600 kept"),
+            # Vector S3: what hides in text, never seen.
+            ("a️b︀c", "abc"),
+            ("a\U000e0100b\U000e01efc", "abc"),
+            ("z​w‌j‍x", "zwjx"),
+            ("w⁠j⁣n⁤", "wjn"),
+            ("﻿bom", "bom"),
+            ("line para end", "lineparaend"),
         ],
     )  # fmt: skip
     def test_what_it_strips(self, text: str, kept: str) -> None:

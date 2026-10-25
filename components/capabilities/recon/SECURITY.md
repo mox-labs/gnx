@@ -407,8 +407,9 @@ injection channel, and, through a command, an execution one.
   nowhere, and past `deliver.timeout` it is stopped with every process it started.
 - **What can hide or reorder text is taken out** of every string a delivery carries: a
   terminal's escape sequences (CSI, OSC, DCS, SOS, PM, APC, and their one-byte C1 forms), every
-  other control character but tab and line feed, bidirectional controls, Unicode tag characters
-  and lone surrogates; each string is then cut to `deliver.max_chars` (200). There is no body
+  other control character but tab and line feed, bidirectional controls, Unicode tag characters,
+  variation selectors, zero-width characters, the line and paragraph separators, and lone
+  surrogates; each string is then cut to `deliver.max_chars` (200). There is no body
   unless `deliver.fields` names one.
 - **The command gets no credential of recon's**: not recon's environment, but the few variables
   a desktop notifier needs (`recon --skill -r subscriptions` lists them), so a token an `env:`
