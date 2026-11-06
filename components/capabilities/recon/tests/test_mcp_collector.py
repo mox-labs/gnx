@@ -72,7 +72,7 @@ def _alive(pid: int) -> bool:
 
 
 def _problems(catalog: list[dict[str, Any]], collectors: list[dict[str, Any]]) -> Any:
-    from recon.application.plan import build_plan
+    from recon.core.application.plan import build_plan
 
     plan = build_plan({"catalog": catalog, "collectors": collectors}, load_plugins(), {})
     return {p.path: p for p in plan.problems}, plan.warnings
@@ -364,7 +364,7 @@ def _plan(
     mission.mkdir(parents=True)
     config = {"catalog": [kwargs.pop("source", STDIO)], "collectors": collectors}
     (mission / "config.yaml").write_text(yaml.safe_dump(config))
-    return root({}, project=project, **kwargs).plan("m", check=check)
+    return root({}, project=project, **kwargs).observation.plan("m", check=check)
 
 
 def test_a_plan_starts_no_server_unless_it_is_asked_to_check(tmp_path: Path) -> None:
@@ -600,7 +600,7 @@ def _captured(archive: Path) -> tuple[str, dict[str, Any]]:
 def _replayed(project: Path, archive: Path, extract: str) -> list[dict[str, Any]]:
     """The records a ``capture`` collector reads back from the survey's capture log."""
     from recon.adapters._out.capture_collector import CaptureCollector
-    from recon.domain.models import CollectorEntry
+    from recon.core.domain.models import CollectorEntry
 
     log = str(archive / "captures.jsonl")
     entry = CollectorEntry.model_validate(

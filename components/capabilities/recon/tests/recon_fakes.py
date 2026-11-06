@@ -18,25 +18,25 @@ import yaml
 from recon.adapters._out.archive_files import FLUSH_BYTES, FLUSH_S, ArchiveFiles
 from recon.adapters._out.mission_layout import STATE, archive_dir
 from recon.composition import load_plugins, root
-from recon.domain.archives import ArchiveRef
-from recon.domain.collector import CollectorType, Plugins
-from recon.domain.http import HttpResponse
-from recon.domain.models import CollectorEntry, ReconConfig
+from recon.core.domain.archives import ArchiveRef
+from recon.core.domain.collector import CollectorType, Plugins
+from recon.core.domain.http import HttpResponse
+from recon.core.domain.models import CollectorEntry, ReconConfig
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
     from pathlib import Path
 
     from recon.composition import RequesterFactory
-    from recon.domain.archives import Hold, Landed, Sidecar, TableEnds
-    from recon.domain.capture import CaptureLog
-    from recon.domain.clock import Clock
-    from recon.domain.collector import Collector, CollectorContext
-    from recon.domain.converters import ConversionResult, DocumentConverter
-    from recon.domain.documents import SurveyDocument, TableOutcome, WindowOutcome
-    from recon.domain.models import SourceEntry
-    from recon.domain.shell import ShellRunner
-    from recon.domain.telemetry import EventSink
+    from recon.core.domain.archives import Hold, Landed, Sidecar, TableEnds
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.clock import Clock
+    from recon.core.domain.collector import Collector, CollectorContext
+    from recon.core.domain.converters import ConversionResult, DocumentConverter
+    from recon.core.domain.documents import SurveyDocument, TableOutcome, WindowOutcome
+    from recon.core.domain.models import SourceEntry
+    from recon.core.domain.shell import ShellRunner
+    from recon.core.domain.telemetry import EventSink
 
 
 class FixedClock:
@@ -120,7 +120,7 @@ class VirtualClock:
 
 
 class LandedThrough:
-    """A :class:`~recon.domain.archives.Landed` that does what ``inner`` does: a test's
+    """A :class:`~recon.core.domain.archives.Landed` that does what ``inner`` does: a test's
     subclass changes the one member it stands in for (a write that waits, a meta that cannot
     be recorded), through the port alone."""
 
@@ -185,6 +185,11 @@ class _HoldThrough:
     @contextlib.contextmanager
     def begin(self, archive_id: str) -> Iterator[Landed]:
         with self._inner.begin(archive_id) as landed:
+            yield self._wrap(landed)
+
+    @contextlib.contextmanager
+    def derive(self, ref: ArchiveRef) -> Iterator[Landed]:
+        with self._inner.derive(ref) as landed:
             yield self._wrap(landed)
 
     def retire(self, ref: ArchiveRef, tombstone: Mapping[str, Any]) -> None:
@@ -409,5 +414,5 @@ def run_survey(
         shell=shell,
         converter=converter,
     )
-    document = recon.survey(name, on_event=on_event)
+    document = recon.observation.survey(name, on_event=on_event)
     return archive_path(project, ArchiveRef(name, document.archive)), document.tables

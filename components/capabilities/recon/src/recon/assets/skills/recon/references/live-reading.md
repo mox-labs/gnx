@@ -28,7 +28,7 @@ A state, where a table's `ok` or `error` is an outcome. Beside it, `ended` says 
 |---|---|---|
 | `finished` | it ran to its end and recorded its meta, so an `incomplete` archive's tables failed (or it could not be marked complete) | the writer, in the archive's meta |
 | `stopped` | it was stopped on request (Ctrl-C, SIGTERM, a stream's stop) and recorded its meta saying so, with the tables that ended before the stop | the writer, in the archive's meta |
-| `crashed` | it recorded no meta, or only the one it records as it compares its tables (`ended: null`, with the tables compared so far): it was killed (SIGKILL, its host went down), or could not record one (a full disk; that survey said so as it ended, with an `archive_unfinished` warning and exit 9). The two read alike because the record that would tell them apart is the one missing | no one: read from that absence |
+| `crashed` | it recorded no meta: it was killed (SIGKILL, its host went down), or could not record one (a full disk; that survey said so as it ended, with an `archive_unfinished` warning and exit 9). The two read alike because the record that would tell them apart is the one missing | no one: read from that absence |
 
 A survey stopped on request exits `interrupted` (130), the exit kind every gnx tool shares; its archive reads `ended: stopped`. A stream's stop is how its run ends, so `recon stream` exits 0 (`recon --skill -r streaming`).
 

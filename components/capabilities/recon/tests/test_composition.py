@@ -14,14 +14,6 @@ from recon.adapters._out.cli_collector import PopenRunner
 from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
-from recon.application.collectors import (
-    COLLECTORS_GROUP,
-    CollectorPorts,
-    ScopedEnv,
-    SurveyCollectors,
-)
-from recon.application.collectors import build_collectors as build
-from recon.application.plan import build_plan
 from recon.composition import (
     TRANSFORMS_GROUP,
     Discover,
@@ -29,14 +21,22 @@ from recon.composition import (
     load_plugins,
     load_transforms,
 )
-from recon.domain.capture import CaptureLog
-from recon.domain.collector import Collector, CollectorContext, CollectorType, Plugins
-from recon.domain.deadline import Deadline
-from recon.domain.documents import TableOutcome
-from recon.domain.errors import CollectionError
-from recon.domain.http import HttpResponse
-from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
-from recon.domain.telemetry import Telemetry
+from recon.core.application.collectors import (
+    COLLECTORS_GROUP,
+    CollectorPorts,
+    ScopedEnv,
+    SurveyCollectors,
+)
+from recon.core.application.collectors import build_collectors as build
+from recon.core.application.plan import build_plan
+from recon.core.domain.capture import CaptureLog
+from recon.core.domain.collector import Collector, CollectorContext, CollectorType, Plugins
+from recon.core.domain.deadline import Deadline
+from recon.core.domain.documents import TableOutcome
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.http import HttpResponse
+from recon.core.domain.models import CollectorEntry, ReconConfig, SourceEntry
+from recon.core.domain.telemetry import Telemetry
 from tests.recon_fakes import EmptyCollector, NoConverter, ScriptedRequester, building
 from tests.recon_fakes import run_survey as run
 
@@ -100,7 +100,7 @@ def test_the_types_that_read_extract_say_so() -> None:
 def plugin_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """A throwaway module on sys.path holding a good type, a bad object, and a raiser."""
     (tmp_path / "recon_test_plugins.py").write_text(
-        "from recon.domain.collector import CollectorType\n"
+        "from recon.core.domain.collector import CollectorType\n"
         "good = CollectorType(create=lambda ctx: object(), effects=frozenset({'network'}))\n"
         "not_a_type = 42\n"
         "def shout(v):\n    return str(v).upper()\n"
@@ -135,7 +135,7 @@ def test_a_plugin_that_raises_on_import_is_reported_and_others_load(plugin_modul
     by_name = {b.name: b for b in broken}
     assert set(by_name) == {"boom", "wrong", "missing"}
     assert "RuntimeError: boom on import" in by_name["boom"].error
-    assert "expected a recon.domain.collector.CollectorType" in by_name["wrong"].error
+    assert "expected a recon.core.domain.collector.CollectorType" in by_name["wrong"].error
     assert "ModuleNotFoundError" in by_name["missing"].error
 
 
@@ -146,7 +146,7 @@ def test_a_plugin_type_declares_a_stream_through_the_entry_point_a_built_in_uses
     ``paced_by`` on its ``CollectorType``, registered under ``recon.collectors`` as ``tail``
     and ``sse`` are, and the plan makes a stream of it with the defaults those declare."""
     (tmp_path / "recon_test_feed.py").write_text(
-        "from recon.domain.collector import CollectorType\n"
+        "from recon.core.domain.collector import CollectorType\n"
         "feed = CollectorType(create=lambda ctx: object(), effects=frozenset({'network'}),\n"
         "                     unbounded=True, paced_by='source')\n"
     )
@@ -705,7 +705,7 @@ def test_a_close_that_raises_is_a_warning_and_the_rest_are_closed(tmp_path: Path
     import yaml
 
     (doc_root / "config.yaml").write_text(yaml.safe_dump(config))
-    document = root({}, project=tmp_path, plugins=registry).survey("m")
+    document = root({}, project=tmp_path, plugins=registry).observation.survey("m")
     [warning] = [w for w in document.warnings if w["kind"] == "plugin_broken"]
     assert "close() raised OSError: socket already gone" in warning["message"]
     assert len(_Server.closed) == 1

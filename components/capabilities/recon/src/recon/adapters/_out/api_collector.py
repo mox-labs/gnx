@@ -16,14 +16,14 @@ page named, resolved against the page's own and held to the source's origin (a l
 fails the table: the source's credential would go with it), with the source's credential
 parameter and no other query; a ``cursor``, ``offset`` or ``page`` crawl sends ``params`` and
 the token as ``paginate.param`` (a ``page`` crawl its first page's number too). How it stops
-is :class:`~recon.domain.paginate.Crawl`'s. Each record carries ``_position``, ``{page, i}``;
+is :class:`~recon.core.domain.paginate.Crawl`'s. Each record carries ``_position``, ``{page, i}``;
 each page, with its token (a URL as recon reports one, its credential parameter redacted), is
 said through the page log (``CollectorContext.pages``) before it is asked for, and not asked
 for when the page log does not want it; a crawl cut short is said there too.
 
-In a stream (ruling P4), ``collect``'s ``after`` is a :class:`~recon.domain.paginate.Resume`'s
+In a stream (ruling P4), ``collect``'s ``after`` is a :class:`~recon.core.domain.paginate.Resume`'s
 document: the crawl asks for that page again, by its token, and keeps what follows the last
-record kept from it, found by :class:`~recon.domain.paginate.Seek` (a page that moved is said
+record kept from it, found by :class:`~recon.core.domain.paginate.Seek` (a page that moved is said
 through the page log's ``shifted``). A resumed token the source refuses (a status that is
 neither a retry's nor a credential's: an expired cursor, a page gone) begins the crawl again
 from its first page, said through the page log's ``restarted``.
@@ -48,12 +48,17 @@ from recon.adapters._out.http_source import (
 )
 from recon.adapters._out.parsing import parse_body
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
-from recon.domain.capture import redact_credentials, redact_query_params
-from recon.domain.collector import CollectorType
-from recon.domain.errors import CollectionError, Problem
-from recon.domain.http import reported_url
-from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, resolve_path, to_records
-from recon.domain.paginate import (
+from recon.core.domain.capture import redact_credentials, redact_query_params
+from recon.core.domain.collector import CollectorType
+from recon.core.domain.errors import CollectionError, Problem
+from recon.core.domain.http import reported_url
+from recon.core.domain.normalize import (
+    BUILTIN_TRANSFORMS,
+    apply_normalize,
+    resolve_path,
+    to_records,
+)
+from recon.core.domain.paginate import (
     COUNTED,
     FIRST_PAGE,
     Crawl,
@@ -65,17 +70,17 @@ from recon.domain.paginate import (
     next_link,
     position,
 )
-from recon.domain.stream import POSITION_FIELD
-from recon.domain.substitution import find_unresolved, substitute
+from recon.core.domain.stream import POSITION_FIELD
+from recon.core.domain.substitution import find_unresolved, substitute
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
-    from recon.domain.capture import CaptureLog
-    from recon.domain.collector import Transform
-    from recon.domain.http import HttpResponse, Requester
-    from recon.domain.models import CollectorEntry, SourceEntry
-    from recon.domain.paginate import PageLog, PaginateSpec
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.collector import Transform
+    from recon.core.domain.http import HttpResponse, Requester
+    from recon.core.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.paginate import PageLog, PaginateSpec
 
 
 class ApiSettings(BaseModel):
@@ -127,7 +132,7 @@ class ApiCollector:
         after: Any = None,
     ) -> Iterator[dict[str, Any]]:
         """The source's records. ``after``, for a stream's crawl, is where to go on from (a
-        :class:`~recon.domain.paginate.Resume`'s document); one entry without ``paginate:``
+        :class:`~recon.core.domain.paginate.Resume`'s document); one entry without ``paginate:``
         makes one request, and has nowhere to go on from."""
         settings = _settings(entry)
         # The plan holds both: the type requires a source, and _check an endpoint.

@@ -20,10 +20,10 @@ from recon.adapters._out.markitdown_converter import MarkitdownConverter
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.adapters._out.web_collector import WebCollector
-from recon.domain.collector import Collector
-from recon.domain.errors import CollectionError
-from recon.domain.models import CollectorEntry, RateLimitConfig, ReconConfig, SourceEntry
-from recon.domain.ratelimit import RateLimiter
+from recon.core.domain.collector import Collector
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.models import CollectorEntry, RateLimitConfig, ReconConfig, SourceEntry
+from recon.core.domain.ratelimit import RateLimiter
 from tests.recon_fakes import collector_entry
 from tests.recon_fakes import run_survey as run
 

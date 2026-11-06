@@ -56,20 +56,20 @@ from recon.adapters._out.http_source import (
     described_credential,
 )
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
-from recon.domain.collector import CollectorType
-from recon.domain.errors import CollectionError, Problem
-from recon.domain.http import LONG_LINE, reported_url
-from recon.domain.stream import POSITION_FIELD, BufferSpec, Gap
+from recon.core.domain.collector import CollectorType
+from recon.core.domain.errors import CollectionError, Problem
+from recon.core.domain.http import LONG_LINE, reported_url
+from recon.core.domain.stream import POSITION_FIELD, BufferSpec, Gap
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
     from datetime import datetime
 
-    from recon.domain.capture import CaptureLog
-    from recon.domain.clock import Clock
-    from recon.domain.http import LiveBody, Requester
-    from recon.domain.models import CollectorEntry, SourceEntry
-    from recon.domain.stream import GapLog
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.clock import Clock
+    from recon.core.domain.http import LiveBody, Requester
+    from recon.core.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.stream import GapLog
 
 #: The longest wait before a reconnect, in seconds, however many attempts have failed.
 _MOST_WAIT_S = 30.0

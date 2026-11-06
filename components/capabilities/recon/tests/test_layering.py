@@ -1,10 +1,13 @@
 """The layers, checked by scanning imports.
 
-``domain`` holds the model, its pure logic and the ports; ``application`` orchestrates it
-over those ports. Each may import only what is on its allowlist: a named set of pure
-standard-library modules, pydantic, and the recon layers at or inside it. Everything else
-fails, including a module nobody thought to forbid, a call to the builtin ``open``, a file
-operation on a path, and a read of the clock.
+Two layers, each with a ``domain`` (the model, its pure logic and the ports) and an
+``application`` (which orchestrates it over those ports): the collect core (``core/``) and the
+observe layer (``observe/``). The core never imports the observe layer; the observe layer
+reaches the core only through ``recon.core.__all__``, the same names an outside driver gets.
+Each may import only what is on its allowlist: a named set of pure standard-library modules,
+pydantic, and the recon layers at or inside it. Everything else fails, including a module
+nobody thought to forbid, a call to the builtin ``open``, a file operation on a path, and a
+read of the clock.
 
 Outside the inner layers: only ``recon.composition`` wires outbound adapters; outbound
 adapters know neither the use cases nor the command line; every driving adapter, each file
@@ -34,6 +37,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -45,6 +49,9 @@ except ImportError:  # a package run apart from its workspace has no shared chec
     )
 
 import recon
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "recon"
 
@@ -81,15 +88,23 @@ PURE_STDLIB = frozenset(
 #: ``timeout`` and rate to it (``domain/clock.py``); it starts no thread. Accepted (owner
 #: ruling 2026-10-22).
 LAYER_STDLIB = {
-    "domain": frozenset({"threading"}),
-    "application": frozenset({"hashlib", "hmac", "json", "threading"}),
+    "core/domain": frozenset({"threading"}),
+    "core/application": frozenset({"hashlib", "hmac", "json", "threading"}),
+    "observe/domain": frozenset(),
+    "observe/application": frozenset({"hashlib", "hmac", "json"}),
 }
 
 #: Third-party packages an inner layer may import.
 THIRD_PARTY = frozenset({"pydantic"})
 
-#: recon packages an inner layer may import, by layer.
-INNER = {"domain": ("recon.domain",), "application": ("recon.domain", "recon.application")}
+#: recon packages an inner layer may import, by layer. The observe layer's ``recon.core`` is
+#: the core's public names alone (:func:`test_the_observe_layer_reaches_the_core_by_its_api`).
+INNER = {
+    "core/domain": ("recon.core.domain",),
+    "core/application": ("recon.core.domain", "recon.core.application"),
+    "observe/domain": ("recon.core", "recon.observe.domain"),
+    "observe/application": ("recon.core", "recon.observe"),
+}
 
 #: Methods that touch the filesystem through a path.
 PATH_IO = frozenset(
@@ -157,15 +172,94 @@ def _files(*parts: str) -> list[Path]:
     return sorted(SRC.joinpath(*parts).rglob("*.py"))
 
 
+def _layer_files(layer: str) -> list[Path]:
+    return _files(*layer.split("/"))
+
+
 def _relative(file: Path) -> str:
     return file.relative_to(SRC).as_posix()
 
 
 @pytest.mark.parametrize("layer", sorted(INNER))
 def test_inner_layers_import_only_what_is_allowed(layer: str) -> None:
-    assert _files(layer), f"no files in {layer}"
-    offenders = {_relative(f): sorted(bad) for f in _files(layer) if (bad := _violations(f, layer))}
+    files = _layer_files(layer)
+    assert files, f"no files in {layer}"
+    offenders = {_relative(f): sorted(bad) for f in files if (bad := _violations(f, layer))}
     assert offenders == {}
+
+
+def _observe_reaches(src: Path) -> list[str]:
+    """Each place an observe-layer file reaches the core other than by ``recon.core``'s
+    declared names."""
+    import recon.core
+
+    files = sorted((src / "observe").rglob("*.py"))
+    found = reaches_outside(files, "recon.core", recon.core.__all__)
+    # The shared checker reads ``<package>.<name>`` for a one-word package; ``recon.core`` is
+    # two, so its attribute reads are found here.
+    for file in files:
+        for node in ast.walk(ast.parse(file.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Attribute):
+                continue
+            if _dotted(node)[:2] == ["recon", "core"] and len(_dotted(node)) == 3:
+                name = _dotted(node)[2]
+                if name not in recon.core.__all__:
+                    found.append(f"{file.name}:{node.lineno}: recon.core.{name} is not in __all__")
+    return found
+
+
+def _dotted(node: ast.AST) -> list[str]:
+    """``a.b.c`` read as ``["a", "b", "c"]``; nothing for anything else."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.insert(0, node.attr)
+        node = node.value
+    return [node.id, *parts] if isinstance(node, ast.Name) and parts else []
+
+
+def _core_reaches_observe(src: Path) -> list[str]:
+    """Each core file that imports the observe layer, or anything outside the core (the
+    package's facade, its composition root, an adapter)."""
+    found = []
+    outside = ("recon.observe", "recon.api", "recon.composition", "recon.adapters", "recon._")
+    for file in sorted((src / "core").rglob("*.py")):
+        for module in _imports(file):
+            if module == "recon" or module.startswith(outside):
+                found.append(f"{file.relative_to(src).as_posix()}: {module}")
+    return found
+
+
+def test_the_core_never_imports_the_observe_layer() -> None:
+    """The import contract of the two layers (REQ §2: the core never depends on the observe
+    layer), so the core alone is a working subset, and a later split moves no core module."""
+    assert _core_reaches_observe(SRC) == []
+
+
+def test_the_observe_layer_reaches_the_core_by_its_api() -> None:
+    """The observe layer uses the core as an outside driver would: ``from recon.core import
+    <a name in recon.core.__all__>``, never a module inside it."""
+    assert _observe_reaches(SRC) == []
+
+
+@pytest.mark.parametrize(
+    ("rel", "line", "check"),
+    [
+        ("core/application/survey.py", "from recon.observe.application.changes import failed",
+         _core_reaches_observe),
+        ("core/domain/models.py", "import recon.observe", _core_reaches_observe),
+        ("observe/application/follow.py", "from recon.core.domain.archives import ArchiveRef",
+         _observe_reaches),
+        ("observe/domain/spans.py", "from recon.core import _private", _observe_reaches),
+        ("observe/application/status.py", "import recon.core\nrecon.core.application",
+         _observe_reaches),
+    ],
+)  # fmt: skip
+def test_a_reach_across_the_layer_line_is_found(
+    tmp_path: Path, rel: str, line: str, check: Callable[[Path], list[str]]
+) -> None:
+    tree = copy_tree(SRC.parents[1], tmp_path)
+    plant(tree, Plant("layer line", f"src/recon/{rel}", line, ""))
+    assert check(tree / "src" / "recon") != []
 
 
 def test_the_scan_catches_what_it_claims(tmp_path: Path) -> None:
@@ -180,8 +274,8 @@ def test_the_scan_catches_what_it_claims(tmp_path: Path) -> None:
         "from datetime import datetime\n"
         "from recon.adapters._out.archive_files import ArchiveFiles\n"
         "from recon.composition import root\n"
-        "from recon.application.plan import build_plan\n"
-        "from recon.domain.models import ReconConfig\n"
+        "from recon.core.application.plan import build_plan\n"
+        "from recon.core.domain.models import ReconConfig\n"
         "if TYPE_CHECKING:\n"
         "    from matrix import Registry\n"
         "text = open('x').read()\n"
@@ -189,14 +283,14 @@ def test_the_scan_catches_what_it_claims(tmp_path: Path) -> None:
         "def f(path):\n"
         "    return path.read_text(), path.exists()\n"
     )
-    assert _violations(file, "domain") == {
+    assert _violations(file, "core/domain") == {
         "yaml", "duckdb", "httpx2", "glom", "os", "time", "uuid", "subprocess", "json",
         "hashlib", "recon.adapters._out.archive_files", "recon.composition",
-        "recon.application.plan", "matrix", "open()", "datetime.now()", ".read_text()",
+        "recon.core.application.plan", "matrix", "open()", "datetime.now()", ".read_text()",
         ".exists()",
     }  # fmt: skip
-    in_application = _violations(file, "application")
-    assert "recon.application.plan" not in in_application
+    in_application = _violations(file, "core/application")
+    assert "recon.core.application.plan" not in in_application
     assert {"json", "hashlib"}.isdisjoint(in_application) and "yaml" in in_application
 
 
@@ -216,7 +310,8 @@ def test_only_composition_wires_outbound_adapters() -> None:
 def test_outbound_adapters_know_neither_use_cases_nor_the_command_line() -> None:
     for file in _files("adapters", "_out"):
         reached = {m for m in _imports(file) if m.split(".")[0] == "recon"}
-        assert all(_within(m, ("recon.domain", "recon.adapters._out")) for m in reached), (
+        allowed = ("recon.core.domain", "recon.observe.domain", "recon.adapters._out")
+        assert all(_within(m, allowed) for m in reached), (
             file.name,
             reached,
         )
@@ -224,10 +319,12 @@ def test_outbound_adapters_know_neither_use_cases_nor_the_command_line() -> None
 
 def test_the_facade_imports_no_adapter_and_no_use_case() -> None:
     """``recon/__init__.py``, ``api.py`` and ``skill_files.py`` name the composition root and the
-    domain, never an adapter or the application: which adapters are bound is not theirs."""
+    core's domain, never an adapter, a service or the observe layer: which adapters are bound
+    is not theirs."""
+    banned = ("recon.adapters", "recon.core.application", "recon.observe")
     for name in ("__init__.py", "api.py", "skill_files.py"):
         reached = {m for m in _imports(SRC / name) if m.split(".")[0] == "recon"}
-        assert not any(_within(m, ("recon.adapters", "recon.application")) for m in reached), name
+        assert not any(_within(m, banned) for m in reached), name
 
 
 def _driving_reaches(src: Path) -> list[str]:
@@ -259,7 +356,7 @@ def test_the_command_line_calls_only_the_declared_api() -> None:
         # recon-tests / first pass: the rule bound adapters/_in/cli.py by path, so a second
         # driving adapter could reach the use cases or the root and pass.
         ("adapters/_in/server.py", "from recon.composition import root"),
-        ("adapters/_in/server.py", "from recon.application.use_cases import survey"),
+        ("adapters/_in/server.py", "from recon.core.application.collection import Collection"),
         ("adapters/_in/server.py", "import recon\nrecon.composition"),
         ("adapters/_in/cli.py", "from . import server"),
         ("adapters/_in/cli.py", "from recon import _private"),
@@ -313,7 +410,7 @@ class TestLibrarySurface:
     def test_the_surface_is_operations_errors_and_tables(self) -> None:
         """The rule for ``__all__``: an operation, the versioned document an operation
         returns, the skill text, an error, or a published table. The extension contract for
-        collector types lives in ``recon.domain.collector`` and is not re-exported.
+        collector types lives in ``recon.core.domain.collector`` and is not re-exported.
 
         Changed requirement: the operations return typed documents, so their types are
         declared names too. Changed again (review item 6): a control an operation takes to be
@@ -321,14 +418,16 @@ class TestLibrarySurface:
         ``schedule_*`` operations and the two documents they return. Changed (ruling R1):
         ``changes_since`` and its ``ChangesSince``. Changed (ruling R3): ``subscribe``,
         ``ack``, ``unsubscribe`` and the ``SubscriptionDocument`` the last two return; (ruling
-        R4) ``deliver`` and its ``DeliverDocument``."""
+        R4) ``deliver`` and its ``DeliverDocument``. Changed (step M3): ``open``, which gives
+        the session (``Recon``) whose ``collection`` and ``observation`` are the two layers'
+        operations."""
         operations = {"init", "plan", "survey", "status", "query", "templates", "capture",
                       "survey_failure", "error_document", "skill", "skill_references",
                       "configure_telemetry", "read_since", "watch", "stream",
                       "stream_failure", "schedule_install", "schedule_list",
                       "schedule_remove", "schedule_status", "schedule_tick",
                       "changes_since", "subscribe", "ack", "unsubscribe",
-                      "deliver"}  # fmt: skip
+                      "deliver", "open"}  # fmt: skip
         documents = {"MissionDocument", "PlanDocument", "SurveyDocument", "TableOutcome",
                      "StatusDocument", "QueryRows", "TemplatesDocument", "Capture",
                      "ErrorDocument", "RecordsSince", "StreamDocument",
@@ -340,7 +439,8 @@ class TestLibrarySurface:
         tables = {"ERROR_KINDS", "EXIT_CODES", "EXIT_MEANINGS", "EXIT_NEXT", "PROBLEM_KINDS",
                   "__version__"}  # fmt: skip
         controls = {"StreamStop"}  # what an operation takes to be steered while it runs
-        assert set(recon.__all__) == operations | documents | errors | tables | controls
+        session = {"Recon"}  # what open() gives: the two layers' operations
+        assert set(recon.__all__) == operations | documents | errors | tables | controls | session
 
     def test_no_declared_name_is_shadowed_by_a_subpackage(self) -> None:
         """Importing ``recon.<sub>`` binds ``<sub>`` on ``recon``; a function of the same
@@ -498,4 +598,5 @@ def test_the_public_names_are_the_ones_callers_use() -> None:
         "changes_since", "ChangesSince",
         "subscribe", "ack", "unsubscribe", "SubscriptionDocument",
         "deliver", "DeliverDocument",
+        "open", "Recon",
     }  # fmt: skip

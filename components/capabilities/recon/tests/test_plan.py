@@ -6,9 +6,9 @@ from typing import Any, ClassVar
 import pytest
 import yaml
 
-from recon.application.plan import Plan, build_plan
 from recon.composition import load_plugins
-from recon.domain.collector import BrokenPlugin, Collector, CollectorContext, Plugins
+from recon.core.application.plan import Plan, build_plan
+from recon.core.domain.collector import BrokenPlugin, Collector, CollectorContext, Plugins
 
 
 @pytest.fixture(scope="module")
@@ -637,7 +637,7 @@ class TestATypeOwnsItsSettings:
     def plugins(self, registry: Plugins) -> Plugins:
         from pydantic import BaseModel, ConfigDict
 
-        from recon.domain.collector import CollectorType
+        from recon.core.domain.collector import CollectorType
 
         class SqlSettings(BaseModel):
             model_config = ConfigDict(frozen=True, extra="forbid")
@@ -764,7 +764,7 @@ class TestFanOutByKind:
     ) -> None:
         """Regression: the ``cli`` type was declared the API key's variable of a source it
         fanned out over, so its commands could read it."""
-        from recon.application.collectors import declared_env
+        from recon.core.application.collectors import declared_env
 
         raw = {
             "catalog": [
@@ -849,7 +849,7 @@ class TestSourceKinds:
         assert _plan(raw, registry).valid
 
     def test_a_kind_an_installed_type_adds_plans(self, registry: Plugins) -> None:
-        from recon.domain.collector import CollectorType
+        from recon.core.domain.collector import CollectorType
 
         types = dict(registry.collector_types)
         types["sqlite"] = CollectorType(
@@ -881,9 +881,9 @@ class TestSourceKinds:
         (``source_env``): the plan validates, checks and warns through each."""
         from pydantic import BaseModel, ConfigDict
 
-        from recon.application.collectors import declared_env
-        from recon.domain.collector import CollectorType
-        from recon.domain.errors import Problem
+        from recon.core.application.collectors import declared_env
+        from recon.core.domain.collector import CollectorType
+        from recon.core.domain.errors import Problem
 
         class DbSource(BaseModel):
             model_config = ConfigDict(extra="forbid")

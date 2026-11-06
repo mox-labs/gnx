@@ -1,4 +1,4 @@
-"""Determinism, the contract stated in ``recon.application.survey``.
+"""Determinism, the contract stated in ``recon.core.application.survey``.
 
 Same mission and same inputs give the same records; the clock, the network and the shell
 enter only through ports. Here each is a fake: a fixed clock, a requester answering from a
@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from recon.domain.models import RateLimitConfig, SourceEntry
-from recon.domain.ratelimit import RateLimiter
+from recon.core.domain.models import RateLimitConfig, SourceEntry
+from recon.core.domain.ratelimit import RateLimiter
 from tests.recon_fakes import FixedClock, ScriptedRequester, ScriptedShell, run_survey
 
 if TYPE_CHECKING:

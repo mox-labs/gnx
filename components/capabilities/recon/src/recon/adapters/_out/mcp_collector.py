@@ -61,22 +61,22 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict
 
 from recon.adapters._out.credentials import helper_headers, resolve_reference
-from recon.domain.capture import credential_values, redact_credentials
-from recon.domain.collector import CollectorType, Requirement
-from recon.domain.credentials import NOT_A_REFERENCE, REFERENCE_FIX, env_name, reference
-from recon.domain.errors import CollectionError, ErrorKind, NoRecordsError, Problem
-from recon.domain.http import REDACTED as REPORTED_REDACTED
-from recon.domain.http import reported_url
-from recon.domain.normalize import apply_normalize, to_records
-from recon.domain.substitution import find_unresolved, substitute
-from recon.domain.telemetry import MCP_CALL
+from recon.core.domain.capture import credential_values, redact_credentials
+from recon.core.domain.collector import CollectorType, Requirement
+from recon.core.domain.credentials import NOT_A_REFERENCE, REFERENCE_FIX, env_name, reference
+from recon.core.domain.errors import CollectionError, ErrorKind, NoRecordsError, Problem
+from recon.core.domain.http import REDACTED as REPORTED_REDACTED
+from recon.core.domain.http import reported_url
+from recon.core.domain.normalize import apply_normalize, to_records
+from recon.core.domain.substitution import find_unresolved, substitute
+from recon.core.domain.telemetry import MCP_CALL
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping
 
-    from recon.domain.capture import CaptureLog
-    from recon.domain.collector import CollectorContext
-    from recon.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.collector import CollectorContext
+    from recon.core.domain.models import CollectorEntry, SourceEntry
 
 T = TypeVar("T")
 

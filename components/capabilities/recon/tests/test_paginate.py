@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from recon.domain.paginate import (
+from recon.core.domain.paginate import (
     DEFAULT_PAGES,
     EMPTY_PAGES,
     Crawl,

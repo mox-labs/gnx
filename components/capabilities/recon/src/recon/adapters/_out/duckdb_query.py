@@ -3,7 +3,7 @@
 The tables are the ones the archive adapter this is built with lists (:class:`TableFiles`):
 this adapter reads each where that adapter says it is, and knows nothing else of how archives
 are stored; no location reaches a caller, a document or an error. Every table is a view
-named by :func:`~recon.domain.archives.table_name` (non-identifier characters become ``_``).
+named by :func:`~recon.core.domain.archives.table_name` (non-identifier characters become ``_``).
 A table that collected nothing is a view with no rows, whose columns are the ones the adapter
 says it keeps (its collector's ``normalize:`` spec's), null-typed, so a query of them binds as
 it would on a full table; ``_empty`` is a column of it too, for queries written against the
@@ -53,14 +53,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from recon.adapters._out.private_files import make_dirs
-from recon.domain.archives import Rows, table_name
-from recon.domain.errors import NotFoundError, Problem, QueryError, ReconError
+from recon.core.domain.archives import Rows, table_name
+from recon.core.domain.errors import NotFoundError, Problem, QueryError, ReconError
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Sequence
 
-    from recon.domain.archives import ArchiveRef
-    from recon.domain.changes import ChangeOp
+    from recon.core.domain.archives import ArchiveRef
+    from recon.core.domain.changes import ChangeOp
 
 #: The schemas recon makes beside the tables' own views.
 JSON, LINES, BASELINE = "json", "lines", "baseline"
@@ -128,7 +128,7 @@ def _reads_only(conn: Any, sql: str) -> None:
 
 
 class DuckdbQuery:
-    """The :class:`~recon.domain.archives.ArchiveQuery` over the archive adapter ``files``."""
+    """The :class:`~recon.core.domain.archives.ArchiveQuery` over the archive adapter ``files``."""
 
     def __init__(self, files: TableFiles) -> None:
         self._files = files
@@ -400,7 +400,7 @@ def _fix(exc: Exception, tables: list[str], sql: str, baseline: bool) -> str:
 
 # --- the join of a large told index (ruling C6) --------------------------------------------
 #
-# DuckdbJoin: the KeyJoin (``recon.domain.changes``) of a large told index, on a DuckDB
+# DuckdbJoin: the KeyJoin (``recon.observe.domain.joins``) of a large told index, on a DuckDB
 # connection of its own that runs no SQL but this module's. The told index and the table's keys
 # are written, as they are read, to two CSV files in a directory of the join's own, which DuckDB
 # reads; every answer is read back a batch at a time. So the process holds a batch, and DuckDB

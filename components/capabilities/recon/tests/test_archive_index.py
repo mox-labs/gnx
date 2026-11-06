@@ -32,12 +32,12 @@ class TestAClockThatStepsBack:
         _mission(tmp_path, {"key": ["id"]})
         surveys = Surveys(tmp_path)
         first, _ = surveys.survey(A, B)
-        read = surveys.recon.changes_since("m", "inbox")
+        read = surveys.recon.observation.changes_since("m", "inbox")
         assert [row.key for row in read.rows] == [{"id": "a"}, {"id": "b"}]
         surveys.clock.advance(-3600)  # the host's clock set back an hour
         later, _ = surveys.survey(A, B, C)
         assert later.name < first.name, "its id says it began before the first"
-        on = surveys.recon.changes_since("m", "inbox", read.cursor)
+        on = surveys.recon.observation.changes_since("m", "inbox", read.cursor)
         assert [(row.archive, row.key) for row in on.rows] == [(later.name, {"id": "c"})]
         assert _rows(later) == [{"op": "insert", "key": {"id": "c"}, "record": C}], (
             "compared with the archive made before it, not the one its id sorts after"
@@ -52,9 +52,11 @@ class TestAClockThatStepsBack:
         assert (_meta(first)["index"], _meta(second)["index"]) == (1, 2)
         listed = files_of(tmp_path, FixedClock()).archives("m")
         assert [a.id for a in listed] == [first.name, second.name]
-        history = surveys.recon.status("m").missions[0].history
+        history = surveys.recon.observation.status("m").missions[0].history
         assert history is not None and [a.id for a in history] == [first.name, second.name]
-        assert surveys.recon.query("m", "SELECT 1 AS one").archive == second.name, "the latest"
+        assert surveys.recon.collection.query("m", "SELECT 1 AS one").archive == second.name, (
+            "the latest"
+        )
 
     def test_an_ack_after_the_step_back_is_later_not_older(self, tmp_path: Path) -> None:
         mission = {"catalog": [{"name": "mail", "url": "https://mail.test"}],
@@ -66,12 +68,14 @@ class TestAClockThatStepsBack:
         (tmp_path / ".recon" / "m" / "config.yaml").write_text(yaml.safe_dump(mission))
         surveys = Surveys(tmp_path)
         surveys.survey(A)
-        surveys.recon.ack("m", "all", surveys.recon.subscribe("m", "all").cursor)
+        surveys.recon.observation.ack(
+            "m", "all", surveys.recon.observation.subscribe("m", "all").cursor
+        )
         surveys.clock.advance(-3600)
         surveys.survey(A, B)
-        read = surveys.recon.subscribe("m", "all")
+        read = surveys.recon.observation.subscribe("m", "all")
         assert [row.key for row in read.rows] == [{"id": "b"}]
-        assert surveys.recon.ack("m", "all", read.cursor).outcome == "acked"
+        assert surveys.recon.observation.ack("m", "all", read.cursor).outcome == "acked"
 
     def test_a_retired_archive_s_tombstone_keeps_its_index(self, tmp_path: Path) -> None:
         _mission(tmp_path, {"key": ["id"]}, retain={"archives": 1})
@@ -163,9 +167,9 @@ class TestALostRecordIsReadFromTheArchives:
 
     def test_a_subscriber_s_unread_archives_are_still_held(self, tmp_path: Path) -> None:
         surveys, first, second = self._stepped(tmp_path)
-        read = surveys.recon.subscribe("m", "all")
+        read = surveys.recon.observation.subscribe("m", "all")
         assert [row.key for row in read.rows] == [{"id": "a"}, {"id": "b"}]
-        warnings = [w["kind"] for w in surveys.recon.status("m").warnings]
+        warnings = [w["kind"] for w in surveys.recon.observation.status("m").warnings]
         assert "subscription_behind" in warnings
         assert first.exists() and second.exists()
 
@@ -192,7 +196,9 @@ def test_after_a_loss_the_next_index_passes_every_retired_one(tmp_path: Path) ->
     surveys = Surveys(tmp_path)
     surveys.survey(A)
     surveys.survey(A, B)
-    surveys.recon.ack("m", "all", surveys.recon.subscribe("m", "all").cursor)
+    surveys.recon.observation.ack(
+        "m", "all", surveys.recon.observation.subscribe("m", "all").cursor
+    )
     crashed, _ = surveys.survey(A, B, C)  # retention retires the two acked
     retired = tmp_path / ".recon" / "m" / "archive" / "retired.jsonl"
     stones = [json.loads(line)["index"] for line in retired.read_text().splitlines()]
@@ -204,7 +210,7 @@ def test_after_a_loss_the_next_index_passes_every_retired_one(tmp_path: Path) ->
     (tmp_path / ".recon" / "m" / "archive-index.jsonl").unlink()
     later, _ = surveys.survey(A, B, C, B | {"id": "d"})
     assert _meta(later)["index"] > max(stones)
-    read = surveys.recon.subscribe("m", "all")
+    read = surveys.recon.observation.subscribe("m", "all")
     assert {(row.archive, row.key["id"]) for row in read.rows if row.key} >= {(later.name, "c")}
     surveys.survey(A, B, C, B | {"id": "d"})
     assert later.exists(), "its rows not acked: retention holds it"

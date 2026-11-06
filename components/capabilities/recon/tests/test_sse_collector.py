@@ -15,14 +15,14 @@ import pytest
 from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.http_requester import HttpRequester
 from recon.adapters._out.sse_collector import SseCollector, collector_type
-from recon.domain.errors import CollectionError
-from recon.domain.models import CollectorEntry, SourceEntry
-from recon.domain.ratelimit import RateLimiter
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.models import CollectorEntry, SourceEntry
+from recon.core.domain.ratelimit import RateLimiter
 from tests.recon_fakes import HurriedClock
 from tests.sse_server import SseServer
 
 if TYPE_CHECKING:
-    from recon.domain.stream import Gap
+    from recon.core.domain.stream import Gap
 
 
 #: The test server's rate limit, unless a test gives its own: each reconnect draws a token,

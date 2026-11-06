@@ -74,10 +74,10 @@ tail = "recon.adapters._out.tail_collector:collector_type"
 sse = "recon.adapters._out.sse_collector:collector_type"
 
 [project.entry-points."recon.transforms"]
-html2text = "recon.domain.normalize:html2text"
-inverted_index = "recon.domain.normalize:inverted_index"
-join = "recon.domain.normalize:join"
-first = "recon.domain.normalize:first"
+html2text = "recon.core.domain.normalize:html2text"
+inverted_index = "recon.core.domain.normalize:inverted_index"
+join = "recon.core.domain.normalize:join"
+first = "recon.core.domain.normalize:first"
 markitdown = "recon.adapters._out.markitdown_converter:markitdown_path"
 
 [build-system]

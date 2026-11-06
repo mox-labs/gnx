@@ -35,12 +35,12 @@ from recon.adapters._in.cli import _stopping
 from recon.adapters._out.cli_collector import CliCollector, PopenRunner
 from recon.adapters._out.mission_layout import STATE
 from recon.adapters._out.system_clock import SystemClock
-from recon.application.stream import Stream, StreamStop
 from recon.composition import root
-from recon.domain.archives import ArchiveRef
-from recon.domain.errors import CollectionError
-from recon.domain.models import CollectorEntry, SourceEntry
-from recon.domain.stream import BufferSpec, WindowSpec
+from recon.core.application.stream import Stream, StreamStop
+from recon.core.domain.archives import ArchiveRef
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.models import CollectorEntry, SourceEntry
+from recon.core.domain.stream import BufferSpec, WindowSpec
 from tests.recon_fakes import StalledArchives, VirtualClock, files_of, window_kept
 from tests.test_streams import Script, _plan, _run, _seq, _telemetry
 
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
     from contextlib import AbstractContextManager
 
-    from recon.domain.documents import WindowOutcome
+    from recon.core.domain.documents import WindowOutcome
 
 CLI = "import sys; from recon.adapters._in.cli import main; sys.exit(main())"
 K = 7  # records a window
@@ -187,7 +187,7 @@ class TestKilledThenResumed:
             f.write('"}\n' + "".join(json.dumps({"seq": n}) + "\n"
                                      for n in range(kill_at + 1, total)))  # fmt: skip
 
-        document = root({}, project=tmp_path).stream("m", "log", windows=2)
+        document = root({}, project=tmp_path).observation.stream("m", "log", windows=2)
 
         after = _paths(tmp_path, "log")
         assert {w.name: _digest(w) for w in after if w.name in before} == before
@@ -240,7 +240,7 @@ class TestKilledThenResumed:
             f.write('"}\n' + "".join(json.dumps({"seq": n}) + "\n"
                                      for n in range(whole + 1, total)))  # fmt: skip
 
-        root({}, project=tmp_path).stream("m", "log", windows=resumed)
+        root({}, project=tmp_path).observation.stream("m", "log", windows=resumed)
 
         after = _paths(tmp_path, "log")
         assert {w.name: _digest(w) for w in after if w.name in before} == before
@@ -269,7 +269,7 @@ class TestKilledThenResumed:
         store = files_of(tmp_path)
         last = store.archives("m", stream="count")[-1]
         sealed = store.meta(last).get("stream")
-        document = root({}, project=tmp_path).stream("m", "count", windows=1)
+        document = root({}, project=tmp_path).observation.stream("m", "count", windows=1)
 
         assert document.last_window is not None
         window = window_kept(tmp_path, "m", document.last_window)
@@ -414,7 +414,7 @@ def test_a_stream_of_a_quiet_command_leaves_no_process_behind(tmp_path: Path) ->
         [{"name": "here", "type": "local", "url": ".", "timeout": 3600}],
     )  # fmt: skip
 
-    document = root({}, project=tmp_path).stream("m", "quiet", windows=1)
+    document = root({}, project=tmp_path).observation.stream("m", "quiet", windows=1)
 
     assert document.last_window is not None
     [row] = _rows(window_kept(tmp_path, "m", document.last_window), "quiet")
@@ -492,7 +492,7 @@ class TestACommandStoppedBeforeItStarts:
         stop.ask()
 
         started = time.monotonic()
-        root({}, project=tmp_path).stream("m", "quiet", windows=1, stop=stop)
+        root({}, project=tmp_path).observation.stream("m", "quiet", windows=1, stop=stop)
 
         assert time.monotonic() - started < 10
         _not_left_running(pid)
@@ -568,7 +568,8 @@ def test_memory_stays_flat_over_a_long_stream(tmp_path: Path) -> None:
         stream = Stream(store, store, clock, "test", telemetry=_telemetry(events))
         source = Long(clock, [])
         run = stream.run(
-            "m", plan, source.records, dict, close=source.close, on_window=measure,
+            "m", plan, source.records, dict, close=source.close,
+            sealed=lambda hold, outcome: measure(outcome),
             preserve_raw=True,
         )  # fmt: skip
     finally:

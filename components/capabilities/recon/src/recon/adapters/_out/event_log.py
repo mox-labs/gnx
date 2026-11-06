@@ -17,7 +17,7 @@ from recon.adapters._out.private_files import open_file
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from recon.domain.telemetry import Event
+    from recon.core.domain.telemetry import Event
 
 
 class EventLog:

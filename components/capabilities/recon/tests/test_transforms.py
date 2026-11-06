@@ -7,8 +7,8 @@ from typing import Any, NoReturn
 
 import pytest
 
-from recon.domain.errors import CollectionError, ConfigError
-from recon.domain.normalize import (
+from recon.core.domain.errors import CollectionError, ConfigError
+from recon.core.domain.normalize import (
     BUILTIN_TRANSFORMS,
     apply_normalize,
     first,
@@ -292,7 +292,7 @@ class TestMarkitdown:
         """Changed requirement: a file $markitdown cannot read is an error, not an empty
         string, because an empty column reads as an empty document."""
         from recon.adapters._out.markitdown_converter import markitdown_path
-        from recon.domain.errors import CollectionError
+        from recon.core.domain.errors import CollectionError
 
         declared, _outside = dirs
         with pytest.raises(CollectionError) as excinfo:
@@ -304,7 +304,7 @@ class TestMarkitdown:
         self, dirs: tuple[Path, Path]
     ) -> None:
         from recon.adapters._out.markitdown_converter import markitdown_path
-        from recon.domain.errors import CollectionError
+        from recon.core.domain.errors import CollectionError
 
         declared, _outside = dirs
         (declared / "blob.bin").write_bytes(b"\x00\x01\x02\xff\xfe")
@@ -318,7 +318,7 @@ class TestMarkitdown:
         import markitdown
 
         from recon.adapters._out.markitdown_converter import markitdown_path
-        from recon.domain.errors import CollectionError
+        from recon.core.domain.errors import CollectionError
 
         def missing(self: Any, path: str) -> NoReturn:
             raise markitdown.MissingDependencyException("pdfminer is not installed")
@@ -355,7 +355,7 @@ class TestMarkitdown:
 
     def _refused(self, value: Any, roots: list[Path]) -> CollectionError:
         from recon.adapters._out.markitdown_converter import markitdown_path
-        from recon.domain.errors import CollectionError
+        from recon.core.domain.errors import CollectionError
 
         with pytest.raises(CollectionError) as excinfo:
             markitdown_path(value, roots=roots)
@@ -503,8 +503,8 @@ class TestAudioIsNeverSentAnywhere:
         from recon.adapters._out.markitdown_converter import MarkitdownConverter
         from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
         from recon.adapters._out.web_collector import WebCollector
-        from recon.domain.http import HttpResponse
-        from recon.domain.models import CollectorEntry, SourceEntry
+        from recon.core.domain.http import HttpResponse
+        from recon.core.domain.models import CollectorEntry, SourceEntry
 
         class Requester:
             def get(self, source: SourceEntry, url: str, **kwargs: Any) -> HttpResponse:

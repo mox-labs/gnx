@@ -27,8 +27,8 @@ import pytest
 import yaml
 
 from recon.composition import root
-from recon.domain.errors import CollectionError
-from recon.domain.ranges import Interval, committed_in, committed_kept, iso
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.ranges import Interval, committed_in, committed_kept, iso
 from tests.recon_fakes import FixedClock, LandedThrough, WrappingArchives, files_of
 from tests.test_ranges import StepsSettings, _plugins
 
@@ -37,9 +37,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from recon.composition import Recon
-    from recon.domain.archives import ArchiveRef, Landed
-    from recon.domain.capture import CaptureLog
-    from recon.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.archives import ArchiveRef, Landed
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.models import CollectorEntry, SourceEntry
 
 HISTORIES = 25
 EVENTS = 24
@@ -153,7 +153,7 @@ class History:
     def survey(self, interval: tuple[datetime, datetime] | None = None) -> None:
         self.faults.calls = 0
         try:
-            self.recon.survey("m", interval=interval)
+            self.recon.observation.survey("m", interval=interval)
         except Killed:
             self.trail.append("  killed")
         finally:

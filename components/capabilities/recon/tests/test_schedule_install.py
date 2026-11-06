@@ -29,13 +29,14 @@ from click.testing import CliRunner
 from recon.adapters._in.cli import main
 from recon.adapters._out.schedulers import Ran, make_scheduler, safe_path
 from recon.composition import root
-from recon.domain.errors import ReconError
+from recon.core.domain.errors import ReconError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from recon.composition import Recon
-    from recon.domain.schedule import Platform, Scheduler
+    from recon.core.domain.schedule import Platform
+    from recon.observe.domain.scheduling import Scheduler
 
 SENTINEL = "s3ntinel-7f3a9c1e5b"
 
@@ -114,7 +115,7 @@ class TestInstall:
         project = tmp_path / "project"
         _mission(project, {"every": 600})
 
-        document = _root(project, host).schedule_install("inbox", platform=platform)
+        document = _root(project, host).observation.schedule_install("inbox", platform=platform)
 
         assert document.outcome == "installed"
         assert document.platform == platform and document.every == 600
@@ -149,15 +150,15 @@ class TestInstall:
     ) -> None:
         _mission(tmp_path, {"every": 600})
         recon = _root(tmp_path, host)
-        recon.schedule_install("inbox", platform=platform)
+        recon.observation.schedule_install("inbox", platform=platform)
         before = list(host.runner.ran)
 
-        again = recon.schedule_install("inbox", platform=platform)
+        again = recon.observation.schedule_install("inbox", platform=platform)
 
         assert again.outcome == "unchanged"
         assert [argv for argv in host.runner.ran[len(before) :] if argv[1:] != ("-l",)] == []
         _mission(tmp_path, {"every": 1800})
-        assert recon.schedule_install("inbox", platform=platform).outcome == "replaced"
+        assert recon.observation.schedule_install("inbox", platform=platform).outcome == "replaced"
 
     def test_a_mission_without_a_schedule_is_refused_with_a_fix(
         self, tmp_path: Path, host: Host
@@ -165,7 +166,7 @@ class TestInstall:
         _mission(tmp_path)
 
         with pytest.raises(ReconError) as raised:
-            _root(tmp_path, host).schedule_install("inbox")
+            _root(tmp_path, host).observation.schedule_install("inbox")
 
         assert raised.value.kind == "config"
         [problem] = raised.value.problems
@@ -175,7 +176,7 @@ class TestInstall:
 
     def test_a_mission_that_does_not_exist_is_not_found(self, tmp_path: Path, host: Host) -> None:
         with pytest.raises(ReconError) as raised:
-            _root(tmp_path, host).schedule_install("nope")
+            _root(tmp_path, host).observation.schedule_install("nope")
         assert raised.value.kind == "not_found"
 
     def test_the_scheduler_refusing_is_run_failed_with_what_it_said(
@@ -188,7 +189,7 @@ class TestInstall:
 
         host.runner = refuses  # type: ignore[assignment]
         with pytest.raises(ReconError, match="Input/output error") as raised:
-            _root(tmp_path, host).schedule_install("inbox", platform="launchd")
+            _root(tmp_path, host).observation.schedule_install("inbox", platform="launchd")
         assert raised.value.kind == "run_failed" and raised.value.fix
 
 
@@ -200,20 +201,22 @@ class TestListAndRemove:
         _mission(tmp_path, {"every": 600})
         _mission(tmp_path, {"every": 3600}, name="feeds")
         recon = _root(tmp_path, host)
-        recon.schedule_install("inbox", platform=platform)
-        recon.schedule_install("feeds", platform=platform)
+        recon.observation.schedule_install("inbox", platform=platform)
+        recon.observation.schedule_install("feeds", platform=platform)
 
-        listed = recon.schedule_list(platform=platform)
+        listed = recon.observation.schedule_list(platform=platform)
         assert [(s.mission, s.installed) for s in listed.schedules] == [
             ("feeds", True), ("inbox", True)
         ]  # fmt: skip
 
-        removed = recon.schedule_remove("inbox", platform=platform)
+        removed = recon.observation.schedule_remove("inbox", platform=platform)
         assert removed.outcome == "removed"
-        assert [s.mission for s in recon.schedule_list(platform=platform).schedules] == ["feeds"]
-        assert recon.schedule_remove("inbox", platform=platform).outcome == "absent"
-        recon.schedule_remove("feeds", platform=platform)
-        assert recon.schedule_list(platform=platform).schedules == []
+        assert [
+            s.mission for s in recon.observation.schedule_list(platform=platform).schedules
+        ] == ["feeds"]
+        assert recon.observation.schedule_remove("inbox", platform=platform).outcome == "absent"
+        recon.observation.schedule_remove("feeds", platform=platform)
+        assert recon.observation.schedule_list(platform=platform).schedules == []
         written = [p for p in host.home.rglob("*") if p.is_file()]
         assert written == [], written
         if platform == "cron":
@@ -226,13 +229,13 @@ class TestListAndRemove:
         _mission(tmp_path, {"every": 3600}, name="feeds")
         recon = _root(tmp_path, host)
 
-        recon.schedule_install("inbox", platform="cron")
-        recon.schedule_install("feeds", platform="cron")
+        recon.observation.schedule_install("inbox", platform="cron")
+        recon.observation.schedule_install("feeds", platform="cron")
         assert host.runner.crontab is not None
         assert host.runner.crontab.startswith(mine)
         assert host.runner.crontab.count("# BEGIN recon schedules") == 1
-        recon.schedule_remove("inbox", platform="cron")
-        recon.schedule_remove("feeds", platform="cron")
+        recon.observation.schedule_remove("inbox", platform="cron")
+        recon.observation.schedule_remove("feeds", platform="cron")
 
         assert host.runner.crontab == mine
 
@@ -252,7 +255,7 @@ class TestListAndRemove:
         recon = _root(tmp_path, host)
 
         with pytest.raises(ReconError) as raised:
-            getattr(recon, f"schedule_{edit}")("inbox", platform="cron")
+            getattr(recon.observation, f"schedule_{edit}")("inbox", platform="cron")
 
         assert raised.value.kind == "config"
         assert "# END recon schedules" in (raised.value.fix or "")
@@ -262,9 +265,11 @@ class TestListAndRemove:
     def test_list_is_this_project_s_schedules_alone(self, tmp_path: Path, host: Host) -> None:
         for project in ("a", "b"):
             _mission(tmp_path / project, {"every": 600})
-            _root(tmp_path / project, host).schedule_install("inbox", platform="launchd")
+            _root(tmp_path / project, host).observation.schedule_install(
+                "inbox", platform="launchd"
+            )
 
-        listed = _root(tmp_path / "a", host).schedule_list(platform="launchd")
+        listed = _root(tmp_path / "a", host).observation.schedule_list(platform="launchd")
 
         assert [s.mission for s in listed.schedules] == ["inbox"]
         assert len(list((host.home / "Library" / "LaunchAgents").iterdir())) == 2
@@ -276,10 +281,13 @@ class TestStatus:
     ) -> None:
         _mission(tmp_path, {"every": 600})
         recon = _root(tmp_path, host)
-        assert recon.schedule_status("inbox", platform="launchd").schedules[0].installed is False
+        assert (
+            recon.observation.schedule_status("inbox", platform="launchd").schedules[0].installed
+            is False
+        )
 
-        recon.schedule_install("inbox", platform="launchd")
-        [status] = recon.schedule_status("inbox", platform="launchd").schedules
+        recon.observation.schedule_install("inbox", platform="launchd")
+        [status] = recon.observation.schedule_status("inbox", platform="launchd").schedules
 
         assert status.installed and status.config_changed is False
         assert status.next_at is not None and status.every == 600
@@ -289,11 +297,11 @@ class TestStatus:
     ) -> None:
         _mission(tmp_path, {"every": 600})
         recon = _root(tmp_path, host)
-        recon.schedule_install("inbox", platform="launchd")
+        recon.observation.schedule_install("inbox", platform="launchd")
         config = tmp_path / ".recon" / "inbox" / "config.yaml"
         config.write_text(config.read_text() + "# a line an agent added\n")
 
-        document = recon.schedule_status("inbox", platform="launchd")
+        document = recon.observation.schedule_status("inbox", platform="launchd")
 
         assert document.schedules[0].config_changed is True
         [warning] = document.warnings
@@ -305,10 +313,13 @@ class TestStatus:
     ) -> None:
         _mission(tmp_path, {"every": 600})
         recon = _root(tmp_path, host)
-        [plist] = recon.schedule_install("inbox", platform="launchd").files
+        [plist] = recon.observation.schedule_install("inbox", platform="launchd").files
         Path(plist).write_text(Path(plist).read_text().replace("tick", "survey"))
 
-        assert recon.schedule_status("inbox", platform="launchd").schedules[0].installed is False
+        assert (
+            recon.observation.schedule_status("inbox", platform="launchd").schedules[0].installed
+            is False
+        )
 
 
 class TestTheCommandLine:
@@ -359,7 +370,9 @@ class TestNoSecretIsProjected:
         (mission / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
         os.environ["RECON_TEST_SENTINEL"] = SENTINEL  # the process's own, too
         try:
-            document = _root(tmp_path, host, env).schedule_install("inbox", platform=platform)
+            document = _root(tmp_path, host, env).observation.schedule_install(
+                "inbox", platform=platform
+            )
         finally:
             del os.environ["RECON_TEST_SENTINEL"]
 
@@ -432,5 +445,6 @@ class TestThePathATickRunsWith:
         (tmp_path / "bin").mkdir()
         (tmp_path / "bin").chmod(0o755)
         recon = root({"PATH": f"{tmp_path / 'bin'}:/usr/bin"}, project=tmp_path)
-        assert recon._schedules is not None
-        assert recon._schedules._host.path == ("/usr/bin",)
+        schedules = recon.observation._schedules  # noqa: SLF001 - what a tick runs with
+        assert schedules is not None
+        assert schedules._host.path == ("/usr/bin",)

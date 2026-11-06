@@ -26,17 +26,17 @@ from recon.adapters._out.mission_layout import STATE
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.adapters._out.web_collector import WebCollector
-from recon.application.survey import Survey
-from recon.domain.archives import ArchiveRef
-from recon.domain.capture import CaptureLog
-from recon.domain.collector import Collector, CollectorContext, CollectorType
-from recon.domain.converters import ConversionResult
-from recon.domain.documents import TableError, TableOutcome, failure_kind
-from recon.domain.errors import CollectionError, NoRecordsError, Problem
-from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
-from recon.domain.ratelimit import RateLimiter
-from recon.domain.substitution import substitute
-from recon.domain.telemetry import Telemetry
+from recon.core.application.survey import Survey
+from recon.core.domain.archives import ArchiveRef
+from recon.core.domain.capture import CaptureLog
+from recon.core.domain.collector import Collector, CollectorContext, CollectorType
+from recon.core.domain.converters import ConversionResult
+from recon.core.domain.documents import TableError, TableOutcome, failure_kind
+from recon.core.domain.errors import CollectionError, NoRecordsError, Problem
+from recon.core.domain.models import CollectorEntry, ReconConfig, SourceEntry
+from recon.core.domain.ratelimit import RateLimiter
+from recon.core.domain.substitution import substitute
+from recon.core.domain.telemetry import Telemetry
 from tests.recon_fakes import (
     ARCHIVE_ID,
     FixedClock,
@@ -1245,7 +1245,7 @@ class TestDeadlines:
         else a later retry. Then it read as a garden path ("raise a `deadline:` a table's
         error names"), and a source's ``timeout:`` that is too short, which also fails on
         every retry, was sent to the later retry: it is raised too."""
-        from recon.domain.errors import EXIT_NEXT
+        from recon.core.domain.errors import EXIT_NEXT
 
         said = EXIT_NEXT["transient"]
         assert said.startswith(
@@ -1370,7 +1370,7 @@ class TestWhatASurveyResolved:
         mission = project / ".recon" / "m"
         mission.mkdir(parents=True)
         (mission / "config.yaml").write_text("collectors: [{name: c, type: cli, run: 'true'}]\n")
-        document = root({}).survey("m")
+        document = root({}).observation.survey("m")
         where = archive_path(project, ArchiveRef("m", document.archive))
         meta = yaml.safe_load((where / "meta.yaml").read_text())
         assert meta["resolved"]["root"] == found_by

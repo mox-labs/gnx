@@ -10,7 +10,7 @@ from typing import get_args
 import pytest
 from pydantic import ValidationError
 
-from recon.domain.stream import (
+from recon.core.domain.stream import (
     SealReason,
     WindowEnd,
     Windowing,

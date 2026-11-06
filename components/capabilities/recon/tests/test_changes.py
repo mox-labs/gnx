@@ -20,14 +20,14 @@ import pytest
 import yaml
 
 from recon.adapters._out.mission_files import MissionFiles
-from recon.application.changes import Comparison, Hasher, MemoryJoin, canonical
-from recon.application.plan import build_plan
 from recon.composition import load_plugins, root
-from recon.domain.archives import ArchiveRef
-from recon.domain.changes import ChangesSpec
-from recon.domain.errors import CollectionError, ReconError
-from recon.domain.http import HttpResponse
-from recon.domain.stream import window_id
+from recon.core.application.plan import build_plan
+from recon.core.domain.archives import ArchiveRef
+from recon.core.domain.changes import ChangesSpec
+from recon.core.domain.errors import CollectionError, ReconError
+from recon.core.domain.http import HttpResponse
+from recon.core.domain.stream import window_id
+from recon.observe.application.changes import Comparison, Hasher, MemoryJoin, canonical
 from tests.recon_fakes import (
     FixedClock,
     LandedThrough,
@@ -44,9 +44,9 @@ from tests.test_paginated_survey import PagedApi
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from recon.domain.capture import CaptureLog
-    from recon.domain.collector import Plugins
-    from recon.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.collector import Plugins
+    from recon.core.domain.models import CollectorEntry, SourceEntry
 
 
 class Inbox:
@@ -88,7 +88,7 @@ class Surveys:
     def survey(self, *messages: dict[str, Any]) -> tuple[Path, Any]:
         self.clock.advance(1)
         self.inbox.messages = list(messages)
-        document = self.recon.survey("m")
+        document = self.recon.observation.survey("m")
         return kept(self.project, document), document
 
 
@@ -131,7 +131,9 @@ class TestTheChangeTable:
         _mission(tmp_path, {"key": ["id"]})
         surveys = Surveys(tmp_path)
         surveys.survey(A, B)
-        rows = surveys.recon.query("m", "SELECT op, key.id AS id FROM inbox_changes ORDER BY id")
+        rows = surveys.recon.collection.query(
+            "m", "SELECT op, key.id AS id FROM inbox_changes ORDER BY id"
+        )
         assert [tuple(r.values()) for r in rows.rows] == [("insert", "a"), ("insert", "b")]
         tables = [t.output for t in files_of(tmp_path).tables(ArchiveRef("m", rows.archive))]
         assert tables == ["inbox", "inbox.changes"], "the key index is no table"
@@ -144,9 +146,9 @@ class TestTheChangeTable:
         surveys.survey(A)
         archive, _ = surveys.survey(A)
         assert _rows(archive) == []
-        assert surveys.recon.query("m", "SELECT count(*) AS n FROM inbox_changes").rows == [
-            {"n": 0}
-        ]
+        assert surveys.recon.collection.query(
+            "m", "SELECT count(*) AS n FROM inbox_changes"
+        ).rows == [{"n": 0}]
 
     def test_no_hash_leaves_the_key_index(self, tmp_path: Path) -> None:
         """C2: hashes never leave recon: not in a change row, meta.yaml, the event log or a
@@ -176,7 +178,7 @@ class TestTheBaseline:
 
             def request(self, source: SourceEntry, method: str, url: str, **kw: Any) -> Any:
                 if self.fail:
-                    from recon.domain.errors import CollectionError
+                    from recon.core.domain.errors import CollectionError
 
                     raise CollectionError("down", kind="transient")
                 return super().request(source, method, url, **kw)
@@ -391,7 +393,12 @@ class TestWhatWasTold:
         """F3: stopped (Ctrl-C) or dead (anything else that ends the process) while comparing
         its second table, the survey's first change table is sealed and its summary is in
         ``meta.yaml`` already, so the next survey tells the first table nothing again and the
-        second its rows."""
+        second its rows.
+
+        Changed requirement (ruling R9): changes are derived after the archive is sealed, so the
+        archive reads ``finished`` whatever its change phase did, and its second table is
+        pending; the next survey derives it into that archive first (its catch-up), then
+        compares its own tables with it."""
 
         class EndsOnSecond:
             joins = 0
@@ -419,13 +426,15 @@ class TestWhatWasTold:
         meta = yaml.safe_load((ended / "meta.yaml").read_text())
         first = meta["tables"][0]["changes"]
         assert first["previous"] is None and (ended / "inbox.changes.jsonl").exists()
-        if how is SystemExit:
-            assert meta["ended"] is None, "written while it compared: it never said it ended"
-            history = surveys.recon.status("m").missions[0].history
-            assert history is not None and [a.ended for a in history] == ["crashed"]
+        assert meta["ended"] == "finished", "sealed before its changes were derived"
+        assert meta["tables"][1]["changes"] is None, "its second table is pending"
+        history = surveys.recon.observation.status("m").missions[0].history
+        assert history is not None and [a.ended for a in history] == ["finished"]
         surveys.recon = root({}, project=tmp_path, clock=surveys.clock,
                              requester=lambda t, d, r: surveys.inbox)  # fmt: skip
         again, _ = surveys.survey(A, B)
+        caught_up = [(r["op"], r["key"]["id"]) for r in _rows(ended, "other")]
+        assert caught_up == [("insert", "a"), ("insert", "b")], "told in its own archive"
         assert _rows(again, "inbox") == []
         self._told_once(tmp_path, "inbox")
         self._told_once(tmp_path, "other")
@@ -456,7 +465,8 @@ class TestWhatWasTold:
             surveys.survey(A, B)
         [died] = sorted((tmp_path / ".recon" / "m" / "archive").iterdir())
         meta = yaml.safe_load((died / "meta.yaml").read_text())
-        assert meta["ended"] is None and meta["tables"][0]["changes"]["previous"] is None
+        # Changed requirement (ruling R9): sealed before its changes were derived.
+        assert meta["ended"] == "finished" and meta["tables"][0]["changes"]["previous"] is None
         assert (died / "inbox.keys.jsonl").exists() and not (died / "inbox.changes.jsonl").exists()
         again, _ = surveys.survey(A, B)
         assert _ops(again) == [("insert", "a"), ("insert", "b")]
@@ -465,7 +475,11 @@ class TestWhatWasTold:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """F3: the told index is written before the change table, so one that cannot be
-        written leaves no row a reader sees and the next survey would not fold."""
+        written leaves no row a reader sees and the next survey would not fold.
+
+        Changed requirement (ruling R9): changes are derived after the seal, so a told index
+        that cannot be written fails the table's changes (classified ``store``, warned
+        ``changes_failed``), never the archive, which is sealed whole before."""
         failing = {"left": 1}
 
         class FailsOnce(LandedThrough):
@@ -483,7 +497,11 @@ class TestWhatWasTold:
             requester=lambda t, d, r: surveys.inbox,
         )  # fmt: skip
         failed, document = surveys.survey(A, B)
-        assert document.status == "incomplete"
+        assert document.status == "complete"
+        changes = document.tables[0].changes
+        assert changes is not None and changes.error is not None
+        assert changes.error.kind == "store"
+        assert [w["kind"] for w in document.warnings] == ["changes_failed"]
         assert not (failed / "inbox.changes.jsonl").exists()
         surveys.survey(A, B)
         self._told_once(tmp_path, "inbox")
@@ -589,7 +607,7 @@ class TestAJoinThatWillNotClose:
         recon = root({}, project=tmp_path, clock=VirtualClock(), memory_keys=0,
                      key_join=lambda mission: _ClosesBadly(),
                      plugins=plugins_with(feed=_Feed(TestStreams.RECORDS)))  # fmt: skip
-        document = recon.stream("m", "s", windows=3)
+        document = recon.observation.stream("m", "s", windows=3)
         first, second, third = _windows(tmp_path)
         assert _window_ops(first) == [("insert", "a"), ("insert", "b")]
         assert _window_ops(second) == [("update", "a"), ("insert", "c")]
@@ -664,7 +682,7 @@ class TestTheJoinsFiles:
 
     def test_past_the_cap_the_table_s_changes_fail_classified(self, tmp_path: Path) -> None:
         from recon.adapters._out.duckdb_query import DuckdbJoin
-        from recon.domain.errors import ReconError
+        from recon.core.domain.errors import ReconError
 
         many = ((n, canonical([f"key-{n:09d}-" + "x" * 40]), f"{n:032x}") for n in range(400_000))
         tight = DuckdbJoin(scratch=tmp_path / ".joins", memory_limit="8MB",
@@ -702,7 +720,7 @@ class TestALargeComparison:
         assert _ops(archive) == [("update", "a"), ("insert", "c"), ("insert", "d"), ("delete", "b")]
 
     def test_the_default_is_two_hundred_thousand(self) -> None:
-        from recon.application.changes import MEMORY_KEYS
+        from recon.observe.application.changes import MEMORY_KEYS
 
         assert MEMORY_KEYS == 200_000
 
@@ -965,7 +983,7 @@ class TestStreams:
         _stream_mission(tmp_path)
         recon = root({}, project=tmp_path, clock=VirtualClock(),
                      plugins=plugins_with(feed=_Feed(self.RECORDS)))  # fmt: skip
-        recon.stream("m", "s", windows=3)
+        recon.observation.stream("m", "s", windows=3)
         first, second, third = _windows(tmp_path)
         assert _window_ops(first) == [("insert", "a"), ("insert", "b")]
         assert _window_ops(second) == [("update", "a"), ("insert", "c")]
@@ -979,7 +997,7 @@ class TestStreams:
         _stream_mission(tmp_path)
         feed = _Feed(self.RECORDS[:4])
         recon = root({}, project=tmp_path, clock=VirtualClock(), plugins=plugins_with(feed=feed))
-        recon.stream("m", "s", windows=2)
+        recon.observation.stream("m", "s", windows=2)
         first, second = _windows(tmp_path)
         told = [json.loads(json.loads(line)["key"])[0]
                 for line in (second / "s.keys.jsonl").read_text().splitlines()[1:]]  # fmt: skip
@@ -988,7 +1006,7 @@ class TestStreams:
         (second / "s.keys.jsonl").unlink()
         (first / "s.keys.jsonl").unlink()
         feed.records = self.RECORDS
-        recon.stream("m", "s", windows=1)
+        recon.observation.stream("m", "s", windows=1)
         third = _windows(tmp_path)[-1]
         assert _window_ops(third) == [("insert", "d")], "folded again from the first window"
 
@@ -1001,7 +1019,7 @@ class TestStreams:
                    {"id": "a", "v": 1}, {"id": "z", "v": 1}]  # fmt: skip
         recon = root({}, project=tmp_path, clock=VirtualClock(),
                      plugins=plugins_with(feed=_Feed(records)))  # fmt: skip
-        recon.stream("m", "s", windows=3)
+        recon.observation.stream("m", "s", windows=3)
         _, ambiguous, third = _windows(tmp_path)
         assert _window_ops(ambiguous) == []
         meta = _meta(ambiguous)
@@ -1028,11 +1046,11 @@ class TestStreams:
         records = self.RECORDS + [{"id": "e", "v": 1}, {"id": "a", "v": 3}]
         feed = _Feed(records[:2])
         recon = root({}, project=tmp_path, clock=VirtualClock(), plugins=plugins_with(feed=feed))
-        recon.stream("m", "s", windows=1)  # a1, b1
+        recon.observation.stream("m", "s", windows=1)  # a1, b1
         dead = self._crashed_window(tmp_path, 1, [{**records[2], "_position": 2},
                                                  {**records[3], "_position": 3}])  # fmt: skip
         feed.records = records[:6]
-        recon.stream("m", "s", windows=1)  # resumed after 3: b1, d1
+        recon.observation.stream("m", "s", windows=1)  # resumed after 3: b1, d1
         first, crashed, resumed = _windows(tmp_path)
         assert crashed == dead
         assert _window_ops(resumed) == [("update", "a"), ("insert", "c"), ("insert", "d")]
@@ -1043,7 +1061,7 @@ class TestStreams:
         # The resumed window's told index, rebuilt, folds the dead window's records too.
         (resumed / "s.keys.jsonl").unlink()
         feed.records = records
-        recon.stream("m", "s", windows=1)  # e1, a3
+        recon.observation.stream("m", "s", windows=1)  # e1, a3
         last = _windows(tmp_path)[-1]
         assert _window_ops(last) == [("insert", "e"), ("update", "a")]
 
@@ -1067,7 +1085,7 @@ class TestStreams:
         recon = root({}, project=tmp_path, clock=VirtualClock(), memory_keys=0,
                      key_join=lambda mission: FailsFirst(),
                      plugins=plugins_with(feed=_Feed(self.RECORDS)))  # fmt: skip
-        recon.stream("m", "s", windows=3)  # a1 b1 (failed) | a2 c1 | b1 d1
+        recon.observation.stream("m", "s", windows=3)  # a1 b1 (failed) | a2 c1 | b1 d1
         failed, second, third = _windows(tmp_path)
         meta = _meta(failed)
         assert meta["tables"][0]["changes"]["error"] is not None
@@ -1097,9 +1115,9 @@ class TestStreams:
         _stream_mission(tmp_path)
         feed = FailsAt(self.RECORDS)
         recon = root({}, project=tmp_path, clock=VirtualClock(), plugins=plugins_with(feed=feed))
-        recon.stream("m", "s", windows=3)  # a1 b1 | a2, then the error
+        recon.observation.stream("m", "s", windows=3)  # a1 b1 | a2, then the error
         feed.fail_at = None
-        recon.stream("m", "s", windows=1)  # resumed after 2: c1, b1
+        recon.observation.stream("m", "s", windows=1)  # resumed after 2: c1, b1
         first, failed, resumed = _windows(tmp_path)
         meta = _meta(failed)
         assert meta["tables"][0]["status"] == "error"
@@ -1110,13 +1128,13 @@ class TestStreams:
     def test_a_window_never_tells_a_delete_whatever_its_spec_says(self, tmp_path: Path) -> None:
         """C7, held by the detector itself, not only by the plan's refusal of deletes: true on
         a stream (a mutant that left it to the plan survived; design record)."""
-        from recon.application.changes import ChangeDetector
-        from recon.domain.documents import TableOutcome
+        from recon.core.domain.documents import TableOutcome
+        from recon.observe.application.changes import ChangeDetector
 
         _stream_mission(tmp_path)
         recon = root({}, project=tmp_path, clock=VirtualClock(),
                      plugins=plugins_with(feed=_Feed(self.RECORDS[:4])))  # fmt: skip
-        recon.stream("m", "s", windows=2)  # a1 b1 | a2 c1: b is not in the second
+        recon.observation.stream("m", "s", windows=2)  # a1 b1 | a2 c1: b is not in the second
         first, second = _windows(tmp_path)
         store = files_of(tmp_path, FixedClock())
         secret = MissionFiles(tmp_path, FixedClock()).change_key("m")
@@ -1149,7 +1167,7 @@ class TestStreams:
         recon = root({}, project=tmp_path, clock=VirtualClock(), memory_keys=0,
                      key_join=lambda mission: Broken(),
                      plugins=plugins_with(feed=_Feed(self.RECORDS[:2])))  # fmt: skip
-        document = recon.stream("m", "s", windows=1)
+        document = recon.observation.stream("m", "s", windows=1)
         [window] = _windows(tmp_path)
         meta = _meta(window)
         assert meta["tables"][0]["status"] == "ok" and meta["tables"][0]["records"] == 2
@@ -1161,7 +1179,7 @@ class TestStreams:
         _stream_mission(tmp_path, retain={"archives": 1})
         recon = root({}, project=tmp_path, clock=VirtualClock(),
                      plugins=plugins_with(feed=_Feed(self.RECORDS)))  # fmt: skip
-        recon.stream("m", "s", windows=3)
+        recon.observation.stream("m", "s", windows=3)
         stream = tmp_path / ".recon" / "m" / "streams" / "s"
         assert [w.name for w in _windows(tmp_path)] == [_windows(tmp_path)[-1].name]
         assert len(list(stream.rglob("s.keys.jsonl"))) == 1

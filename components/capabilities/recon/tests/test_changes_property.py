@@ -2,7 +2,7 @@
 of 2026-10-24 on what was told): random histories of a small mailbox, checked against an
 oracle written apart from the code. The oracle keeps what it has told as a map of key to
 content and folds its own ops into it; the code keeps a told index of hashes, joined with each
-table through a :class:`~recon.domain.changes.KeyJoin`.
+table through a :class:`~recon.core.domain.changes.KeyJoin`.
 
 ``hypothesis`` is not a dev dependency, so each property runs over seeded ``random`` cases
 (500 for the comparisons, 25 histories end to end), and a failure names its seed. A history is
@@ -21,19 +21,19 @@ import pytest
 import yaml
 
 from recon.adapters._out.duckdb_query import DuckdbJoin
-from recon.application.changes import Comparison, Hasher, MemoryJoin, canonical, told_lines
 from recon.composition import root
-from recon.domain.archives import ArchiveRef
-from recon.domain.changes import ChangesSpec
-from recon.domain.errors import CollectionError
-from recon.domain.http import HttpResponse
+from recon.core.domain.archives import ArchiveRef
+from recon.core.domain.changes import ChangesSpec
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.http import HttpResponse
+from recon.observe.application.changes import Comparison, Hasher, MemoryJoin, canonical, told_lines
 from tests.recon_fakes import FixedClock, archive_path, files_of
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from recon.domain.changes import KeyJoin
-    from recon.domain.models import SourceEntry
+    from recon.core.domain.models import SourceEntry
+    from recon.observe.domain.joins import KeyJoin
 
 CASES = 500
 SECRET = b"k" * 32
@@ -388,7 +388,7 @@ def test_the_memory_join_counts_its_told_index_without_listing_it(
 ) -> None:
     """Round-4 review M6: the count is the union of the keys told and the table's, never a
     sort of the whole fold to count it; and it is the fold's length, either way deletes go."""
-    from recon.application.changes import _MemoryJoined
+    from recon.observe.application.changes import _MemoryJoined
 
     for seed in range(200):
         rng = random.Random(seed)
@@ -510,7 +510,7 @@ def test_end_to_end_each_survey_s_change_table_is_the_oracle_s(
         for step, (records, status) in enumerate(history):
             clock.advance(1)
             mailbox.snapshot = (records, status)
-            document = recon.survey("m")
+            document = recon.observation.survey("m")
             archive = archive_path(project, ArchiveRef("m", document.archive))
             [table] = document.tables
             where = f"seed {seed}, survey {step} ({status})"
@@ -533,7 +533,7 @@ def test_end_to_end_each_survey_s_change_table_is_the_oracle_s(
         # is the one computed again from the chain.
         clock.advance(1)
         mailbox.snapshot = ([], "truncated")
-        document = recon.survey("m")
+        document = recon.observation.survey("m")
         archive = archive_path(project, ArchiveRef("m", document.archive))
         assert _lines(archive / "inbox.changes.jsonl") == [], f"seed {seed}"
         again = [

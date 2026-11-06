@@ -20,7 +20,7 @@ from click.testing import CliRunner
 import recon
 from recon import composition
 from recon.adapters._in.cli import main
-from recon.application.plan import build_plan
+from recon.core.application.plan import build_plan
 
 SKILL = recon.skill()
 REFERENCES = {name: recon.skill(name) for name in recon.skill_references()}

@@ -15,9 +15,14 @@ import pytest
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog, read_captures
 from recon.adapters._out.system_clock import SystemClock
-from recon.application.captures import record_hook_payload
-from recon.domain.capture import REDACTED, credential_values, redact_credentials, redact_headers
-from recon.domain.errors import CollectionError, ConfigError
+from recon.core.application.captures import record_hook_payload
+from recon.core.domain.capture import (
+    REDACTED,
+    credential_values,
+    redact_credentials,
+    redact_headers,
+)
+from recon.core.domain.errors import CollectionError, ConfigError
 
 
 def _record(log: FilesystemCaptureLog, body: bytes = b"{}", **overrides: Any) -> dict[str, Any]:

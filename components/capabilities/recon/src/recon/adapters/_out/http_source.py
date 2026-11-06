@@ -13,14 +13,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from recon.domain.http import REDACTED
-from recon.domain.substitution import substitute
+from recon.core.domain.http import REDACTED
+from recon.core.domain.substitution import substitute
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from recon.adapters._out.credentials import Credentials
-    from recon.domain.models import SourceEntry
+    from recon.core.domain.models import SourceEntry
 
 
 def build_url(base_url: str, endpoint: str, values: Mapping[str, str]) -> str:
@@ -50,7 +50,7 @@ def auth_params(source: SourceEntry, credentials: Credentials) -> dict[str, str]
 
 def described_credential(source: SourceEntry) -> tuple[dict[str, str], dict[str, str]]:
     """The query parameter and the header that carry ``source``'s ``auth.token``, as a plan
-    shows a request: :data:`~recon.domain.http.REDACTED`, read from nowhere. A helper's headers
+    shows a request: :data:`~recon.core.domain.http.REDACTED`, read from nowhere. A helper's headers
     are not known until it runs, so a plan names the helper instead."""
     if not source.auth.token:
         return {}, {}

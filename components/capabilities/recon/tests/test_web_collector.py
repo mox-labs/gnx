@@ -11,10 +11,10 @@ import pytest
 
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.adapters._out.web_collector import WebCollector
-from recon.domain.converters import ConversionResult
-from recon.domain.errors import CollectionError
-from recon.domain.http import HttpResponse
-from recon.domain.models import CollectorEntry, SourceEntry
+from recon.core.domain.converters import ConversionResult
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.http import HttpResponse
+from recon.core.domain.models import CollectorEntry, SourceEntry
 from tests.recon_fakes import collector_entry
 
 

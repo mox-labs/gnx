@@ -24,10 +24,10 @@ from recon.adapters._in.cli import main
 from recon.adapters._out import otel_telemetry
 from recon.adapters._out.http_requester import HttpRequester
 from recon.adapters._out.otel_telemetry import OtelEvents, export_from_env
-from recon.domain.errors import CollectionError
-from recon.domain.models import AuthConfig, SourceEntry
-from recon.domain.ratelimit import RateLimiter
-from recon.domain.telemetry import Telemetry
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.models import AuthConfig, SourceEntry
+from recon.core.domain.ratelimit import RateLimiter
+from recon.core.domain.telemetry import Telemetry
 from tests.recon_fakes import FixedClock
 
 
@@ -194,7 +194,7 @@ def test_the_event_log_keeps_its_file_open_and_each_event_is_on_disk_as_it_happe
 def test_a_table_s_progress_is_an_event_at_most_once_a_second(tmp_path: Path) -> None:
     """A5: while a table is written, ``recon.collect.progress`` says how many of its records
     are written, at most once a second by the clock port, inside the table's span."""
-    from recon.domain.models import ReconConfig
+    from recon.core.domain.models import ReconConfig
     from tests.recon_fakes import plugins_with, run_survey
 
     clock = FixedClock()
@@ -832,8 +832,8 @@ def test_a_query_span_ends_with_the_count_of_its_rows(tmp_path: Path) -> None:
     from recon.adapters._out.archive_files import ArchiveFiles
     from recon.adapters._out.duckdb_query import DuckdbQuery
     from recon.adapters._out.mission_files import MissionFiles
-    from recon.application.use_cases import Recon
     from recon.composition import load_plugins
+    from recon.core.application.collection import Collection
     from tests.recon_fakes import run_survey
 
     run_survey(
@@ -846,7 +846,7 @@ def test_a_query_span_ends_with_the_count_of_its_rows(tmp_path: Path) -> None:
     def no_survey(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("a query builds no collector")
 
-    querying = Recon(
+    querying = Collection(
         missions=MissionFiles(tmp_path, clock),
         landing=archives,
         archives=archives,

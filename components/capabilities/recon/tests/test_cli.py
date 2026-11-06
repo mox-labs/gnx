@@ -28,17 +28,17 @@ import recon
 from recon.adapters._in.cli import main
 from recon.adapters._out.system_clock import SystemClock
 from recon.composition import load_plugins, root
-from recon.domain import documents as documents_module
-from recon.domain.collector import BrokenPlugin, CollectorContext, CollectorType
-from recon.domain.errors import CollectionError, ErrorKind
-from recon.domain.type_url import is_type_url
+from recon.core.domain import documents as documents_module
+from recon.core.domain.collector import BrokenPlugin, CollectorContext, CollectorType
+from recon.core.domain.errors import CollectionError, ErrorKind
+from recon.core.domain.type_url import is_type_url
 from tests.recon_fakes import LandedThrough, WrappingArchives, building
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-    from recon.domain.capture import CaptureLog
-    from recon.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.models import CollectorEntry, SourceEntry
 
 OK_CONFIG = {
     "collectors": [
@@ -69,7 +69,16 @@ def _invoke(*args: str, stdin: str | None = None, over: object | None = None) ->
 
 
 class _Raises:
-    """Operations that each raise ``error``: a defect, or an error that escapes them."""
+    """A session whose operations each raise ``error``: a defect, or an error that escapes
+    them, in either layer (``collection``, ``observation``)."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+        self.collection = self.observation = _Raising(error)
+
+
+class _Raising:
+    """One layer's operations, each raising ``error``."""
 
     def __init__(self, error: BaseException) -> None:
         self._error = error

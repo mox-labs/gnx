@@ -10,12 +10,12 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from recon.application.plan import Plan, build_plan
 from recon.composition import load_plugins
-from recon.domain.schedule import EVERY_ALLOWED
+from recon.core.application.plan import Plan, build_plan
+from recon.core.domain.schedule import EVERY_ALLOWED
 
 if TYPE_CHECKING:
-    from recon.domain.collector import Plugins
+    from recon.core.domain.collector import Plugins
 
 
 @pytest.fixture(scope="module")
@@ -222,7 +222,7 @@ class TestATickSeesNoShellVariable:
         assert _unscheduled(plan) == {}
 
     def test_the_kind_is_a_warning_kind_recon_publishes(self) -> None:
-        from recon.domain.errors import PROBLEM_KINDS
+        from recon.core.domain.errors import PROBLEM_KINDS
 
         assert "env_unscheduled" in PROBLEM_KINDS
 
@@ -396,6 +396,6 @@ class TestATickRunsTheCodeItWasInstalledWith:
         }
 
     def test_the_kind_is_a_warning_kind_recon_publishes(self) -> None:
-        from recon.domain.errors import PROBLEM_KINDS
+        from recon.core.domain.errors import PROBLEM_KINDS
 
         assert "package_unpinned" in PROBLEM_KINDS

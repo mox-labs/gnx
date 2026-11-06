@@ -34,8 +34,8 @@ import io
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from recon.domain.converters import ConversionResult
-from recon.domain.errors import CollectionError
+from recon.core.domain.converters import ConversionResult
+from recon.core.domain.errors import CollectionError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

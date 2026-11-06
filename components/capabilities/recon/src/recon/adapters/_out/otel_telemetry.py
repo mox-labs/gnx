@@ -32,15 +32,15 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Any
 
-from recon.domain.errors import Problem
-from recon.domain.telemetry import COLLECT, HTTP_REQUEST
+from recon.core.domain.errors import Problem
+from recon.core.domain.telemetry import COLLECT, HTTP_REQUEST
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from contextlib import AbstractContextManager
     from datetime import datetime
 
-    from recon.domain.telemetry import Event
+    from recon.core.domain.telemetry import Event
 
 #: The semantic conventions recon's attributes follow.
 SCHEMA_URL = "https://opentelemetry.io/schemas/1.44.0"

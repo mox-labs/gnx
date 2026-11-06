@@ -9,9 +9,9 @@ from typing import Any
 
 import pytest
 
-from recon.application.plan import Plan, build_plan
 from recon.composition import load_plugins
-from recon.domain.collector import Collector, CollectorContext, CollectorType, Plugins
+from recon.core.application.plan import Plan, build_plan
+from recon.core.domain.collector import Collector, CollectorContext, CollectorType, Plugins
 
 
 def _never_built(ctx: CollectorContext) -> Collector:

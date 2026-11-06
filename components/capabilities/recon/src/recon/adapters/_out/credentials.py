@@ -1,5 +1,5 @@
 """Where a source's credential comes from, resolved the one way every collector type resolves
-it (ruling A1; the grammar is :mod:`recon.domain.credentials`).
+it (ruling A1; the grammar is :mod:`recon.core.domain.credentials`).
 
 * ``env:NAME``: the variable, from the environment the mission declares for the type
   (``CollectorContext.env``); unset, there is none, and the request goes without it, which the
@@ -25,16 +25,16 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from recon.domain.capture import credential_values, redact_credentials
-from recon.domain.credentials import reference
-from recon.domain.errors import CollectionError
+from recon.core.domain.capture import credential_values, redact_credentials
+from recon.core.domain.credentials import reference
+from recon.core.domain.errors import CollectionError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from recon.domain.deadline import Deadline
-    from recon.domain.models import SourceEntry
-    from recon.domain.shell import ShellRunner
+    from recon.core.domain.deadline import Deadline
+    from recon.core.domain.models import SourceEntry
+    from recon.core.domain.shell import ShellRunner
 
 #: The permission bits that let a file's group or others read it, or write it (and so choose
 #: the credential recon sends: round-4 review M5).

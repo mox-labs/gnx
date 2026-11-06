@@ -16,7 +16,7 @@ directories of JSONL, DuckDB for queries, the system clock, httpx2 for HTTP, a s
 commands, markitdown for documents, and telemetry to two sinks: the survey's event log in its
 archive, always, and OpenTelemetry's API, which exports only when the application has
 installed an SDK. It holds no policy of its own: what each collector type is handed, and what
-recon holds every type to, is the application's (``recon.application.collectors``).
+recon holds every type to, is the application's (``recon.core.application.collectors``).
 
 recon is a library here, so the root never installs OpenTelemetry's SDK: OpenTelemetry's
 guidance is that libraries use the API and applications configure the SDK.
@@ -27,6 +27,7 @@ command line is such an application.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from functools import partial
 from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
@@ -54,39 +55,41 @@ from recon.adapters._out.schedulers import (
 from recon.adapters._out.subscription_files import SubscriptionFiles
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
-from recon.application.changes import MEMORY_KEYS
-from recon.application.collectors import (
+from recon.core.application.collection import Collection
+from recon.core.application.collectors import (
     COLLECTORS_GROUP,
     CollectorPorts,
     SurveyCollectors,
     build_collectors,
 )
-from recon.application.stream import StreamStop as StreamStop
-from recon.application.use_cases import Recon as Recon
-from recon.domain.collector import BrokenPlugin, CollectorType, Plugins
-from recon.domain.schedule import ScheduleHost
-from recon.domain.telemetry import Telemetry
+from recon.core.application.stream import StreamStop as StreamStop
+from recon.core.domain.collector import BrokenPlugin, CollectorType, Plugins
+from recon.core.domain.telemetry import Telemetry
+from recon.observe.application.changes import MEMORY_KEYS
+from recon.observe.application.observation import Observation
+from recon.observe.domain.scheduling import ScheduleHost
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
     from datetime import datetime
 
-    from recon.application.use_cases import ChannelFactory
-    from recon.domain.changes import KeyJoin
-    from recon.domain.clock import Clock
-    from recon.domain.collector import Transform
-    from recon.domain.converters import DocumentConverter
-    from recon.domain.deadline import Deadline
-    from recon.domain.errors import Problem
-    from recon.domain.http import Requester
-    from recon.domain.models import ReconConfig
-    from recon.domain.paginate import PageLog
-    from recon.domain.ratelimit import RateLimiter
-    from recon.domain.schedule import Platform, Scheduler
-    from recon.domain.shell import ShellRunner
-    from recon.domain.stream import GapLog
-    from recon.domain.subscriptions import Deliverer
-    from recon.domain.telemetry import Channel, EventSink
+    from recon.core.application.collection import ChannelFactory
+    from recon.core.domain.clock import Clock
+    from recon.core.domain.collector import Transform
+    from recon.core.domain.converters import DocumentConverter
+    from recon.core.domain.deadline import Deadline
+    from recon.core.domain.errors import Problem
+    from recon.core.domain.http import Requester
+    from recon.core.domain.models import ReconConfig
+    from recon.core.domain.paginate import PageLog
+    from recon.core.domain.ratelimit import RateLimiter
+    from recon.core.domain.schedule import Platform
+    from recon.core.domain.shell import ShellRunner
+    from recon.core.domain.stream import GapLog
+    from recon.core.domain.telemetry import Channel, EventSink
+    from recon.observe.domain.delivery import Deliverer
+    from recon.observe.domain.joins import KeyJoin
+    from recon.observe.domain.scheduling import Scheduler
 
 TRANSFORMS_GROUP = "recon.transforms"
 
@@ -133,7 +136,7 @@ def load_collector_types(
     return _load(
         COLLECTORS_GROUP,
         lambda obj: isinstance(obj, CollectorType),
-        "a recon.domain.collector.CollectorType",
+        "a recon.core.domain.collector.CollectorType",
         discover,
     )
 
@@ -178,6 +181,17 @@ def _ours_first(found: Iterable[EntryPoint]) -> list[EntryPoint]:
     """``found`` with recon's own registrations first, so a third party cannot shadow a
     built-in, each part by name."""
     return sorted(found, key=lambda ep: (getattr(ep.dist, "name", None) != "recon", ep.name))
+
+
+@dataclass(frozen=True)
+class Recon:
+    """recon, opened over one project: the collect core's driving port (``collection``: an
+    act planned and run, a stream read into windows, SQL over what was landed, missions made)
+    and the observe layer's (``observation``: a mission planned and surveyed over time, its
+    streams, what changed, subscriptions and their delivery, schedules, status)."""
+
+    collection: Collection
+    observation: Observation
 
 
 def root(
@@ -263,7 +277,7 @@ def root(
     host = schedule_host or ScheduleHost(
         this_recon(), safe_path(process_env.get("PATH", ""), project=found)
     )
-    return Recon(
+    collection = Collection(
         missions=missions,
         landing=store,
         archives=store,
@@ -276,6 +290,12 @@ def root(
         version=__version__,
         root_found_by=found_by,
         channel=channel or ThreadChannel,
+    )
+    observation = Observation(
+        collection=collection,
+        missions=missions,
+        archives=store,
+        clock=clock,
         schedulers=schedulers or partial(_scheduler, process_env),
         schedule_store=ScheduleFiles(home),
         schedule_host=host,
@@ -285,6 +305,7 @@ def root(
         subscriptions=SubscriptionFiles(home),
         deliverer=deliverer or CommandDeliverer(process_env, path=host.path),
     )
+    return Recon(collection, observation)
 
 
 def _scheduler(env: Mapping[str, str], platform: Platform | None) -> Scheduler:

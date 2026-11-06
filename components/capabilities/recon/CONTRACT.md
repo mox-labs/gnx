@@ -1,11 +1,12 @@
 # recon — contracts
 
-What each surface touched in 0.17.0 promises: the decision it hides, its members, its defaults, how it fails, and how stable it is (ruling G6). The surfaces recon 0.17.0 did not touch (the collector contract, `root()`, the component face) are described where they live and get theirs as they are refactored.
+What each surface touched in 0.17.0 and 0.18.0 promises: the decision it hides, its members, its defaults, how it fails, and how stable it is (ruling G6). The surfaces recon 0.17.0 did not touch (the collector contract, `root()`, the component face) are described where they live and get theirs as they are refactored.
 
 "Stable" means: a change that breaks a caller is a major version of the document schema (`recon.v2.*`) or, for a library call or a default, a line under "Changed (breaking)" in the CHANGELOG, never silent. A field or kind added is not breaking: a reader ignores a field it does not know, and handles a kind it does not know by the exit code.
 
 ## Contents
 
+- [The two layers](#the-two-layers)
 - [Ranges: `range:`](#ranges-range)
 - [The plan](#the-plan)
 - [Queries over archives](#queries-over-archives)
@@ -13,11 +14,21 @@ What each surface touched in 0.17.0 promises: the decision it hides, its members
 - [The storage ports](#the-storage-ports)
 - [The mission store](#the-mission-store)
 
+## The two layers
+
+**Hides:** which layer a concern belongs to. The collect core (`recon.core`) knows one act: fetching one span of a source, capturing it, normalizing it, landing it with its checkpoint in one seal; the plan of an act; SQL over what was landed. The observe layer (`recon.observe`) knows acts over time: which span each run asks for, what changed (derived into each archive after its seal), retention, schedules, subscriptions and their delivery, following, status. The test for a new concern: does it need to know about an act other than the one running? Then it is the observe layer's.
+
+**Members.** `recon.core.__all__`: the core's public names, what the observe layer and any outside driver use, its driving port `Collection` (`prepare`, `read`, `hold`, `snapshot`, `stream`, `query`, `describe`, `preflight`, `init`, `templates`, `capture`) among them. `recon.open(root=None)` gives a session, `recon.Recon`, whose `collection` is the core's port and whose `observation` the observe layer's (`plan`, `survey`, `stream`, `status`, `read_since`, `watch`, `changes_since`, `subscribe`, `ack`, `unsubscribe`, `deliver`, `schedule_*`). The module functions are those operations.
+
+**Guarantees.** The core never imports the observe layer; the observe layer imports nothing of the core but `recon.core`'s names (`tests/test_layering.py`, with a planted violation of each). An act the core runs alone lands and commits whole; what changed is derived after its seal (ruling R9). A table sealed under the mission's config with no change summary is **pending**: a change reader waits on it, and the next survey or stream run of that config derives it in its own archive before anything newer.
+
+**Stability:** beta. `recon.core.__all__` is the surface a later split of the layers into two packages keeps; until then a name may move between the layers in a minor release, said in the CHANGELOG.
+
 ## Ranges: `range:`
 
 **Hides:** which source time a ranged table asks for on each run, and how that survives failures, kills, overlapping runs and retention. A mission says what kind of time it wants; recon decides the interval, the steps and the checkpoint.
 
-**Members.** On a snapshot collector entry, `range:` with `start`, `end`, `last`, `step`, `settle`, `max_steps`, `align` (`recon.domain.ranges.RangeSpec`). The kind is which keys are written: `continuing` (neither `end` nor `last`), `fixed` (`start` and `end`), `rolling` (`last`). The placeholders `{range.start}`, `{range.end}`, `{range.last}`, each with an optional `:iso`, `:epoch`, `:epoch_ms` or `:date`, filled by the core into the type's own settings before the type sees them. Every record of a ranged table carries `_range` (`{start, end}`); every outcome of one (`recon.v1.survey` `tables[]`, the archive's meta, `recon.v1.status`) carries `range` (`start`, `end`, `kind`, `from`, `request`, `steps`). `recon survey --range START..END`, `--rebase OUTPUT`, `--restart OUTPUT`; the library's `interval=(start, end)`, `rebase=`, `restart=` on `recon.plan` and `recon.survey`.
+**Members.** On a snapshot collector entry, `range:` with `start`, `end`, `last`, `step`, `settle`, `max_steps`, `align` (`recon.core.domain.ranges.RangeSpec`). The kind is which keys are written: `continuing` (neither `end` nor `last`), `fixed` (`start` and `end`), `rolling` (`last`). The placeholders `{range.start}`, `{range.end}`, `{range.last}`, each with an optional `:iso`, `:epoch`, `:epoch_ms` or `:date`, filled by the core into the type's own settings before the type sees them. Every record of a ranged table carries `_range` (`{start, end}`); every outcome of one (`recon.v1.survey` `tables[]`, the archive's meta, `recon.v1.status`) carries `range` (`start`, `end`, `kind`, `from`, `request`, `steps`). `recon survey --range START..END`, `--rebase OUTPUT`, `--restart OUTPUT`; the library's `interval=(start, end)`, `rebase=`, `restart=` on `recon.plan` and `recon.survey`.
 
 **Defaults** (each in the plan's `provenance` with its origin): `step` 3600 s (a rolling range's: its `last`), `settle` 60 s, `max_steps` 24, `align` none, `start` none (the first run asks for one step back from the horizon). The horizon is `now - settle`, to the whole second, floored to `align`. Intervals are half-open.
 
@@ -65,11 +76,11 @@ What each surface touched in 0.17.0 promises: the decision it hides, its members
 
 **Hides:** durability, exclusion, layout, retention and the medium (owner ruling G5). No port carries a path.
 
-**Members** (`recon.domain.archives`, Protocols): `Landing.hold(mission, stream=)` gives a `Hold`, which `begin(id)`s a `Landed` and `retire(ref, tombstone)`s a sealed archive. `Landed`: `ref`, `write`, `ends`, `keep`, `mark`, `captures`, `events`, `record` (the commit point), `complete`. `Archives`: `archives`, `streams`, `state`, `stream_state`, `meta`, `records`, `sidecar`, `last_record`, `read_since`, `size`, `retired`, `retired_count`, `abandoned`. `ArchiveQuery`: `run(refs, sql, baseline=)`, `unreadable(ref)`. Writing is apart from reading; `ArchiveRef(mission, id, stream, index)` names an archive, ordered by `rank`. The file adapter (`ArchiveFiles`) implements the first two; `DuckdbQuery` the third.
+**Members** (`recon.core.domain.archives`, Protocols): `Landing.hold(mission, stream=)` gives a `Hold`, which `begin(id)`s a `Landed`, `derive(ref)`s a sealed archive (a `Landed` again, for what is derived from its own tables), and `retire(ref, tombstone)`s a sealed archive. `Landed`: `ref`, `write`, `ends`, `keep`, `mark`, `captures`, `events`, `record` (the commit point), `complete`. `Archives`: `archives`, `streams`, `state`, `stream_state`, `meta`, `records`, `sidecar`, `last_record`, `read_since`, `size`, `retired`, `retired_count`, `abandoned`. `ArchiveQuery`: `run(refs, sql, baseline=)`, `unreadable(ref)`. Writing is apart from reading; `ArchiveRef(mission, id, stream, index)` names an archive, ordered by `rank`. The file adapter (`ArchiveFiles`) implements the first two; `DuckdbQuery` the third.
 
 **Defaults.** Holds, locking, retention's mechanics and the layout are the file adapter's alone (`mission_layout.py`).
 
-**Failure.** A second writer of what is held: `busy` (exit 11, the holder's pid). A taken id: `store`. `record` replaces the meta whole or not at all; a writer that dies before it leaves tables no reader counts.
+**Failure.** A second writer of what is held: `busy` (exit 11, the holder's pid). A taken id: `store`. `derive` of an archive never sealed: `not_found`; of one another writer holds: `busy`. While derived from, an archive reads `writing`; what it was marked (complete or not) and every table it sealed are left as they were. `record` replaces the meta whole or not at all; a writer that dies before it leaves tables no reader counts.
 
 **Stability:** recon's own ports, not an extension point: `root(archives=...)` lets a test stand in for them. They may change in a minor release, said in the CHANGELOG.
 

@@ -14,10 +14,10 @@ the receiver is named in ``stuck``, and its ``close`` is not called, since the t
 still inside it. The thread is a daemon and stays until the receiver returns.
 
 A receiver that raises gets nothing more. A sink's error is raised to the survey at its next
-event, so :class:`~recon.domain.telemetry.Telemetry` drops it and names it, as it does a sink
+event, so :class:`~recon.core.domain.telemetry.Telemetry` drops it and names it, as it does a sink
 called inline; a callback's is kept in ``failed``. A sink's ``around`` and ``trace_headers``
 are answered at once, not through the queue: what they return is needed now, and they must
-not block (``recon.domain.telemetry``).
+not block (``recon.core.domain.telemetry``).
 
 Each receiver is called on the channel's one thread, in the order the events were sent.
 The names follow matrix's event channel (``EventPolicy.queue``, ``drain_s``, ``dropped``).
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from contextlib import AbstractContextManager
 
-    from recon.domain.telemetry import Event, EventCallback, EventSink
+    from recon.core.domain.telemetry import Event, EventCallback, EventSink
 
 #: Events waiting for the receivers, at most; one more is dropped and counted.
 QUEUE = 4096

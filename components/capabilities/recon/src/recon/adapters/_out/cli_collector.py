@@ -26,19 +26,19 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from recon.adapters._out.parsing import parse_line
-from recon.domain.collector import CollectorType
-from recon.domain.errors import CollectionError, Problem
-from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, bound
-from recon.domain.substitution import substitute
+from recon.core.domain.collector import CollectorType
+from recon.core.domain.errors import CollectionError, Problem
+from recon.core.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, bound
+from recon.core.domain.substitution import substitute
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
 
-    from recon.domain.capture import CaptureLog
-    from recon.domain.collector import Transform
-    from recon.domain.deadline import Deadline
-    from recon.domain.models import CollectorEntry, SourceEntry
-    from recon.domain.shell import ShellRunner
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.collector import Transform
+    from recon.core.domain.deadline import Deadline
+    from recon.core.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.shell import ShellRunner
 
 #: The most of a command's stderr kept for its error message: the end, where the reason is.
 STDERR_TAIL_BYTES = 4096
