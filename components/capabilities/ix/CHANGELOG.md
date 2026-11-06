@@ -5,7 +5,11 @@
 ### Changed
 
 - **Built against matrix 0.9** (`matrix>=0.9,<0.10`). ix's three run-path components take
-  matrix's `Context`, the protocol, rather than its `RunContext` class.
+  matrix's `Context`, the protocol, rather than its `RunContext` class. A runtime's warnings
+  and its `aclose()` are read through matrix's `SupportsWarnings` and `SupportsAclose`, not
+  by name. The observer that relays a run's `ix.*` events, the stores and the agent runtimes
+  ix's tests stand in with each pass matrix's conformance suite for its port; the agent
+  runtimes among those stand-ins now say how their sessions end (`stop`), as the port asks.
 
 ### Fixed
 

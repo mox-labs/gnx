@@ -384,6 +384,21 @@ package owns the type URLs under its own name (`acme`
 owns `acme.*`): when two extensions register the same type URL, the owner keeps it and the
 other is quarantined, so nothing can replace a built-in by loading first.
 
+A runtime, store or observer is held to its point's port when it is registered and when it
+is built. What only some implementations do is a protocol of its own (`SupportsWarnings`,
+`SupportsAclose`, `SupportsLocation`, `SupportsAround`, ...), which matrix checks with
+`isinstance`, so nothing is found by its name. `matrix.testing` has a conformance suite for
+each port; run the one for yours:
+
+```python
+from matrix.testing import ConstructStoreConformance
+
+
+class TestMyStore(ConstructStoreConformance):
+    def store(self):
+        return MyStore()
+```
+
 ## Running a config
 
 The config declares a run: its `components`, its `inputs`, where it is recorded (`store`,
@@ -489,9 +504,10 @@ whose changelog says so and that carries the migration of every consumer in this
 
 Everything else exported from `matrix` is public and may change in a minor release, said in
 the changelog, when matrix and its consumers in this repository change together: the
-executor and its records, the ports and their stores, runtimes and observers, the session
-table, composition and config, the loader, the documents the command prints, and telemetry.
-Names under `matrix.domain`, `matrix.adapters` and `matrix.composition` are internal.
+executor and its records, the ports, their optional protocols and their stores, runtimes
+and observers, the conformance suites (`matrix.testing`), the session table, composition and
+config, the loader, the documents the command prints, and telemetry. Names under
+`matrix.domain`, `matrix.adapters` and `matrix.composition` are internal.
 
 ## Documentation
 

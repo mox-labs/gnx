@@ -315,9 +315,9 @@ def test_an_agent_runtime_declares_what_its_sessions_do_as_data() -> None:
     """Whether a session loads skills from settings or from its working directory,
     which tool fires a skill and where in its working directory its skills must be placed,
     whether its tools can write files, and the config that keeps it from reading the machine
-    it runs on, are the runtime's to declare (its config's ``capabilities()``, asked through
-    ``Entry.capabilities``), so a caller asks the runtime instead of reading option names it
-    would have to know."""
+    it runs on, are the runtime's to declare when it registers (``capabilities=``, asked
+    through ``Entry.capabilities``), so a caller asks the runtime instead of reading option
+    names it would have to know."""
     from matrix import AgentCapabilities, default_registry
 
     registry = default_registry(discover=False)
@@ -353,3 +353,35 @@ def test_an_agent_runtime_declares_what_its_sessions_do_as_data() -> None:
     )
     # The stand-in declares nothing: a dry run is reviewed as the session it stands in for.
     assert registry.entry("agent-runtime", "matrix.v1.agent-runtime.mock").capabilities({}) is None
+
+
+def test_capabilities_are_declared_at_registration_and_nowhere_else() -> None:
+    """A config class with a method named ``capabilities`` declares nothing unless its
+    registration says so; and capabilities are an agent runtime's, with a config."""
+    from matrix import AgentCapabilities, ConfigError, Registry
+
+    class Named(BaseModel):
+        def capabilities(self) -> AgentCapabilities:
+            return AgentCapabilities(writes_files=False)
+
+    def build(config: Named) -> MockAgentRuntime:
+        return MockAgentRuntime()
+
+    registry = Registry()
+    registry.register("agent-runtime", "acme.v1.agent-runtime.named", build, config=Named)
+    registry.register(
+        "agent-runtime",
+        "acme.v1.agent-runtime.declared",
+        build,
+        config=Named,
+        capabilities=Named.capabilities,
+    )
+    assert registry.entry("agent-runtime", "acme.v1.agent-runtime.named").capabilities({}) is None
+    declared = registry.entry("agent-runtime", "acme.v1.agent-runtime.declared")
+    assert declared.capabilities({}) == AgentCapabilities(writes_files=False)
+    with pytest.raises(ConfigError, match="agent runtime's config"):
+        registry.register("component", "acme.v1.thing", build, capabilities=Named.capabilities)
+    with pytest.raises(ConfigError, match="agent runtime's config"):
+        registry.register(
+            "agent-runtime", "acme.v1.agent-runtime.bare", build, capabilities=Named.capabilities
+        )

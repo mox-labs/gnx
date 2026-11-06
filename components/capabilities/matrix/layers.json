@@ -14,7 +14,7 @@
                 "matrix.domain.config", "matrix.domain.construct", "matrix.domain.errors",
                 "matrix.domain.executor", "matrix.domain.ids", "matrix.domain.loading",
                 "matrix.domain.model_call", "matrix.domain.model_step", "matrix.domain.needs",
-                "matrix.domain.observer",
+                "matrix.domain.observer", "matrix.domain.optional",
                 "matrix.domain.problems", "matrix.domain.ref", "matrix.domain.registry",
                 "matrix.domain.session", "matrix.domain.template",
                 "matrix.domain.ports._out"],
@@ -122,6 +122,17 @@
       "forbid": ["opentelemetry", "hardline", "pydantic_ai"],
       "why": {
         "*": "matrix.process is a public helper a component calls (start, kill_group): process technology, reaching no part of matrix"
+      }
+    },
+    {
+      "name": "testing",
+      "files": ["src/matrix/testing.py"],
+      "allow": ["__future__", "asyncio", "collections", "contextlib", "inspect", "json",
+                "logging", "typing", "matrix.domain"],
+      "forbid": ["opentelemetry", "hardline", "pydantic_ai", "pytest"],
+      "why": {
+        "matrix.domain": "a conformance suite holds an implementation to the port it keeps, stated in the domain's types, and runs it through the executor: it names no adapter, so a third party's runs against nothing of matrix's but the port",
+        "forbid pytest": "the suites are plain classes of plain tests: a package's test runner collects them, and matrix depends on no test framework"
       }
     },
     {

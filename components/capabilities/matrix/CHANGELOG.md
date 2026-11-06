@@ -27,6 +27,24 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   `model_runtimes`, `schemas`, `models`, `model_runtime_entries`, `name`) is a `ConfigError`:
   composition supplies those, and a host's value silently replaced them. `cwd`, and needs of
   the host's own, are handed over as before.
+- **Optional members are declared protocols, never found by name.** matrix checks each with
+  `isinstance`: `SupportsWarnings`, `SupportsResolved` and `SupportsAclose` on runtimes of
+  either kind, `SupportsEvents` on a store's writer, `SupportsLocation` and
+  `SupportsDamaged` on a store, `SupportsAround` and `SupportsClose` on an observer. An
+  implementation keeps the same member names and shapes, so none has to change; one whose
+  member does not match its protocol's shape fails that protocol's conformance test.
+  `location_of` and `damaged_of` return what the store gives, no longer coerced to `str`.
+  `usage_counted_by` and `pydantic_ai_model` are still read by name: they belong to the seam
+  between agent and model runtimes, which this release leaves as it is.
+- **What an agent runtime's sessions do is declared when it registers**:
+  `registry.register("agent-runtime", ..., config=..., capabilities=...)`, a pure function of
+  the validated config giving `AgentCapabilities`. A config class's method named
+  `capabilities()` declares nothing unless its registration passes it
+  (`capabilities=MyConfig.capabilities`); `capabilities` at another point, or without a
+  `config`, is a `ConfigError`. The registry imports no agent type to run.
+- **matrix's test stand-ins keep the ports they stand in for.** Three agent runtimes in the
+  OpenTelemetry tests returned a response without a `stop`, which the port forbids; they now
+  say how their session ended.
 
 ### Added
 
@@ -38,6 +56,13 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   with its type, what it is and its stability (`models` and `model_runtime_entries` are
   `beta`). Composition supplies exactly these, the skill prints them, and a missing need's fix
   says whether matrix or the host hands it over.
+- **`matrix.testing`: a conformance suite per port.** `AgentRuntimeConformance`,
+  `ConstructStoreConformance`, `ObserverConformance`, `DocumentSourceConformance`,
+  `ContextConformance` and `ComponentConformance` check what each port promises when it is
+  called, and that each optional member an implementation has keeps its protocol. Subclass
+  one in a test and say how to build yours. matrix runs each against each of its own
+  implementations and its tests' stand-ins, and ix against its own. There is none for the
+  model-runtime port.
 
 ## 0.8.0 — 2026-10-24
 

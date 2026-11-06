@@ -925,12 +925,12 @@ def _limit(options: Mapping[str, Any]) -> float:
 
 async def released(runtime: object) -> None:
     """Close what ``runtime`` opened for its calls (hardline's clients), if it says how
-    (``aclose``). hardline keeps a client per event loop and can close it only in that loop,
-    while it runs, so whoever made the calls closes the runtime there, once they are done:
-    a runtime is built per round, per call and per reading, and is not used again."""
-    close = getattr(runtime, "aclose", None)
-    if callable(close):
-        await close()
+    (``matrix.SupportsAclose``). hardline keeps a client per event loop and can close it only
+    in that loop, while it runs, so whoever made the calls closes the runtime there, once
+    they are done: a runtime is built per round, per call and per reading, and is not used
+    again."""
+    if isinstance(runtime, matrix.SupportsAclose):
+        await runtime.aclose()
 
 
 @contextmanager

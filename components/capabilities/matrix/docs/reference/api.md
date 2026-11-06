@@ -90,6 +90,15 @@ from matrix import (
     model_runtime_type_url,
     observer_type_url,
     store_type_url,
+    # optional members of the ports
+    SupportsWarnings,
+    SupportsResolved,
+    SupportsAclose,
+    SupportsEvents,
+    SupportsLocation,
+    SupportsDamaged,
+    SupportsAround,
+    SupportsClose,
     # observers
     Event,
     EventPolicy,
@@ -620,14 +629,15 @@ large or external value. matrix records it and does nothing else with it.
 | `store.load(run_id) -> Construct` | the record of a run in any state; `torn` reports entries with no row |
 | `store.describe(run_id) -> dict` | the `matrix.v1.run` document with each table's size. A run that never finished reads `running`, or `interrupted` when the store can tell its writer is gone |
 | `store.runs() -> list[str]` | run ids, oldest first. The JSONL store skips, and logs on `matrix.store`, a directory whose `run.json` cannot be read or is not a record |
-| `writer.events() -> Observer \| None` | optional: a sink for the run's events kept with its record; the executor closes it after the run |
-| `store.location(run_id) -> str` | optional: where the run's record is, or would be |
-| `store.damaged() -> list[tuple[str, str]]` | optional: each record `runs()` skipped, `(where, why)`, which `list_runs` reports; a store without it reports none |
+| `writer.events() -> Observer \| None` | optional, `SupportsEvents`: a sink for the run's events kept with its record; the executor closes it after the run when it keeps `SupportsClose` |
+| `store.location(run_id) -> str` | optional, `SupportsLocation`: where the run's record is, or would be |
+| `store.damaged() -> list[tuple[str, str]]` | optional, `SupportsDamaged`: each record `runs()` skipped, `(where, why)`, which `list_runs` reports |
 
 A missing run is a `NotFoundError` naming those that exist. Anything a store cannot write or
 read back is a `StoreError`; the executor turns any other exception a store raises into one.
-The two optional members came later: a store without them keeps working, keeps no events,
-and is located by the run id.
+Each optional member is [a declared protocol](#optional-members) of its own: a writer without
+`SupportsEvents` keeps no events, a store without `SupportsLocation` is located by the run
+id, and one without `SupportsDamaged` reports nothing skipped.
 
 `JsonlConstructStore(root, *, fsync=False)` keeps a directory per run: `run.json`, one
 `<kind>.jsonl` per table whose lines are the rows, and `events.jsonl`. `fsync=True` flushes
@@ -700,18 +710,23 @@ Without `session` nothing else holds them, and they stay.
 | `check` | `(definition) -> None` | **Required.** Raises `ConfigError` for a definition the runtime cannot play. A runtime that plays everything implements it as a no-op |
 | `run` | `async (definition, task: str) -> AgentResponse` | Returns a response whose `stop` says why the session ended, or raises `AgentRuntimeError` with a `reason`. Never an empty normal response for a failed session |
 
-Three members are optional, read with `getattr`: `warnings` (problems a reader of its config
-should see); `resolved`, JSON data for what the runtime settled when it was built, beyond
-its own config, that decides how it answers, which composition digests into the reuse
-fingerprint of every component that runs an agent on the runtime; and `usage_counted_by`, the
-name of what already counts the inference tokens of the runtime's model calls (`pydantic-ai`
-declares `hardline`). `BoundAgent` puts it on `matrix.agent.end`, and the `otel` observer then
-adds the session's tokens to no counter; its span and its session row keep them.
+Three members are optional, each [a declared protocol](#optional-members): `SupportsWarnings`
+(problems a reader of its config should see); `SupportsResolved`, JSON data for what the
+runtime settled when it was built, beyond its own config, that decides how it answers, which
+composition digests into the reuse fingerprint of every component that runs an agent on the
+runtime; and `SupportsAclose`, which closes what its sessions opened, in the loop that used
+them. One more is read by its name: `usage_counted_by`, the name of what already counts the
+inference tokens of the runtime's model calls (`pydantic-ai` declares `hardline`).
+`BoundAgent` puts it on `matrix.agent.end`, and the `otel` observer then adds the session's
+tokens to no counter; its span and its session row keep them.
 
-**What its sessions do is data the runtime declares**, so a caller asks it instead of
-reading its options by name: the runtime's config class may define `capabilities(self) ->
-AgentCapabilities`, which `Entry.capabilities(config)` asks of a config. `AgentCapabilities`
-(frozen, unknown fields rejected) answers, each `None` where the runtime does not say:
+**What its sessions do is data the runtime declares when it registers**, so a caller asks it
+instead of reading its options by name: `registry.register("agent-runtime", ...,
+config=..., capabilities=...)`, a pure function of the validated config returning
+`AgentCapabilities`, which `Entry.capabilities(config)` asks of a config without building the
+runtime. `AgentCapabilities` is the agent-runtime point's own extension; its skill fields are
+Claude Code's mechanics. Frozen, unknown fields rejected, it answers each `None` where the
+runtime does not say:
 
 | Field | Type | Meaning |
 |-------|------|---------|
@@ -871,13 +886,14 @@ session row holds (`native_finish_reason`, `name` through `latency_ms`, `params`
 | `check` | `(model: str \| None) -> None` | **Required.** Raises `ConfigError` for a model name the runtime cannot resolve (an unknown one, or none where there is no default), so a step that names it is refused when it is built |
 | `call` | `async (request: ModelRequest) -> ModelCall` | Returns the call's record, or raises `ModelRuntimeError` with a `reason`. With `output`, `value` is the validated reply, or it raises |
 
-The optional members `warnings` and `resolved` are read as on an agent runtime; the `hardline`
-runtime's `resolved` is its registry (`default` and each model's row, without `api_key`), read
-from `matrix.models` or hardline's own tiers, and is digested into the fingerprint of every
-component that calls it. A third, `aclose()`, is async and closes the connections the
-runtime's calls opened in the running event loop; a connection can be closed only in its own
-loop, so a model step defers it to the end of the run that made the calls. The runtime stays
-usable after it. The `hardline` runtime has it. A fourth, `pydantic_ai_model(model=None)`, gives
+The optional members `SupportsWarnings`, `SupportsResolved` and `SupportsAclose` are [the
+declared protocols](#optional-members) an agent runtime may keep too; the `hardline` runtime's
+`resolved` is its registry (`default` and each model's row, without `api_key`), read from
+`matrix.models` or hardline's own tiers, and is digested into the fingerprint of every
+component that calls it. Its `aclose()` closes the connections the runtime's calls opened in
+the running event loop; a connection can be closed only in its own loop, so a model step
+defers it to the end of the run that made the calls. The runtime stays usable after it. A
+fourth member is read by its name: `pydantic_ai_model(model=None)` gives
 pydantic-ai's `Model` on a model name the runtime resolves (raising `ConfigError` as `check`
 does), its requests made as the runtime makes its own calls, for a caller that runs pydantic-ai
 itself, such as an evaluator's judge; the `Model` has an async `aclose()` for the connections its
@@ -964,11 +980,13 @@ declare their own with `add_point`, named under their own root (ix declares `ix.
 | `origin` | `str` | the distribution that registered it; `(direct)` for a direct call |
 | `stand_in` | `bool` | whether it stands in for the real thing (the mock runtimes): its answers are canned, not a model's. Declared, never inferred. Default `False` |
 | `drives` | `tuple[str, ...]` | the distributions it drives, by their installed names: `claude-sdk` drives `claude-agent-sdk`, `pydantic-ai` drives `pydantic-ai-slim` and `hardline`, the `hardline` model runtime `hardline`. What a record of the versions behind a run reads, rather than a table of runtime names. Default `()` |
+| `capabilities_of` | `Callable[[Any], AgentCapabilities] \| None` | for an agent runtime, what it registered as `capabilities=`. Default `None` |
 
-`entry.describe()` returns all of it as a JSON-ready dict, with `config` as a JSON schema.
-`entry.capabilities(config)` is what an agent runtime declares its sessions do when built
-with `config` (see `AgentRuntime`): `None` when it declares nothing, or when its config
-refuses `config`.
+`entry.describe()` returns all of it but `capabilities_of` as a JSON-ready dict, with
+`config` as a JSON schema and `needs` as [the needs](#needs-and-need) with their types.
+`entry.capabilities(config)` is what an agent runtime declared its sessions do when built
+with `config` (see `AgentRuntime`), computed from the validated config without building it:
+`None` when it declares nothing, or when its config refuses `config`.
 
 `Failure(*, extension, origin, error)` records an extension that failed to load or a
 refused registration: `extension` is its entry point's name, `origin` its distribution.
@@ -981,7 +999,7 @@ called with the registry, and anything it raises, importing included, quarantine
 | Method | Signature | Behaviour |
 |--------|-----------|-----------|
 | `add_point` | `(point, *, port=None) -> Registry` | Declares an extension point, owned by the distribution declaring it; with `port`, a Protocol whatever is registered there must keep. `ConfigError` when another distribution owns the point already |
-| `register` | `(point, type_url, build, *, config=None, needs=(), summary="", stability="beta", stand_in=False, drives=()) -> Registry` | `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, a class `build` that does not keep its point's port (naming each member it lacks), or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
+| `register` | `(point, type_url, build, *, config=None, needs=(), summary="", stability="beta", stand_in=False, drives=(), capabilities=None) -> Registry` | `capabilities`, for an `agent-runtime` with a `config`, is a pure function of the validated config giving its `AgentCapabilities`. `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, a class `build` that does not keep its point's port (naming each member it lacks), `capabilities` at another point or without a `config`, or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
 | `register_payload` | `(type_url, model, summary="") -> Registry` | Registers a pydantic model at `payload-type`; summary defaults to the first line of the model's docstring |
 | `entry` | `(point, type_url) -> Entry` | `NotFoundError` listing what is registered at that point |
 | `entries` | `(point=None) -> list[Entry]` | Sorted by point, then type URL |
@@ -996,8 +1014,8 @@ keep: `agent-runtime` to `AgentRuntime`, `model-runtime` to `ModelRuntime`, `sto
 distribution that declared it: `matrix` for matrix's own, `(direct)` for one declared by the
 code composing the registry), `failures: list[Failure]`. A port is held by its required
 members: each must be there and callable, and one the port awaits must be a coroutine
-function; a port's optional members (an observer's `around`, a store's `events` and
-`location`) are not required. A point under a distribution's name (`ix.subject`) belongs to
+function; a port's [optional members](#optional-members) are not required. A point under a
+distribution's name (`ix.subject`) belongs to
 that distribution whoever declared it first: an impostor that did is quarantined whole, as for
 type URLs. Any other point belongs to the distribution that declared it first. Another that
 declares an owned point again, with or without a port, is refused and quarantined whole; the
@@ -1100,6 +1118,57 @@ def register(registry):
     registry.register_payload("acme.v1.review", Review)
 ```
 
+### Optional members
+
+What only some implementations of a port do is an optional member, and each is a protocol of
+its own, `runtime_checkable`, which matrix checks with `isinstance` where it reads it, so a
+type checker sees it and nothing is found by its name. The rule an optional member meets: its
+absence has a stated meaning that changes nothing another part computes. A fact whose absence
+would change a result is a required member, a registration field (`stand_in`, `drives`,
+`capabilities`) or a port of its own.
+
+| Protocol | Member | Kept by | Without it |
+|----------|--------|---------|------------|
+| `SupportsWarnings` | `warnings -> tuple[Problem, ...]`, a property | agent and model runtimes | no warnings shown |
+| `SupportsResolved` | `resolved -> dict[str, Any]`, a property, JSON data | agent and model runtimes | its fingerprint is its config and needs alone |
+| `SupportsAclose` | `async aclose() -> None` | agent and model runtimes | nothing to close |
+| `SupportsEvents` | `events() -> Observer \| None` | a store's `RunWriter` | the run keeps no events |
+| `SupportsLocation` | `location(run_id) -> str` | a store | located by the run id |
+| `SupportsDamaged` | `damaged() -> list[tuple[str, str]]` | a store | nothing reported skipped |
+| `SupportsAround` | `around(event) -> AbstractContextManager \| None` | an observer | it sees spans through the queue alone |
+| `SupportsClose` | `close() -> None` | an observer | nothing to close |
+
+Two members are still read by their names, each of the seam between agent runtimes and model
+runtimes: an agent runtime's `usage_counted_by` and a model runtime's `pydantic_ai_model`.
+
+### Conformance suites: `matrix.testing`
+
+A suite is what every implementation of a port must do, as tests: mix it into a test class
+and say how to build what it checks. pytest collects its tests in that class; each is
+synchronous and awaits in an event loop of its own, so no async plugin is needed, and a
+failure is an `AssertionError` saying what was promised.
+
+```python
+from matrix.testing import ConstructStoreConformance
+
+
+class TestMyStore(ConstructStoreConformance):
+    def store(self):
+        return MyStore()  # a store with no run in it yet
+```
+
+| Suite | Define | It checks |
+|-------|--------|-----------|
+| `AgentRuntimeConformance` | `runtime()`; `definition()` and `task` when the defaults do not suit | the port's members; `check` passes a definition it plays; a session ends in a response whose `stop` says why, or an `AgentRuntimeError` with a known `reason`; each optional member it has keeps its protocol |
+| `ConstructStoreConformance` | `store()`, empty | the port's members; a run recorded through the executor reads back row for row, with its ledger and status; a run id is never reopened; a run reads `running` while it is recorded; a missing run is `NotFoundError`; runs list oldest first; each optional member keeps its protocol |
+| `ObserverConformance` | `observer()` | the port; it takes every event of a run that completes and of one that fails, and `around` when it has one, without raising; each optional member keeps its protocol |
+| `DocumentSourceConformance` | `source()`, `present()` (a location with a document), `absent()` | the port; nothing there is `None`; a document is its mapping and where it came from; a location's documents are each data or a problem; `beside` gives a string |
+| `ContextConformance` | `async within(check)`, awaiting `check(ctx)` with a context of the host's | the protocol's members; telemetry and releases under the component's own names; a name, measure kind or value a run refuses is a `ContractError`; a scope names the sessions of its block |
+| `ComponentConformance` | `component()`; `inputs()` when it requires kinds | the protocol, and that it wires; a run of it with its inputs completes, handing over only the kinds it provides |
+
+matrix runs each suite against each of its own implementations, and its tests' stand-ins.
+There is none for the model-runtime port.
+
 ---
 
 ## Observers
@@ -1146,8 +1215,10 @@ Events about a component carry its name in `component`.
 
 ### `Observer` (Protocol), `EventPolicy` and `RecordingObserver`
 
-`Observer` is `on_event(event: Event)`, a plain function or a coroutine function, and one
-optional member, read with `getattr` so an observer without it works unedited:
+`Observer` is `on_event(event: Event)`, a plain function or a coroutine function. Two members
+are optional, each [a declared protocol](#optional-members): `SupportsClose`, `close()`, which
+closes what the observer holds open (the executor closes a store writer's event sink once the
+run's events have drained), and `SupportsAround`:
 
 ```python
 def around(self, event: Event) -> AbstractContextManager[Callable[[Event], None] | None] | None: ...

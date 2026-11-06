@@ -71,6 +71,7 @@ from matrix.domain.errors import (
 from matrix.domain.executor import Executor, Limits, Reuse
 from matrix.domain.model_step import MODEL_CALL, MODEL_STEP
 from matrix.domain.needs import NEEDS
+from matrix.domain.optional import SupportsResolved, SupportsWarnings
 from matrix.domain.ports._out.construct_store import location_of
 from matrix.domain.problems import problem, sourced
 from matrix.domain.registry import Extension, Registry
@@ -338,9 +339,8 @@ class Container:
         url = None if runtime is None else agent_runtime_type_url(runtime.type)
         if url is not None and (AGENT_RUNTIME, url) in self._registry:
             found["needs"] = self._needs_made_of(self._registry.entry(AGENT_RUNTIME, url).needs)
-        resolved = getattr(agent.runtime, "resolved", None)
-        if resolved is not None:
-            found["resolved"] = resolved
+        if isinstance(agent.runtime, SupportsResolved):
+            found["resolved"] = agent.runtime.resolved
         return found
 
     def _model_runtime_made_of(self, name: str) -> dict[str, Any] | None:
@@ -354,9 +354,8 @@ class Container:
         url = model_runtime_type_url(runtime.type)
         if (MODEL_RUNTIME, url) in self._registry:
             found["needs"] = self._needs_made_of(self._registry.entry(MODEL_RUNTIME, url).needs)
-        resolved = getattr(built, "resolved", None)
-        if resolved is not None:
-            found["resolved"] = resolved
+        if isinstance(built, SupportsResolved):
+            found["resolved"] = built.resolved
         return found
 
     def _needs_made_of(self, needs: Iterable[str]) -> dict[str, Any]:
@@ -943,7 +942,8 @@ def compose(
             ("model_runtimes", model_runtimes),
         )
         for name, runtime in built.items()
-        for notice in getattr(runtime, "warnings", ())
+        if isinstance(runtime, SupportsWarnings)
+        for notice in runtime.warnings
     ]
     warnings += telemetry.warnings()
     return Container(

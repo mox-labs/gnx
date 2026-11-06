@@ -23,6 +23,7 @@ import pytest
 import yaml
 from click.testing import CliRunner
 from matrix.adapters._out.observers.otel import OtelObserver
+from matrix.testing import AgentRuntimeConformance
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -93,7 +94,13 @@ def _registry(answer: Callable[[str], matrix.AgentResponse]) -> matrix.Registry:
         runtime.answer = answer
         return runtime
 
-    registry.register("agent-runtime", SCRIPTED, build, config=ScriptedConfig)
+    registry.register(
+        "agent-runtime",
+        SCRIPTED,
+        build,
+        config=ScriptedConfig,
+        capabilities=ScriptedConfig.capabilities,
+    )
     return registry
 
 
@@ -389,7 +396,13 @@ def _mounting() -> matrix.Registry:
         runtime.answer = _fires()
         return runtime
 
-    registry.register("agent-runtime", MOUNTING, build, config=MountingConfig)
+    registry.register(
+        "agent-runtime",
+        MOUNTING,
+        build,
+        config=MountingConfig,
+        capabilities=MountingConfig.capabilities,
+    )
     return registry
 
 
@@ -572,7 +585,12 @@ class TestAVerdictIsTiedToWhatItJudged:
             return runtime
 
         registry.register(
-            "agent-runtime", driving, build, config=ScriptedConfig, drives=("pydantic", "acme-gone")
+            "agent-runtime",
+            driving,
+            build,
+            config=ScriptedConfig,
+            capabilities=ScriptedConfig.capabilities,
+            drives=("pydantic", "acme-gone"),
         )
         lab = _routing(
             tmp_path, subjects={"catalog": {"kind": "agent-session", "runtime": driving}}
@@ -640,7 +658,9 @@ def _third_parties() -> matrix.Registry:
     def judges(task: str) -> matrix.AgentResponse:
         if "Rubric:" not in task:
             return fires(task)
-        return matrix.AgentResponse(content='{"score": 0.6}', num_turns=1, family="scripted")
+        return matrix.AgentResponse(
+            content='{"score": 0.6}', num_turns=1, stop="completed", family="scripted"
+        )
 
     registry = _registry(judges)
 
@@ -852,12 +872,20 @@ def _pooled(log: list[list[tuple[str, object]]]) -> matrix.Registry:
     def agent(config: ScriptedConfig) -> PooledAgent:
         runtime = PooledAgent(log)
         runtime.answer = lambda task: matrix.AgentResponse(
-            content='{"score": 0.6}' if "Rubric:" in task else "BANANA", num_turns=1
+            content='{"score": 0.6}' if "Rubric:" in task else "BANANA",
+            num_turns=1,
+            stop="completed",
         )
         return runtime
 
     registry.register("model-runtime", POOLED_MODEL, model)
-    registry.register("agent-runtime", POOLED_AGENT, agent, config=ScriptedConfig)
+    registry.register(
+        "agent-runtime",
+        POOLED_AGENT,
+        agent,
+        config=ScriptedConfig,
+        capabilities=ScriptedConfig.capabilities,
+    )
     return registry
 
 
@@ -925,7 +953,13 @@ def _sandboxed() -> matrix.Registry:
         runtime.answer = _fires()
         return runtime
 
-    registry.register("agent-runtime", SANDBOXED, build, config=SandboxConfig)
+    registry.register(
+        "agent-runtime",
+        SANDBOXED,
+        build,
+        config=SandboxConfig,
+        capabilities=SandboxConfig.capabilities,
+    )
     return registry
 
 
@@ -1004,13 +1038,25 @@ class TestASkillToolNobodyNames:
     skill fires read every ``must_trigger`` probe as not fired, a confident ``fails`` and a
     perfect score on the decoys, and validate said nothing."""
 
-    @pytest.mark.parametrize("config", [SilentConfig, ToollessConfig])
+    @pytest.mark.parametrize(
+        ("config", "capabilities"),
+        [(SilentConfig, None), (ToollessConfig, ToollessConfig.capabilities)],
+    )
     def test_activation_is_unobservable_until_the_tool_is_named(
-        self, tmp_path: Path, config: type[BaseModel]
+        self,
+        tmp_path: Path,
+        config: type[BaseModel],
+        capabilities: Callable[[Any], matrix.AgentCapabilities] | None,
     ) -> None:
         registry = _third_parties()
         url = "acme.v1.agent-runtime.quiet"
-        registry.register("agent-runtime", url, lambda config: Scripted(), config=config)
+        registry.register(
+            "agent-runtime",
+            url,
+            lambda config: Scripted(),
+            config=config,
+            capabilities=capabilities,
+        )
         session = {"kind": "agent-session", "runtime": url}
         root = Root(registry=registry, settings=_settings())
         lab = _either(tmp_path / "a", session, routing=True, sensors=[{"kind": "activation"}])
@@ -1054,7 +1100,9 @@ class Elsewhere:
         )
         skills = sorted(path.name for path in (self.cwd / "agent" / "skills").glob("*"))
         calls = tuple({"name": "use_skill", "input": {"skill": skill}} for skill in skills)
-        return matrix.AgentResponse(content="ok", tool_calls=calls, num_turns=1, family="acme")
+        return matrix.AgentResponse(
+            content="ok", tool_calls=calls, num_turns=1, stop="completed", family="acme"
+        )
 
 
 def _elsewhere() -> matrix.Registry:
@@ -1063,7 +1111,14 @@ def _elsewhere() -> matrix.Registry:
     def build(config: ElsewhereConfig, *, cwd: str | None = None) -> Elsewhere:
         return Elsewhere(cwd or ".")  # the preflight builds it with no directory
 
-    registry.register("agent-runtime", ELSEWHERE, build, config=ElsewhereConfig, needs={"cwd"})
+    registry.register(
+        "agent-runtime",
+        ELSEWHERE,
+        build,
+        config=ElsewhereConfig,
+        capabilities=ElsewhereConfig.capabilities,
+        needs={"cwd"},
+    )
     return registry
 
 
@@ -1326,7 +1381,13 @@ def _listening(heard: list[tuple[str | None, str]]) -> matrix.Registry:
         runtime.answer, runtime.heard = _fires(), heard
         return runtime
 
-    registry.register("agent-runtime", SCRIPTED, build, config=ScriptedConfig)
+    registry.register(
+        "agent-runtime",
+        SCRIPTED,
+        build,
+        config=ScriptedConfig,
+        capabilities=ScriptedConfig.capabilities,
+    )
     return registry
 
 
@@ -1840,7 +1901,9 @@ class TestFactorsDriveAgentSettings:
 
             def answer(task: str) -> matrix.AgentResponse:
                 asked.append(task)
-                return matrix.AgentResponse(content=config.default or "a draft", num_turns=1)
+                return matrix.AgentResponse(
+                    content=config.default or "a draft", num_turns=1, stop="completed"
+                )
 
             runtime.answer = answer
             return runtime
@@ -1910,7 +1973,9 @@ class TestAReportCallsNoModel:
         def answer(task: str) -> matrix.AgentResponse:
             if "Rubric:" in task:
                 judged.append(task)
-                return matrix.AgentResponse(content='{"score": 0.9, "reason": "fine"}')
+                return matrix.AgentResponse(
+                    content='{"score": 0.9, "reason": "fine"}', stop="completed"
+                )
             return _fires()(task)
 
         registry = _registry(answer)
@@ -2165,7 +2230,13 @@ def _cautious_registry(answer: Callable[[str], matrix.AgentResponse]) -> matrix.
         runtime.answer = answer
         return runtime
 
-    registry.register("agent-runtime", SCRIPTED, build, config=ScriptedConfig)
+    registry.register(
+        "agent-runtime",
+        SCRIPTED,
+        build,
+        config=ScriptedConfig,
+        capabilities=ScriptedConfig.capabilities,
+    )
     return registry
 
 
@@ -2334,3 +2405,46 @@ class TestTheSecondDrive:
         assert shown.exit_code == 0, shown.output
         assert "cannot discriminate" not in shown.stdout and "Screen" not in shown.stdout
         assert ix.run(lab, dry_run=True).screen == ()
+
+
+def _scripted(tmp_path: Path) -> Scripted:
+    return Scripted()
+
+
+def _pooled_agent(tmp_path: Path) -> Scripted:
+    return PooledAgent([])
+
+
+def _listening_runtime(tmp_path: Path) -> Scripted:
+    runtime = Listening()
+    runtime.heard = []
+    return runtime
+
+
+def _hanging(tmp_path: Path) -> Scripted:
+    return Hanging()
+
+
+def _cautious(tmp_path: Path) -> Scripted:
+    return Cautious()
+
+
+def _elsewhere_runtime(tmp_path: Path) -> Elsewhere:
+    Elsewhere.seen = []
+    return Elsewhere(str(tmp_path))
+
+
+class TestTheStandInAgentRuntimes(AgentRuntimeConformance):
+    """Each agent runtime this module stands in with keeps matrix's port, answering as the
+    tests answer (``_fires``). ``Hanging`` hangs on a hard task only, and this one is not."""
+
+    @pytest.fixture(autouse=True, params=[_scripted, _pooled_agent, _listening_runtime,
+                                          _hanging, _cautious, _elsewhere_runtime])  # fmt: skip
+    def _made(self, request: pytest.FixtureRequest, tmp_path: Path) -> None:
+        made = request.param(tmp_path)
+        if isinstance(made, Scripted):
+            made.answer = _fires()
+        self.made: matrix.AgentRuntime = made
+
+    def runtime(self) -> matrix.AgentRuntime:
+        return self.made

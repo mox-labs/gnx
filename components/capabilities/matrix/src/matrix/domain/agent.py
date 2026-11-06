@@ -121,9 +121,14 @@ class AgentDefinition(BaseModel):
 class AgentCapabilities(BaseModel):
     """What sessions on an agent runtime do, as its config sets them: data the runtime
     declares about itself, so a caller asks it instead of reading its options by name. A
-    runtime's config class declares them, as a method ``capabilities()`` returning one of
-    these, and :meth:`~matrix.domain.registry.Entry.capabilities` asks it of a config. Each
-    answer is None where the runtime does not say: a caller then assumes nothing."""
+    runtime declares them when it registers, ``capabilities=`` a function of its validated
+    config, and :meth:`~matrix.domain.registry.Entry.capabilities` asks it of a config without
+    building the runtime. Each answer is None where the runtime does not say: a caller then
+    assumes nothing.
+
+    This is the agent-runtime point's own extension, and its skill fields are Claude Code's
+    mechanics (``skill_tool``, ``skills_dir``, the settings a session reads), which an
+    evaluator of skills needs; a runtime without skills answers ``False`` or None."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 

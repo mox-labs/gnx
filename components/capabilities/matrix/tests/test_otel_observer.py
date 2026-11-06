@@ -30,12 +30,15 @@ from matrix import (  # noqa: E402
     wire,
 )
 from matrix.adapters._out.observers.otel import OtelObserver  # noqa: E402
+from matrix.testing import AgentRuntimeConformance  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from opentelemetry.sdk.trace import ReadableSpan
     from opentelemetry.util.types import AttributeValue
+
+    from matrix import AgentRuntime
 
 # Providers of the tests' own, handed to each observer: nothing here installs a global one, so
 # no test depends on which suite ran first in the process. A test that reads metrics gives its
@@ -132,7 +135,7 @@ class _Traced:
         from matrix import AgentResponse
 
         with _LIBRARY.start_as_current_span("library.in-session"):
-            return AgentResponse(content="done")
+            return AgentResponse(content="done", stop="completed")
 
 
 class _UsesLibraries:
@@ -415,6 +418,7 @@ class _Session:
 
         return AgentResponse(
             content="done",
+            stop="completed",
             tokens_input=40,
             tokens_output=9,
             provider="anthropic",
@@ -510,7 +514,11 @@ class _Cached:
         from matrix import AgentResponse
 
         return AgentResponse(
-            content="done", tokens_input=100, cache_read_tokens=60, cache_write_tokens=10
+            content="done",
+            stop="completed",
+            tokens_input=100,
+            cache_read_tokens=60,
+            cache_write_tokens=10,
         )
 
 
@@ -752,3 +760,14 @@ async def test_the_span_names_are_the_pinned_ones() -> None:
         "matrix.release",
         "acme.probe",
     }
+
+
+class TestTheStandInAgentRuntimes(AgentRuntimeConformance):
+    """Each agent runtime this module stands in with keeps the port it stands in for."""
+
+    @pytest.fixture(autouse=True, params=[_Traced, _Session, _Cached, _Fails, _Refuses])
+    def _made(self, request: pytest.FixtureRequest) -> None:
+        self.made: type[AgentRuntime] = request.param
+
+    def runtime(self) -> AgentRuntime:
+        return self.made()

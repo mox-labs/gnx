@@ -14,7 +14,7 @@
    version), and nothing outside ``ids`` splits a string on ``/``.
 3. **The command line** reaches matrix through ``import matrix`` and the names in
    ``matrix.__all__`` alone, so what it can do, a program can do with the declared names.
-4. The API reference and the README's stable names agree with ``matrix.__all__``.
+4. The API reference, and the names the README promises, agree with ``matrix.__all__``.
 
 What these cannot see, so review still reads for it (the design record keeps the list): a
 module reached by ``importlib`` or through an alias, a use that is not an import, an adapter's

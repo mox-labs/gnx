@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 import matrix
 import pytest
+from matrix.testing import AgentRuntimeConformance
 
 from ix.adapters._out.agent_sensors import (
     ActivationSensor,
@@ -1381,3 +1382,19 @@ def test_no_test_here_can_reach_a_live_model() -> None:
         assert found.__name__ == "refuse", f"{module_name}.{attribute} is not refused"
         checked += 1
     assert checked, "none of the live calls is installed here, so none was checked"
+
+
+class TestTheScriptedAgentRuntime(AgentRuntimeConformance):
+    """The stand-in keeps matrix's port, replying or failing as the port says a session
+    does."""
+
+    @pytest.fixture(
+        autouse=True,
+        params=[_reply("hello"), matrix.AgentRuntimeError("down", reason="unavailable")],
+        ids=["replies", "fails"],
+    )
+    def _made(self, request: pytest.FixtureRequest) -> None:
+        self.reply: matrix.AgentResponse | Exception = request.param
+
+    def runtime(self) -> matrix.AgentRuntime:
+        return Scripted(self.reply)

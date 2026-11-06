@@ -11,13 +11,13 @@ Content is a sample, never guaranteed; a caller judges it, the runtime does not.
 resolve (an unknown name, or none where there is no default), so a step that names it is
 refused when it is built, before anything runs.
 
-Four members are optional, read with ``getattr`` as on an agent runtime: ``warnings``;
-``resolved``: JSON data for what the runtime settled when it was built that decides how it
-answers (hardline's registry), which composition digests into the reuse fingerprint of every
-component that calls the runtime; ``aclose()``, an async method that closes the
-connections the runtime's calls opened in the running event loop. A connection can be closed
-only in its own loop, so the caller that made the calls closes them there: a model step
-defers it to the end of the run that made them. The runtime stays usable after it. And
+Three members are optional, the declared protocols any runtime may keep
+(:mod:`matrix.domain.optional`), checked with ``isinstance``: ``SupportsWarnings``;
+``SupportsResolved``, what the runtime settled when it was built that decides how it answers
+(hardline's registry), which composition digests into the reuse fingerprint of every
+component that calls the runtime; ``SupportsAclose``, which closes the connections the
+runtime's calls opened in the running event loop: a model step defers it to the end of the
+run that made them. A fourth is read by its name,
 ``pydantic_ai_model(model)``: pydantic-ai's ``Model`` on a model name the runtime resolves,
 its requests made as the runtime makes its own calls, for a caller that runs pydantic-ai
 itself (an evaluator's judge); it raises ``ConfigError`` as ``check`` does, and the ``Model``

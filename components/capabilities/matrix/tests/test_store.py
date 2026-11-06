@@ -38,9 +38,12 @@ from matrix import (
     default_registry,
     wire,
 )
+from matrix.testing import ConstructStoreConformance
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from matrix import ConstructStore
 
 TRIAL, READING, SEED = "acme.v1.trial", "acme.v1.reading", "acme.v1.seed"
 
@@ -1023,3 +1026,14 @@ async def test_an_unsafe_run_id_is_refused_before_anything_runs(tmp_path: Path) 
             run_id="../outside",
         )
     assert ran == [] and list(tmp_path.iterdir()) == []
+
+
+class TestTheStandInStores(ConstructStoreConformance):
+    """The stores this module stands in with keep the port when they are not told to fail."""
+
+    @pytest.fixture(autouse=True, params=[Failing, _Finishes])
+    def _made(self, request: pytest.FixtureRequest) -> None:
+        self.made: type[ConstructStore] = request.param
+
+    def store(self) -> ConstructStore:
+        return self.made()

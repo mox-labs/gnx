@@ -29,8 +29,8 @@ the same span of work and the same session row as a step's.
 
 Both the prompt's placeholders and the model name are checked when the step is built: a
 typo, or a model the runtime cannot resolve, is a ``config`` problem at composition. A
-runtime that holds connections (``aclose()``) has them closed when the run ends, in the run's
-event loop, which made them.
+runtime that holds connections (``SupportsAclose``) has them closed when the run ends, in the
+run's event loop, which made them.
 
 Config::
 
@@ -64,6 +64,7 @@ from matrix.domain.observer import (
     emit,
     observing,
 )
+from matrix.domain.optional import SupportsAclose
 from matrix.domain.session import (
     Session,
     call_sent,
@@ -161,9 +162,9 @@ class ModelStep:
         return render(self._config.prompt, self._config.inputs, inputs, where=where)
 
     async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
-        close = getattr(self._runtime, "aclose", None)
-        if callable(close):  # the runtime's connections close in the loop that made them
-            ctx.defer(close)
+        if isinstance(self._runtime, SupportsAclose):
+            # The runtime's connections close in the loop that made them.
+            ctx.defer(self._runtime.aclose)
         prompt = self.render(inputs)
         request = ModelRequest(
             prompt=prompt, model=self._config.model, system=self._config.system, output=self._output

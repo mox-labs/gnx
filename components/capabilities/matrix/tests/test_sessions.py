@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from pydantic import BaseModel
@@ -45,6 +45,10 @@ from matrix import (
     wire,
 )
 from matrix.adapters._out.runtime.mock import MockAgentRuntime, MockAgentRuntimeConfig
+from matrix.testing import AgentRuntimeConformance
+
+if TYPE_CHECKING:
+    from matrix import AgentRuntime
 
 DATA_MODEL = Path(__file__).parents[1] / "docs" / "explanation" / "data-model.md"
 RATING = "acme.v1.rating"
@@ -528,6 +532,14 @@ class _Failing:
 
     async def run(self, definition: AgentDefinition, task: str) -> Any:
         raise self._error
+
+
+class TestAStandInWhoseSessionsFailTyped(AgentRuntimeConformance):
+    """The stand-in, failing as the port says a session fails. Failing with anything else
+    breaks the port on purpose, to show the record keeps such a session too."""
+
+    def runtime(self) -> AgentRuntime:
+        return _Failing(AgentRuntimeError("the provider is down", reason="unavailable"))
 
 
 @pytest.mark.parametrize(

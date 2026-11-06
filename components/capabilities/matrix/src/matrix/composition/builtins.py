@@ -177,6 +177,7 @@ def register(registry: Registry) -> None:
         agent_runtime_type_url("claude-sdk"),
         _claude_sdk,
         config=ClaudeSdkRuntimeConfig,
+        capabilities=ClaudeSdkRuntimeConfig.capabilities,
         needs={"cwd"},
         summary="Claude Agent SDK sessions: tools, multiple turns, plugins, skills, subagents",
         drives=("claude-agent-sdk",),
@@ -186,6 +187,7 @@ def register(registry: Registry) -> None:
         agent_runtime_type_url("pydantic-ai"),
         _pydantic_ai,
         config=PydanticAiRuntimeConfig,
+        capabilities=PydanticAiRuntimeConfig.capabilities,
         needs={"models"},
         summary="pydantic-ai agent sessions whose model calls go through hardline: tools, "
         "multiple turns, any model family hardline has a row for",

@@ -314,7 +314,13 @@ package's own namespace (`acme` owns `acme.*`):
   (`check` and async `run`; `check` and async `call`) when it is registered and when it is
   built: one that lacks a member is a `config` error naming it. A mock declares
   `stand_in=True`; a runtime over a package declares it as `drives=("<distribution>",)`, so a
-  tool can record that package's version (`matrix catalog --json` shows it).
+  tool can record that package's version (`matrix catalog --json` shows it). What only some
+  implementations do is a protocol of its own (`matrix.SupportsWarnings`,
+  `matrix.SupportsAclose`, ...), checked with `isinstance`; an agent runtime declares what
+  its sessions do (skills, file writes) as `capabilities=` when it registers.
+- `matrix.testing` holds a conformance suite per port (`AgentRuntimeConformance`,
+  `ConstructStoreConformance`, `ComponentConformance`, ...): subclass it in a test, say how
+  to build yours, and pytest runs what the port promises against it.
 - An extension that fails to import or register is quarantined: its entries are dropped,
   the others load, and `matrix catalog` lists it as `FAILED`.
 

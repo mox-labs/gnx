@@ -16,8 +16,10 @@ under its own root. A ``*.start``/``*.end`` pair matrix emits for a span of work
 ends with, and opens no span. Event names and fields are telemetry, not contract (owner
 ruling 2026-10-22): they may change without notice.
 
-**Around the work.** An observer may have one optional member besides ``on_event``, read with
-``getattr`` so an observer written before it works unedited:
+**Optional members** are declared protocols, checked with ``isinstance``, under the rule
+:mod:`matrix.domain.optional` states: :class:`SupportsAround` and :class:`SupportsClose`.
+
+**Around the work** (:class:`SupportsAround`):
 
     around(event) -> AbstractContextManager[Callable[[Event], None] | None] | None
 
@@ -33,6 +35,10 @@ drops. Because it runs in the work's own task, ``around`` **must not block**: no
 wait, no lock another task holds. What it raises, entering, ending or leaving, is logged and
 skipped, and it can never swallow the work's own exception. An observer's ``around`` is the
 one part of an observer that can slow a run.
+
+**Closing** (:class:`SupportsClose`): ``close()`` closes what the observer opened (a file).
+The executor closes a store writer's event sink once the run's events have drained; an
+observer a caller attached is the caller's to close.
 """
 
 from __future__ import annotations
@@ -119,10 +125,24 @@ class Event:
 
 @runtime_checkable
 class Observer(Protocol):
-    """A sink for events. ``on_event`` may be a plain function or a coroutine function.
-    ``around`` is optional (see the module docstring)."""
+    """A sink for events. ``on_event`` may be a plain function or a coroutine function."""
 
     def on_event(self, event: Event) -> Awaitable[None] | None: ...
+
+
+@runtime_checkable
+class SupportsAround(Protocol):
+    """An observer entered around each span of work, in the task doing it (see the module
+    docstring). Without it: the observer sees the span's events through the channel alone."""
+
+    def around(self, event: Event) -> AbstractContextManager[Any] | None: ...
+
+
+@runtime_checkable
+class SupportsClose(Protocol):
+    """An observer that holds something open between events. Without it: nothing to close."""
+
+    def close(self) -> None: ...
 
 
 def check_event_name(name: str, *, what: str = "event") -> None:
@@ -306,11 +326,10 @@ class _Around:
 
     def __enter__(self) -> Callable[[Event], None]:
         for observer in self._observers:
-            hook = getattr(observer, "around", None)
-            if not callable(hook):
+            if not isinstance(observer, SupportsAround):
                 continue
             try:
-                manager = hook(self._event)
+                manager = observer.around(self._event)
                 if manager is None:
                     continue
                 given = manager.__enter__()
@@ -343,7 +362,7 @@ class _Around:
 def around(
     observers: Sequence[Observer], event: Event
 ) -> AbstractContextManager[Callable[[Event], None]]:
-    """Enter each observer's optional ``around(event)`` (see the module docstring) for the span
+    """Enter ``around(event)`` of each observer that keeps :class:`SupportsAround` for the span
     of work ``event`` starts. Entered in the task doing that work, around all of it; what it
     gives back is called with the span's end event before the block exits."""
     return _Around(observers, event)

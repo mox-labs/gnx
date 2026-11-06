@@ -36,6 +36,7 @@ from matrix import (
     load_config,
 )
 from matrix.adapters._out.stores.jsonl import JsonlStoreConfig
+from matrix.testing import ConstructStoreConformance, ObserverConformance
 
 import ix
 from ix.adapters._in.matrix_components import (
@@ -62,6 +63,8 @@ from ix.domain.run import CALIBRATION, Failure, HarnessError, Interaction, Readi
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
+
+    from matrix import ConstructStore, Observer
 
     from ix.domain.experiment import Shape
     from ix.domain.ports import Requirement, Surroundings
@@ -1669,3 +1672,22 @@ def test_an_adapter_without_the_optional_checks_runs_with_nothing_to_check(
     report = Root(registry=registry).run(write_experiment(experiment()), exploratory=True)
     assert report.status == "completed" and report.trials.carried_out == 15
     assert report.trials.harness_failures == report.trials.subject_failures == 0
+
+
+class TestTheStandInStores(ConstructStoreConformance):
+    """matrix's JSONL store under the other names this module registers keeps the port."""
+
+    @pytest.fixture(autouse=True, params=[_RecordingStore, _CountingStore])
+    def _made(self, request: pytest.FixtureRequest, tmp_path: Path) -> None:
+        self.made: type[JsonlConstructStore] = request.param
+        self.root = tmp_path / "runs"
+
+    def store(self) -> ConstructStore:
+        return self.made.from_config(JsonlStoreConfig(root=str(self.root)))
+
+
+class TestTheRelayOfIxsEvents(ObserverConformance):
+    """The observer ix attaches to each run to hand its ``ix.*`` events on."""
+
+    def observer(self) -> Observer:
+        return matrix_runs._Relay(lambda name, fields: None)

@@ -64,6 +64,7 @@ from matrix.domain.observer import (
     EventPolicy,
     Observer,
     SpanScope,
+    SupportsClose,
     around,
     check_event_name,
     check_measure,
@@ -415,10 +416,9 @@ class Executor:
 
 def _close(sink: Observer | None) -> None:
     """Close the record's event log once the run's events have drained into it."""
-    close = getattr(sink, "close", None)
-    if callable(close):
+    if isinstance(sink, SupportsClose):
         try:
-            close()
+            sink.close()
         except Exception:
             logger.exception("the run's event log could not be closed")
 

@@ -84,7 +84,8 @@ def test_registration_is_as_promised() -> None:
         "config: 'type[BaseModel] | None' = None, "
         "needs: 'frozenset[str] | set[str] | tuple[str, ...]' = (), summary: 'str' = '', "
         "stability: 'Stability' = 'beta', stand_in: 'bool' = False, "
-        "drives: 'tuple[str, ...] | list[str]' = ()) -> 'Registry'"
+        "drives: 'tuple[str, ...] | list[str]' = (), "
+        "capabilities: 'Callable[[Any], AgentCapabilities] | None' = None) -> 'Registry'"
     )
     assert str(inspect.signature(Registry.register_payload)) == (
         "(self, type_url: 'str', model: 'type[BaseModel]', summary: 'str' = '') -> 'Registry'"

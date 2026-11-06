@@ -19,6 +19,7 @@ import matrix
 import pytest
 import yaml
 from matrix.adapters._out.observers.otel import OtelObserver
+from matrix.testing import AgentRuntimeConformance
 from opentelemetry import trace
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.trace import TracerProvider
@@ -848,3 +849,10 @@ def test_the_evaluators_said_to_read_no_span_never_reach_for_one() -> None:
         assert ("span_tree" in inspect.getsource(cls)) == (name not in READS_NO_SPANS), name
     assert _sensor().reads_spans({"evaluator": "ToolCorrectness"})
     assert not _sensor().reads_spans({"evaluator": "LLMJudge"})
+
+
+class TestTheScriptedAgentRuntime(AgentRuntimeConformance):
+    """The stand-in whose session makes timed tool calls keeps matrix's port."""
+
+    def runtime(self) -> matrix.AgentRuntime:
+        return Scripted()

@@ -119,9 +119,23 @@ from .domain.model_step import (
     call_model,
 )
 from .domain.needs import NEEDS, Need
-from .domain.observer import Event, EventPolicy, Observer, RecordingObserver
+from .domain.observer import (
+    Event,
+    EventPolicy,
+    Observer,
+    RecordingObserver,
+    SupportsAround,
+    SupportsClose,
+)
+from .domain.optional import SupportsAclose, SupportsResolved, SupportsWarnings
 from .domain.ports._out.agent_runtime import RUNTIME_LOGGER, Agent, AgentRuntime
-from .domain.ports._out.construct_store import ConstructStore, RunWriter
+from .domain.ports._out.construct_store import (
+    ConstructStore,
+    RunWriter,
+    SupportsDamaged,
+    SupportsEvents,
+    SupportsLocation,
+)
 from .domain.ports._out.document_source import Document, DocumentSource
 from .domain.ports._out.model_runtime import ModelRuntime
 from .domain.problems import Problem
@@ -253,6 +267,14 @@ __all__ = [
     "Session",
     "StoreConfig",
     "StoreError",
+    "SupportsAclose",
+    "SupportsAround",
+    "SupportsClose",
+    "SupportsDamaged",
+    "SupportsEvents",
+    "SupportsLocation",
+    "SupportsResolved",
+    "SupportsWarnings",
     "Telemetry",
     "TokenUsage",
     "TypeUrl",

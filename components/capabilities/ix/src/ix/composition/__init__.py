@@ -234,8 +234,8 @@ class _Runtimes:
             )
         finally:
             quiet.removeFilter(_unsaid)
-        if self._heard is not None:
-            for found in getattr(runtime, "warnings", ()) or ():
+        if self._heard is not None and isinstance(runtime, matrix.SupportsWarnings):
+            for found in runtime.warnings:
                 if found not in self._heard:
                     self._heard.append(found)
         return runtime
