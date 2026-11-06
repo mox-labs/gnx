@@ -32,7 +32,8 @@ An adapter's own role is one of the four family ports (:class:`Subject`, :class:
 :class:`Sensor`, :class:`Environment`). What else it can say is a separate optional
 Protocol, read with ``isinstance`` and never by an attribute's name: :class:`Preflight`
 (what it needs of this host), :class:`Review` (what is wrong with how an entry is written),
-:class:`StandIn` (the entry on a stand-in for a dry run), :class:`SpanReader` (whether a
+:class:`StandIn` (the entry on a stand-in for a dry run), :class:`ModelCalls` (how many
+model calls a trial starts, which ``ix plan`` counts as work), :class:`SpanReader` (whether a
 sensor reads a trial's spans) and :class:`Liveness` (whether an environment is still up).
 An adapter that is none of them has nothing to say there, and the run proceeds. The scope a
 run hands an environment is a :class:`Scope`, and may also be :class:`Traced` and
@@ -40,7 +41,8 @@ run hands an environment is a :class:`Scope`, and may also be :class:`Traced` an
 
 **What an adapter is given.** A :class:`Review` and a :class:`StandIn` are given an
 entry's options as written: they judge or rewrite the writing. Everything that carries an
-entry out (a :class:`Preflight` and every member of the family ports) is given its options
+entry out (a :class:`Preflight`, :class:`ModelCalls` and every member of the family
+ports) is given its options
 as carried out: every option the entry leaves out that its kind declares a ``default`` for
 is there, with that default, so an adapter holds no default of its own. A sensor's options
 also have each ``path`` option resolved against the experiment's directory; a subject, an
@@ -70,6 +72,7 @@ from ix.domain.ports import (
     Flag,
     Liveness,
     Measured,
+    ModelCalls,
     Preflight,
     Probe,
     Recorded,
@@ -245,6 +248,7 @@ __all__ = [
     "Launcher",
     "Liveness",
     "Measured",
+    "ModelCalls",
     "Point",
     "Preflight",
     "Probe",

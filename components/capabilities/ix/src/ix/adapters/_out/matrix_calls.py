@@ -198,8 +198,8 @@ def _unobservable(around: Surroundings) -> list[Problem]:
 
 class ModelCallSubject:
     """One model call per trial: see the module docstring. Offers ``respondent`` (the call's
-    handle). A :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight` and
-    a :class:`~ix.domain.ports.StandIn`."""
+    handle). A :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight`, a
+    :class:`~ix.domain.ports.StandIn` and :class:`~ix.domain.ports.ModelCalls`."""
 
     def __init__(self, sessions: Sessions, runtimes: Runtimes) -> None:
         self._sessions = sessions
@@ -236,6 +236,10 @@ class ModelCallSubject:
                 if key not in takes
             ),
         ]
+
+    def model_calls(self, options: Mapping[str, Any]) -> int:
+        """One call a trial; none on a stand-in. Raises for a runtime nothing registered."""
+        return 0 if self._runtimes.stand_in(MODEL_RUNTIME, str(options["runtime"])) else 1
 
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn:
         """The call on ``mock``: the real runtime's ``runtime_options`` set aside, the

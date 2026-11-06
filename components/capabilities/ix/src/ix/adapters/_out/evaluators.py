@@ -312,7 +312,8 @@ class EvaluatorSensor:
     Options: ``evaluator`` (required), ``arguments``, ``result``; for an evaluator that
     calls a model, ``model_runtime`` (required), ``model`` and ``runtime_options``. A
     :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight` (a judge
-    evaluator's model can be had) and a :class:`~ix.domain.ports.StandIn`."""
+    evaluator's model can be had), a :class:`~ix.domain.ports.StandIn` and
+    :class:`~ix.domain.ports.ModelCalls`."""
 
     def __init__(self, runtimes: Runtimes, judge_models: JudgeModels) -> None:
         self._runtimes = runtimes
@@ -419,6 +420,14 @@ class EvaluatorSensor:
                 lambda: self._judge_model(options),
             )
         ]
+
+    def model_calls(self, options: Mapping[str, Any]) -> int:
+        """One judge's agent run a reading for an evaluator that calls a model, on a model
+        runtime that is not a stand-in; none otherwise. Raises for an evaluator
+        pydantic-evals does not have, and for a runtime nothing registered."""
+        if not _calls_a_model(_evaluator_class(options)) or not options.get("model_runtime"):
+            return 0
+        return 0 if self._runtimes.stand_in(MODEL_RUNTIME, str(options["model_runtime"])) else 1
 
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn:
         """A judge evaluator on the stand-in model runtime, whose model is pydantic-ai's

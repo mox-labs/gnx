@@ -185,7 +185,9 @@ Work in this order:
    runtime names it: claude-sdk's `Skill`), a tool-reading
    sensor on a `model-call` subject, files to collect that no tool can write. `Runnable` says
    whether the runtime can start here (`claude-sdk` needs the Claude Code CLI and its
-   credentials).
+   credentials). `Model calls` says how many the run starts at most, as work and never as a
+   price: each agent session (one a loop's round), model call and judge's reading counted
+   once however many requests it makes, none on a stand-in (`work` in `--json`).
 2. **Dry run.** Give the probe a `mock_response`, a reply whose grade you know, and run
    `ix run <path> --dry-run`: the file as written, with the session on the `mock` runtime
    and the real runtime's config (`runtime_options`, `plugins`) set aside (the report
@@ -535,7 +537,10 @@ read at the same width, one at a time for a kind that forbids overlap.
   or cannot play the agent as written, a model runtime (a subject's or a judge's) that
   cannot start or cannot resolve the model. `ix plan` lists every requirement under
   `Requires` with whether it holds, and those that do not under `Runnable: no` with the
-  fix; they depend on the host, so they do not stop `ix register`.
+  fix; they depend on the host, so they do not stop `ix register`. Under `Model calls` it
+  counts the work a run asks of model providers, from what each adapter says one trial
+  starts (`ModelCalls` in `ix.extension`), and names each entry that may call a model and
+  does not say: the count is a bound only over what it counts, and never a price.
 - **Failures have an owner.** A trial the subject failed (it exited, it was not up in time,
   it answered no request successfully within the measured time, it returned a different body; an agent session that
   broke, was refused or ran past its probe's `timeout`) counts against the subject. A trial the harness failed (k6 missing

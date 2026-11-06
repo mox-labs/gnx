@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     )
     from ix.domain.genre import Genre
     from ix.domain.kind import Kind, Kinds
+    from ix.domain.run import Trial
 
 #: Where a resolved value came from.
 Origin = Literal["experiment", "genre", "ix", "kind", "runtime"]
@@ -637,6 +638,18 @@ def entries_in_use(experiment: Experiment, design: Design, probes: ProbeSet) -> 
     return tuple(
         replace(entry, options=design.options(entry.key, entry.options))
         for entry in entries(experiment, probes, design.sensors)
+    )
+
+
+def trial_entries(trial: Trial, design: Design) -> frozenset[str]:
+    """The keys of the entries one trial carries out: its subject, its probe, and every
+    sensor the design uses (each reads every trial carried out)."""
+    return frozenset(
+        {
+            subject_entry(trial.subject),
+            probe_entry(trial.probe),
+            *(sensor_entry(sensor.kind) for sensor in design.sensors),
+        }
     )
 
 

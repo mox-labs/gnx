@@ -28,11 +28,13 @@ from pydantic import Field, computed_field
 from ix.domain import intervals, run, schema
 from ix.domain.analysis import CONFIDENCE, Spread
 from ix.domain.design import (
+    ENVIRONMENT,
     RoleAssignment,
     SelectedSensor,
     SourcedValue,
     metric_text,
     missing_adapters,
+    trial_entries,
 )
 from ix.domain.experiment import Level, cells
 from ix.domain.genre import Calibration, Order, VerdictForm
@@ -42,13 +44,14 @@ from ix.domain.registration import design_form
 from ix.domain.schema import Record
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping, Sequence
 
     from ix.domain.design import Design
     from ix.domain.experiment import Experiment, ProbeSet
     from ix.domain.genre import Genre
     from ix.domain.kind import Kinds
     from ix.domain.ports import Requirement
+    from ix.domain.run import Trial
 
 #: The share of runs in which a true effect of the detectable size is shown.
 POWER = 0.8
@@ -146,6 +149,79 @@ class Duration(Record):
         return f"about {human} ({self.basis})"
 
 
+class ModelCallCount(Record):
+    """The model calls one entry starts over a run, as its adapter counts them."""
+
+    #: Where the entry is written: ``subjects.agent``, ``sensors.1``, ``environment``.
+    entry: str
+    #: The most it starts in one trial; for the environment, in bringing it up.
+    per_trial: int
+    #: The trials it takes part in; 1 for the environment, brought up once.
+    trials: int
+    #: What it starts over the run: its count in each trial's cell, over its trials.
+    total: int
+
+
+class Work(Record):
+    """What a run asks of model providers, as work and never as a price: at most
+    ``model_calls`` agent sessions, model calls and judges' agent runs, each counted once
+    however many model requests it makes, as each entry's adapter says
+    (:class:`~ix.domain.ports.ModelCalls`). Every trial in the plan is counted, a trial a run
+    leaves unread too, so the count is a bound. ``uncounted`` names each entry whose adapter
+    may call a model and does not say how many, or could not count: the bound leaves it out.
+    Not part of the digest: it is what the adapters installed here say."""
+
+    model_calls: int = 0
+    entries: tuple[ModelCallCount, ...] = ()
+    #: Each entry left out of the count, where it is written and why: ``sensors.1 (it does
+    #: not say how many)``.
+    uncounted: tuple[str, ...] = ()
+
+    def text(self) -> str:
+        """The work in one line."""
+        if not self.entries and not self.uncounted:
+            return "none: no entry here calls a model"
+        parts = []
+        if self.model_calls:
+            calling = ", ".join(f"{c.entry} {c.total}" for c in self.entries if c.total)
+            parts.append(
+                f"at most {self.model_calls} ({calling}): a session, a call or a judge's run "
+                "each counts once, however many requests it makes"
+            )
+        elif self.entries:
+            parts.append("none: each entry that calls one is on a stand-in")
+        if self.uncounted:
+            parts.append(f"not counted, though each may call a model: {', '.join(self.uncounted)}")
+        return "; ".join(parts)
+
+
+def work(
+    trials: Sequence[Trial],
+    design: Design,
+    counted: Mapping[str, tuple[str, Mapping[str, int]]],
+    uncounted: Sequence[str] = (),
+) -> Work:
+    """The work of a run of ``trials`` under ``design``. ``counted`` gives, by each entry's
+    key (:mod:`ix.domain.design`), where it is written and the model calls one trial of it
+    starts in each cell, by the cell's key; ``uncounted``, where each entry it cannot count
+    is written."""
+    found: list[ModelCallCount] = []
+    for key, (where, by_cell) in counted.items():
+        if key == ENVIRONMENT:
+            once = max(by_cell.values(), default=0)
+            found.append(ModelCallCount(entry=where, per_trial=once, trials=1, total=once))
+            continue
+        mine = [trial for trial in trials if key in trial_entries(trial, design)]
+        total = sum(by_cell.get(run.cell_key(trial.cell), 0) for trial in mine)
+        most = max(by_cell.values(), default=0)
+        found.append(ModelCallCount(entry=where, per_trial=most, trials=len(mine), total=total))
+    return Work(
+        model_calls=sum(count.total for count in found),
+        entries=tuple(found),
+        uncounted=tuple(uncounted),
+    )
+
+
 class RegistrationStatus(Record):
     """Where the experiment stands against its registration."""
 
@@ -217,6 +293,9 @@ class Plan(Record):
     #: The smallest effect a run of this plan can detect, when an earlier run says how much
     #: the primary varies. Not part of the digest: it changes with the runs, not the plan.
     sensitivity: Sensitivity = Sensitivity()
+    #: The model calls a run starts, as work: not part of the digest, since it is what the
+    #: adapters installed here say.
+    work: Work = Work()
     #: Every design value and where it came from.
     provenance: tuple[SourcedValue, ...]
     #: Kinds the experiment uses that this ix has no adapter for, or whose adapter cannot be

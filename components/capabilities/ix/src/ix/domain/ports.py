@@ -5,8 +5,9 @@ which tool applies a stimulus (:class:`Probe`), how a measurement is taken
 (:class:`Sensor`), and what is brought up around the subjects (:class:`Environment`).
 :class:`Scope` is all ix assumes of whatever runs its work. The rest are optional, so an
 adapter need not answer what it cannot tell: a subject or a sensor may also be a
-:class:`Review` and a :class:`StandIn`, any adapter a :class:`Preflight`, an environment a
-:class:`Liveness`, and a scope :class:`Traced` and :class:`Recorded`. Without one there is
+:class:`Review` and a :class:`StandIn`, any adapter a :class:`Preflight` and a
+:class:`ModelCalls`, an environment a :class:`Liveness`, and a scope :class:`Traced` and
+:class:`Recorded`. Without one there is
 nothing to check, to stand in, to trace or to name, and the run proceeds. A sensor may also be
 a :class:`SpanReader`, so a run keeps the spans it reads. A kind's options,
 facets and metrics are data (:mod:`ix.domain.kind`), not part of these ports.
@@ -187,6 +188,22 @@ class Preflight(Protocol):
         its kind declares for one left out among them), a factor's ``{name}`` filled in;
         a requirement that depends on a placeholder only a trial fills (an environment's
         binding, ``{db.url}``) is left out: it is told when the trial starts."""
+        ...
+
+
+@runtime_checkable
+class ModelCalls(Protocol):
+    """Optional for any adapter: how many model calls it starts in one trial of an entry, so
+    that ``ix plan`` can say how much work a run asks of model providers, never what it costs.
+    An adapter that may call a model (one that needs ``runtimes`` or ``judge_models``) and is
+    not a ``ModelCalls`` is listed as not counted."""
+
+    def model_calls(self, options: Mapping[str, Any]) -> int:
+        """The most model calls one trial of an entry whose options are ``options`` starts:
+        each agent session, model call or judge's agent run once, however many model
+        requests it makes inside; 0 on a stand-in, which calls no model. ``options`` are as a
+        preflight's are, for one cell. Asks nothing of the host; raises for options it cannot
+        count, which leaves the entry not counted."""
         ...
 
 

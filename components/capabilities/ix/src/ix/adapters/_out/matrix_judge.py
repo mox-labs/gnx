@@ -132,7 +132,8 @@ class JudgeSensor:
     Options: ``rubric`` or ``rubric_file``; ``model_runtime`` or ``agent_runtime`` (one is
     required), ``model``, ``runtime_options``; ``repeats``; ``pass_at``. A
     :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight` (its runtime
-    builds and can judge) and a :class:`~ix.domain.ports.StandIn`."""
+    builds and can judge), a :class:`~ix.domain.ports.StandIn` and
+    :class:`~ix.domain.ports.ModelCalls`."""
 
     def __init__(self, runtimes: Runtimes) -> None:
         self._runtimes = runtimes
@@ -210,6 +211,12 @@ class JudgeSensor:
 
         noun = "model runtime" if point == MODEL_RUNTIME else "agent runtime"
         return [runtime_requirement(f"the judge's {noun} {name!r} builds and can judge", judges)]
+
+    def model_calls(self, options: Mapping[str, Any]) -> int:
+        """``repeats`` calls or one-turn sessions a reading; none on a stand-in. Raises for a
+        judge that names no runtime or both, and for a runtime nothing registered."""
+        point, name = _port(options)
+        return 0 if self._runtimes.stand_in(point, name) else int(options["repeats"])
 
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn:
         """The judge on the ``mock`` of its own port, scoring every reply 0.5: its readings

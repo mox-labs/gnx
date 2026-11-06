@@ -375,7 +375,7 @@ class TestPlanCommand:
             "schema", "digest", "experiment", "experiment_digest", "genre", "genre_url",
             "question", "decides", "comparison", "guardrails", "verdict_form", "subjects",
             "control", "factors", "probes", "calibration", "trials", "schedule_digest", "duration",
-            "order", "sensors", "requirements", "registration", "sensitivity",
+            "order", "sensors", "requirements", "registration", "sensitivity", "work",
             "provenance", "unimplemented", "notes", "overridden", "warnings", "runnable",
         ]  # fmt: skip
         assert re.fullmatch(r"[0-9a-f]{64}", document["schedule_digest"])

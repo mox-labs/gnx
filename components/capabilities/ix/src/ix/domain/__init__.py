@@ -39,12 +39,14 @@ from ix.domain.genre import AnalysisRef, GenreDesign, Repeats, Role
 from ix.domain.kind import Confusion, Metric, Option
 from ix.domain.plan import (
     Duration,
+    ModelCallCount,
     OrderPlan,
     PlannedProbes,
     RegistrationStatus,
     Required,
     Sensitivity,
     Trials,
+    Work,
 )
 from ix.domain.provenance import Content, Provenance, RuntimeOrigin
 from ix.domain.registration import Amendment, Deviation, Registration
@@ -77,6 +79,7 @@ __all__ = [
     "Margin",
     "Metric",
     "MetricExpectation",
+    "ModelCallCount",
     "MetricRef",
     "Option",
     "OrderPlan",
@@ -106,4 +109,5 @@ __all__ = [
     "Trial",
     "TrialCounts",
     "Trials",
+    "Work",
 ]

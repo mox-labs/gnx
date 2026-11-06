@@ -74,16 +74,17 @@ from ix.composition.settings import IxSettings
 from ix.domain import schema
 from ix.domain.design import entries_in_use, sensor_entry
 from ix.domain.errors import ConfigError, IxError, NotFoundError, UsageError
-from ix.domain.experiment import Experiment
+from ix.domain.experiment import Experiment, cells
 from ix.domain.genre import Genres, genres
-from ix.domain.kind import KIND_FAMILIES, Kinds, kinds, per_cell
-from ix.domain.plan import required
-from ix.domain.ports import Preflight, Requirement, SpanReader, Traced
+from ix.domain.kind import KIND_FAMILIES, Kinds, fill, kinds, per_cell
+from ix.domain.plan import Work, required, work
+from ix.domain.ports import ModelCalls, Preflight, Requirement, SpanReader, Traced
 from ix.domain.problem import InvalidExperimentError
 from ix.domain.provenance import Provenance, RuntimeOrigin, named_files
 from ix.domain.report import Report, Runs
 from ix.domain.report import report as build_report
 from ix.domain.report import summary as summarize
+from ix.domain.run import cell_key, schedule
 from ix.extension import (
     AGENT_RUNTIME,
     JUDGE_MODELS,
@@ -650,6 +651,7 @@ class Root:
                 self._stored(opened),
                 location=opened.registration.location if opened.registration else "",
                 requirements=requirements,
+                work=self._work(checked.experiment, checked.design, checked.probes),
                 earlier=self._earlier(opened.base, checked.experiment.name),
             )
             made = made.model_copy(
@@ -762,6 +764,46 @@ class Root:
                     if moved not in cautions:
                         cautions.append(moved)
         return required(found), tuple(cautions)
+
+    def _work(self, experiment: Experiment, design: Design, probes: ProbeSet) -> Work:
+        """The model calls a run would start, from every adapter in use that is a
+        :class:`~ix.domain.ports.ModelCalls`, asked each cell's options as its trials will
+        have them. An entry whose adapter may call a model (it needs matrix's runtimes or a
+        judge's models) and is not one, or that raises counting, is not counted, and the work
+        says so: counting runs an extension's own code."""
+        counted: dict[str, tuple[str, dict[str, int]]] = {}
+        uncounted: list[str] = []
+        for entry in entries_in_use(experiment, design, probes):
+            adapter = self._built(entry.kind)
+            if adapter is None:
+                continue  # a kind with no adapter here: the plan says so
+            if not isinstance(adapter, ModelCalls):
+                if self._needs(entry.kind) & {RUNTIMES, JUDGE_MODELS}:
+                    uncounted.append(f"{entry.where} (it does not say how many)")
+                continue
+            # Only a subject's and a probe's options are filled with a cell's levels.
+            filled = schema.family_of(entry.kind) in ("subject", "probe")
+            try:
+                by_cell = {
+                    cell_key(cell): adapter.model_calls(
+                        fill(entry.options, cell, escaped=True) if filled else entry.options
+                    )
+                    for cell in cells(experiment.factors)
+                }
+            except Exception as error:
+                uncounted.append(f"{entry.where} (its adapter raised {type(error).__name__})")
+                continue
+            counted[entry.key] = (entry.where, by_cell)
+        return work(schedule(experiment, design, probes), design, counted, uncounted)
+
+    def _needs(self, kind: str) -> frozenset[str]:
+        """What the adapter registered for ``kind`` (a type URL) is built with; nothing for a
+        kind nothing registered."""
+        point = POINTS.get(schema.family_of(kind) or "")
+        try:
+            return frozenset(self._registry.entry(point, kind).needs) if point else frozenset()
+        except MatrixError:
+            return frozenset()
 
     def _store(self, directory: str) -> ConstructStore:
         """The run store, built at matrix's ``store`` point to keep runs under
@@ -898,7 +940,7 @@ class Root:
         process, said in words: matrix's runtimes or a judge's models (it may call a model),
         or a launcher (it starts processes: the experiment's graders, the agent's code).
         Empty when none is: those are the sensors a report may run."""
-        needs = {sensor: self._registry.entry(POINTS["sensor"], sensor).needs for sensor in sensors}
+        needs = {sensor: self._needs(sensor) for sensor in sensors}
 
         def named(given: set[str]) -> str:
             return ", ".join(schema.short(s) for s in sorted(needs) if needs[s] & given)

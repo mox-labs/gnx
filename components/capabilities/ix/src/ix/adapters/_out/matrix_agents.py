@@ -689,8 +689,8 @@ def _unobservable(
 class AgentSessionSubject:
     """A fresh agent session per trial, in a working directory of its own: see the module
     docstring. Offers ``respondent`` (the session's handle) and ``workdir``. A
-    :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight` and a
-    :class:`~ix.domain.ports.StandIn`."""
+    :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight`, a
+    :class:`~ix.domain.ports.StandIn` and :class:`~ix.domain.ports.ModelCalls`."""
 
     def __init__(self, sessions: Sessions, runtimes: Runtimes, launcher: Launcher) -> None:
         self._sessions = sessions
@@ -716,6 +716,14 @@ class AgentSessionSubject:
             and not self._runtimes.stand_in(AGENT_RUNTIME, parsed.runtime)
         )
         return [*undeclared, *_unobservable(parsed, around, does, answers=answers)]
+
+    def model_calls(self, options: Mapping[str, Any]) -> int:
+        """One session a round: the ``loop``'s rounds, or one; none on a stand-in. Raises
+        for options that do not parse and for a runtime nothing registered."""
+        parsed = SessionOptions.model_validate(options)
+        if self._runtimes.stand_in(AGENT_RUNTIME, parsed.runtime):
+            return 0
+        return parsed.loop.rounds if parsed.loop is not None else 1
 
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn:
         """The session on ``mock``: what would be the real runtime's config (its

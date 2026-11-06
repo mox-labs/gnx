@@ -1020,7 +1020,11 @@ cannot be built here (`ix kinds` says why). What an entry needs of this host (a 
 PATH, an `auth` variable that is set, a runtime that resolves the model, the docker daemon)
 its adapter checks: the plan's `requirements` list each with `holds`, and one that does not
 hold is under `Runnable: no` with its `why` and `fix`. It depends on the host, so the
-experiment can still be registered.
+experiment can still be registered. The plan's `work` (`Model calls`) is how many model
+calls the run starts at most, as work, never a price: each agent session (one per round of a
+`loop`), model call and judge's reading counted once however many requests it makes, none
+on a stand-in, with each entry that may call a model and does not say how many named under
+`uncounted`.
 
 A `process` subject is up when its `ready` URL answers an HTTP GET with a status below 500;
 without `ready`, when its `url` accepts a connection; with neither, as soon as it starts. One

@@ -328,6 +328,7 @@ def _print_plan_cost(plan: ix.Plan) -> None:
         for required in plan.requirements
     ]
     _field("Requires", *(lines or ["nothing of this host that an adapter checks"]))
+    _field("Model calls", plan.work.text())
     _field("Registration", plan.registration.text())
     _field("Sensitivity", plan.sensitivity.text)
     blockers = [

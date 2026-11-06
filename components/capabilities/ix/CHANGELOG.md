@@ -67,6 +67,20 @@
   from `ix.composition.extension` so that it is not mistaken for the public contract. It
   registers ix's run path and its adapters, and declares nothing a third party uses.
 
+### Added
+
+- **The plan counts the model calls a run starts, as work, never as a price** (`Plan.work`,
+  `Model calls` in `ix plan`). Each adapter that starts model calls says how many one trial
+  of its entry starts, through a new optional role, `ModelCalls` (`model_calls(options)`,
+  in `ix.extension`): an agent session one a round of its `loop` (one without), a model
+  call one, a judge its `repeats`, a judge evaluator one, and each none on a stand-in. The
+  plan adds them over every trial of the schedule, cell by cell (a factor on a loop's
+  `rounds` counts each level), with each entry's share (`ModelCallCount`). An agent session
+  or a judge's agent run counts once however many requests it makes. An entry whose
+  adapter may call a model (it needs `runtimes` or `judge_models`) and does not say, or
+  raises counting, is named under `uncounted`. The count is not in the digest: it is what
+  the adapters installed here say.
+
 ### Fixed
 
 - **A deviation under a key that holds a dot names its values.** Deviations were found by a
