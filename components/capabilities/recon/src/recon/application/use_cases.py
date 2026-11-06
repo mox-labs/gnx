@@ -112,7 +112,7 @@ if TYPE_CHECKING:
     )
     from recon.domain.changes import KeyJoin
     from recon.domain.clock import Clock
-    from recon.domain.collector import Collector, Plugins
+    from recon.domain.collector import Collector, CollectorType, Plugins
     from recon.domain.documents import (
         Capture,
         ScheduleDocument,
@@ -325,20 +325,23 @@ class Recon:
         interval: tuple[datetime, datetime] | None = None,
         rebase: Collection[str] = (),
         restart: Collection[str] = (),
+        check: bool = False,
     ) -> PlanDocument:
-        """What a survey would do: every run with its effects, the files it would write, and
-        what the runs need of this host. Raises ConfigError listing every problem.
+        """What a survey would do: every run with its effects, and the files it would write.
+        Raises ConfigError listing every problem.
 
         A run of an entry with ``range:`` says the span it would ask for (``range``: its
         ``start``, ``end``, ``kind``, where it began, as ``from``, and its ``steps``), after
         what its table committed, read now; and it describes its first step's request, the
         bounds filled. ``interval``, ``rebase`` and ``restart`` are :meth:`survey`'s.
 
-        Writes nothing. Runs and fetches nothing either, unless a run's collector type
-        declares a ``preflight``: that type's collector is then built, asked what each of its
-        runs needs (an ``mcp`` type starts each stdio server a run names, and connects to each
-        remote one, to list its tools), and closed; ``preflight`` says what was done, and
-        ``requirements`` what was found.
+        Pure: it writes nothing, and runs, fetches and connects to nothing (ruling R11). With
+        ``check``, it also asks what the runs need of this host: each collector type that
+        declares a ``preflight`` has its collector built, asked what each of its runs needs (an
+        ``mcp`` type starts each stdio server a run names, and connects to each remote one, to
+        list its tools), and closed; ``preflight`` says what was done, ``requirements`` what was
+        found, and ``runnable`` whether it all holds (None unchecked). A plan of a run whose
+        type declares one says in ``provenance`` (``preflight``) whether it was checked.
 
         With ``stream``, what :meth:`stream` would do with ``windows``, ``until`` and
         ``forever``: it refuses what that refuses, and ``provenance`` also says how long the
@@ -364,7 +367,8 @@ class Recon:
             )
         elif plan.streams:
             provenance.append(_survey_returns(plan.config, plan.streams))
-        requirements, said, broken = self._preflight(name, plan.config)
+        provenance += _preflight_said(plan.config, self._plugins.collector_types, check)
+        requirements, said, broken = self._preflight(name, plan.config) if check else ([], [], [])
         broken += self._behind(name, plan)
         return PlanDocument(
             mission=name,
@@ -380,7 +384,7 @@ class Recon:
             warnings=[w.document() for w in plan.warnings + ranged.warnings + broken],
             skipped=[skipped.document() for skipped in plan.skipped],
             requirements=requirements,
-            runnable=all(required.holds for required in requirements),
+            runnable=all(required.holds for required in requirements) if check else None,
             preflight=said,
             provenance=provenance,
         )
@@ -1756,6 +1760,27 @@ def _returns(
         "or pages end it first. To not wait: a shorter window: seconds, or run it in the "
         "background"
     )
+
+
+def _preflight_said(
+    config: ReconConfig, types: Mapping[str, CollectorType], check: bool
+) -> list[SourcedValue]:
+    """Whether a plan checked what its runs need, said when a run's type declares a preflight
+    (an ``mcp`` run's): off by default, so a plan starts and connects to nothing."""
+    declared = sorted({e.type for e in config.collectors if e.type in types
+                       and types[e.type].preflight})  # fmt: skip
+    if not declared:
+        return []
+    if check:
+        return [SourcedValue(path="preflight", value=True, origin="command",
+                             note=f"checked: {', '.join(declared)}")]  # fmt: skip
+    return [SourcedValue(
+        path="preflight",
+        value=False,
+        origin="recon",
+        note=f"off: nothing was started or reached; --check runs the preflight of "
+        f"{', '.join(declared)} (an mcp server is started, or connected to, to list its tools)",
+    )]  # fmt: skip
 
 
 def _survey_returns(config: ReconConfig, streams: list[PlannedStream]) -> SourcedValue:

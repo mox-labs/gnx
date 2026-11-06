@@ -191,6 +191,28 @@ class TestSurvey:
         [listed] = _doc(_invoke("status", "m", "--json"))["missions"][0]["history"]
         assert listed["id"] == doc["archive"]
 
+    def test_check_checks_a_dry_run_and_is_refused_without_one(self, project: Path) -> None:
+        """Ruling R11: a plan is pure; ``--check`` asks it to run the preflights too, and means
+        nothing to a survey, which checks each run as it runs it."""
+        _mission(project, "m", {"catalog": [{"name": "s", "type": "mcp",
+                                             "command": str(project / "no-such-server")}],
+                                "collectors": [{"name": "a", "type": "mcp", "source": "s",
+                                                "tool": "t"}]})  # fmt: skip
+
+        pure = _doc(_invoke("survey", "m", "--dry-run", "--json"))
+        checked = _doc(_invoke("survey", "m", "--dry-run", "--check", "--json"))
+        refused = _invoke("survey", "m", "--check", "--json")
+
+        assert (pure["requirements"], pure["preflight"], pure["runnable"]) == ([], [], None)
+        human = _invoke("survey", "m", "--dry-run").stdout
+        assert "Runnable" not in human, "unchecked is not unrunnable"
+        assert checked["preflight"] and checked["runnable"] is False
+        [required] = checked["requirements"]
+        assert required["holds"] is False
+        assert refused.exit_code == 2 and _error(refused)["kind"] == "usage"
+        assert "--dry-run --check" in _error(refused)["fix"]
+        assert not (project / ".recon" / "m" / "archive").exists(), "nothing was surveyed"
+
     def test_human_mode_prints_the_archive_id_on_stdout(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         result = _invoke("survey", "m")
@@ -1021,12 +1043,9 @@ class TestTemplatesAndInit:
         have are the placeholders it asks the user to fill — and those must be caught by
         the plan, not discovered as a 404 against `/repos/{owner}/...`.
 
-        The configs are what is checked, so no preflight runs: ``mcp-server``'s would start
-        npx, which downloads its server."""
-        plugins = load_plugins()
-        for name, ct in list(plugins.collector_types.items()):
-            plugins.collector_types[name] = replace(ct, preflight="")
-        over = root(plugins=plugins)
+        The configs are what is checked, and a plan unchecked runs no preflight (ruling R11):
+        ``mcp-server``'s would start npx, which downloads its server."""
+        over = root()
         placeholder_templates = set()
         for item in _doc(_invoke("templates", "--json"))["templates"]:
             name = item["name"]

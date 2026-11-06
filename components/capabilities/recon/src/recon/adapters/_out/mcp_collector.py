@@ -33,7 +33,7 @@ resource's come from the JSON in its text. ``extract`` and ``normalize`` then ap
 
 Before each call the run's requirements are checked against the server's listing, taken
 once per survey: the tool is listed and the arguments match its input schema, or the
-resource is listed or matches a listed template. A dry run asks the same through
+resource is listed or matches a listed template. A checked dry run asks the same through
 :meth:`McpCollector.requirements`; in a survey, one that does not hold fails the table as
 ``config``. Every call, a listing included, draws a token from the source's rate limit and
 is one ``recon.mcp.call`` client span that names the method, the tool and the source, and

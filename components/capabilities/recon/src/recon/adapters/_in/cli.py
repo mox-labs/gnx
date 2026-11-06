@@ -259,6 +259,22 @@ def init(
 # --- survey ------------------------------------------------------------------------------
 
 
+_check_option = click.option(
+    "--check",
+    is_flag=True,
+    help="With --dry-run: also check what the runs need of this host, by each collector type's "
+    "preflight (mcp starts each stdio server, or connects to each remote one, to list its "
+    "tools)",
+)
+
+
+def _checked_with_dry_run(check: bool, dry_run: bool, fix: str) -> None:
+    """``--check`` checks a plan, so it is refused without ``--dry-run``: a survey checks
+    each run as it runs it."""
+    if check and not dry_run:
+        raise recon.UsageError("--check checks a dry run's plan, and this is no dry run", fix=fix)
+
+
 def _interval(
     ctx: click.Context, param: click.Parameter, value: str | None
 ) -> tuple[datetime, datetime] | None:
@@ -283,9 +299,9 @@ def _interval(
     "-n",
     "--dry-run",
     is_flag=True,
-    help="Validate and print the plan. Nothing is written; nothing is fetched or run, except "
-    "what a collector type's preflight says (mcp starts each stdio server to list its tools)",
+    help="Validate and print the plan. Nothing is written, fetched, run or connected to",
 )
+@_check_option
 @click.option(
     "--range",
     "interval",
@@ -313,6 +329,7 @@ def survey(
     config: Path | None,
     replace: bool,
     dry_run: bool,
+    check: bool,
     interval: tuple[datetime, datetime] | None,
     rebase: tuple[str, ...],
     restart: tuple[str, ...],
@@ -332,14 +349,16 @@ def survey(
 
     \b
     recon survey my-scan --dry-run
+    recon survey my-scan --dry-run --check
     recon survey my-scan --json
     recon survey my-scan -c other.yaml --replace
     recon survey metrics --range 2026-10-01T00:00Z..2026-10-02T00:00Z
     """
+    _checked_with_dry_run(check, dry_run, f"recon survey {name} --dry-run --check")
     setup = _telemetry_warnings()
     ranged = {"interval": interval, "rebase": rebase, "restart": restart}
     if dry_run:
-        plan = _operations().plan(name, config=config, replace=replace, **ranged)
+        plan = _operations().plan(name, config=config, replace=replace, check=check, **ranged)
         plan = plan.model_copy(update={"warnings": setup + plan.warnings})
         if as_json:
             _emit(plan.document())
@@ -413,6 +432,7 @@ def _instant(ctx: click.Context, param: click.Parameter, value: str | None) -> d
 @click.option(
     "-n", "--dry-run", is_flag=True, help="Validate and print the plan, every default with it"
 )
+@_check_option
 @_json_option
 def stream(
     name: str,
@@ -423,6 +443,7 @@ def stream(
     config: Path | None,
     replace: bool,
     dry_run: bool,
+    check: bool,
     as_json: bool,
 ) -> None:
     """Collect a stream: a source that does not end, into windows, each sealed as an archive.
@@ -443,11 +464,14 @@ def stream(
     recon stream my-feed --stream events --until 2026-10-24T18:00:00Z --json
     recon stream my-feed --stream events --forever
     """
+    _checked_with_dry_run(
+        check, dry_run, f"recon stream {name} --stream {collector} --dry-run --check"
+    )
     setup = _telemetry_warnings()
     if dry_run:
         plan = _operations().plan(
             name, config=config, replace=replace, stream=collector, windows=windows,
-            until=until, forever=forever,
+            until=until, forever=forever, check=check,
         )  # fmt: skip
         plan = plan.model_copy(update={"warnings": setup + plan.warnings})
         if as_json:
@@ -534,7 +558,7 @@ def _print_plan(name: str, plan: recon.PlanDocument) -> None:
         if not required.holds:
             said += "".join(f"; {part}" for part in (required.why, required.fix) if part)
         out.print(f"{holds}  {escape(said)}")
-    if not plan.runnable:
+    if plan.runnable is False:
         out.print("[red]Runnable: no[/]: a survey fails each table whose requirement is NO")
     for value in plan.provenance:
         said = f"{value.path} = {json.dumps(value.value)} ({value.origin}"

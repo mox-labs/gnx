@@ -136,13 +136,14 @@ class PlanDocument(Document):
     #: accepting the source's kind: ``{"collector", "source", "kind"}``.
     skipped: list[dict[str, str]] = []
     #: What the runs need of this host, as the collector types that declare a preflight
-    #: checked it during this dry run, each with whether it holds.
+    #: checked it, each with whether it holds: a plan asked to check (``--check``) alone.
     requirements: list[Required] = []
-    #: Whether every requirement holds. False is not an error: the plan is still valid, and a
-    #: survey fails each table whose requirement does not hold, as ``config``.
-    runnable: bool = True
-    #: What this dry run did to check the requirements, by collector type (``mcp: started
-    #: each stdio server a run names ...``); empty when it ran, fetched and wrote nothing.
+    #: Whether every requirement holds; None when the plan did not check. False is not an
+    #: error: the plan is still valid, and a survey fails each table whose requirement does
+    #: not hold, as ``config``.
+    runnable: bool | None = None
+    #: What the check did, by collector type (``mcp: started each stdio server a run names
+    #: ...``); empty when it ran, fetched and wrote nothing, as a plan does unless checked.
     preflight: list[str] = []
     #: Each setting of a stream the survey would use, and of a schedule (``schedule.every``,
     #: ``schedule.missed``, and the ``deadline`` a scheduled mission has), with where it came

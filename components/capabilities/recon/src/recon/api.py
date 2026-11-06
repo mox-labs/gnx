@@ -79,15 +79,17 @@ def plan(
     interval: tuple[datetime, datetime] | None = None,
     rebase: Collection[str] = (),
     restart: Collection[str] = (),
+    check: bool = False,
     root: Path | None = None,
 ) -> PlanDocument:
     """What ``survey`` would do, without doing it. ``recon.v1.plan``.
 
-    Writes nothing, and fetches and runs nothing, but for the preflight of a collector type
-    that declares one, which the document's ``preflight`` names: an ``mcp`` run's server is
-    started (or connected to) and asked for its tools, and ``requirements`` says what was
-    found. ``config`` is a file to plan instead of the mission's own; ``replace`` allows it to
-    differ from the mission's config. Raises ConfigError listing every problem; its
+    Pure: writes nothing, and fetches, runs and connects to nothing. With ``check``, it also
+    runs the preflight of each collector type that declares one, which the document's
+    ``preflight`` names: an ``mcp`` run's server is started (or connected to) and asked for
+    its tools, ``requirements`` says what was found, and ``runnable`` whether it all holds
+    (None unchecked). ``config`` is a file to plan instead of the mission's own; ``replace``
+    allows it to differ from the mission's config. Raises ConfigError listing every problem; its
     ``complete`` is false when more may follow their fixes. ``provenance`` says where each
     stream setting came from. With ``stream``, what :func:`stream` would do with
     ``windows``, ``until`` and ``forever``: refused as it would be, and ``provenance`` says
@@ -96,7 +98,7 @@ def plan(
     ``restart`` are :func:`survey`'s."""
     return _root(root).plan(
         name, config=config, replace=replace, stream=stream, windows=windows, until=until,
-        forever=forever, interval=interval, rebase=rebase, restart=restart,
+        forever=forever, interval=interval, rebase=rebase, restart=restart, check=check,
     )  # fmt: skip
 
 

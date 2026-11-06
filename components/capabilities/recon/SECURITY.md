@@ -11,17 +11,19 @@ Audience: anyone running `recon survey` against a config they did not write.
 **Read the config first, then the plan.** `recon survey <mission> --dry-run` validates the
 config and lists every run it would make — the exact substituted shell commands, the URLs,
 the MCP calls and each run's declared effects (network, subprocess, filesystem) — without
-writing anything. It fetches and executes nothing either, with one exception it names in the
-plan's `preflight`: for an `mcp` run it starts the stdio server the config names (and
-connects to a remote one) to list its tools. A config with an `mcp` source therefore runs
-its `command` at the dry run (boundary 8): read that key before planning someone else's
-config. Reviewing a config means reviewing it and that plan.
+writing anything. It fetches, executes and connects to nothing either (ruling R11): planning
+someone else's config is safe. `--dry-run --check` goes further, and says so in the plan's
+`preflight`: for an `mcp` run it starts the stdio server the config names (and connects to a
+remote one) to list its tools, so a config with an `mcp` source runs its `command` at a
+checked dry run (boundary 8): read that key before checking someone else's config. Reviewing
+a config means reviewing it and that plan.
 
 ## Blast radius
 
 A survey may execute arbitrary shell commands, start the MCP servers its config names, make
 outbound HTTP requests carrying your credentials, and write files under the mission directory
-(`.recon/<mission>/`). A dry run may start those MCP servers too.
+(`.recon/<mission>/`). A dry run starts nothing; one with `--check` may start those MCP
+servers too.
 
 ## Trust boundaries
 
@@ -228,13 +230,13 @@ sent.
 An `mcp` source names its server, and each of its two shapes is a boundary of its own.
 
 **A stdio server is a program the config runs.** `command` and `args` are started as a
-child process with your user's rights, at the dry run as at the survey: the same trust as
+child process with your user's rights, at a checked dry run as at the survey: the same trust as
 a `cli` collector's `run:` (boundary 1), and with `npx -y` or `uvx`, a package it downloads
 first. It is not given a shell, and not recon's environment: it gets the SDK's short list
 (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`) and the variables its `env:` gives,
 each written as is or as an `env:NAME` reference the mission declares. Its stderr goes to a
 temporary file; the end of it is quoted in a failed table's error, in `meta.yaml`. It is
-stopped when the survey (or the dry run) ends, however it ends. It runs in the project
+stopped when the survey (or the checked dry run) ends, however it ends. It runs in the project
 root, not recon's working directory, so a server given `.` reads the same tree wherever
 recon is run from.
 
