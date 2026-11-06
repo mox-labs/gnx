@@ -17,17 +17,17 @@ import re
 import shlex
 from typing import TYPE_CHECKING, Any
 
-from ix.adapters._out.python_checks import TIMEOUT_S, GraderError, code_in, run_cases, run_grader
-from ix.domain.kind import seconds
+from ix.adapters._out.python_checks import GraderError, code_in, run_cases, run_grader
+from ix.domain.kind import duration_of
 from ix.domain.ports import Sensed
 from ix.domain.problem import Problem, problem
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from ix.adapters._out.processes import Launcher
     from ix.domain.ports import Measured, Surroundings
     from ix.domain.run import Interaction, Target
+    from ix.extension import Launcher
 
 #: What a probe's truth says should happen, for the sensors that read an ``expectation``.
 MUST_TRIGGER = "must_trigger"
@@ -238,6 +238,11 @@ class FunctionTestSensor(_Reads):
         weights = _weights(cases, truth.get("tiers"))
         response = _response(interaction)
         file = options.get("file")
+        if file and str(file) in (response.get("files_too_large") or ()):
+            raise ValueError(
+                f"{file} is larger than the probe's collect_limit, so it was not kept: no "
+                "reading, rather than a failing one"
+            )
         if file:
             code = (response.get("files") or {}).get(str(file))
             source = f"the file {file}"
@@ -248,9 +253,12 @@ class FunctionTestSensor(_Reads):
             failures = [f"{source} holds no code" if not file else f"{file} was not written"]
             results = [False] * len(cases)
         else:
-            timeout_s = seconds(options.get("timeout")) or TIMEOUT_S
             run = await run_cases(
-                self._launcher, code, str(function_name), cases, timeout_s=timeout_s
+                self._launcher,
+                code,
+                str(function_name),
+                cases,
+                timeout_s=duration_of(options, "timeout"),
             )
             results = [result.passed for result in run.results]
             failures = [
@@ -259,7 +267,7 @@ class FunctionTestSensor(_Reads):
                 if not result.passed
             ]
         score = round(sum(w for w, ok in zip(weights, results, strict=True) if ok), 12)
-        pass_at = float(options.get("pass_at", 1.0))
+        pass_at = float(options["pass_at"])
         return Sensed(
             values={
                 "tests_passed": score >= pass_at - 1e-12,
@@ -294,12 +302,17 @@ class OutcomeSensor(_Reads):
             "probe": interaction.probe,
             "truth": dict(truth),
             "files": dict(response.get("files") or {}),
+            "files_too_large": list(response.get("files_too_large") or ()),
             "tool_calls": list(response.get("tool_calls") or []),
         }
-        timeout_s = seconds(options.get("timeout")) or TIMEOUT_S
         try:
             score = await run_grader(
-                self._launcher, str(options["graders"]), name, text, trial, timeout_s=timeout_s
+                self._launcher,
+                str(options["graders"]),
+                name,
+                text,
+                trial,
+                timeout_s=duration_of(options, "timeout"),
             )
         except GraderError as error:
             raise ValueError(str(error)) from error
@@ -314,7 +327,7 @@ class OutcomeSensor(_Reads):
             score = len(found) / len(facts)
             missed = [fact for fact in facts if fact not in found]
             detail = {"graded_by": "expected_facts", "found": found, "missed": missed}
-        above = float(options.get("pass_above", 0.5))
+        above = float(options["pass_above"])
         return Sensed(
             values={"outcome_score": score, "outcome_passed": score > above}, detail=detail
         )
@@ -421,9 +434,9 @@ class TextMatchSensor(_Reads):
                 f"{', '.join(TEXT_CHECKS)} in its truth or the sensor's options"
             )
         text = str(_response(interaction).get("text", ""))
-        if options.get("strip", True):
+        if options["strip"]:
             text = text.strip()
-        folded = options.get("ignore_case", False)
+        folded = options["ignore_case"]
 
         def fold(value: str) -> str:
             return value.casefold() if folded else value

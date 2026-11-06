@@ -60,12 +60,13 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from functools import cache
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
-from ix.adapters._out.matrix_agents import MODEL_RUNTIME, STAND_IN, runtime_requirement
+from ix.adapters._out.matrix_agents import STAND_IN, runtime_requirement
 from ix.domain.kind import placeholders
 from ix.domain.ports import Requirement, Sensed, StoodIn
 from ix.domain.problem import Problem, problem
+from ix.extension import MODEL_RUNTIME
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator, Sequence
@@ -74,9 +75,9 @@ if TYPE_CHECKING:
     from pydantic_evals.evaluators import Evaluator
     from pydantic_evals.otel import SpanTree, SpanTreeRecordingError
 
-    from ix.adapters._out.matrix_agents import Runtimes
     from ix.domain.ports import Surroundings
     from ix.domain.run import Interaction, Target
+    from ix.extension import JudgeModels, Runtimes
 
 #: The kind this sensor carries out, and the key its watch is kept under in an interaction.
 KIND = "ix.v1.sensor.evaluator"
@@ -103,17 +104,6 @@ READS_NO_SPANS = frozenset(
 
 #: Why a trial's spans are not there, when the watch kept none and said nothing.
 UNWATCHED = "no spans were kept for this trial: the evaluator sensor did not watch it"
-
-
-class JudgeModels(Protocol):
-    """Where a judge evaluator's model comes from, as the composition root hands it over:
-    a pydantic-ai ``Model`` that makes its calls through a matrix model runtime."""
-
-    def model(self, runtime: str, model: str | None, config: Mapping[str, Any]) -> Any:
-        """The pydantic-ai ``Model`` for ``model`` on the model runtime named ``runtime``,
-        built with ``config``. Raises ``IxError`` (with a ``fix``), ``matrix.MatrixError`` or
-        ``ValueError`` when there is none to give."""
-        ...
 
 
 class NoSpansError(ValueError):
@@ -322,7 +312,8 @@ class EvaluatorSensor:
     Options: ``evaluator`` (required), ``arguments``, ``result``; for an evaluator that
     calls a model, ``model_runtime`` (required), ``model`` and ``runtime_options``. A
     :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight` (a judge
-    evaluator's model can be had) and a :class:`~ix.domain.ports.StandIn`."""
+    evaluator's model can be had), a :class:`~ix.domain.ports.StandIn` and
+    :class:`~ix.domain.ports.ModelCalls`."""
 
     def __init__(self, runtimes: Runtimes, judge_models: JudgeModels) -> None:
         self._runtimes = runtimes
@@ -429,6 +420,14 @@ class EvaluatorSensor:
                 lambda: self._judge_model(options),
             )
         ]
+
+    def model_calls(self, options: Mapping[str, Any]) -> int:
+        """One judge's agent run a reading for an evaluator that calls a model, on a model
+        runtime that is not a stand-in; none otherwise. Raises for an evaluator
+        pydantic-evals does not have, and for a runtime nothing registered."""
+        if not _calls_a_model(_evaluator_class(options)) or not options.get("model_runtime"):
+            return 0
+        return 0 if self._runtimes.stand_in(MODEL_RUNTIME, str(options["model_runtime"])) else 1
 
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn:
         """A judge evaluator on the stand-in model runtime, whose model is pydantic-ai's

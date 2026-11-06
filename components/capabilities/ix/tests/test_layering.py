@@ -170,18 +170,18 @@ def test_only_composition_wires_outbound_adapters() -> None:
         if any(_within(module, ("ix.adapters._out",)) for module in _imports(file))
     }
     outside = {name for name in importers if not name.startswith("adapters/_out/")}
-    assert outside == {"composition/__init__.py", "composition/extension.py"}
+    assert outside == {"composition/__init__.py", "composition/entry_point.py"}
 
 
 def test_outbound_adapters_know_neither_use_cases_nor_the_command_line() -> None:
-    """An outbound adapter reaches the domain and its fellow adapters, nothing else in ix:
-    not the use cases, not the composition root, not the command line."""
+    """An outbound adapter reaches the domain, the extension contract and its fellow
+    adapters, nothing else in ix: not the use cases, not the composition root, not the
+    command line. (Changed requirement: what an adapter is handed is published in
+    ``ix.extension``, which the built-in adapters import as a third party's do.)"""
     for file in _files("adapters", "_out"):
         reached = {m for m in _imports(file) if m.split(".")[0] == "ix"}
-        assert all(_within(m, ("ix.domain", "ix.adapters._out")) for m in reached), (
-            file.name,
-            reached,
-        )
+        allowed = ("ix.domain", "ix.extension", "ix.adapters._out")
+        assert all(_within(m, allowed) for m in reached), (file.name, reached)
 
 
 def test_the_facade_imports_no_adapter() -> None:
@@ -202,12 +202,14 @@ def test_only_composition_and_the_matrix_adapters_name_matrix() -> None:
     import it: the components matrix drives ix through, and the adapters ix drives matrix
     through. Every other module, the domain and the use cases first, is held to none."""
     importers = {file.relative_to(SRC).as_posix() for file in _files() if _names_matrix(file)}
+    # Changed requirement: the extension contract names matrix's AgentCapabilities, the
+    # answer of Runtimes.capabilities, for its type alone (layers.json holds it to that).
     allowed = {
         file.relative_to(SRC).as_posix()
         for file in _files()
         if file.parent == SRC / "composition"
         or (file.parent.parent == SRC / "adapters" and file.name.startswith("matrix_"))
-    }
+    } | {"extension.py"}
     assert importers <= allowed, importers - allowed
     # The rule is about something: the adapters that speak to matrix exist and do.
     assert {
@@ -399,9 +401,11 @@ def test_the_domain_names_no_genre_and_no_kind() -> None:
     kinds = {file.stem.split(".", 1)[1] for file in (builtin / "kinds").glob("*.yaml")}
     assert genres >= {"evaluate", "compare", "characterize", "regress"}
     assert kinds >= {"http-load", "function-test", "inspect-task", "compose", "judge"}
-    # Words that are also plain English or a family name stay out of the scan.
+    # Words that are also plain English or a family name stay out of the scan; so does
+    # "command", an option type the domain holds before any kind, and "check", the word for
+    # what an A/A pass, a preflight and a genre do.
     names = (genres | kinds) - {"none", "process", "prompt", "usage", "memory", "timing",
-                                "outcome"}  # fmt: skip
+                                "outcome", "command", "check"}  # fmt: skip
     for file in _files("domain"):
         tree = ast.parse(file.read_text(encoding="utf-8"))
         docstrings = {

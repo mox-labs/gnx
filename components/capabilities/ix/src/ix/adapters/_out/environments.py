@@ -11,16 +11,15 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from ix.adapters._out.processes import answers, is_up, startable, wait_ready
-from ix.adapters._out.subjects import STARTUP_TIMEOUT_S
 from ix.domain.kind import seconds
 from ix.domain.ports import StoodIn
 from ix.domain.run import HarnessError
 
 if TYPE_CHECKING:
-    from ix.adapters._out.processes import Launcher
     from ix.domain.experiment import EnvironmentConfig
     from ix.domain.ports import Requirement, Scope
     from ix.domain.run import Bindings
+    from ix.extension import Launcher
 
 
 class NoEnvironment:
@@ -62,7 +61,7 @@ class ProcessEnvironment:
         for service in services.values() if isinstance(services, Mapping) else ():
             command = service.get("command") if isinstance(service, Mapping) else None
             if isinstance(command, list | tuple) and command:
-                program = startable(str(command[0]), base=base, cwd=str(service.get("cwd") or "."))
+                program = startable(str(command[0]), base=base, cwd=str(service["cwd"]))
                 if program is not None:
                     found.append(program)
         return found
@@ -72,7 +71,13 @@ class ProcessEnvironment:
         for name, service in environment.options["services"].items():
             command = [str(part) for part in service["command"]]
             ready = service.get("ready")
-            timeout_s = seconds(service.get("startup_timeout")) or STARTUP_TIMEOUT_S
+            timeout_s = seconds(service["startup_timeout"])
+            if timeout_s is None:
+                raise HarnessError(
+                    "option",
+                    f"service {name}: startup_timeout {service['startup_timeout']!r} is not a "
+                    "duration",
+                )
             if ready and await is_up(ready=ready):
                 raise HarnessError(
                     "address_in_use",
@@ -82,7 +87,7 @@ class ProcessEnvironment:
             try:
                 process = await self._launcher.start(
                     command,
-                    cwd=str(Path(base, service.get("cwd") or ".")),
+                    cwd=str(Path(base, service["cwd"])),
                     env={**os.environ, **added},
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.DEVNULL,

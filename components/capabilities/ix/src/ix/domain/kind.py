@@ -1,9 +1,12 @@
 """Kinds: what a subject, a probe, a sensor or an environment of a given kind is, as data.
 
-A kind's declaration says which options it takes (their types, which are required), which
-facets it ``offers`` and which it ``needs``, and, for a sensor, the metrics it provides (with
-whether a model judges them) and the probe truth it reads. ``validate`` holds an experiment
-to these declarations, so it does not depend on the author asserting them.
+A kind's declaration says which options it takes (their types, which are required, and the
+``default`` an entry that leaves one out is carried out with), which facets it ``offers``
+and which it ``needs``, and, for a sensor, the metrics it provides (with whether a model
+judges them) and the probe truth it reads. ``validate`` holds an experiment to these
+declarations, so it does not depend on the author asserting them. A default is the
+declaration's, never an adapter's constant: the design resolves it, the plan shows it, a
+registration freezes it, and an adapter is given it with the options written.
 
 A declaration starts nothing and measures nothing: the adapter registered under the kind's
 type URL does. What carrying a kind out needs of the host (a program, a daemon, a variable)
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Collection, Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import Field, ValidationError, model_validator
@@ -202,6 +206,18 @@ def seconds(value: Any) -> float | None:
     return None
 
 
+def duration_of(options: Mapping[str, Any], name: str) -> float:
+    """The duration option ``name`` of ``options`` as an adapter is given them (its default
+    filled in when it was left out), in seconds. Raises :class:`ValueError`, naming the
+    option and its value, when it is not a duration: a placeholder a cell filled with
+    something else, since validation holds what is written."""
+    value = options[name]
+    found = seconds(value)
+    if found is None:
+        raise ValueError(f"{name} {value!r} is not a duration")
+    return found
+
+
 def arrivals(value: Any) -> tuple[int, Literal["s", "m"]] | None:
     """A rate option as (arrivals, per second or per minute): ``80/s``, ``600/m`` or a bare
     number of arrivals per second. None when it is not a whole number of at least one
@@ -252,14 +268,6 @@ class Metric(Record):
         return self
 
 
-#: A metric's fields that neither a plan's digest nor a registration holds: its prose
-#: (``description``), and ``contended``, which is not prose but admission policy, a property
-#: of the instrument read where it is used: validation applies it to the width at every
-#: validate, plan, register and run, so a sensor that declares a metric contended after a
-#: registration refuses the run (it fails closed) rather than ungating it.
-UNFROZEN_METRIC_FIELDS: frozenset[str] = frozenset({"description", "contended"})
-
-
 class Confusion(Record):
     """For a sensor that names what was expected and what it observed in each trial (a skill
     that should fire, the one that did): the ``detail`` keys that hold the two, and the label
@@ -269,6 +277,24 @@ class Confusion(Record):
     expected: str = Field(min_length=1)
     observed: str = Field(min_length=1)
     negative: str = "none"
+
+
+#: The defaults an entry is carried out with besides what it writes: an option's value, or,
+#: for a mapping declared field by field, the defaults inside it.
+type Filled = dict[str, Level | Filled]
+
+#: An option of the subjects a probe or a sensor reads, as ``default_from`` names one: the
+#: runtime the subject runs on decides, not an option of the entry itself.
+SUBJECT_PREFIX = "subject."
+
+
+class DefaultBy(Record):
+    """A default that follows another option's value: the option beside it, of the same
+    kind or the same mapping (``load_model``), and the default for each of its values. A
+    value it names nothing for leaves the option without a default."""
+
+    option: Name
+    values: dict[str, Level] = Field(min_length=1)
 
 
 class Option(Record):
@@ -287,14 +313,58 @@ class Option(Record):
     #: directory.
     within: str = ""
     #: The placeholders the adapter fills in this option's value itself, at run time (a
-    #: loop's ``{prompt}`` and ``{response}``): validation reads them as bound.
+    #: loop's ``{prompt}`` and ``{response}``): validation reads them as bound, and a
+    #: default inside the option may hold them.
     binds: tuple[str, ...] = ()
     #: The value is prompt text, sent to a model as text (a prompt, a system prompt, a
     #: rubric), not a setting. A ``{name}`` in it that nothing fills is sent as written,
     #: since a prompt may hold code (``f"{user}"``), and validation warns of it rather
     #: than refusing it.
     text: bool = False
+    #: The value an entry that leaves the option out is carried out with. Data, not an
+    #: adapter's constant: the design holds it, the plan shows it with the kind it came
+    #: from, and a registration freezes it, so a later default moves no registered verdict
+    #: unseen. None: the option has no value when it is left out (a feature not used).
+    default: Level | None = None
+    #: A default that follows another option's value (:class:`DefaultBy`): ``concurrency``
+    #: follows ``load_model``. Resolved, shown and frozen as ``default`` is.
+    default_by: DefaultBy | None = None
+    #: For an option whose value, left out, is the runtime's own (an agent's ``max_turns``):
+    #: the options that may name that runtime, the first one written deciding: options of
+    #: the same kind, or, for a probe or a sensor, ``subject.<option>`` of the subjects it
+    #: reads. ix cannot know such a value, so the plan says whose it is instead.
+    default_from: tuple[str, ...] = ()
+    #: For a ``mapping`` whose keys are fixed (a loop's ``strategy`` and ``rounds``): each
+    #: key, declared as an option is, with its type, whether it is required and its default.
+    #: No other key may be written there.
+    fields: dict[Name, Option] = {}
+    #: For a ``mapping`` whose keys the author names (``services``): what each value is,
+    #: declared as an option is, its ``fields`` and their defaults included.
+    entries: Option | None = None
     description: str = ""
+
+    @model_validator(mode="after")
+    def _one_default(self) -> Option:
+        given = [self.default is not None, self.default_by is not None, bool(self.default_from)]
+        if sum(given) > 1:
+            raise ValueError(
+                "an option takes its default from one of default, default_by and default_from"
+            )
+        if any(given) and (self.required or self.required_when):
+            raise ValueError("a required option has no default")
+        candidates = [self.default] if self.default is not None else []
+        candidates += list(self.default_by.values.values()) if self.default_by else []
+        for value in candidates:
+            if not _fits(value, self, placeheld=False):
+                raise ValueError(
+                    f"default {value!r} is not a {_TYPE_WORDS.get(self.type, self.type)}"
+                    + (f" of {', '.join(self.allowed)}" if self.allowed else "")
+                )
+        if (self.fields or self.entries is not None) and self.type != "mapping":
+            raise ValueError("only a mapping declares fields or entries")
+        if self.fields and self.entries is not None:
+            raise ValueError("a mapping declares its fields, or what each of its entries is")
+        return self
 
 
 class Kind(Record):
@@ -346,12 +416,7 @@ class Kind(Record):
         for name in self.duration:
             if name not in self.options or self.options[name].type != "duration":
                 raise ValueError(f"duration names {name!r}, which is not a duration option")
-        for name, option in self.options.items():
-            unknown = sorted(set(option.required_when) - set(self.options))
-            if unknown:
-                raise ValueError(f"{name} is required_when {unknown}, which are not options")
-            if option.within and (option.type != "command" or option.within not in self.options):
-                raise ValueError(f"{name} is within {option.within!r}: a command names an option")
+        _coherent(self.options, (), reads_subjects=family in ("probe", "sensor"))
         return self
 
     @property
@@ -368,25 +433,169 @@ class Kind(Record):
         """The options whose value is prompt text (``text``)."""
         return tuple(name for name, option in self.options.items() if option.text)
 
+    def defaults(self, written: Mapping[str, Any]) -> Filled:
+        """What an entry written as ``written`` is carried out with besides what it writes:
+        the default of each option it leaves out, ``default`` or ``default_by``, and inside
+        a mapping it writes that declares its ``fields`` (or what each of its ``entries``
+        is), the default of each key it leaves out there."""
+        return _filled(self.options, written)
+
+    def left_to_runtime(
+        self, written: Mapping[str, Any], subjects: Iterable[Mapping[str, Any]] = ()
+    ) -> dict[str, str]:
+        """Each option ``written`` leaves out whose value is then its runtime's own
+        (``default_from``), with the runtime as ``written`` names it: the value of the first
+        of its ``default_from`` options written there, or, for ``subject.<option>``, the
+        values ``subjects`` write, joined; empty when none is."""
+        named = list(subjects)
+        found: dict[str, str] = {}
+        for name, option in self.options.items():
+            if not option.default_from or name in written:
+                continue
+            runtimes: list[str] = []
+            for key in option.default_from:
+                if key.startswith(SUBJECT_PREFIX):
+                    key = key.removeprefix(SUBJECT_PREFIX)
+                    runtimes = sorted({str(s[key]) for s in named if s.get(key)})
+                elif written.get(key):
+                    runtimes = [str(written[key])]
+                if runtimes:
+                    break
+            found[name] = ", ".join(runtimes)
+        return found
+
     def required(self, options: Mapping[str, Any]) -> tuple[str, ...]:
         """The options that must be written beside this kind, given the ``options`` that are."""
-        return tuple(
-            name
-            for name, option in self.options.items()
-            if option.required
-            or (
-                option.required_when
-                and all(options.get(key) == value for key, value in option.required_when.items())
+        return _required(self.options, options)
+
+
+# --- the declaration's own rules, and its defaults ---------------------------------------
+
+
+def _coherent(
+    declared: Mapping[str, Option], binds: tuple[str, ...], *, reads_subjects: bool
+) -> None:
+    """Hold each option of ``declared`` (a kind's, or a mapping's ``fields``) to the options
+    beside it: what makes it required, the directory a command is within, the option its
+    default follows and those that name the runtime whose value it is are options beside it;
+    a default holds no placeholder but those an option enclosing it ``binds``. Raises
+    :class:`ValueError` naming the first that is not."""
+    for name, option in declared.items():
+        unknown = sorted(set(option.required_when) - set(declared))
+        if unknown:
+            raise ValueError(f"{name} is required_when {unknown}, which are not options")
+        if option.within and (option.type != "command" or option.within not in declared):
+            raise ValueError(f"{name} is within {option.within!r}: a command names an option")
+        beside = {key for key in option.default_from if not key.startswith(SUBJECT_PREFIX)}
+        of_subjects = set(option.default_from) - beside
+        if name in beside or not beside <= set(declared) or (of_subjects and not reads_subjects):
+            raise ValueError(
+                f"{name} takes its default from {list(option.default_from)}: each names another "
+                "option beside it, or, for a probe or a sensor, subject.<option>"
             )
+        by = option.default_by
+        if by is not None and (by.option == name or by.option not in declared):
+            raise ValueError(
+                f"{name}'s default follows {by.option!r}, which is not an option beside it"
+            )
+        bound = (*binds, *option.binds)
+        held = [option.default] if option.default is not None else []
+        held += list(by.values.values()) if by is not None else []
+        stray = sorted({p for value in held for p in placeholders(value)} - set(bound))
+        if stray:
+            raise ValueError(f"{name}'s default holds {stray}, which nothing binds there")
+        _coherent(option.fields, bound, reads_subjects=reads_subjects)
+        if option.entries is not None:
+            _coherent({name: option.entries}, bound, reads_subjects=reads_subjects)
+
+
+def _default(option: Option, beside: Mapping[str, Any]) -> Level | None:
+    """What ``option`` is left out as, given the values beside it: its ``default``, or what
+    its ``default_by`` gives the value of the option it follows; None for neither."""
+    if option.default is not None:
+        return option.default
+    by = option.default_by
+    if by is None or placeholders(beside.get(by.option)):
+        return None
+    followed = beside.get(by.option)
+    return None if followed is None else by.values.get(_level_text(followed))
+
+
+def _level_text(value: Any) -> str:
+    """A value as a ``default_by`` names it: ``true`` for True, as written otherwise."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _filled(declared: Mapping[str, Option], written: Mapping[str, Any]) -> Filled:
+    """The defaults of what ``written`` leaves out of ``declared``, key by key, inside the
+    mappings it writes too. A default that follows another option reads that option as it
+    is carried out: written, or its own default."""
+    found: Filled = {
+        name: option.default
+        for name, option in declared.items()
+        if name not in written and option.default is not None
+    }
+    beside = {**found, **written}
+    for name, option in declared.items():
+        if name in written:
+            inner = written[name]
+            if isinstance(inner, Mapping) and (nested := _inner(option, inner)):
+                found[name] = nested
+        elif (value := _default(option, beside)) is not None:
+            found[name] = value
+    return found
+
+
+def _inner(option: Option, written: Mapping[str, Any]) -> Filled:
+    """The defaults inside the mapping ``written`` that ``option`` declares further."""
+    if option.fields:
+        return _filled(option.fields, written)
+    if option.entries is None or not option.entries.fields:
+        return {}
+    return {
+        key: nested
+        for key, item in written.items()
+        if isinstance(item, Mapping) and (nested := _filled(option.entries.fields, item))
+    }
+
+
+def merged(defaults: Mapping[str, Any], written: Mapping[str, Any]) -> dict[str, Any]:
+    """``written`` with each value of ``defaults`` it leaves out, mapping by mapping: an
+    entry's options as it is carried out. What is written wins."""
+    found = dict(defaults)
+    for key, value in written.items():
+        held = found.get(key)
+        if isinstance(held, Mapping) and isinstance(value, Mapping):
+            found[key] = merged(held, value)
+        else:
+            found[key] = value
+    return found
+
+
+def _required(declared: Mapping[str, Option], options: Mapping[str, Any]) -> tuple[str, ...]:
+    """The keys of ``declared`` that must be written, given the ``options`` that are."""
+    return tuple(
+        name
+        for name, option in declared.items()
+        if option.required
+        or (
+            option.required_when
+            and all(options.get(key) == value for key, value in option.required_when.items())
         )
+    )
 
 
 # --- options -----------------------------------------------------------------------------
 
 
-def _fits(value: Any, option: Option) -> bool:
-    if placeholders(value):
-        return True  # bound per cell; its type is known only then
+def _fits(value: Any, option: Option, *, placeheld: bool = True) -> bool:
+    """Whether ``value`` is of ``option``'s type and allowed values. A value holding a
+    placeholder fits while ``placeheld``: it is bound per cell, and its type known only
+    then."""
+    if placeheld and placeholders(value):
+        return True
     match option.type:
         case "string":
             ok = isinstance(value, str)
@@ -465,32 +674,57 @@ def binding_names(kind: Kind | None, options: Mapping[str, Any]) -> tuple[str, .
 
 
 def placed(kind: Kind, options: Mapping[str, Any], base: str) -> dict[str, Any]:
-    """``options`` with each option ``kind`` declares a ``path`` resolved against the
-    directory ``base``: a relative path is joined to it, an absolute one stands."""
+    """``options`` with each option ``kind`` declares a ``path``, and each directory a
+    ``command`` is ``within`` (its ``cwd``), resolved against the directory ``base``: a
+    relative one is joined to it, an absolute one stands."""
     joined = dict(options)
+    within = {option.within for option in kind.options.values() if option.within}
     for name, option in kind.options.items():
         value = joined.get(name)
-        if option.type == "path" and isinstance(value, str) and not value.startswith("/"):
+        if (
+            (option.type == "path" or name in within)
+            and isinstance(value, str)
+            and not value.startswith("/")
+        ):
             joined[name] = f"{base.rstrip('/')}/{value}"
     return joined
 
 
 def check_options(kind: Kind, options: Mapping[str, Any], path: str) -> list[Problem]:
     """Hold the options written beside a kind to its declaration: unknown keys, missing
-    required ones, wrong types. ``path`` is the entry (``subjects.buffered``)."""
-    label = schema.short(kind.name)
-    known = tuple(kind.options)
+    required ones, wrong types, and the same inside each mapping it declares further.
+    ``path`` is the entry (``subjects.buffered``)."""
+    owner = _Owner(f"{kind.family} kind {kind.label}", kind.label, f"beside kind: {kind.label}")
+    return _checked(kind.options, options, path, owner)
+
+
+@dataclass(frozen=True)
+class _Owner:
+    """Whose options a problem is about, in its words: what holds them (``probe kind
+    prompt``, ``option 'loop'``), its short name, and where a missing one is added."""
+
+    holder: str
+    label: str
+    place: str
+
+
+def _checked(
+    declared: Mapping[str, Option], options: Mapping[str, Any], path: str, owner: _Owner
+) -> list[Problem]:
+    """:func:`check_options` for ``declared``, the options of ``owner``, written at
+    ``path``."""
+    known = tuple(declared)
     problems: list[Problem] = []
     for key, value in options.items():
         if key.startswith(NOTE_PREFIX):
             continue
-        option = kind.options.get(key)
+        option = declared.get(key)
         if option is None:
             problems.append(
                 problem(
                     f"{path}.{key}",
                     kind="option_unknown",
-                    message=f"{kind.family} kind {label} takes no option {key!r}"
+                    message=f"{owner.holder} takes no option {key!r}"
                     + (f"; it takes {', '.join(known)}" if known else "; it takes none"),
                     fix=f"remove {key!r} or correct its spelling"
                     + (f" (options: {', '.join(known)})" if known else "")
@@ -509,7 +743,7 @@ def check_options(kind: Kind, options: Mapping[str, Any], path: str) -> list[Pro
                 problem(
                     f"{path}.{key}",
                     kind="option_invalid",
-                    message=f"{label} option {key!r} is {expected}; got {value!r}",
+                    message=f"{owner.label} option {key!r} is {expected}; got {value!r}",
                     fix=f"{key}: {option.allowed[0]}"
                     if option.allowed
                     else f"give {key!r} {expected}" + _EXAMPLES.get(option.type, ""),
@@ -517,22 +751,70 @@ def check_options(kind: Kind, options: Mapping[str, Any], path: str) -> list[Pro
                     got=value if isinstance(value, str | int | float | bool) else None,
                 )
             )
-    for key in kind.required(options):
+        elif isinstance(value, Mapping):
+            problems += _within_mapping(option, value, f"{path}.{key}", key)
+    for key in _required(declared, options):
         if key not in options:
-            problems.append(_missing(kind, key, path))
+            problems.append(_missing(declared[key], key, path, owner))
+    problems += _unfollowed(declared, options, path)
     return problems
 
 
-def _missing(kind: Kind, key: str, path: str) -> Problem:
-    option = kind.options[key]
+def _within_mapping(option: Option, value: Mapping[str, Any], path: str, key: str) -> list[Problem]:
+    """The problems inside a mapping ``option`` declares further: its ``fields``, or each of
+    its ``entries``."""
+    if option.fields:
+        return _checked(option.fields, value, path, _Owner(f"option {key!r}", key, f"in {key}"))
+    entry = option.entries
+    if entry is None:
+        return []
+    problems: list[Problem] = []
+    for name, item in value.items():
+        if not _fits(item, entry):
+            problems.append(
+                problem(
+                    f"{path}.{name}",
+                    kind="option_invalid",
+                    message=f"{key} {name!r} is a {_TYPE_WORDS.get(entry.type, entry.type)}; "
+                    f"got {item!r}",
+                    fix=f"give {key}.{name} as its declaration says",
+                )
+            )
+        elif isinstance(item, Mapping) and entry.fields:
+            within = _Owner(f"{key} {name!r}", name, f"in {key}.{name}")
+            problems += _checked(entry.fields, item, f"{path}.{name}", within)
+    return problems
+
+
+def _unfollowed(
+    declared: Mapping[str, Option], options: Mapping[str, Any], path: str
+) -> list[Problem]:
+    """An option left out whose default follows one a cell fills: which default applies is
+    known only per cell, and a design holds one default per entry, so it must be written."""
+    return [
+        problem(
+            f"{path}.{name}",
+            kind="option_missing",
+            message=f"{name}'s default follows {option.default_by.option}, which a cell fills, "
+            "so which default applies is known only per trial",
+            fix=f"write {name!r}, or write {option.default_by.option!r} without a placeholder",
+        )
+        for name, option in declared.items()
+        if option.default_by is not None
+        and name not in options
+        and placeholders(options.get(option.default_by.option))
+    ]
+
+
+def _missing(option: Option, key: str, path: str, owner: _Owner) -> Problem:
     when = ", ".join(f"{other} is {value}" for other, value in option.required_when.items())
     return problem(
         f"{path}.{key}",
         kind="option_missing",
-        message=f"{kind.family} kind {kind.label} requires option {key!r}"
+        message=f"{owner.holder} requires option {key!r}"
         + (f" when {when}" if when else "")
         + (f": {option.description}" if option.description else ""),
-        fix=f"add {key!r} beside kind: {kind.label}"
+        fix=f"add {key!r} {owner.place}"
         + (
             "; choose one of "
             + ", ".join(f"{value} ({means})" for value, means in option.choices.items())

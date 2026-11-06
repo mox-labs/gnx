@@ -1,7 +1,7 @@
 """The ``compose`` environment: a docker compose project brought up before the trials and down
 after them, for experiments whose subjects need several services around them.
 
-Every docker command goes through the :class:`~ix.adapters._out.processes.Launcher`, so a
+Every docker command goes through the :class:`~ix.extension.Launcher`, so a
 command that hangs is ended with its process group, and a test can put a fake ``docker`` on
 the path.
 
@@ -41,20 +41,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ix.adapters._out.processes import startable
-from ix.domain.kind import placeholders, seconds
+from ix.domain.kind import duration_of, placeholders
 from ix.domain.ports import Requirement
 from ix.domain.run import HarnessError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from ix.adapters._out.processes import Launcher
     from ix.domain.experiment import EnvironmentConfig
     from ix.domain.ports import Scope
     from ix.domain.run import Bindings
+    from ix.extension import Launcher
 
-#: How long the stack may take to come up, and healthy, when the experiment does not say.
-WAIT_TIMEOUT_S = 120.0
 #: How long a docker command other than ``up`` and ``down`` may take.
 COMMAND_TIMEOUT_S = 60.0
 #: How long ``down`` may take; the run's release of the environment is given longer.
@@ -258,9 +256,12 @@ class ComposeEnvironment:
         self._compose = compose
         # Before up: a stack that comes up in part, or whose up is cancelled, comes down.
         scope.defer(self._down)
-        wait_s = seconds(options.get("wait_timeout")) or WAIT_TIMEOUT_S
+        try:
+            wait_s = duration_of(options, "wait_timeout")
+        except ValueError as error:
+            raise HarnessError("option", str(error)) from error
         argv = [*compose, "up", "-d", "--wait", "--wait-timeout", str(math.ceil(wait_s))]
-        if options.get("build"):
+        if options["build"]:
             argv.append("--build")
         if options.get("pull"):
             argv += ["--pull", str(options["pull"])]

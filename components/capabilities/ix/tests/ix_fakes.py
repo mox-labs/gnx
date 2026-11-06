@@ -19,14 +19,19 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from functools import cache
 from typing import TYPE_CHECKING, Any
 
 from matrix import Registry, default_registry
 
 from ix.adapters._out.environments import NoEnvironment
-from ix.composition.extension import POINTS, register_run_path
+from ix.adapters._out.matrix_documents import KindFiles
+from ix.composition import type_url_problem
+from ix.composition.entry_point import register_run_path
 from ix.domain import schema
+from ix.domain.kind import Kinds, kinds, merged
 from ix.domain.run import HarnessError, SubjectError, Target
+from ix.extension import POINTS
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
@@ -37,6 +42,20 @@ if TYPE_CHECKING:
 
 #: What the fakes did in this process, in order: each subject reached, probed and released.
 LOG: list[str] = []
+
+
+@cache
+def _builtin_kinds() -> Kinds:
+    return kinds(KindFiles(packages=["ix.builtin.kinds"]).files(), grammar=type_url_problem)
+
+
+def carried(family: str, kind: str, options: Mapping[str, Any]) -> dict[str, Any]:
+    """``options`` as a run hands them to the adapter of the built-in ``kind`` of ``family``:
+    as written, with each default the kind declares for an option they leave out. A test
+    that calls an adapter directly gives it no less than ix does."""
+    declared = _builtin_kinds().get(family, kind)
+    assert declared is not None, f"no built-in {family} kind {kind}"
+    return merged(declared.defaults(options), options)
 
 
 class FakeSubject:

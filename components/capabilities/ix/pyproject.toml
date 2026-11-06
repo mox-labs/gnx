@@ -1,6 +1,6 @@
 [project]
 name = "ix"
-version = "0.7.0"
+version = "0.8.0"
 description = "Experiments on agents and services: one file with a genre, validated, planned, registered, run and reported"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -60,7 +60,7 @@ ix = "ix.builtin.kinds"
 # ix's run path, its extension points and its adapters, registered as every matrix
 # extension is; `matrix catalog` lists them.
 [project.entry-points."matrix.extensions"]
-ix = "ix.composition.extension:register"
+ix = "ix.composition.entry_point:register"
 
 [project.scripts]
 ix = "ix.adapters._in.cli:main"

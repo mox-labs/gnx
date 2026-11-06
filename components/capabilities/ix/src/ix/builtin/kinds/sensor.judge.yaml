@@ -18,10 +18,10 @@ options:
       claude-sdk: a one-turn Claude Agent SDK session; calls a model provider
       pydantic-ai: a one-turn pydantic-ai session, its model call through hardline; calls a model provider
       mock: a canned reply; calls no model
-  model: {type: string, description: the model that judges}
+  model: {type: string, default_from: [model_runtime, agent_runtime], description: "the model that judges; left out, the judge runtime's own"}
   runtime_options: {type: mapping, description: "the judge runtime's own config, passed through as written"}
-  repeats: {type: integer, description: "how many times the judge reads each response, to check that it agrees with itself; 1 when absent"}
-  pass_at: {type: number, description: "the score at which judged_pass is true; 0.5 when absent"}
+  repeats: {type: integer, default: 1, description: "how many times the judge reads each response, to check that it agrees with itself; at least 1"}
+  pass_at: {type: number, default: 0.5, description: "the score at which judged_pass is true"}
 needs: [response]
 metrics:
   - {name: judged_score, unit: ratio, direction: higher, shape: scalar, judged: true, bounds: [0, 1], description: "the judge's score against the rubric, the mean of its repeats"}

@@ -15,7 +15,6 @@ import asyncio
 import os
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlsplit
 
 import httpx2
@@ -23,23 +22,8 @@ import httpx2
 from ix.domain.kind import placeholders
 from ix.domain.ports import Requirement
 
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
 #: How often a starting program is asked whether it is up.
 POLL_S = 0.05
-
-
-class Launcher(Protocol):
-    """Starts a child in a group of its own, and ends the whole group."""
-
-    async def start(self, argv: Sequence[str], **options: Any) -> asyncio.subprocess.Process:
-        """Start ``argv``. ``options`` are those of ``asyncio.create_subprocess_exec``."""
-        ...
-
-    async def stop(self, process: asyncio.subprocess.Process, *, grace_s: float = 5.0) -> None:
-        """End the process and everything it started: politely, then for good."""
-        ...
 
 
 def startable(program: str, *, base: str, cwd: str = ".") -> Requirement | None:

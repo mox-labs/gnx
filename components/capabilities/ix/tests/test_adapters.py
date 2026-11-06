@@ -12,9 +12,10 @@ import os
 import socket
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
+from ix_fakes import carried
 
 from ix.adapters._out import k6_load
 from ix.adapters._out.environments import NoEnvironment, ProcessEnvironment
@@ -25,6 +26,9 @@ from ix.adapters._out.subjects import HttpSubject, ProcessSubject
 from ix.domain.experiment import EnvironmentConfig, SubjectConfig
 from ix.domain.ports import Surroundings
 from ix.domain.run import HarnessError, Interaction, SubjectError, Target
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 
@@ -39,15 +43,25 @@ def _free_port() -> int:
 
 def _server(port: int, **options: Any) -> SubjectConfig:
     url = f"http://127.0.0.1:{port}"
-    return SubjectConfig(
-        kind="process",
-        options={
-            "command": [sys.executable, str(SERVER), "--port", str(port), "--delay-ms", "1"],
-            "url": url,
-            "ready": f"{url}/healthz",
-            **options,
-        },
+    written = {
+        "command": [sys.executable, str(SERVER), "--port", str(port), "--delay-ms", "1"],
+        "url": url,
+        "ready": f"{url}/healthz",
+        **options,
+    }
+    return SubjectConfig(kind="process", options=carried("subject", "process", written))
+
+
+def _services(services: Mapping[str, Any]) -> EnvironmentConfig:
+    """A ``process`` environment of ``services``, as a run gives it to its adapter."""
+    return EnvironmentConfig(
+        kind="process", options=carried("environment", "process", {"services": services})
     )
+
+
+def _load(options: Mapping[str, Any]) -> dict[str, Any]:
+    """An ``http-load`` probe's options as a run gives them to the probe."""
+    return carried("probe", "http-load", options)
 
 
 def _alive(pid: int) -> bool:
@@ -178,13 +192,12 @@ class TestProcessSubject:
 
     async def test_a_program_that_exits_before_it_is_up_is_the_subjects_failure(self) -> None:
         port = _free_port()
+        written = {
+            "command": [sys.executable, "-c", "import sys; sys.exit('no config')"],
+            "ready": f"http://127.0.0.1:{port}/healthz",
+        }
         broken = _server(port).model_copy(
-            update={
-                "options": {
-                    "command": [sys.executable, "-c", "import sys; sys.exit('no config')"],
-                    "ready": f"http://127.0.0.1:{port}/healthz",
-                }
-            }
+            update={"options": carried("subject", "process", written)}
         )
         with pytest.raises(SubjectError) as failed:
             async with ProcessSubject(MatrixLauncher()).reach("s", broken, base="."):
@@ -195,14 +208,13 @@ class TestProcessSubject:
         self,
     ) -> None:
         port = _free_port()
+        written = {
+            "command": [sys.executable, "-c", "import time; time.sleep(600)"],
+            "ready": f"http://127.0.0.1:{port}/healthz",
+            "startup_timeout": "300ms",
+        }
         silent = _server(port).model_copy(
-            update={
-                "options": {
-                    "command": [sys.executable, "-c", "import time; time.sleep(600)"],
-                    "ready": f"http://127.0.0.1:{port}/healthz",
-                    "startup_timeout": "300ms",
-                }
-            }
+            update={"options": carried("subject", "process", written)}
         )
         started: list[int] = []
 
@@ -224,7 +236,8 @@ class TestProcessSubject:
         subject = ProcessSubject(MatrixLauncher())
 
         def told(command: list[str], **options: Any) -> str | None:
-            found = subject.requirements({"command": command, **options}, base=str(tmp_path))
+            given = carried("subject", "process", {"command": command, **options})
+            found = subject.requirements(given, base=str(tmp_path))
             return next((required.why for required in found if not required.holds), None)
 
         assert (
@@ -250,7 +263,10 @@ class TestProcessSubject:
         assert [(p.path, p.kind) for p in broken] == [("subjects.proxy.url", "option_invalid")]
 
     async def test_a_command_that_cannot_be_started_is_the_subjects_failure(self) -> None:
-        missing = SubjectConfig(kind="process", options={"command": ["./no-such-program"]})
+        missing = SubjectConfig(
+            kind="process",
+            options=carried("subject", "process", {"command": ["./no-such-program"]}),
+        )
         with pytest.raises(SubjectError) as failed:
             async with ProcessSubject(MatrixLauncher()).reach("s", missing, base="."):
                 pass
@@ -331,11 +347,8 @@ class TestEnvironments:
     async def test_process_starts_each_service_and_defers_its_stop(self) -> None:
         port = _free_port()
         server = _server(port).options
-        environment = EnvironmentConfig(
-            kind="process",
-            options={
-                "services": {"upstream": {"command": server["command"], "ready": server["ready"]}}
-            },
+        environment = _services(
+            {"upstream": {"command": server["command"], "ready": server["ready"]}}
         )
         scope = Scope()
         bindings = await ProcessEnvironment(MatrixLauncher()).up(environment, base=".", scope=scope)
@@ -356,11 +369,8 @@ class TestEnvironments:
     async def test_a_service_that_goes_down_after_it_came_up_is_lost(self) -> None:
         port = _free_port()
         server = _server(port).options
-        environment = EnvironmentConfig(
-            kind="process",
-            options={
-                "services": {"upstream": {"command": server["command"], "ready": server["ready"]}}
-            },
+        environment = _services(
+            {"upstream": {"command": server["command"], "ready": server["ready"]}}
         )
         scope = Scope()
         provider = ProcessEnvironment(MatrixLauncher())
@@ -384,16 +394,13 @@ class TestEnvironments:
 
     async def test_a_service_that_does_not_come_up_fails_and_is_still_released(self) -> None:
         port = _free_port()
-        environment = EnvironmentConfig(
-            kind="process",
-            options={
-                "services": {
-                    "upstream": {
-                        "command": [sys.executable, "-c", "raise SystemExit(3)"],
-                        "ready": f"http://127.0.0.1:{port}/healthz",
-                    }
+        environment = _services(
+            {
+                "upstream": {
+                    "command": [sys.executable, "-c", "raise SystemExit(3)"],
+                    "ready": f"http://127.0.0.1:{port}/healthz",
                 }
-            },
+            }
         )
         scope = Scope()
         with pytest.raises(HarnessError, match="exited with code 3"):
@@ -460,7 +467,7 @@ class TestSensors:
 class TestTheLoadProbeWithoutItsTool:
     def test_a_closed_model_holds_clients_and_warms_up_first(self) -> None:
         plan, duration = k6_load.scenarios(
-            {"load_model": "closed", "concurrency": 4, "duration": "3s", "warmup": "500ms"}
+            _load({"load_model": "closed", "concurrency": 4, "duration": "3s", "warmup": "500ms"})
         )
         assert duration == 3.0
         assert plan == {
@@ -476,23 +483,32 @@ class TestTheLoadProbeWithoutItsTool:
     def test_every_request_of_the_window_is_waited_for_up_to_its_timeout(self) -> None:
         """Regression: a request in flight when the window closed was cut off and counted
         nowhere, so a subject that hung on some requests read as having no errors. Now k6
-        waits past the window for as long as a request may take (option ``timeout``, k6's
-        60s when absent), so every request sent ends answered, failed or timed out."""
-        plan, _ = k6_load.scenarios({"load_model": "closed", "duration": "3s", "timeout": "2s"})
+        waits past the window for as long as a request may take (option ``timeout``, 60s,
+        k6's own, when it is left out), so every request sent ends answered, failed or timed
+        out."""
+        plan, _ = k6_load.scenarios(
+            _load({"load_model": "closed", "duration": "3s", "timeout": "2s"})
+        )
         assert plan["measured"]["gracefulStop"] == "3s"
-        assert k6_load.request_timeout({"timeout": "2s"}) == 2.0
-        assert k6_load.request_timeout({}) == k6_load.REQUEST_TIMEOUT_S == 60.0
+        assert k6_load.times(_load({"duration": "3s", "timeout": "2s"})).timeout == 2.0
+        assert k6_load.times(_load({"duration": "3s"})).timeout == 60.0
         probe = k6_load.K6Load(MatrixLauncher())
-        assert probe.budget_s({"duration": "3s", "timeout": "2s"}) == 3 + 3 + k6_load.OVERHEAD_S
+        assert probe.budget_s(_load({"duration": "3s", "timeout": "2s"})) == (
+            3 + 3 + k6_load.OVERHEAD_S
+        )
 
     def test_an_open_model_holds_an_arrival_rate(self) -> None:
-        plan, _ = k6_load.scenarios({"load_model": "open", "rate": "80/s", "duration": "60s"})
+        plan, _ = k6_load.scenarios(
+            _load({"load_model": "open", "rate": "80/s", "duration": "60s"})
+        )
         assert list(plan) == ["measured"]
         measured = plan["measured"]
         assert (measured["executor"], measured["rate"], measured["timeUnit"]) == (
             "constant-arrival-rate", 80, "1s",
         )  # fmt: skip
-        per_minute, _ = k6_load.scenarios({"load_model": "open", "rate": "30/m", "duration": "60s"})
+        per_minute, _ = k6_load.scenarios(
+            _load({"load_model": "open", "rate": "30/m", "duration": "60s"})
+        )
         assert (per_minute["measured"]["rate"], per_minute["measured"]["timeUnit"]) == (30, "1m")
 
     @pytest.mark.parametrize(
@@ -508,7 +524,7 @@ class TestTheLoadProbeWithoutItsTool:
         self, options: dict[str, Any]
     ) -> None:
         with pytest.raises(HarnessError) as failed:
-            k6_load.scenarios(options)
+            k6_load.scenarios(_load(options))
         assert failed.value.reason == "option"
 
     def _summary(
@@ -570,7 +586,7 @@ class TestTheLoadProbeWithoutItsTool:
             {"load_model": "open", "rate": "20/s", "duration": "6s"},
             {"load_model": "open", "rate": "20/s", "duration": "6s", "concurrency": 5},
         ):
-            plan, _ = k6_load.scenarios(options)
+            plan, _ = k6_load.scenarios(_load(options))
             measured = plan["measured"]
             assert measured["preAllocatedVUs"] == measured["maxVUs"]
 
@@ -654,8 +670,8 @@ class TestTheLoadProbeWithoutItsTool:
         probe = k6_load.K6Load(MatrixLauncher(), binary="no-such-load-tool")
         options = {"target": "http://127.0.0.1:1/x", "load_model": "closed", "duration": "1s"}
         with pytest.raises(HarnessError) as failed:
-            await probe.apply(options, Target(subject="s"), seed=1)
+            await probe.apply(_load(options), Target(subject="s"), seed=1)
         assert failed.value.reason == "tool_missing"
-        assert probe.budget_s({"duration": "3s", "warmup": "1s"}) == (
-            4 + k6_load.REQUEST_TIMEOUT_S + 1 + k6_load.OVERHEAD_S
+        assert probe.budget_s(_load({"duration": "3s", "warmup": "1s"})) == (
+            4 + 60 + 1 + k6_load.OVERHEAD_S
         )

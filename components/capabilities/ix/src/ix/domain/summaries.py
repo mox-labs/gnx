@@ -24,6 +24,7 @@ import statistics
 from typing import TYPE_CHECKING, Literal
 
 from ix.domain import schema
+from ix.domain.analysis import observes
 from ix.domain.run import CALIBRATION
 from ix.domain.schema import Record
 
@@ -181,10 +182,12 @@ def _range(metric: Metric) -> tuple[float, float] | None:
 def screen(
     design: Design, trials: Sequence[Trial], readings: Sequence[Reading]
 ) -> tuple[ProbeScreen, ...]:
-    """The screen of every probe on the primary metric; empty without a primary."""
+    """The screen of every probe on the primary metric; empty without a primary, and for a
+    check, whose probes are predicates that should always hold: a ceiling there is the
+    point, not a probe that cannot discriminate."""
     primary = design.primary
     metric = design.metric(primary.metric) if primary is not None else None
-    if primary is None or metric is None:
+    if primary is None or metric is None or observes(design.analysis):
         return ()
     statistic = primary.statistic or "value"
     probe_of = {trial.seq: trial.probe for trial in trials if trial.role != CALIBRATION}

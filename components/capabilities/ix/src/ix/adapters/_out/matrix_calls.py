@@ -3,7 +3,7 @@
 **A trial is one model call.** A model call is not an agent session: it has no loop, no
 tools, no turns and no working directory. Reaching a ``model-call`` subject opens a
 :class:`Call` under a handle (``respondent``) in the
-:class:`~ix.adapters._out.matrix_agents.Sessions` the ``prompt`` probe shares; the probe puts
+:class:`~ix.extension.Sessions` the ``prompt`` probe shares; the probe puts
 its prompt, and the call makes one request through :meth:`matrix.ModelRuntime.call`.
 Leaving the subject closes the handle.
 
@@ -50,12 +50,9 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from ix.adapters._out.matrix_agents import (
     ACTIVATION,
     CANNED,
-    MODEL_RUNTIME,
     RESPONDENT,
     STAND_IN,
     TOOL_USAGE,
-    Runtimes,
-    Sessions,
     built,
     carried_out,
     released,
@@ -66,12 +63,14 @@ from ix.domain.kind import placeholders
 from ix.domain.ports import Requirement, StoodIn
 from ix.domain.problem import Problem, problem
 from ix.domain.run import HarnessError, Target
+from ix.extension import MODEL_RUNTIME
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
 
     from ix.domain.experiment import SubjectConfig
     from ix.domain.ports import Surroundings
+    from ix.extension import Runtimes, Sessions
 
 FUNCTION_TEST = "ix.v1.sensor.function-test"
 
@@ -105,7 +104,7 @@ class CallOptions(BaseModel):
 @dataclass
 class Call:
     """One trial's model call: the runtime it is made on, and how it is asked. A
-    :class:`~ix.adapters._out.matrix_agents.Respondent`."""
+    :class:`~ix.extension.Respondent`."""
 
     options: CallOptions
     simulated: bool
@@ -199,8 +198,8 @@ def _unobservable(around: Surroundings) -> list[Problem]:
 
 class ModelCallSubject:
     """One model call per trial: see the module docstring. Offers ``respondent`` (the call's
-    handle). A :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight` and
-    a :class:`~ix.domain.ports.StandIn`."""
+    handle). A :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight`, a
+    :class:`~ix.domain.ports.StandIn` and :class:`~ix.domain.ports.ModelCalls`."""
 
     def __init__(self, sessions: Sessions, runtimes: Runtimes) -> None:
         self._sessions = sessions
@@ -237,6 +236,10 @@ class ModelCallSubject:
                 if key not in takes
             ),
         ]
+
+    def model_calls(self, options: Mapping[str, Any]) -> int:
+        """One call a trial; none on a stand-in. Raises for a runtime nothing registered."""
+        return 0 if self._runtimes.stand_in(MODEL_RUNTIME, str(options["runtime"])) else 1
 
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn:
         """The call on ``mock``: the real runtime's ``runtime_options`` set aside, the

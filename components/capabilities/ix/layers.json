@@ -49,6 +49,17 @@
       }
     },
     {
+      "name": "extension",
+      "files": ["src/ix/extension.py"],
+      "allow": ["__future__", "asyncio", "collections", "typing", "matrix", "ix.domain"],
+      "forbid": ["opentelemetry", "open"],
+      "why": {
+        "ix.domain": "the ports, records and errors an adapter speaks in are the domain's, published here under the one name an extension author imports",
+        "asyncio, matrix": "type-only: a Launcher starts an asyncio subprocess, and Runtimes answers with matrix's AgentCapabilities, which ix does not wrap",
+        "nothing else": "the contract declares; it implements nothing and wires nothing"
+      }
+    },
+    {
       "name": "builtin_data",
       "files": ["src/ix/builtin/**/*.py"],
       "allow": [],
@@ -59,18 +70,20 @@
     {
       "name": "adapters_out",
       "files": ["src/ix/adapters/__init__.py", "src/ix/adapters/_out/__init__.py",
-                "src/ix/adapters/_out/agent_sensors.py", "src/ix/adapters/_out/compose.py",
+                "src/ix/adapters/_out/agent_sensors.py", "src/ix/adapters/_out/commands.py",
+                "src/ix/adapters/_out/compose.py",
                 "src/ix/adapters/_out/environments.py", "src/ix/adapters/_out/evaluators.py",
                 "src/ix/adapters/_out/k6_load.py",
                 "src/ix/adapters/_out/processes.py", "src/ix/adapters/_out/provenance.py",
                 "src/ix/adapters/_out/python_checks.py",
                 "src/ix/adapters/_out/registration_file.py", "src/ix/adapters/_out/sensors.py",
                 "src/ix/adapters/_out/subjects.py"],
-      "allow": ["*", "ix.domain", "ix.adapters._out"],
+      "allow": ["*", "ix.domain", "ix.extension", "ix.adapters._out"],
       "forbid": ["matrix", "opentelemetry"],
       "why": {
         "*": "one technology each: k6, ps, httpx2, child Python, docker compose, git and file digests, the registration file, pydantic-evals",
         "ix.domain": "the ports they implement and the types they speak in",
+        "ix.extension": "what an adapter is handed (a Launcher, Runtimes, Sessions, JudgeModels) is the published contract a third party writes against too",
         "ix.adapters._out": "one adapter may build on another, a subject or the compose environment on the launcher's processes module; a deviation from the four places that test_layering allows on purpose",
         "forbid": "matrix and OpenTelemetry each have adapter files of their own"
       }
@@ -78,7 +91,7 @@
     {
       "name": "adapters_out_matrix",
       "files": ["src/ix/adapters/_out/matrix_*.py"],
-      "allow": ["*", "ix.domain", "ix.adapters._out"],
+      "allow": ["*", "ix.domain", "ix.extension", "ix.adapters._out"],
       "forbid": ["opentelemetry"],
       "why": {
         "*": "matrix is their technology: agent runtimes and sessions (matrix_agents, matrix_calls, matrix_judge), the loader (matrix_documents), errors (matrix_errors), process groups (matrix_process), the run store and executor (matrix_runs)",

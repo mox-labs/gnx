@@ -375,7 +375,7 @@ class TestPlanCommand:
             "schema", "digest", "experiment", "experiment_digest", "genre", "genre_url",
             "question", "decides", "comparison", "guardrails", "verdict_form", "subjects",
             "control", "factors", "probes", "calibration", "trials", "schedule_digest", "duration",
-            "order", "sensors", "requirements", "registration", "sensitivity",
+            "order", "sensors", "requirements", "registration", "sensitivity", "work",
             "provenance", "unimplemented", "notes", "overridden", "warnings", "runnable",
         ]  # fmt: skip
         assert re.fullmatch(r"[0-9a-f]{64}", document["schedule_digest"])
@@ -403,7 +403,9 @@ class TestPlanCommand:
         }
         for value in document["provenance"]:
             assert set(value) == {"path", "value", "origin", "note"}
-            assert value["origin"] in ("experiment", "genre", "ix")
+            # Changed requirement: an option's default comes from its kind, and a value
+            # left to the runtime is said to be the runtime's.
+            assert value["origin"] in ("experiment", "genre", "ix", "kind", "runtime")
         for required in document["requirements"]:
             assert set(required) == {"need", "holds", "why", "fix", "needed_by"}
 
@@ -693,9 +695,14 @@ class TestGenresAndKindsCommands:
         assert load["schema"] == "ix.v1.kind"
         assert load["options"]["duration"] == {
             "type": "duration", "required": True, "allowed": [], "required_when": {},
-            "choices": {}, "within": "", "binds": [], "text": False,
+            "choices": {}, "within": "", "binds": [], "text": False, "default": None,
+            "default_by": None, "default_from": [], "fields": {}, "entries": None,
             "description": "how long the measured load lasts",
         }  # fmt: skip
+        # Each default is the declaration's, in the document an agent reads.
+        assert load["options"]["timeout"]["default"] == "60s"
+        session = document["kinds"]["ix.v1.subject.agent-session"]["options"]
+        assert session["max_turns"]["default_from"] == ["runtime"]
         command = document["kinds"]["ix.v1.subject.process"]["options"]["command"]
         assert (command["type"], command["within"]) == ("command", "cwd")
         runtime = document["kinds"]["ix.v1.subject.agent-session"]["options"]["runtime"]

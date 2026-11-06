@@ -34,7 +34,7 @@ from ix.adapters._in.cli import main
 from ix.adapters._out.matrix_agents import Loop
 from ix.adapters._out.otel_tracing import OtelTracer
 from ix.composition import Root, using
-from ix.composition.extension import register
+from ix.composition.entry_point import register
 from ix.composition.settings import IxSettings
 
 if TYPE_CHECKING:
@@ -1516,7 +1516,8 @@ class TestAPromptReachesTheAgentAsWritten:
             'You said ok; quote {response} as {"k": {"v": 1}} for {{user}} at {size}.'
         }
         until = "{{response}} {{done}} {}"
-        assert Loop(strategy="self-review", until=until).until == "{response} {{done}} {}"
+        loop = Loop(strategy="self-review", rounds=2, prompt="p", until=until, test_timeout="1s")
+        assert loop.until == "{response} {{done}} {}"
 
     def test_a_factor_named_as_a_round_fills_leaves_the_rounds_escape_to_the_round(
         self, tmp_path: Path

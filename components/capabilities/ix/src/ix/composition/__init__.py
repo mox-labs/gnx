@@ -50,7 +50,7 @@ from matrix import (
 )
 
 from ix.adapters._in.matrix_components import COMPOSITION, NEED
-from ix.adapters._out.matrix_agents import AGENT_RUNTIME, MODEL_RUNTIME, Point, Sessions
+from ix.adapters._out.matrix_agents import SessionTable
 from ix.adapters._out.matrix_documents import (
     STDIN_SOURCE,
     GenreFiles,
@@ -70,21 +70,31 @@ from ix.application import running
 from ix.application import skill as skill_document
 from ix.application.experiments import Examined, FolderProbes, Vocabulary
 from ix.application.running import Kit
-from ix.composition.extension import JUDGE_MODELS, LAUNCHER, POINTS, RUNTIMES, SESSIONS
 from ix.composition.settings import IxSettings
 from ix.domain import schema
-from ix.domain.design import entries_in_use
+from ix.domain.design import entries_in_use, sensor_entry
 from ix.domain.errors import ConfigError, IxError, NotFoundError, UsageError
-from ix.domain.experiment import Experiment
+from ix.domain.experiment import Experiment, cells
 from ix.domain.genre import Genres, genres
-from ix.domain.kind import KIND_FAMILIES, Kinds, kinds, per_cell
-from ix.domain.plan import required
-from ix.domain.ports import Preflight, Requirement, SpanReader, Traced
+from ix.domain.kind import KIND_FAMILIES, Kinds, fill, kinds, per_cell
+from ix.domain.plan import Work, required, work
+from ix.domain.ports import ModelCalls, Preflight, Requirement, SpanReader, Traced
 from ix.domain.problem import InvalidExperimentError
 from ix.domain.provenance import Provenance, RuntimeOrigin, named_files
 from ix.domain.report import Report, Runs
 from ix.domain.report import report as build_report
 from ix.domain.report import summary as summarize
+from ix.domain.run import cell_key, schedule
+from ix.extension import (
+    AGENT_RUNTIME,
+    JUDGE_MODELS,
+    LAUNCHER,
+    MODEL_RUNTIME,
+    POINTS,
+    RUNTIMES,
+    SESSIONS,
+    Point,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
@@ -358,7 +368,7 @@ class Root:
         self._runtimes = _Runtimes(self._registry, lambda: self._settings().matrix.models)
         self._supplies = {
             LAUNCHER: MatrixLauncher(),
-            SESSIONS: Sessions(),
+            SESSIONS: SessionTable(),
             RUNTIMES: self._runtimes,
             JUDGE_MODELS: _JudgeModels(self._runtimes),
         }
@@ -538,31 +548,27 @@ class Root:
         absolute = str(Path(base).resolve())
         return use_cases.reviewed(examined, vocabulary, self._built, base=absolute)
 
-    def _widened(
-        self, opened: _Opened, examined: Examined, trials_in_flight: int, verb: str
-    ) -> tuple[Examined, str]:
-        """``examined`` at ``trials_in_flight`` in place of its own width, judged again, so a
-        width that overlap would confound is refused as it would be written in the file; and
-        the change, worded as the run's ``overridden`` notes it."""
-        checked = use_cases.valid(examined, verb)
-        written = checked.design.trials_in_flight
+    def _widened(self, opened: _Opened, trials_in_flight: int) -> tuple[Examined, str]:
+        """The experiment as written at ``trials_in_flight`` in place of its own width, judged
+        again, so a width that overlap would confound is refused as it would be written in
+        the file; and the change, worded as the run's ``overridden`` notes it."""
+        checked = use_cases.valid(opened.examined, "planned")
         widened = self._examine(
             checked.experiment.model_copy(update={"trials_in_flight": trials_in_flight}),
             opened.vocabulary,
             base=opened.base,
-            source=examined.source,
+            source=opened.examined.source,
         )
-        use_cases.require_valid(widened, f"{verb} with --trials-in-flight {trials_in_flight}")
-        return widened, (
-            f"trials_in_flight: {trials_in_flight} in place of {written} (--trials-in-flight)"
-        )
+        use_cases.require_valid(widened, f"planned with --trials-in-flight {trials_in_flight}")
+        return widened, _width_change(trials_in_flight, checked.design.trials_in_flight)
 
     def _digested(self, examined: Examined, vocabulary: Vocabulary, base: str) -> Examined:
         """``examined`` with what each file and folder its subjects and sensors name holds:
         what registration freezes and a run is held to."""
         if examined.experiment is None:
             return examined
-        named = named_files(examined.experiment, vocabulary.kinds)
+        probes = examined.probes.probes if examined.probes is not None else ()
+        named = named_files(examined.experiment, vocabulary.kinds, probes)
         return replace(examined, contents=contents(named, str(Path(base).resolve())))
 
     def _provenance(self, directory: str) -> Provenance:
@@ -630,7 +636,7 @@ class Root:
             # thing to say, whatever state its registration is in.
             examined, overridden = opened.examined, tuple[str, ...]()
             if trials_in_flight is not None:
-                examined, change = self._widened(opened, examined, trials_in_flight, "planned")
+                examined, change = self._widened(opened, trials_in_flight)
                 overridden = (change,)
             checked = use_cases.valid(examined, "planned")
             requirements, cautions = self._preflight(
@@ -646,6 +652,7 @@ class Root:
                 self._stored(opened),
                 location=opened.registration.location if opened.registration else "",
                 requirements=requirements,
+                work=self._work(checked.experiment, checked.design, checked.probes),
                 earlier=self._earlier(opened.base, checked.experiment.name),
             )
             made = made.model_copy(
@@ -730,30 +737,74 @@ class Root:
         checked now; and what the runtimes they build warn of (a permissive
         ``permission_mode``), each at ``<entry>.runtime_options.<option>``: an entry's
         runtime options are its runtime's config. Each cell's options are asked as its
-        trials will have them, so a factor on one option hides nothing, and its prompt text as
-        text (``declared``: the kinds, which say which options are). An adapter that cannot
-        be built has nothing to check: that is told as a kind with no adapter."""
+        trials will have them (each default its kind declares filled in), so a factor on one
+        option hides nothing, and its prompt text as text (``declared``: the kinds, which say
+        which options are). An adapter that cannot be built has nothing to check: that is
+        told as a kind with no adapter."""
         adapters: dict[str, object] = {}
         found: list[tuple[str, Requirement]] = []
         cautions: list[Problem] = []
-        for where, kind, written in entries_in_use(experiment, design, probes):
-            if kind not in adapters:
-                adapters[kind] = self._built(kind)
-            adapter = adapters[kind]
+        for entry in entries_in_use(experiment, design, probes):
+            if entry.kind not in adapters:
+                adapters[entry.kind] = self._built(entry.kind)
+            adapter = adapters[entry.kind]
             if not isinstance(adapter, Preflight):
                 continue
-            entry = declared.kinds.get(kind)
-            text = entry.text_options if entry else ()
-            for options in per_cell(written, experiment.factors, text=text):
+            kind = declared.kinds.get(entry.kind)
+            text = kind.text_options if kind else ()
+            for options in per_cell(entry.options, experiment.factors, text=text):
                 with self._runtimes.listening() as heard:
-                    found += [(where, needed) for needed in _required(adapter, kind, options, base)]
+                    found += [
+                        (entry.where, needed)
+                        for needed in _required(adapter, entry.kind, options, base)
+                    ]
                 for caution in converted(heard):
                     moved = caution.model_copy(
-                        update={"path": f"{where}.runtime_options.{caution.path}"}
+                        update={"path": f"{entry.where}.runtime_options.{caution.path}"}
                     )
                     if moved not in cautions:
                         cautions.append(moved)
         return required(found), tuple(cautions)
+
+    def _work(self, experiment: Experiment, design: Design, probes: ProbeSet) -> Work:
+        """The model calls a run would start, from every adapter in use that is a
+        :class:`~ix.domain.ports.ModelCalls`, asked each cell's options as its trials will
+        have them. An entry whose adapter may call a model (it needs matrix's runtimes or a
+        judge's models) and is not one, or that raises counting, is not counted, and the work
+        says so: counting runs an extension's own code."""
+        counted: dict[str, tuple[str, dict[str, int]]] = {}
+        uncounted: list[str] = []
+        for entry in entries_in_use(experiment, design, probes):
+            adapter = self._built(entry.kind)
+            if adapter is None:
+                continue  # a kind with no adapter here: the plan says so
+            if not isinstance(adapter, ModelCalls):
+                if self._needs(entry.kind) & {RUNTIMES, JUDGE_MODELS}:
+                    uncounted.append(f"{entry.where} (it does not say how many)")
+                continue
+            # Only a subject's and a probe's options are filled with a cell's levels.
+            filled = schema.family_of(entry.kind) in ("subject", "probe")
+            try:
+                by_cell = {
+                    cell_key(cell): adapter.model_calls(
+                        fill(entry.options, cell, escaped=True) if filled else entry.options
+                    )
+                    for cell in cells(experiment.factors)
+                }
+            except Exception as error:
+                uncounted.append(f"{entry.where} (its adapter raised {type(error).__name__})")
+                continue
+            counted[entry.key] = (entry.where, by_cell)
+        return work(schedule(experiment, design, probes), design, counted, uncounted)
+
+    def _needs(self, kind: str) -> frozenset[str]:
+        """What the adapter registered for ``kind`` (a type URL) is built with; nothing for a
+        kind nothing registered."""
+        point = POINTS.get(schema.family_of(kind) or "")
+        try:
+            return frozenset(self._registry.entry(point, kind).needs) if point else frozenset()
+        except MatrixError:
+            return frozenset()
 
     def _store(self, directory: str) -> ConstructStore:
         """The run store, built at matrix's ``store`` point to keep runs under
@@ -795,49 +846,40 @@ class Root:
         Refuses before anything starts when the experiment is invalid, names a kind with no
         adapter, or is unregistered and the run is neither ``exploratory`` nor a
         ``dry_run``; and ``repeats`` or ``trials_in_flight`` on a run that is neither
-        (:class:`UsageError`), since a gated run is held to the design its registration
-        froze. ``trials_in_flight`` is refused too where the experiment's kinds, metrics or
-        genre refuse overlap (its validation problem). Once it has started, whatever happens
+        (:class:`UsageError`, from :func:`~ix.application.running.prepare`, which holds that
+        rule), since a gated run is held to the design its registration froze.
+        ``trials_in_flight`` is refused too where the experiment's kinds, metrics or genre
+        refuse overlap (its validation problem). Once it has started, whatever happens
         is in the record: a run that was stopped or that failed still returns its report,
         which says so.
         """
-        if not (exploratory or dry_run):
-            for flag, key, value in (
-                ("--repeats", "repeats", repeats),
-                ("--trials-in-flight", "trials_in_flight", trials_in_flight),
-            ):
-                if value is not None:
-                    raise UsageError(
-                        f"{flag} {value} changes the design, and a run that gives a verdict "
-                        "is held to the design its registration froze",
-                        fix=f"pilot with --exploratory {flag} N (or --dry-run {flag} N); to "
-                        f"change the {key} a verdict rests on, edit the file and "
-                        '`ix register <path> --amend --reason "<why>"`',
-                        details={"path": flag, "value": value},
-                    )
         _require_width(trials_in_flight)
         opened = self._open(source, base=base, registration=registration)
         use_cases.require_valid(opened.examined, "run")
         directory = str(Path(opened.base).resolve())
         records = self._records(directory)
-        examined, stored, notes = opened.examined, self._stored(opened), None
-        overridden: tuple[str, ...] = ()
+        stored, notes = self._stored(opened), None
+        # The changes are computed here and judged by `prepare`, which holds the rule that a
+        # run giving a verdict refuses them.
+        written = use_cases.valid(opened.examined, "run")
+        changed, overridden = written.experiment, list[running.Override]()
         if repeats is not None:
-            checked = use_cases.valid(examined, "run")
-            written = checked.design.repeats
-            examined = self._examine(
-                checked.experiment.model_copy(update={"repeats": repeats}),
-                opened.vocabulary,
-                base=opened.base,
-                source=examined.source,
-            )
-            use_cases.require_valid(examined, f"run with --repeats {repeats}")
-            overridden = (f"repeats: {repeats} in place of {written} (--repeats: a pilot)",)
+            changed = changed.model_copy(update={"repeats": repeats})
+            note = f"repeats: {repeats} in place of {written.design.repeats} (--repeats: a pilot)"
+            overridden.append(running.Override("--repeats", "repeats", repeats, note))
         if trials_in_flight is not None:
-            examined, change = self._widened(opened, examined, trials_in_flight, "run")
-            overridden += (change,)
+            changed = changed.model_copy(update={"trials_in_flight": trials_in_flight})
+            note = _width_change(trials_in_flight, written.design.trials_in_flight)
+            overridden.append(
+                running.Override("--trials-in-flight", "trials_in_flight", trials_in_flight, note)
+            )
+        examined = opened.examined
+        if overridden:
+            examined = self._examine(
+                changed, opened.vocabulary, base=opened.base, source=examined.source
+            )
         if dry_run:
-            checked = use_cases.valid(examined, "dry run")
+            checked = use_cases.valid(examined, "dry run" + running.given(overridden))
             stood, notes = running.stand_in(checked.experiment, checked.probes, self._built)
             examined = self._examine(
                 stood, opened.vocabulary, base=opened.base, source=examined.source
@@ -853,7 +895,7 @@ class Root:
             version=self._version,
             exploratory=exploratory,
             dry_run=notes,
-            overridden=overridden,
+            overridden=tuple(overridden),
         )
         kit = self._kit(prepared.kinds, opened.vocabulary.kinds)
         observers = self._settings().matrix.observers
@@ -899,7 +941,7 @@ class Root:
         process, said in words: matrix's runtimes or a judge's models (it may call a model),
         or a launcher (it starts processes: the experiment's graders, the agent's code).
         Empty when none is: those are the sensors a report may run."""
-        needs = {sensor: self._registry.entry(POINTS["sensor"], sensor).needs for sensor in sensors}
+        needs = {sensor: self._needs(sensor) for sensor in sensors}
 
         def named(given: set[str]) -> str:
             return ", ".join(schema.short(s) for s in sorted(needs) if needs[s] & given)
@@ -999,6 +1041,11 @@ class Root:
                 yield RunRecords.summary(record)  # another ix's: its id, state and counts
 
 
+def _width_change(given: int, written: int) -> str:
+    """A width given in place of the experiment's, as a plan or a run notes it."""
+    return f"trials_in_flight: {given} in place of {written} (--trials-in-flight)"
+
+
 def _required(
     adapter: Preflight, kind: str, options: Mapping[str, Any], base: str
 ) -> Sequence[Requirement]:
@@ -1024,7 +1071,7 @@ def _reads_spans(design: Design, kit: Kit) -> bool:
     :class:`~ix.domain.ports.SpanReader` and says so of its options."""
     return any(
         isinstance(sensor := kit.sensors.get(selected.kind), SpanReader)
-        and sensor.reads_spans(selected.options)
+        and sensor.reads_spans(design.options(sensor_entry(selected.kind), selected.options))
         for selected in design.sensors
     )
 

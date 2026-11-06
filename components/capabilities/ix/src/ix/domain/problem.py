@@ -64,6 +64,8 @@ PROBLEM_KINDS: frozenset[str] = frozenset(
         "estimator_illegal",
         "judged_gate",
         "unit_mismatch",
+        "metric_shape",
+        "decision_inapplicable",
         # trials in flight
         "trials_in_flight_refused",
         "trials_in_flight_contended",

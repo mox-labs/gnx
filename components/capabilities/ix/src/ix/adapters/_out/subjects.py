@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from ix.adapters._out.processes import is_up, startable, wait_ready
-from ix.domain.kind import placeholders, seconds
+from ix.domain.kind import duration_of, placeholders
 from ix.domain.ports import Requirement
 from ix.domain.problem import Problem, problem
 from ix.domain.run import HarnessError, SubjectError, Target
@@ -23,12 +23,9 @@ from ix.domain.run import HarnessError, SubjectError, Target
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
 
-    from ix.adapters._out.processes import Launcher
     from ix.domain.experiment import SubjectConfig
     from ix.domain.ports import Surroundings
-
-#: How long a started program has to come up when the subject does not say.
-STARTUP_TIMEOUT_S = 30.0
+    from ix.extension import Launcher
 
 
 def _said(path: str, limit: int = 400) -> str:
@@ -46,7 +43,7 @@ class ProcessSubject:
     Options: ``command`` (the program and its arguments), ``url`` (where it listens),
     ``ready`` (a URL that answers once it is up; without one, ``url`` accepting a connection
     is taken as up), ``cwd`` (relative to the experiment), ``env`` (added to the
-    environment) and ``startup_timeout``.
+    environment) and ``startup_timeout`` (how long it has to come up).
 
     Offers ``pid`` (the process, which leads its own group) and ``url``.
 
@@ -90,7 +87,7 @@ class ProcessSubject:
         command = options.get("command")
         if not isinstance(command, list | tuple) or not command:
             return []  # the kind's declaration reports it
-        found = startable(str(command[0]), base=base, cwd=str(options.get("cwd") or "."))
+        found = startable(str(command[0]), base=base, cwd=str(options["cwd"]))
         return [] if found is None else [found]
 
     @asynccontextmanager
@@ -99,8 +96,11 @@ class ProcessSubject:
         command = [str(part) for part in options["command"]]
         url = options.get("url")
         ready = options.get("ready")
-        timeout_s = seconds(options.get("startup_timeout")) or STARTUP_TIMEOUT_S
-        cwd = str(Path(base, options.get("cwd") or "."))
+        try:
+            timeout_s = duration_of(options, "startup_timeout")
+        except ValueError as error:
+            raise HarnessError("option", f"{name}: {error}") from error
+        cwd = str(Path(base, options["cwd"]))
         environment = {**os.environ, **{k: str(v) for k, v in (options.get("env") or {}).items()}}
 
         if (ready or url) and await is_up(ready=ready, url=url):

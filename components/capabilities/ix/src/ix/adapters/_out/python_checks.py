@@ -44,10 +44,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from ix.adapters._out.processes import Launcher
-
-#: How long a check may take when the experiment does not say.
-TIMEOUT_S = 30.0
+    from ix.extension import Launcher
 
 _PYTHON_BLOCK = re.compile(r"```(?:python|py)[^\n]*\n(.*?)```", re.DOTALL)
 _ANY_BLOCK = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
@@ -249,7 +246,7 @@ async def run_cases(
     function_name: str,
     cases: Sequence[Mapping[str, Any]],
     *,
-    timeout_s: float = TIMEOUT_S,
+    timeout_s: float,
 ) -> CaseRun:
     """Run ``cases`` against ``function_name`` in ``code`` (untrusted: see the module
     docstring). A case is ``{input, expected}`` or ``{input, raises}``; a list input is
@@ -297,7 +294,7 @@ async def run_grader(
     text: str,
     trial: Mapping[str, Any],
     *,
-    timeout_s: float = TIMEOUT_S,
+    timeout_s: float,
 ) -> float | None:
     """The score ``GRADERS[grader]`` in ``module`` gives ``text``; None when the module has no
     such grader. Raises :class:`GraderError` when it could not grade."""

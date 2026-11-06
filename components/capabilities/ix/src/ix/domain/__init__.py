@@ -1,10 +1,12 @@
-"""The parts of what ix returns and what an extension implements, under one public name.
+"""The parts of what ix returns, under one public name.
 
 ``ix`` exports the functions, the documents they return, the records an author writes and
 the errors. Every type reachable from those (a report's findings and decisions, a plan's
-trials and sensitivity, an experiment's subject and probe configs) and every port an
-extension implements is exported here, and ``ix.domain`` is the only public path to them:
-the modules inside it are not, so they can be divided or renamed without breaking a caller.
+trials and sensitivity, an experiment's subject and probe configs, the rows of a run's
+tables) is exported here, and ``ix.domain`` is the only public path to them: the modules
+inside it are not, so they can be divided or renamed without breaking a caller. What an
+extension implements and is handed (the ports, the needs, what an adapter raises) is
+:mod:`ix.extension`'s.
 """
 
 from ix.domain.analysis import (
@@ -34,89 +36,56 @@ from ix.domain.experiment import (
     Threshold,
 )
 from ix.domain.genre import AnalysisRef, GenreDesign, Repeats, Role
-from ix.domain.kind import Confusion, Metric, Option
+from ix.domain.kind import Confusion, DefaultBy, Metric, Option
 from ix.domain.plan import (
     Duration,
+    ModelCallCount,
     OrderPlan,
     PlannedProbes,
     RegistrationStatus,
     Required,
     Sensitivity,
     Trials,
-)
-from ix.domain.ports import (
-    Environment,
-    Flag,
-    Liveness,
-    Measured,
-    Preflight,
-    Probe,
-    Requirement,
-    Review,
-    Scope,
-    Sensed,
-    Sensor,
-    Span,
-    StandIn,
-    StoodIn,
-    Subject,
-    Surroundings,
-    Traced,
+    Work,
 )
 from ix.domain.provenance import Content, Provenance, RuntimeOrigin
 from ix.domain.registration import Amendment, Deviation, Registration
 from ix.domain.report import RunSummary, TrialCounts
-from ix.domain.run import (
-    Bindings,
-    Failure,
-    HarnessError,
-    Interaction,
-    Reading,
-    SubjectError,
-    Target,
-    Trial,
-    TrialError,
-)
+from ix.domain.run import Failure, Interaction, Reading, Trial
 from ix.domain.summaries import ConfusionTable, LabelScore, ProbeScreen
 
 __all__ = [
     "Amendment",
     "Analysis",
     "AnalysisRef",
-    "Bindings",
     "CalibrationCheck",
     "Confusion",
     "ConfusionTable",
     "Content",
     "Decision",
+    "DefaultBy",
     "Deviation",
     "Duration",
-    "Environment",
     "EnvironmentConfig",
     "Estimate",
     "Failure",
     "FailureCount",
     "Finding",
-    "Flag",
     "GenreDesign",
     "Guardrail",
-    "HarnessError",
     "Interaction",
     "Interval",
     "LabelScore",
     "Level",
-    "Liveness",
     "Margin",
-    "Measured",
     "Metric",
     "MetricExpectation",
+    "ModelCallCount",
     "MetricRef",
     "Option",
     "OrderPlan",
     "Outcome",
     "PlannedProbes",
-    "Preflight",
-    "Probe",
     "ProbeConfig",
     "ProbeFile",
     "ProbeScreen",
@@ -126,33 +95,20 @@ __all__ = [
     "RegistrationStatus",
     "Repeats",
     "Required",
-    "Requirement",
-    "Review",
     "Role",
     "RoleAssignment",
     "RunSummary",
     "RuntimeOrigin",
-    "Scope",
     "SelectedSensor",
-    "Sensed",
     "Sensitivity",
-    "Sensor",
     "SensorConfig",
     "Shape",
     "SourcedValue",
-    "Span",
     "Spread",
-    "StandIn",
-    "StoodIn",
-    "Subject",
     "SubjectConfig",
-    "SubjectError",
-    "Surroundings",
-    "Target",
     "Threshold",
-    "Traced",
     "Trial",
     "TrialCounts",
-    "TrialError",
     "Trials",
+    "Work",
 ]

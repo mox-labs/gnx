@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from ix.domain import schema
-from ix.domain.analysis import ANALYSES, MIN_BLOCKS, analysis_unsupported
+from ix.domain.analysis import ANALYSES, MIN_BLOCKS, analysis_unsupported, observes
 from ix.domain.design import (
     assign_roles,
     kind_uses,
@@ -123,6 +123,7 @@ def _against_genre(experiment: Experiment, genre: Genre) -> list[Problem]:
         *_comparison(experiment, genre),
         *_repeats(experiment, genre),
         *_guardrail_forms(experiment, genre),
+        *_unread(experiment, genre),
     ]
 
 
@@ -227,8 +228,9 @@ def _repeats(experiment: Experiment, genre: Genre) -> list[Problem]:
 
 
 def _guardrail_forms(experiment: Experiment, genre: Genre) -> list[Problem]:
-    """A guardrail with a margin, in a genre with no control to be within a margin of."""
-    if genre.role(CONTROL) is not None:
+    """A guardrail with a margin, in a genre with no control to be within a margin of; a genre
+    that reads no guardrail at all refuses it whole (:func:`_unread`)."""
+    if genre.role(CONTROL) is not None or genre.verdict_form == "none" or observes(genre.analysis):
         return []
     return [
         problem(
@@ -487,9 +489,73 @@ def _decidable(
     return problems
 
 
+def _unread(experiment: Experiment, genre: Genre) -> list[Problem]:
+    """A threshold, a margin or a guardrail written for a genre whose analysis never reads
+    one: one that gives no verdict (estimates only), or one that observes (a check). Each is
+    refused at its key, so that none is mistaken for part of a verdict that ignores it."""
+    label = schema.short(genre.name)
+    if genre.verdict_form == "none":
+        why, fix = "gives no verdict: it estimates only", "use a genre that decides on one"
+    elif observes(genre.analysis):
+        why = "decides whether the primary held on every trial, observed"
+        fix = "to hold a rate to a threshold, use a genre that estimates one"
+    else:
+        return []
+    return [
+        problem(
+            path,
+            kind="decision_inapplicable",
+            message=f"genre {label} {why}; it reads no {noun}, so the {noun} would be ignored",
+            fix=f"remove {path.split('.')[0]!r}; {fix}",
+            got=label,
+        )
+        for path, noun, given in [
+            ("threshold", "threshold", experiment.threshold is not None),
+            ("margin", "margin", experiment.margin is not None),
+            *(
+                (f"guardrails.{index}", "guardrail", True)
+                for index in range(len(experiment.guardrails))
+            ),
+        ]
+        if given
+    ]
+
+
+def _observation(experiment: Experiment, genre: Genre, instruments: Instruments) -> list[Problem]:
+    """What an analysis that observes (a check) cannot decide on: a primary that is not a
+    boolean."""
+    label = schema.short(genre.name)
+    problems: list[Problem] = []
+    metric = instruments.metrics.get(experiment.primary.metric) if experiment.primary else None
+    if metric is not None and metric.shape != "boolean":
+        problems.append(
+            problem(
+                "primary.metric",
+                kind="metric_shape",
+                message=f"genre {label} decides on a boolean, whether the primary held; "
+                f"{metric.name} is a {metric.shape}",
+                fix="name a boolean metric as the primary (a sensor's pass or fail), and keep "
+                f"{metric.name} under 'metrics:' to report it",
+                allowed=("boolean",),
+                got=metric.shape,
+            )
+        )
+    return problems
+
+
 def _decision(
     experiment: Experiment, genre: Genre | None, instruments: Instruments, probes: ProbeSet | None
 ) -> list[Problem]:
+    if genre is not None and observes(genre.analysis):
+        observing = _observation(experiment, genre, instruments)
+        if experiment.primary is not None:
+            deciding = _Deciding(
+                decides=genre.decides, estimator=genre.design.estimator, blocks=None
+            )
+            observing += _reads(
+                experiment.primary, "primary", instruments, deciding, directional=False
+            )
+        return observing
     problems: list[Problem] = []
     compares = genre is not None and (experiment.comparison or genre.default_comparison) is not None
     repeats = experiment.repeats or (genre.design.repeats.default if genre else 1)

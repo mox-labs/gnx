@@ -37,7 +37,7 @@ from pydantic import ValidationError
 from ix.application.experiments import standing, valid
 from ix.domain import schema
 from ix.domain.analysis import ANALYSES, analysis_unsupported
-from ix.domain.design import Design, kinds_in_use, missing_adapters
+from ix.domain.design import Design, carried_out, kinds_in_use, missing_adapters
 from ix.domain.errors import ConfigError, UnregisteredError, UsageError
 from ix.domain.experiment import Experiment, ProbeConfig, SubjectConfig
 from ix.domain.kind import fill_options, placed, placeholders
@@ -158,6 +158,18 @@ def _span(scope: Scope | None, name: str, **attributes: Any) -> Iterator[Span]:
 
 
 @dataclass(frozen=True)
+class Override:
+    """A change the caller made to the experiment as written, for one run: the flag that
+    made it (``--repeats``), the design value it replaces (``repeats``), the value given, and
+    the note the run records (``Report.overridden``)."""
+
+    flag: str
+    key: str
+    value: int
+    note: str
+
+
+@dataclass(frozen=True)
 class Prepared:
     """A run that may start: its experiment, design and probes, its manifest, the trials it
     will carry out and the kinds (type URLs) it uses."""
@@ -181,27 +193,29 @@ def prepare(
     version: str,
     exploratory: bool = False,
     dry_run: tuple[str, ...] | None = None,
-    overridden: tuple[str, ...] = (),
+    overridden: tuple[Override, ...] = (),
 ) -> Prepared:
     """Decide whether the experiment may run, and write down what the run is held to.
 
     ``dry_run`` is given for an experiment :func:`stand_in` rewrote: the notes of what it
-    set aside. Such a run is exploratory and held to no registration. ``overridden`` notes
-    what the caller changed from the experiment as written (a pilot's repeats, a width to
-    try), for an exploratory run or a dry one only.
+    set aside. Such a run is exploratory and held to no registration. ``overridden`` is what
+    the caller changed from the experiment as written (a pilot's repeats, a width to try),
+    which only an exploratory run or a dry one may carry.
 
     Refuses, before anything starts: an invalid experiment; a kind in use that has no
     adapter, or an analysis this ix does not have (:class:`ConfigError`); an override on a
-    run that gives a verdict (:class:`UsageError`, as the command's flags are); and an
-    experiment with no registration, unless the run is ``exploratory``
-    (:class:`UnregisteredError`).
+    run that gives a verdict (:class:`UsageError`, its ``details.path`` the first override's
+    flag, as the command's other refusals of a flag are); and an experiment with no
+    registration, unless the run is ``exploratory`` (:class:`UnregisteredError`).
 
     A registered experiment that has changed since is not refused, and is not held to its
     registration either: the run proceeds ungated, as an exploratory one does, the
     deviations go into the manifest, and the report gives what it found as an indication,
     never a gate result. Amending the registration with a reason makes the next run gated.
     """
-    checked = valid(examined, "run")
+    if overridden and not exploratory and dry_run is None:
+        raise _held_to_design(overridden)
+    checked = valid(examined, "run" + given(overridden))
     experiment, design, probes = checked.experiment, checked.design, checked.probes
     missing = missing_adapters(experiment, design, probes, vocabulary.adapters or frozenset())
     if missing:
@@ -225,12 +239,6 @@ def prepare(
     made, frozen = standing(examined, vocabulary, now=now, version=version)
     if dry_run is not None:
         stored, exploratory = None, True
-    if overridden and not exploratory:
-        raise UsageError(
-            f"{examined.source} was changed for this run ({'; '.join(overridden)}), and a run "
-            "that gives a verdict is held to the design as registered",
-            fix="run it exploratory or dry, or change the file and amend its registration",
-        )
     if stored is None and not exploratory:
         raise UnregisteredError(
             f"{examined.source} is not registered, so a run of it could not be held to a "
@@ -260,7 +268,7 @@ def prepare(
             exploratory=exploratory,
             dry_run=dry_run is not None,
             stood_in=dry_run or (),
-            overridden=overridden,
+            overridden=tuple(change.note for change in overridden),
             started_at=now,
             ix_version=version,
         ),
@@ -268,6 +276,28 @@ def prepare(
         kinds=tuple(kind for _, kind in kinds_in_use(experiment, design, probes)),
         design=design,
         probes=probes,
+    )
+
+
+def given(overridden: Sequence[Override]) -> str:
+    """`` with --repeats 3 and --trials-in-flight 2``: the flags that made ``overridden``, as
+    a verb is qualified by them; nothing for none."""
+    flags = " and ".join(f"{change.flag} {change.value}" for change in overridden)
+    return f" with {flags}" if flags else ""
+
+
+def _held_to_design(overridden: Sequence[Override]) -> UsageError:
+    """The refusal of ``overridden`` on a run that gives a verdict: such a run is held to the
+    design its registration froze."""
+    first = overridden[0]
+    flags = given(overridden).removeprefix(" with ")
+    return UsageError(
+        f"{flags} {'changes' if len(overridden) == 1 else 'change'} the design, and a run "
+        "that gives a verdict is held to the design its registration froze",
+        fix=f"pilot with --exploratory {first.flag} N (or --dry-run {first.flag} N); to change "
+        f"the {first.key} a verdict rests on, edit the file and "
+        '`ix register <path> --amend --reason "<why>"`',
+        details={"path": first.flag, "value": first.value},
     )
 
 
@@ -351,7 +381,9 @@ def check_startable(requirements: Sequence[Required]) -> None:
 
 @dataclass(frozen=True)
 class Setup:
-    """A manifest read back into the records the run path works with."""
+    """A manifest read back into the records the run path works with: every entry's options
+    as the run carries them out, each default its kind declared, as the design froze it,
+    beside what was written (:func:`~ix.domain.design.carried_out`)."""
 
     manifest: RunManifest
     experiment: Experiment
@@ -364,15 +396,14 @@ class Setup:
 
 
 def setup_of(manifest: RunManifest) -> Setup:
-    """The experiment, design and probes a manifest holds. Raises :class:`ConfigError` when
-    this ix cannot read them (the manifest was written by another)."""
+    """The experiment, design and probes a manifest holds, as the run carries them out.
+    Raises :class:`ConfigError` when this ix cannot read them (the manifest was written by
+    another)."""
     try:
-        probes = [ProbeConfig.model_validate(probe) for probe in manifest.probes]
-        return Setup(
-            manifest=manifest,
-            experiment=Experiment.model_validate(manifest.declared),
-            design=Design.model_validate(manifest.design),
-            probes={probe.id: probe for probe in probes},
+        experiment, design, probes = carried_out(
+            Experiment.model_validate(manifest.declared),
+            Design.model_validate(manifest.design),
+            [ProbeConfig.model_validate(probe) for probe in manifest.probes],
         )
     except ValidationError as error:
         raise ConfigError(
@@ -380,6 +411,12 @@ def setup_of(manifest: RunManifest) -> Setup:
             f"problem(s)); it was written by ix {manifest.ix_version or '(unknown)'}",
             fix="read the run with the ix that wrote it",
         ) from error
+    return Setup(
+        manifest=manifest,
+        experiment=experiment,
+        design=design,
+        probes={probe.id: probe for probe in probes},
+    )
 
 
 def _failure(error: BaseException) -> Failure:
@@ -554,13 +591,10 @@ async def _carried(
     if failure is None:
         known = {**services, **filled.options, **target.facets, **trial.cell}
         try:
-            observations = await _apply(
-                adapters.probe,
-                fill_options(probe.options, known, probe_kind),
-                target,
-                trial.seed,
-                stopping,
-            )
+            filled_probe = fill_options(probe.options, known, probe_kind)
+            if probe_kind is not None:
+                filled_probe = placed(probe_kind, filled_probe, setup.base)
+            observations = await _apply(adapters.probe, filled_probe, target, trial.seed, stopping)
         except Exception as error:
             failure = _failure(error)
     # Watchers exit before the subject is released: the stack unwinds in reverse.

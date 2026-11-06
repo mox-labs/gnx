@@ -202,6 +202,17 @@ probes:
 primary: {metric: ttfb, statistic: p99}
 margin: 5%
 """,
+    "check": """\
+name: proxy-health
+question: Does the proxy answer its health check once it is up?
+genre: check
+subjects:
+  proxy: {kind: process, command: [./proxy], url: "http://127.0.0.1:8080"}
+probes:
+  - kind: command
+    command: [curl, -fsS, "{url}/healthz"]
+primary: {metric: exited_ok}
+""",
 }
 
 #: From the question a person asks to the genre that answers it, in the person's words.
@@ -219,6 +230,10 @@ QUESTION_TO_GENRE: tuple[tuple[str, str], ...] = (
     ),
     ('"Are A and B the same?"', "`compare`, `comparison: equivalence`, with a `margin`"),
     ('"How does X change with Y?"', "`characterize`, Y a factor; estimates, no verdict"),
+    (
+        '"Does X do it, here, now?" (a command exits 0, a reply holds a fact)',
+        "`check`, a boolean primary, one trial: an observation, never a rate",
+    ),
 )
 
 #: The skill folder the ``agents`` reference evaluates, and its SKILL.md.
@@ -925,14 +940,46 @@ def _genres(genres: Genres) -> str:
 
 
 def _option_values(option: Option) -> str:
-    """What an option takes: its closed set, its open choices, or its type; and whether it
-    is prompt text."""
+    """What an option takes: its closed set, its open choices, or its type; whether it is
+    prompt text; and what it is left out."""
     text = ", prompt text" if option.text else ""
+    if option.default is not None:
+        text += f"; {_written(option.default)} when left out"
+    elif option.default_by is not None:
+        text += f"; left out, as its {option.default_by.option} says"
+    elif option.default_from:
+        text += "; left out, its runtime's own"
+    if option.fields:
+        text += "; keys " + ", ".join(
+            f"{name}{'*' if field.required else ''}"
+            + (f"={_written(field.default)}" if field.default is not None else "")
+            for name, field in option.fields.items()
+        )
     if option.allowed:
         return f" ({'|'.join(option.allowed)}{text})"
     if option.choices:
         return f" ({option.type}: {', '.join(option.choices)} or another{text})"
     return f" ({option.type}{text})"
+
+
+def _written(value: object) -> str:
+    """A value as an author writes it in YAML."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _default(kinds: Kinds, family: str, kind: str, option: str) -> str:
+    """The default the installed ``kind`` of ``family`` declares for ``option`` (dotted for a
+    mapping's field: ``loop.rounds``), as an author writes it; ``(none)`` when it is not
+    installed or declares none, which the skill's tests refuse for a built-in."""
+    declared = kinds.get(family, kind)
+    options = declared.options if declared is not None else {}
+    found = None
+    for name in option.split("."):
+        found = options.get(name)
+        options = found.fields if found is not None else {}
+    return "(none)" if found is None or found.default is None else _written(found.default)
 
 
 def _kind_line(kind: Kind, runnable: bool) -> str:
@@ -982,12 +1029,16 @@ def _kinds(kinds: Kinds) -> str:
         )
         blocks.append(f"### {titles[family]}\n\n{lines}")
     families = "\n\n".join(blocks)
+    startup = _default(kinds, "subject", "process", "startup_timeout")
     return f"""\
 ## Kinds
 
 Subjects and probes must fit: a probe kind needs facets, and every subject's kind must offer
 them (`kind_unfit`). A sensor needs facets from the subjects or from what the probes leave
-behind. Required options are marked `*`.
+behind. Required options are marked `*`. An option left out is carried out with the default
+its kind declares (`600s when left out`), which `ix plan` lists under the entry
+(`probes.<id>.timeout`, from `kind`) and a registration freezes; `its runtime's own` is a
+value ix cannot know, which the plan names as the runtime's.
 
 A kind marked **declared only** has no adapter in this ix: an experiment that uses it can be
 validated, planned and registered, `validate` warns (`kind_unimplemented`), the plan says
@@ -996,11 +1047,24 @@ cannot be built here (`ix kinds` says why). What an entry needs of this host (a 
 PATH, an `auth` variable that is set, a runtime that resolves the model, the docker daemon)
 its adapter checks: the plan's `requirements` list each with `holds`, and one that does not
 hold is under `Runnable: no` with its `why` and `fix`. It depends on the host, so the
-experiment can still be registered.
+experiment can still be registered. The plan's `work` (`Model calls`) is how many model
+calls the run starts at most, as work, never a price: each agent session (one per round of a
+`loop`), model call and judge's reading counted once however many requests it makes, none
+on a stand-in, with each entry that may call a model and does not say how many named under
+`uncounted`.
+
+A kind of your own is two parts, and needs no edit to ix: its declaration, a YAML file like
+these (in a lab's `kinds/` folder, or a package's at the `ix.kind` entry point), and its
+adapter, registered from the package's `matrix.extensions` entry point at
+`ix.extension.POINTS[family]` under the kind's type URL, with the needs it is built with
+(`launcher`, `runtimes`, `sessions`, `judge_models`). Everything an adapter is written
+against is in `ix.extension`: the ports, each need's Protocol, the optional roles, and what
+an adapter raises.
 
 A `process` subject is up when its `ready` URL answers an HTTP GET with a status below 500;
 without `ready`, when its `url` accepts a connection; with neither, as soon as it starts. One
-that is not up within `startup_timeout` (30s) fails the trial as the subject's (`not_ready`).
+that is not up within `startup_timeout` ({startup} when left out) fails the trial as the
+subject's (`not_ready`).
 
 Each kind's `overlap` says whether two trials may use it at once: `allowed` when neither
 changes what the other measures (a fresh agent session each), `forbidden` when they would (a
@@ -1012,7 +1076,7 @@ trial (a time, a throughput, a memory peak).
 """
 
 
-def _running() -> str:
+def _running(kinds: Kinds) -> str:
     method = "\n".join(f"- {line}" for line in METHOD)
     return f"""\
 ## Registration
@@ -1123,7 +1187,8 @@ experiment writes `trials_in_flight`. It prints progress on stderr and then the 
   {EXIT_CODES["run_failed"]}). A *sensor* failure is a reading that could not be taken. The
   report counts each. A subject too slow for an open model's rate is measured, not
   dropped. `error_rate` counts a request that failed, timed out (`http-load`'s
-  `timeout`, k6's 60s) or was never answered, and each arrival dropped, as an error.
+  `timeout`, {_default(kinds, "probe", "http-load", "timeout")} when left out) or was never
+  answered, and each arrival dropped, as an error.
 
 ## Reading a verdict
 
@@ -1152,8 +1217,11 @@ the margin. Choose the comparison for the claim to be made.
 """
 
 
-def _agents() -> str:
+def _agents(kinds: Kinds) -> str:
     dry, usage = EXIT_CODES["ok"], EXIT_CODES["usage"]
+    until = _default(kinds, "subject", "agent-session", "loop.until")
+    setup = _default(kinds, "subject", "agent-session", "setup_timeout")
+    rounds = _default(kinds, "subject", "agent-session", "loop.rounds")
     return f"""\
 ## Evaluating an agent
 
@@ -1172,7 +1240,8 @@ probes and a metric. What makes it one is the kinds.
   says a session finds its skills: claude-sdk's `.claude/skills`, read as its `project`
   settings), `fixtures` (files and folders copied
   into the working directory first), `setup` (a command run there after them:
-  `[python3, seed.py]`) and `runtime_options`: the runtime's own config, passed through as
+  `[python3, seed.py]`), `setup_timeout` (how long it may take: {setup} when left out) and
+  `runtime_options`: the runtime's own config, passed through as
   written. For `claude-sdk` that is `permission_mode`, `setting_sources` (`[]` keeps this
   machine's settings and plugins out), `fallback_model`, `max_budget_usd` and `agents`;
   `matrix describe matrix.v1.agent-runtime.claude-sdk` lists them. A key the runtime's
@@ -1189,10 +1258,11 @@ probes and a metric. What makes it one is the kinds.
   experiment and leave `probes:` out: the markdown body is the prompt, and every
   frontmatter key but `id`, `kind` and `options` is the truth sensors read
   (it never reaches the agent). Probe options, under `options:` in a file: `collect`
-  (files the agent writes, kept for grading), `feedback` (tests a test-feedback loop shows
+  (files the agent writes, kept for grading; `collect_limit`, the largest kept, in bytes:
+  a sensor reading a larger one gives no reading), `feedback` (tests a test-feedback loop shows
   the agent), `mock_response` (the reply a stand-in runtime such as `mock` gives),
-  `timeout` (600s): a session or call that runs past it fails the trial as the subject's
-  (`overran`).
+  `timeout` ({_default(kinds, "probe", "prompt", "timeout")} when left out): a session or
+  call that runs past it fails the trial as the subject's (`overran`).
   An option written beside the truth is truth, which the probe never sees: validate says
   so (`truth_unclaimed`) and shows where it goes. `probes/review-ask.md`:
 
@@ -1235,10 +1305,11 @@ probes and a metric. What makes it one is the kinds.
   same holds for any agent runtime that says so.
 - **Conditions to compare are subjects** under `compare`: one changed option each (a
   `system_prompt`, a `definition` file, a `model`, a `loop`). A `loop` adds rounds:
-  `{{strategy: self-review, rounds: 3}}` asks again with the previous answer until it
-  carries `SOLUTION_VERIFIED`; `{{strategy: test-feedback}}` shows the agent which of the
-  probe's `feedback` tests failed, until none do. Tokens, turns and cost add up over the
-  rounds.
+  `{{strategy: self-review}}` asks again with the previous answer until it carries its
+  `until` (`{until}` when left out), for `rounds` in all (`{rounds}` when left out);
+  `{{strategy: test-feedback}}` shows the agent which of the probe's `feedback` tests
+  failed, until none do. Each strategy's next-round `prompt` is its kind's declared
+  default unless written. Tokens, turns and cost add up over the rounds.
 
 ## Evaluating a skill
 
@@ -1432,9 +1503,9 @@ def render(
         case "kinds":
             body = _kinds(kinds)
         case "running":
-            body = _running()
+            body = _running(kinds)
         case "agents":
-            body = _agents()
+            body = _agents(kinds)
         case _:
             body = _problems()
     return f"# ix {version} reference: {reference}\n\n{body}"

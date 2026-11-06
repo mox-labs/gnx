@@ -6,9 +6,9 @@ options:
   file: {type: path, required: true, description: "the compose file, relative to the experiment"}
   project: {type: string, description: "the project name; one named for the run when absent, so two runs never share one and a stack a killed run left is swept. A project named here that already has containers is refused"}
   services: {type: list, description: "the services to bring up; all of the file's when absent"}
-  wait_timeout: {type: duration, description: "how long the services have to be running, and healthy where they declare a healthcheck; 120s when absent"}
+  wait_timeout: {type: duration, default: 120s, description: "how long the services have to be running, and healthy where they declare a healthcheck"}
   profiles: {type: list, description: "compose profiles to enable"}
   env_file: {type: path, description: "a file of variables compose substitutes into the file, relative to the experiment"}
-  build: {type: boolean, description: "build the services' images before bringing them up; false when absent"}
-  pull: {type: string, allowed: [always, missing, never], description: "when to pull the services' images; compose's own default when absent"}
+  build: {type: boolean, default: false, description: "build the services' images before bringing them up"}
+  pull: {type: string, allowed: [always, missing, never], description: "when to pull the services' images; left out, each service's own pull_policy in the file decides"}
 service_keys: [host, port, url]
