@@ -55,6 +55,12 @@ with its baseline (:mod:`recon.application.changes`): its change table (``<outpu
 and its told index are written, and its outcome says what was found. A stop during that is
 recorded as ``ended: stopped``, and what it wrote is then not to be read.
 
+A table of an entry with ``range:`` asks its source for the run's span step by step
+(:mod:`recon.domain.ranges`): each step is one call of its collector, the entry's settings
+filled with the step's bounds, and every record it gives carries the step as ``_range``
+(``{start, end}``); the steps land in the one table, all or nothing, and its outcome records
+the span (``range``), which commits with the archive's meta.
+
 A table read page by page (``paginate:``) says each page and why its crawl stopped short
 through the survey's page log (:class:`TablePages`, the collectors' ``CollectorContext.pages``).
 Once the table is sealed its page log is kept beside it (its ``pages`` sidecar); a crawl
@@ -72,9 +78,10 @@ from recon.application.changes import changes_failed, failed, join_unclosed
 from recon.application.plan import fan_out
 from recon.domain.archives import META_FORMAT_VERSION
 from recon.domain.deadline import Deadline, DeadlineExceededError
-from recon.domain.documents import TableError, TableOutcome
+from recon.domain.documents import RangeOutcome, TableError, TableOutcome
 from recon.domain.errors import CollectionError, ErrorKind, NoRecordsError, Problem, ReconError
 from recon.domain.normalize import nested_records
+from recon.domain.ranges import RANGE_FIELD, fill, outcome
 from recon.domain.telemetry import COLLECT, EventCallback
 
 if TYPE_CHECKING:
@@ -89,6 +96,7 @@ if TYPE_CHECKING:
     from recon.domain.collector import Collector
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
     from recon.domain.paginate import TruncatedBy
+    from recon.domain.ranges import RangeRun
     from recon.domain.telemetry import Span, Telemetry
 
 #: By default, the least seconds between two ``recon.collect.progress`` events of a table.
@@ -155,7 +163,8 @@ class Survey:
     could not finish. ``finished`` is false when its meta could not be recorded or the
     archive could not be marked complete, so it reads incomplete whatever its tables did.
     ``progress_s`` is the least time between two progress events of a table. ``pages`` is the
-    page log its collectors were built with (``CollectorContext.pages``)."""
+    page log its collectors were built with (``CollectorContext.pages``). ``ranges`` is the
+    run of each ranged table, by output (:func:`recon.application.ranges.range_runs`)."""
 
     def __init__(
         self,
@@ -170,8 +179,10 @@ class Survey:
         progress_s: float = PROGRESS_S,
         pages: TablePages | None = None,
         changes: ChangeDetector | None = None,
+        ranges: Mapping[str, RangeRun] | None = None,
     ) -> None:
         self._pages = pages if pages is not None else TablePages()
+        self._ranges = dict(ranges or {})
         self._changes = changes
         self._progress_s = progress_s
         self._clock = clock
@@ -367,6 +378,9 @@ class Survey:
     ) -> TableOutcome:
         index, entry = at
         output = table.name
+        ranged = self._ranges.get(output)
+        if ranged is not None:
+            table = table.model_copy(update={"range": RangeOutcome.model_validate(outcome(ranged))})
         try:
             self._deadline.check()
         except DeadlineExceededError as passed:
@@ -390,7 +404,12 @@ class Survey:
                     self._progress_s,
                     _within(
                         self._deadline,
-                        _keeping_first(_tagged(collector, target, source, captures), first),
+                        _keeping_first(
+                            _tagged(collector, target, source, captures)
+                            if ranged is None
+                            else _stepped(collector, target, source, captures, ranged),
+                            first,
+                        ),
                     ),
                 )
                 columns = list(entry.normalize or ())
@@ -513,6 +532,26 @@ def _tagged(
         raise
     except Exception as exc:
         raise CollectorError(entry.name, source.name if source else None, exc) from exc
+
+
+def _stepped(
+    collector: Collector,
+    entry: CollectorEntry,
+    source: SourceEntry | None,
+    captures: CaptureLog | None,
+    ranged: RangeRun,
+) -> Generator[dict[str, Any], None, None]:
+    """A ranged table's records: each step's, its collector asked with the entry's settings
+    filled with the step's bounds, each record carrying its step. Closing this closes the step
+    being read, so its collector's cleanup runs."""
+    for step in ranged.steps:
+        asked = entry.model_copy(update=fill(entry.settings, step))
+        records = _tagged(collector, asked, source, captures)
+        try:
+            for record in records:
+                yield {**record, RANGE_FIELD: step.document()}
+        finally:
+            records.close()
 
 
 def _no_records() -> Generator[dict[str, Any], None, None]:

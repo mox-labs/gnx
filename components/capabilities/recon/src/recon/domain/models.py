@@ -21,6 +21,7 @@ from recon.domain.changes import ChangesSpec  # noqa: TC001
 from recon.domain.clock import LONGEST_WAIT
 from recon.domain.credentials import NOT_A_REFERENCE, REFERENCE_FIX, reference
 from recon.domain.paginate import PaginateSpec  # noqa: TC001
+from recon.domain.ranges import RangeSpec  # noqa: TC001
 from recon.domain.ratelimit import wait_for_token
 
 # Pydantic reads the field types when the models are built, so they are imported to run.
@@ -172,7 +173,9 @@ class CollectorEntry(BaseModel):
     out, the plan fills in their defaults and says so. `paginate` reads the source page by
     page, for a type that declares ``paginates`` (:mod:`recon.domain.paginate`). `changes`
     compares each of its tables with the same table of an earlier archive and writes what
-    changed beside it (:mod:`recon.domain.changes`).
+    changed beside it (:mod:`recon.domain.changes`). `range` asks a snapshot entry's source
+    for its time step by step, run after run, each step's bounds filled into the type's
+    settings (:mod:`recon.domain.ranges`).
     Every other key is the type's own setting (`run:` for `cli`, `endpoint:` for `api`),
     kept in :attr:`settings` and validated by the type's own schema at plan time.
     """
@@ -191,6 +194,7 @@ class CollectorEntry(BaseModel):
     retain: Retain | None = None
     paginate: PaginateSpec | None = None
     changes: ChangesSpec | None = None
+    range: RangeSpec | None = None
 
     @property
     def settings(self) -> dict[str, Any]:

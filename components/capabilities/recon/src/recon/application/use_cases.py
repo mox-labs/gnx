@@ -11,7 +11,8 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Collection
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol
@@ -21,7 +22,15 @@ from pydantic import BaseModel, ValidationError
 from recon.application.captures import record_hook_payload
 from recon.application.changes import MEMORY_KEYS, ChangeDetector
 from recon.application.collectors import declared_env
-from recon.application.plan import Plan, PlannedStream, build_plan, fan_out, plugin_warning
+from recon.application.plan import (
+    Plan,
+    PlannedRun,
+    PlannedStream,
+    build_plan,
+    fan_out,
+    plugin_warning,
+)
+from recon.application.ranges import RangeRuns, range_runs
 from recon.application.schedules import Schedules, stale
 from recon.application.stream import (
     Stream,
@@ -53,6 +62,7 @@ from recon.domain.documents import (
     PlanDocument,
     PlanWrites,
     QueryRows,
+    RangeOutcome,
     RecordsSince,
     Required,
     SourcedValue,
@@ -82,6 +92,7 @@ from recon.domain.errors import (
     UsageError,
 )
 from recon.domain.normalize import apply_normalize
+from recon.domain.ranges import fill, interval_of, kept_in_tombstone
 from recon.domain.stream import window_index, window_opened
 from recon.domain.telemetry import QUERY, SURVEY
 
@@ -111,6 +122,7 @@ if TYPE_CHECKING:
     from recon.domain.missions import ConfigFile, MissionStore
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
     from recon.domain.paginate import PageLog
+    from recon.domain.ranges import Interval
     from recon.domain.schedule import Platform, ScheduleHost, Scheduler, ScheduleStore
     from recon.domain.stream import GapLog, RetainSpec, Stop, WindowSpec
     from recon.domain.subscriptions import Deliverer, SubscriptionStore
@@ -310,9 +322,17 @@ class Recon:
         windows: int | None = None,
         until: datetime | None = None,
         forever: bool = False,
+        interval: tuple[datetime, datetime] | None = None,
+        rebase: Collection[str] = (),
+        restart: Collection[str] = (),
     ) -> PlanDocument:
         """What a survey would do: every run with its effects, the files it would write, and
         what the runs need of this host. Raises ConfigError listing every problem.
+
+        A run of an entry with ``range:`` says the span it would ask for (``range``: its
+        ``start``, ``end``, ``kind``, where it began, as ``from``, and its ``steps``), after
+        what its table committed, read now; and it describes its first step's request, the
+        bounds filled. ``interval``, ``rebase`` and ``restart`` are :meth:`survey`'s.
 
         Writes nothing. Runs and fetches nothing either, unless a run's collector type
         declares a ``preflight``: that type's collector is then built, asked what each of its
@@ -332,6 +352,8 @@ class Recon:
         )  # fmt: skip
         _, plan, copy_to = self._prepare(name, config, replace)
         assert plan.config is not None  # _prepare raises on an invalid plan
+        asked = None if interval is None else interval_of(*interval)
+        ranged = self._ranged(name, plan, self._clock.now(), asked, rebase, restart)
         provenance = list(plan.provenance)
         if stream is not None:
             planned = _planned_stream(plan, name, stream)
@@ -347,7 +369,7 @@ class Recon:
         return PlanDocument(
             mission=name,
             valid=plan.valid,
-            runs=[run.document() for run in plan.runs],
+            runs=[self._run_document(run, plan.config, ranged) for run in plan.runs],
             effects=plan.effects(),
             writes=PlanWrites(
                 config=copy_to,
@@ -355,13 +377,53 @@ class Recon:
                 stream_names=[s.name for s in plan.streams],
             ),
             problems=[p.document() for p in plan.problems],
-            warnings=[w.document() for w in plan.warnings + broken],
+            warnings=[w.document() for w in plan.warnings + ranged.warnings + broken],
             skipped=[skipped.document() for skipped in plan.skipped],
             requirements=requirements,
             runnable=all(required.holds for required in requirements),
             preflight=said,
             provenance=provenance,
         )
+
+    def _ranged(
+        self,
+        name: str,
+        plan: Plan,
+        now: datetime,
+        interval: Interval | None,
+        rebase: Collection[str],
+        restart: Collection[str],
+    ) -> RangeRuns:
+        """The run of each ranged table of ``plan``, at ``now``, after what each committed;
+        ConfigError when one is refused (a span past ``max_steps``, a checkpoint committed
+        under another request), before anything is begun."""
+        assert plan.config is not None
+        ranged = range_runs(self._archives, name, plan.config, self._plugins.collector_types,
+                            now, interval=interval, rebase=rebase, restart=restart)  # fmt: skip
+        if ranged.problems:
+            raise ConfigError(
+                f"mission {name!r}: {len(ranged.problems)} problem(s) with its ranges",
+                ranged.problems,
+                fix=f"fix each problem, then: recon survey {name} --dry-run",
+            )
+        return ranged
+
+    def _run_document(
+        self, run: PlannedRun, config: ReconConfig, ranged: RangeRuns
+    ) -> dict[str, Any]:
+        """A planned run as the plan shows it; a ranged one with its span, and its request
+        described with its first step's bounds filled."""
+        document = run.document()
+        planned = ranged.runs.get(run.output)
+        if planned is None:
+            return document
+        entry = next(e for e in config.collectors if e.name == run.collector)
+        target = entry.model_copy(update={"name": run.output})
+        source = next((s for s in config.catalog if s.name == run.source), None)
+        if planned.steps:
+            asked = target.model_copy(update=fill(target.settings, planned.steps[0]))
+            document |= self._plugins.collector_types[run.type].describe(asked, source)
+        return {**document, "range": planned.document()}
 
     def _preflight(
         self, name: str, config: ReconConfig
@@ -412,6 +474,9 @@ class Recon:
         config: Path | None = None,
         replace: bool = False,
         on_event: EventCallback | None = None,
+        interval: tuple[datetime, datetime] | None = None,
+        rebase: Collection[str] = (),
+        restart: Collection[str] = (),
     ) -> SurveyDocument:
         """Plan, then run every table and write one archive. A survey whose tables failed,
         or whose archive could not be finished, still returns its document (``status:
@@ -421,12 +486,22 @@ class Recon:
         found here rather than by the first query. An entry that is a stream runs one window,
         sealed when it ends (``windows``), after the snapshot tables, in config order: the
         dirt road of a stream, a survey run from cron. The mission is held while it runs, so
-        a second survey of it is refused ``busy`` before it writes anything."""
+        a second survey of it is refused ``busy`` before it writes anything.
+
+        An entry with ``range:`` asks for the span after what its table committed, read under
+        the hold (:mod:`recon.domain.ranges`). ``interval``, ``(start, end)`` each with its
+        time zone, asks every ranged entry for that source time instead (a backfill, which
+        moves no checkpoint); ``rebase`` names outputs that go on from their checkpoint under a
+        changed request, ``restart`` outputs that begin again from ``range.start``. Raises
+        UsageError for an interval with no zone or no length, and for an output or interval
+        no entry with ``range:`` takes."""
+        asked = None if interval is None else interval_of(*interval)
         source, plan, copy_to = self._prepare(name, config, replace)
         assert plan.config is not None  # _prepare raises on an invalid plan
         # One survey a mission at a time, from before it writes anything until it returns.
         with self._landing.hold(name) as hold:
-            return self._survey(hold, name, source, plan, copy_to, on_event)
+            return self._survey(hold, name, source, plan, copy_to, on_event, interval=asked,
+                                rebase=rebase, restart=restart)  # fmt: skip
 
     def _scheduled_survey(
         self, name: str, scheduled: dict[str, Any], config_sha256: str
@@ -457,6 +532,9 @@ class Recon:
         on_event: EventCallback | None,
         *,
         scheduled: dict[str, Any] | None = None,
+        interval: Interval | None = None,
+        rebase: Collection[str] = (),
+        restart: Collection[str] = (),
     ) -> SurveyDocument:
         """:meth:`survey`, the mission held and its plan valid."""
         assert plan.config is not None
@@ -469,7 +547,10 @@ class Recon:
             }  # fmt: skip
         )
         sha256 = hashlib.sha256(source.text).hexdigest()
-        warnings = list(plan.warnings)
+        started = self._clock.now()
+        snapshot_plan = replace(plan, config=snapshot)
+        ranged = self._ranged(name, snapshot_plan, started, interval, rebase, restart)
+        warnings = list(plan.warnings) + ranged.warnings
         for warning in warnings:
             emit({"kind": "warning", "reason": str(warning), "fix": warning.fix})
         if copy_to is not None:
@@ -477,7 +558,6 @@ class Recon:
         # Its key read before anything is written: a key that does not hold is refused with no
         # archive begun.
         changes = self._changes(name, snapshot)
-        started = self._clock.now()
         # Held from here until the block ends, so a reader of the archive sees it is being
         # written, however the survey ends.
         with hold.begin(started.strftime(ARCHIVE_ID_FORMAT)) as landed:
@@ -514,7 +594,7 @@ class Recon:
                     survey = Survey(
                         self._clock, self._version, telemetry, on_event,
                         extracts=extracts, kinds=kinds, deadline=deadline, pages=pages,
-                        changes=changes,
+                        changes=changes, ranges=ranged.runs,
                     )  # fmt: skip
                     tables = survey.run(
                         plan.config,
@@ -604,6 +684,9 @@ class Recon:
                 "retired_at": now.isoformat(),
                 "rule": [rule.model_dump(exclude_none=True) for rule in rules
                          if rule is not None and not isinstance(rule, str)],
+                # Its tables' committed ranges: a range goes on from where it was, whatever
+                # retention removed (ruling R-TOMB).
+                "ranges": kept_in_tombstone(meta),
             }  # fmt: skip
             with contextlib.suppress(OSError):  # left listed: the next survey retires it
                 hold.retire(archive, tombstone)
@@ -1155,6 +1238,7 @@ class Recon:
                     error=_table_error(t.get("error")),
                     truncated=t.get("truncated") is True,
                     changes=_read_back(ChangeSummary, t.get("changes")),
+                    range=_read_back(RangeOutcome, t.get("range")),
                 )
                 for t in meta["tables"]
             ],

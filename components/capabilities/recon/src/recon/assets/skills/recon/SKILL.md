@@ -88,6 +88,8 @@ A survey with failed tables still writes its archive, marked incomplete, and lis
 
 **Streams.** A source that never ends (`tail` a file, `sse` events) is a stream, sealed in windows: `recon stream <name> --stream <c>` runs one window and blocks until it ends, 300 s by default, which can outlast a tool call: run it with `--dry-run --json` first and read `stream.returns` (seconds), then set a shorter `window:` or run it in the background. `--windows N`, `--until`, `--forever` run more. A survey runs one window of each stream, in turn, after its tables: its dry run says `survey.returns`. All: `recon --skill -r streaming`. A long crawl is one too (`paginate:`, `window: {pages: N}`): a run goes on where the last left off, the last page ends it: `-r pagination`.
 
+**Ranges.** A source queried by time (metrics, logs, events) takes `range:`, and `{range.start}`, `{range.end}` where it takes its bounds (an MCP tool's `from: "{range.start:epoch}"`, an endpoint's params, a command): each survey asks for the time since what its table committed, so a schedule collects each span once. A failed run commits nothing. `--range START..END` backfills; `--rebase`, `--restart`: `recon --skill -r ranges`.
+
 ## Errors and exit codes
 
 Act on the exit code, then on the error's `fix`:
@@ -147,6 +149,7 @@ collectors:                    # what to ask; required, at least one
     extract: <path>            # api, capture and mcp: where the records are in a body
     paginate: {type: link}     # api: page by page; -r pagination
     changes: {key: [<field>]}  # tell what changed; -r changes
+    range: {step: 3600}        # ask for source time since the last run; -r ranges
     deadline: 120              # optional: seconds each of its tables may take (> 0)
     retain: all                # or {archives, seconds, bytes}: archives kept; -r schedules
     # Every other key is the type's own:
@@ -234,6 +237,7 @@ Each prints with `recon --skill -r <name>`:
 | `telemetry` | the event log, every span and attribute, exporting through OpenTelemetry |
 | `streaming` | stream keys, defaults, refusals; `tail`, `sse`; `--stream` |
 | `pagination` | `paginate:` keys, defaults, stops, refusals; crawls that resume |
+| `ranges` | `range:` kinds, keys, defaults, placeholders; the checkpoint; `--range`, `--rebase`, `--restart` |
 | `changes` | `changes:` keys, defaults, ops, refusals |
 | `live-reading` | `recon watch` and `recon.read_since`: archive states, sealing, the cursor, every flag, default and refusal |
 | `schedules` | `schedule:`, `recon schedule`, ticks |

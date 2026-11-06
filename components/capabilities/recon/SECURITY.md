@@ -38,6 +38,11 @@ whole point of `run:` is to invoke a local tool with operator-chosen arguments, 
 quoting it would break the feature. It is a boundary to be *known*. `--dry-run` prints
 every substituted command, which is the place to read them.
 
+A ranged entry's `{range.start}`, `{range.end}` and `{range.last}` (`range:`, any type) are
+filled before the type sees its settings, with recon's own values: a time in the step's
+format, made of digits and `-:TZ`, never text a source returned. They add nothing a command
+can be steered by.
+
 What constrains it:
 
 - The child starts in a session of its own (`start_new_session` on POSIX), so a timeout

@@ -35,6 +35,7 @@ from recon.domain.errors import Problem
 from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
 from recon.domain.normalize import path_problem, spec_problems
 from recon.domain.paginate import COUNTED, crawl_floor_s
+from recon.domain.ranges import BOUNDS, FORMATS, unknown_placeholders, uses_range
 from recon.domain.schedule import DAY_S, ScheduleSpec, every_fix, pinned_form, unpinned
 from recon.domain.stream import (
     DEFAULT_WINDOW_S,
@@ -50,6 +51,7 @@ if TYPE_CHECKING:
 
     from recon.domain.collector import BrokenPlugin, CollectorType, Plugins
     from recon.domain.documents import Origin
+    from recon.domain.ranges import RangeSpec
     from recon.domain.stream import Overflow, Retain
 
 _TOP_LEVEL_KEYS = tuple(sorted(ReconConfig.model_fields))
@@ -284,6 +286,9 @@ def build_plan(
             values, shifting = _changes(i, entry)
             provenance += values
             problems += shifting
+        values, ranging = _ranged(i, entry, is_stream)
+        provenance += values
+        problems += ranging
         for source, output in targets:
             problems.extend(_output_problems(i, output, produced_by))
             for key in _table_keys(output):
@@ -1402,6 +1407,126 @@ def _changes_problems(i: int, entry: CollectorEntry, is_stream: bool) -> list[Pr
             )
         )
     return problems
+
+
+def _ranged(
+    i: int, entry: CollectorEntry, is_stream: bool
+) -> tuple[list[SourcedValue], list[Problem]]:
+    """``range:``'s effective keys, each with where it came from, and what it may not say:
+    a stream's (windows are its time), one whose settings never name a ``{range.*}`` (each
+    step would ask the same question), ``end`` beside ``last``, a fixed range with no
+    ``start``, a step that is no multiple of ``align``, deletes of a table that holds new data
+    only, and a placeholder nothing fills; and a ``{range.*}`` in an entry with no ``range:``."""
+    at = f"collectors.{i}.range"
+    spec = entry.range
+    if spec is None:
+        if not uses_range(entry.settings):
+            return [], []
+        return [], [Problem(
+            f"collectors.{i}",
+            f"collector {entry.name!r} names a {{range.*}} placeholder and has no range:, so "
+            "nothing fills it",
+            kind="unresolved",
+            fix="give it range: (recon --skill -r ranges), or remove the placeholder",
+        )]  # fmt: skip
+    problems: list[Problem] = []
+    if is_stream:
+        problems.append(Problem(
+            at,
+            f"collector {entry.name!r} is a stream, whose windows are its time: range: is a "
+            "snapshot entry's",
+            fix="remove range:, or window: (and use a type whose records end)",
+        ))  # fmt: skip
+    if not uses_range(entry.settings):
+        problems.append(Problem(
+            at,
+            f"collector {entry.name!r} has range: and names no {{range.start}}, "
+            "{range.end} or {range.last} in its settings, so every step would ask the same",
+            kind="range_unused",
+            fix="name the step's bounds where the source takes them (an endpoint's query, a "
+            "tool's arguments, a command), or remove range:",
+        ))  # fmt: skip
+    if spec.end is not None and spec.last is not None:
+        problems.append(Problem(
+            at,
+            "range: takes end (a fixed range) or last (a rolling one), not both",
+            kind="range_ambiguous",
+            fix="keep start and end for a fixed span, or last for the latest span",
+        ))  # fmt: skip
+    if spec.end is not None and spec.start is None:
+        problems.append(Problem(
+            f"{at}.start",
+            "a fixed range (range.end) needs range.start",
+            kind="missing_key",
+            fix="give range.start, the first instant to collect",
+        ))  # fmt: skip
+    if spec.start is not None and spec.end is not None and spec.end <= spec.start:
+        problems.append(Problem(
+            f"{at}.end",
+            "range.end is not after range.start",
+            fix="give a range.end later than range.start",
+        ))  # fmt: skip
+    if spec.align is not None and spec.step_s % spec.align:
+        problems.append(Problem(
+            f"{at}.step",
+            f"range.step ({spec.step_s:g}s) is not a multiple of range.align ({spec.align:g}s), "
+            "so the steps would not stay aligned",
+            fix="make range.step a multiple of range.align",
+            got=spec.step_s,
+        ))  # fmt: skip
+    if spec.kind != "rolling" and entry.changes is not None and entry.changes.deletes:
+        problems.append(Problem(
+            f"collectors.{i}.changes.deletes",
+            "each table of a continuing or fixed range holds the new source time alone, so a "
+            "key it lacks did not go",
+            kind="range_deletes",
+            fix="remove changes.deletes (or use range.last, which reads the whole span each run)",
+        ))  # fmt: skip
+    for written in dict.fromkeys(unknown_placeholders(entry.settings)):
+        problems.append(Problem(
+            f"collectors.{i}",
+            f"{written} is no placeholder recon fills, so the source would be asked it as text",
+            fix=f"write {{range.<bound>}} or {{range.<bound>:<format>}}, the bound one of "
+            f"{', '.join(BOUNDS)} and the format one of {', '.join(FORMATS)}",
+            got=written,
+        ))  # fmt: skip
+    return _range_values(at, spec), problems
+
+
+def _range_values(at: str, spec: RangeSpec) -> list[SourcedValue]:
+    """Each key of ``range:`` in effect, by where it came from."""
+    written = spec.model_fields_set
+
+    def said(key: str, value: Any, note: str = "") -> SourcedValue:
+        origin: Origin = "mission" if key in written else "recon"
+        return SourcedValue(path=f"{at}.{key}", value=value, origin=origin, note=note)
+
+    kind_note = {"continuing": "neither end nor last: each run goes on from the last one's end",
+                 "fixed": "start and end: runs go on until end is collected",
+                 "rolling": "last: each run reads the latest span again"}[spec.kind]  # fmt: skip
+    values = [SourcedValue(path=f"{at}.kind", value=spec.kind, origin="mission", note=kind_note)]
+    if spec.kind != "rolling":
+        start = spec.start.isoformat() if spec.start is not None else None
+        values.append(said("start", start, "" if start else
+                           "none: the first run asks for one step back from the horizon, and "
+                           "each after it goes on from the checkpoint"))  # fmt: skip
+    if spec.end is not None:
+        values.append(said("end", spec.end.isoformat()))
+    if spec.last is not None:
+        values.append(said("last", spec.last))
+    step_note = ("" if "step" in written else
+                 "the whole span, one request" if spec.kind == "rolling" else
+                 "one request asks for at most this long")  # fmt: skip
+    values += [
+        said("step", spec.step_s, step_note),
+        said("settle", spec.settle, "" if "settle" in written else
+             "a range ends this far behind now, for what its source has not settled"),
+        said("max_steps", spec.max_steps, "" if "max_steps" in written else
+             "a run asks for at most this many steps; a backlog drains over the next runs"),
+        said("align", spec.align, "" if "align" in written else "none: steps start where the "
+             "last ended"),
+    ]  # fmt: skip
+    return values
 
 
 def _changes(i: int, entry: CollectorEntry) -> tuple[list[SourcedValue], list[Problem]]:

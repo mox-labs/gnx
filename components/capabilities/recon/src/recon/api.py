@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from recon.domain.archives import READ_MAX_BYTES, READ_MAX_RECORDS, WATCH_INTERVAL_S
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Collection, Iterator
     from datetime import datetime
     from pathlib import Path
 
@@ -76,6 +76,9 @@ def plan(
     windows: int | None = None,
     until: datetime | None = None,
     forever: bool = False,
+    interval: tuple[datetime, datetime] | None = None,
+    rebase: Collection[str] = (),
+    restart: Collection[str] = (),
     root: Path | None = None,
 ) -> PlanDocument:
     """What ``survey`` would do, without doing it. ``recon.v1.plan``.
@@ -88,10 +91,12 @@ def plan(
     ``complete`` is false when more may follow their fixes. ``provenance`` says where each
     stream setting came from. With ``stream``, what :func:`stream` would do with
     ``windows``, ``until`` and ``forever``: refused as it would be, and ``provenance`` says
-    how long the run is (``stream.windows``, one by default)."""
+    how long the run is (``stream.windows``, one by default). A run of an entry with
+    ``range:`` says the span it would ask for (``range``); ``interval``, ``rebase`` and
+    ``restart`` are :func:`survey`'s."""
     return _root(root).plan(
         name, config=config, replace=replace, stream=stream, windows=windows, until=until,
-        forever=forever,
+        forever=forever, interval=interval, rebase=rebase, restart=restart,
     )  # fmt: skip
 
 
@@ -101,14 +106,24 @@ def survey(
     config: Path | None = None,
     replace: bool = False,
     on_event: Callable[[dict[str, Any]], None] | None = None,
+    interval: tuple[datetime, datetime] | None = None,
+    rebase: Collection[str] = (),
+    restart: Collection[str] = (),
     root: Path | None = None,
 ) -> SurveyDocument:
     """Plan, then collect every table into a new archive. ``recon.v1.survey``.
 
     Failed tables do not raise: the document says ``status: incomplete``, and
     :func:`survey_failure` turns it into the error to act on. ``on_event`` receives each
-    table's outcome as it lands."""
-    return _root(root).survey(name, config=config, replace=replace, on_event=on_event)
+    table's outcome as it lands. An entry with ``range:`` asks for the source time after what
+    its table committed; ``interval`` (``(start, end)``, each with its zone) asks every ranged
+    entry for that span instead, a backfill that moves no checkpoint; ``rebase`` names outputs
+    that go on from their checkpoint under a changed request, ``restart`` outputs that begin
+    again from ``range.start`` (``recon --skill -r ranges``)."""
+    return _root(root).survey(
+        name, config=config, replace=replace, on_event=on_event,
+        interval=interval, rebase=rebase, restart=restart,
+    )  # fmt: skip
 
 
 def stream(

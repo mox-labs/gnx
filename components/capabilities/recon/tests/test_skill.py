@@ -282,6 +282,29 @@ def test_the_pagination_page_is_the_skill_reference() -> None:
         assert taught in REFERENCES["pagination"], taught
 
 
+def test_the_ranges_page_is_the_skill_reference() -> None:
+    """Ranges are taught in full by ``recon --skill -r ranges``, and the skill points there in
+    a paragraph; one text with its docs page. An agent reading it learns each kind, each key and
+    its default, each placeholder and format, what commits a checkpoint, the overrides, and
+    every refusal and warning with its fix."""
+    page = PACKAGE / "docs" / "reference" / "ranges.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    assert page.read_text(encoding="utf-8") == REFERENCES["ranges"]
+    assert "recon --skill -r ranges" in SKILL and "range:" in SKILL
+    for taught in ("continuing", "fixed", "rolling", "`start`", "`end`", "`last`", "`step`",
+                   "`3600`", "`settle`", "`60`", "`max_steps`", "`24`", "`align`",
+                   "{range.start}", "{range.end}", "{range.last}", "`iso`", "`epoch`",
+                   "`epoch_ms`", "`date`", "{{range.start}}", "half-open", "horizon",
+                   "_range", "truncated", "tombstone", "--range START..END", "--rebase OUTPUT",
+                   "--restart OUTPUT", "provenance", "origin"):  # fmt: skip
+        assert taught in REFERENCES["ranges"], taught
+    for kind in ("range_unused", "range_ambiguous", "range_deletes", "range_steps",
+                 "checkpoint_request_changed", "range_behind", "range_current",
+                 "range_complete", "range_overlaps"):  # fmt: skip
+        assert kind in REFERENCES["ranges"] and kind in REFERENCES["errors"], kind
+
+
 def test_the_skill_teaches_a_crawl_that_resumes() -> None:
     """Ruling P4, by the completion checklist: an agent reading only the skill finds a long
     crawl's stream (``window: {pages}``), that its end ends the stream, how a run goes on, what

@@ -259,6 +259,22 @@ def init(
 # --- survey ------------------------------------------------------------------------------
 
 
+def _interval(
+    ctx: click.Context, param: click.Parameter, value: str | None
+) -> tuple[datetime, datetime] | None:
+    """``--range START..END``: two ISO 8601 times, in UTC unless each names its offset."""
+    if value is None:
+        return None
+    start, dots, end = value.partition("..")
+    if not dots or not start or not end:
+        raise click.BadParameter(
+            f"{value!r} is not START..END (2026-10-01T00:00Z..2026-10-02T00:00Z)", ctx, param
+        )
+    first, last = _instant(ctx, param, start), _instant(ctx, param, end)
+    assert first is not None and last is not None
+    return first, last
+
+
 @main.command(epilog=EXIT_CODES)
 @click.argument("name")
 @_config_option
@@ -270,8 +286,38 @@ def init(
     help="Validate and print the plan. Nothing is written; nothing is fetched or run, except "
     "what a collector type's preflight says (mcp starts each stdio server to list its tools)",
 )
+@click.option(
+    "--range",
+    "interval",
+    callback=_interval,
+    default=None,
+    metavar="START..END",
+    help="Ask every entry with range: for this source time instead, a backfill that moves no "
+    "checkpoint (ISO 8601 each, UTC unless it says)",
+)
+@click.option(
+    "--rebase",
+    multiple=True,
+    metavar="OUTPUT",
+    help="Go on from OUTPUT's checkpoint under its changed request (checkpoint_request_changed)",
+)
+@click.option(
+    "--restart",
+    multiple=True,
+    metavar="OUTPUT",
+    help="Begin OUTPUT's range again from its range.start",
+)
 @_json_option
-def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json: bool) -> None:
+def survey(
+    name: str,
+    config: Path | None,
+    replace: bool,
+    dry_run: bool,
+    interval: tuple[datetime, datetime] | None,
+    rebase: tuple[str, ...],
+    restart: tuple[str, ...],
+    as_json: bool,
+) -> None:
     """Plan and run a collection mission.
 
     Every survey validates first: an invalid config exits 3 listing every problem, before
@@ -280,16 +326,20 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
     streams runs one window of each stream, in turn, after its snapshot tables, each up to
     its window: (300 s by default): --dry-run says when the survey returns at the latest,
     as survey.returns. One survey of a mission runs at a time: a second, started while one
-    runs, exits 11 (busy) before it writes anything, naming the first one's pid.
+    runs, exits 11 (busy) before it writes anything, naming the first one's pid. An entry
+    with range: asks for the source time after what its table committed, step by step
+    (recon --skill -r ranges).
 
     \b
     recon survey my-scan --dry-run
     recon survey my-scan --json
     recon survey my-scan -c other.yaml --replace
+    recon survey metrics --range 2026-10-01T00:00Z..2026-10-02T00:00Z
     """
     setup = _telemetry_warnings()
+    ranged = {"interval": interval, "rebase": rebase, "restart": restart}
     if dry_run:
-        plan = _operations().plan(name, config=config, replace=replace)
+        plan = _operations().plan(name, config=config, replace=replace, **ranged)
         plan = plan.model_copy(update={"warnings": setup + plan.warnings})
         if as_json:
             _emit(plan.document())
@@ -299,8 +349,9 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
     if not as_json:
         _print_warnings(setup)
     document = _operations().survey(
-        name, config=config, replace=replace, on_event=None if as_json else _print_event
-    )
+        name, config=config, replace=replace, on_event=None if as_json else _print_event,
+        **ranged,
+    )  # fmt: skip
     document = document.model_copy(update={"warnings": setup + document.warnings})
     if as_json:
         _emit(document.document())

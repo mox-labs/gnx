@@ -200,6 +200,25 @@ class ChangeSummary(Document):
     untold: list[str] = []
 
 
+class RangeOutcome(Document):
+    """The source time a ranged table covers, ``[start, end)``: its range's ``kind``, where
+    its run began (``from``: ``checkpoint``, ``start``, ``default``, ``override``, ``rebase``
+    or ``restart``), the digest of the request it was asked with, and how many steps it asked
+    for. It commits with its table: a continuing or fixed range not begun by an override is
+    the table's checkpoint once its archive's meta is recorded (:mod:`recon.domain.ranges`)."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+
+    start: str
+    end: str
+    kind: Literal["continuing", "fixed", "rolling"]
+    from_: Literal["checkpoint", "start", "default", "override", "rebase", "restart"] = Field(
+        alias="from"
+    )
+    request: str
+    steps: int = 0
+
+
 class TableOutcome(Document):
     """One table of a survey: what produced it and how it ended. ``truncated``: its crawl
     stopped short of its source's end (``paginate:``), so it is sealed ``ok`` and is not a
@@ -220,6 +239,8 @@ class TableOutcome(Document):
     truncated_by: TruncatedBy | None = None
     #: What its change detection found, for an entry with ``changes:``; None otherwise.
     changes: ChangeSummary | None = None
+    #: The source time it covers, for an entry with ``range:``; None otherwise.
+    range: RangeOutcome | None = None
 
 
 class WindowOutcome(Document):
@@ -298,7 +319,7 @@ class TableStatus(Document):
     """One table of an archive, as its meta holds it: what ``recon status`` says of it, so no
     reader opens what the archive keeps. ``truncated``: its crawl stopped short of its
     source's end; ``changes``: what its change detection found, for an entry with
-    ``changes:``."""
+    ``changes:``; ``range``: the source time it covers, for an entry with ``range:``."""
 
     name: str | None
     type_url: str | None
@@ -307,6 +328,7 @@ class TableStatus(Document):
     error: TableError | None = None
     truncated: bool = False
     changes: ChangeSummary | None = None
+    range: RangeOutcome | None = None
 
 
 class GapRecord(Document):
