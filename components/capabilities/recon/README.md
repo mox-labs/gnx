@@ -198,6 +198,7 @@ The tests run offline, except the live integration tests against OpenAlex, arXiv
 - [docs/reference/subscriptions.md](docs/reference/subscriptions.md) — subscriptions: `subscriptions:`, `match:`, `recon.changes_since`, `recon subscribe`, `ack`, `unsubscribe`, and `deliver:` with `recon deliver`: the cursor, the ids, what a command is given; every default and refusal
 - [docs/reference/schedules.md](docs/reference/schedules.md) — schedules: `schedule:`, `recon schedule install`, `list`, `remove`, `status` and `tick`, what is projected onto launchd, systemd and cron, the tick's log; every default and refusal
 - [docs/design/2026-10-19-record.md](docs/design/2026-10-19-record.md) — the design judgments behind 0.11.0 and 0.12.0, and recon's claims
+- [CONTRACT.md](CONTRACT.md) — what each surface touched in 0.17.0 promises: the decision it hides, its members, defaults, failure behaviour and stability
 - [CHANGELOG.md](CHANGELOG.md)
 - `recon --skill` — the skill Claude uses to author missions; `-r normalize-spec`, `-r config-patterns`, `-r capture-format`, `-r live-reading`, `-r streaming`, `-r pagination`, `-r ranges`, `-r changes`, `-r subscriptions`, `-r schedules`, `-r telemetry`, `-r errors` for the references. The plugin's copy is generated from it (`just recon-skill`).
 

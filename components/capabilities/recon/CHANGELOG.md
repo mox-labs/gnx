@@ -1,5 +1,24 @@
 # Changelog — recon
 
+## 0.17.0 — 2026-11-06
+
+### Ranges: source time asked for once, run after run
+
+- **`range:` on a snapshot entry** (rulings R1, R5, R-TOMB): each survey asks the entry's source for the source time since what its table last committed, step by step, so a schedule collects every span once and leaves none between. Three kinds, by the keys written: continuing (neither `end` nor `last`), fixed (`start` and `end`, complete at `end`), rolling (`last`, the latest span again each run, moving nothing). Keys and defaults, each in the plan's `provenance` with its origin: `step` 3600 s, `settle` 60 s, `max_steps` 24, `align` none, `start` none (one step back from the horizon). The contract: `docs/reference/ranges.md`, which `recon --skill -r ranges` prints.
+- **`{range.start}`, `{range.end}`, `{range.last}`**, filled by the core in any type's settings (an endpoint's params, an MCP tool's arguments, a command), as `iso`, `epoch`, `epoch_ms` or `date`; a lone number-format placeholder becomes a number. Every record of a ranged table carries `_range`; its outcome, the archive's meta and `recon status` carry `range` (`start`, `end`, `kind`, `from`, `request`, `steps`).
+- **The checkpoint moves only with a commit**: a range commits with its table, sealed `ok` and not `truncated`, in the archive's meta recorded with `ended`; a failed, killed or cut-short run commits nothing and the next asks again. Tombstones keep the ranges their archive committed, so retention never loses a checkpoint. A property test over random ticks, failures, kills, manual runs, backfills and retention proves committed ranges contiguous, disjoint and never asked twice.
+- **`recon survey --range START..END`** backfills without moving a checkpoint (`range_overlaps` warns of committed time asked again); a changed request is refused `checkpoint_request_changed` until `--rebase OUTPUT` or `--restart OUTPUT`. The library: `interval=`, `rebase=`, `restart=` on `recon.plan` and `recon.survey`.
+- New problem kinds `range_unused`, `range_ambiguous`, `range_deletes`, `range_steps`, `checkpoint_request_changed`; warning kinds `range_behind`, `range_current`, `range_complete`, `range_overlaps`.
+
+### Changed (breaking)
+
+- **A plan is pure** (ruling R11): `recon survey --dry-run`, `recon stream --dry-run` and `recon.plan()` start, fetch and connect to nothing; an `mcp` run's preflight runs behind `--check` (`check=True`). `runnable` is null unless checked; `provenance` says `preflight`. `--check` without `--dry-run` is `usage`.
+- **A source whose limits recon does not know is sent 1 request a second, burst 1** (ruling R12; it was 10, burst 3). The plan reports each source's `catalog.<i>.rate_limit` with its origin; a mission whose source allows more says so.
+- **No location in any document** (ruling R8, owner ruling G5): the survey, stream, window, status, query and read documents lose `path`; a table's outcome loses `file`; the plan's writes say `stream_names`. `recon status` gives each table's `truncated` and `changes`, each window's record, and each stream's windows as `history`. The archive layout is recon's own: read archives by id.
+- **A query reads its archives' tables alone** (SECURITY.md R-19): a path in SQL is refused. What a path served is named: `--baseline <archive id>` gives `baseline.<table>`, `json.<table>` each record's JSON text, `lines.<table>` its line, what a row is cited by.
+- **The storage ports carry no path** (M1): the 30-method `ArchiveStore` is gone, replaced by `Landing` → `Hold` → `Landed` (writing, the meta recorded as the commit point), `Archives` (reading, by `ArchiveRef`) and `ArchiveQuery`. `MissionStore`, `SubscriptionStore`, `ScheduleStore`, `CaptureLog`, `ShellRunner` and `KeyJoin` lose recon's own paths. `root(archives=...)` builds the archive adapter over the project's state directory. The on-disk layout is unchanged.
+- **`CONTRACT.md`**: each surface touched here, with the decision it hides, its members, defaults, failure behaviour and stability (ruling G6).
+
 ## 0.16.0 — 2026-10-25
 
 ### A crawl that resumes: a stream of page windows
