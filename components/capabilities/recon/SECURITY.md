@@ -96,7 +96,8 @@ environment, as a `cli` command does (boundary 1): name it by an absolute path. 
   source's captured body, and an `api` or `sse` source's failed request (whose message
   quotes the start of the answer, into `meta.yaml` and the event log), have the source's
   token and every header its helper printed redacted, as an `mcp` source's are (round-4
-  review S5). **Table records are not redacted**: a server that echoes the credential into
+  review S5). Since 0.19 recon itself captures every type's bodies, each redacted of the
+  credential values its type names as the body's `secrets`: one rule for every type. **Table records are not redacted**: a server that echoes the credential into
   a record it returns puts it in the table (and its change table, and a query's answer), as
   the source's data, kept as given; only captures and error messages are redacted. Keep such
   a field out with `normalize:` (a keep-list), and treat the archive of a source that does
@@ -134,8 +135,9 @@ a collected value. It reads only under the mission directory and the catalog's `
 sources (after resolving symlinks and `..`), and it never fetches a URL; either refusal
 fails the table with a config error (R-6).
 
-A `web` collector's page, and the file `$markitdown` opens, are converted from their bytes
-and nothing else. recon builds markitdown with a named list of converters, audited for
+A document an `api` collector reads with `response_format: document` (the `document`
+converter, which replaced the `web` collector in 0.19), and the file `$markitdown` opens, are
+converted from their bytes and nothing else. recon builds markitdown with a named list of converters, audited for
 markitdown 0.1.5, and none of them reaches the network or starts a process: plain text,
 HTML, ZIP (each entry by the same list), RSS, Wikipedia and Bing result pages (parsed, not
 fetched), DOCX, XLSX, XLS, PPTX, images, notebooks, PDF, Outlook messages, EPub and CSV.
@@ -631,8 +633,8 @@ Regression: `test_a_remotes_token_never_follows_a_redirect_off_its_origin`,
 ### R-14 — audio was uploaded to Google's speech API (fixed)
 
 markitdown's audio converter transcribes a recording with `speech_recognition`'s
-`recognize_google`, which uploads the whole recording to Google. A `web` collector that
-fetched `audio/*`, and `$markitdown` on a local `.wav` or `.mp3` (or one inside a ZIP), sent
+`recognize_google`, which uploads the whole recording to Google. A `web` collector (since 0.19,
+an `api` collector's `document` converter) that fetched `audio/*`, and `$markitdown` on a local `.wav` or `.mp3` (or one inside a ZIP), sent
 it there: no requester, rate limit, span or capture, to a third party the mission never
 named. R-12 had closed the YouTube converter alone. Fixed: recon no longer builds markitdown
 with every built-in; it registers a named list of converters, audited for what they reach
