@@ -537,8 +537,13 @@ def _reference_running() -> str:
 `model_calls_min` and `model_calls_max` (one per step at least, one per attempt at most; the
 maxima are null when a component that is neither an agent step nor a model step needs
 `agents` or `model_runtimes`, and so may make sessions of its own), the `store` and where a
-run would be recorded, and the `limits`. A problem anywhere is the error envelope with every
-problem.
+run would be recorded, and `settings`: the effective value of every key the run is made from
+(the limits and each component's, the store, each runtime, agent, observer and component
+config), each `{path, value, origin, file, note}`. `origin` is `config` (with the `file`
+that set it), `definition`, `extension` (a runtime's or the store's own default) or `matrix`
+(matrix's default); `note` says what a default means where the value does not, as
+`deadline_s: null`, which is no deadline. Read the settings before a long run: nothing bounds
+it in time unless one says so. A problem anywhere is the error envelope with every problem.
 
 `matrix run [CONFIG] --input KIND=PATH ... --json` runs it. Each `--input` file holds one
 JSON value a line, the rows of that run-input kind (`-` is standard input, once). It prints

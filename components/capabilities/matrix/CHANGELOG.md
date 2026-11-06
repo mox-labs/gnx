@@ -42,6 +42,18 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   `capabilities()` declares nothing unless its registration passes it
   (`capabilities=MyConfig.capabilities`); `capabilities` at another point, or without a
   `config`, is a `ConfigError`. The registry imports no agent type to run.
+- **The plan reports every effective value and where it came from.** `matrix.v1.plan`'s
+  `limits` (what differed from the defaults) is gone; `settings` lists the effective value of
+  every key the run is made from, each `{path, value, origin, file, note}`: the run's limits
+  and each component's (its own where it overrides the run's, the run's where it does not),
+  the store's, every runtime's, agent's and observer's options, each component's config,
+  `definitions` and `models`. `origin` is `config`, with the `file` that set it,
+  `definition`, `extension` (an extension's own default) or `matrix` (matrix's). A default is
+  listed as one, and a `note` says what it means where the value does not: a config that
+  sets no `deadline_s` plans a run with no deadline, and says so. `matrix plan` prints the
+  same, a line each. An agent's `model`, `tools` and `max_turns` say whether its config, its
+  definition or its runtime decides them; the model a runtime picks when none is named is not
+  known to the plan.
 - **matrix's test stand-ins keep the ports they stand in for.** Three agent runtimes in the
   OpenTelemetry tests returned a response without a `stop`, which the port forbids; they now
   say how their session ended.

@@ -24,6 +24,7 @@ from matrix.composition.builtins import (
 )
 from matrix.composition.config import discover_sources, load_config
 from matrix.composition.container import build_store, compose, default_registry
+from matrix.composition.effective import SourcedValue, settings
 from matrix.domain.agent_step import AGENT_STEP
 from matrix.domain.errors import ConfigError, NotFoundError, UsageError, invalid
 from matrix.domain.model_step import MODEL_STEP
@@ -251,7 +252,10 @@ class Plan(_Document):
     model_calls_min: int
     model_calls_max: int | None
     store: StorePlan
-    limits: dict[str, Any]
+    #: The effective value of every key the run is made from, and where each came from: the
+    #: limits, each component's own limits and config, the store, every runtime, agent and
+    #: observer. A default is listed as one.
+    settings: list[SourcedValue]
     warnings: list[Problem] = []
 
 
@@ -443,8 +447,9 @@ def plan_config(
     only: bool = False,
 ) -> Plan:
     """What a run of ``tool``'s configured components would do: the order of work, the
-    agents and runtimes it uses, how many agent and model calls it
-    makes, where it would be recorded. Composes and wires; runs nothing and calls nothing.
+    agents and runtimes it uses, how many agent and model calls it makes, where it would be
+    recorded, and the effective value of every key it is made from, with where each came
+    from. Composes and wires; runs nothing and calls nothing.
 
     Raises ConfigError with every problem found (``complete`` False when one kept a check
     from being made).
@@ -580,7 +585,7 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
             type=store_type_url(matrix.store.type),
             location=location_of(container.store, "RUN_ID"),
         ),
-        limits=container.limits.model_dump(mode="json", exclude_defaults=True),
+        settings=settings(loaded, container, wiring),
         warnings=list(container.warnings),
     )
 

@@ -139,7 +139,8 @@
       "name": "root",
       "files": ["src/matrix/__init__.py", "src/matrix/composition/__init__.py",
                 "src/matrix/composition/builtins.py", "src/matrix/composition/config.py",
-                "src/matrix/composition/container.py", "src/matrix/composition/documents.py"],
+                "src/matrix/composition/container.py", "src/matrix/composition/documents.py",
+                "src/matrix/composition/effective.py"],
       "allow": ["*", "matrix"],
       "forbid": ["opentelemetry", "hardline", "pydantic_ai"],
       "why": {

@@ -1654,10 +1654,34 @@ tier; `UsageError` when there are none).
 | `config_view(tool="matrix", config=None, *, only=False)` | `ConfigView` (`matrix.v1.config`): `tool`, `sources`, the merged `matrix` section | `ConfigError` |
 | `check_config(tool="matrix", config=None, *, only=False)` | `CheckReport` (`matrix.v1.check`): `ok`, `agent_runtimes`, `model_runtimes`, `agents`, `observers` (a count), `components` in one valid order of work, `sources`, `warnings` | what `compose` and `wire` raise; `complete` is false when the config did not compose and has components to wire |
 | `list_agents(tool="matrix", config=None, *, only=False)` | `Agents` (`matrix.v1.agents`): each agent's name, runtime, runtime_type, model, tools, description; `warnings` | what `compose` raises |
-| `plan_config(tool="matrix", config=None, *, only=False)` | `Plan` (`matrix.v1.plan`): `tool`, `sources`, `inputs`, `stages` (what starts together), `components` (each `name`, `type`, `requires`, `provides`, `after`, `agent`, `runtime`, `model` (a model step's), `attempts`), `agents`, `agent_runtimes` and `model_runtimes` in use (each `name`, `type`, `stand_in`), `agent_calls_min` and `model_calls_min` (one per agent step, one per model step) and `agent_calls_max` and `model_calls_max` (one per attempt; null when a component that is neither needs `agents` or `model_runtimes`, and so may make sessions of its own), `store` (`type`, `location` with `RUN_ID` for the id), `limits` (what differs from the defaults), `warnings` | what `compose` and `wire` raise, and a problem for each `limits.components` name that is not a component |
+| `plan_config(tool="matrix", config=None, *, only=False)` | `Plan` (`matrix.v1.plan`): `tool`, `sources`, `inputs`, `stages` (what starts together), `components` (each `name`, `type`, `requires`, `provides`, `after`, `agent`, `runtime`, `model` (a model step's), `attempts`), `agents`, `agent_runtimes` and `model_runtimes` in use (each `name`, `type`, `stand_in`), `agent_calls_min` and `model_calls_min` (one per agent step, one per model step) and `agent_calls_max` and `model_calls_max` (one per attempt; null when a component that is neither needs `agents` or `model_runtimes`, and so may make sessions of its own), `store` (`type`, `location` with `RUN_ID` for the id), `settings` ([every effective value and its source](#the-plans-settings)), `warnings` | what `compose` and `wire` raise, and a problem for each `limits.components` name that is not a component |
 | `list_runs(tool="matrix", config=None, *, only=False)` | `Runs` (`matrix.v1.runs`): `store` (its type URL) and `runs`, oldest first, each `run_id`, `status` (`interrupted` for one whose writer is gone), `started`, `ended`, `location`; and `damaged`, each record the store skipped, `location` and `reason` (empty for a store that does not say). Builds only the store: runtimes and agents are not built | `ConfigError` when the store cannot be built, `StoreError` when it cannot be read |
 
 `registry` defaults to `default_registry()`.
+
+### The plan's settings
+
+A plan's `settings` is the effective value of every key a run is made from, a default listed
+as one, each `{path, value, origin, file, note}`:
+
+- `path` is the key path: `matrix.limits.deadline_s`, `matrix.store.root`,
+  `matrix.agent_runtimes.<name>.<option>`, `matrix.agents.<name>.model`,
+  `matrix.observers.<index>.type`, `matrix.components.<name>.config.<key>`.
+- `value` is JSON data, as composition will use it.
+- `origin` is `config` (a config file, or a `MatrixConfig` built in code, set it; `file` names
+  the file, as `sources` does), `definition` (an agent's definition file gave it),
+  `extension` (the default of a runtime's, the store's, an observer's or a component type's
+  own config; for an agent's `model`, `tools` and `max_turns` left unset, the agent runtime's
+  own default) or `matrix` (matrix's default).
+- `note` says what a value means where it alone does not: `deadline_s: null` is no deadline,
+  `concurrency: null` no cap, and a component's limit it does not override is "the run's".
+
+The run's limits come first, then each component's, in the order of work, each of its
+`deadline_s`, `grace_s`, `cleanup_s` and `retry` fields its own where `limits.components`
+overrides it and the run's where it does not; a component's `retry`, given, replaces the
+run's whole. Then the store, each agent runtime, model runtime and agent, each observer,
+each component's config, `definitions` and `models`. A component's `type` and an agent's
+prompt are not settings: the plan's `components` and `matrix agents` show them.
 
 ---
 
@@ -1762,7 +1786,7 @@ Data goes to stdout, diagnostics to stderr. Nothing prompts.
 | `matrix config [CONFIG]... [--sources]` | the merged `matrix` section and the files consulted (`matrix.v1.config`); with `--sources`, only the files (`matrix.v1.config-sources`) |
 | `matrix check [CONFIG]...` | composes runtimes and agents, wires the configured components, and reports what composed (`matrix.v1.check`) |
 | `matrix agents [CONFIG]...` | each agent's name, runtime, runtime type, model, tools and description (`matrix.v1.agents`) |
-| `matrix plan [CONFIG]...` | what a run would do, with its agent and model calls, every problem at once; runs nothing (`matrix.v1.plan`) |
+| `matrix plan [CONFIG]...` | what a run would do, with its agent and model calls and every effective setting with who set it, every problem at once; runs nothing (`matrix.v1.plan`) |
 | `matrix run [CONFIG]... [--input KIND=PATH]... [--run-id ID] [--from RUN_ID]` | runs the configured components; prints the run id, where it is recorded and, for a store that keeps files, each file of the record (`matrix.v1.run`, with `location`, `warnings` and the record's `tables`) |
 | `matrix runs [CONFIG]...` | the runs the configured store keeps, oldest first: id, status, start, location; then a `damaged:` line for each record it skipped, with why (`matrix.v1.runs`) |
 | `matrix --version` | `matrix, version X` |

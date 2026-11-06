@@ -130,3 +130,35 @@ raised explicitly, so it holds under `python -O`. matrix runs each suite against
 own implementations, and against every stand-in in its tests and ix's that keeps the port; a
 stand-in that breaks a port on purpose, to test what matrix does with a broken one, is
 outside it.
+
+## The plan: `matrix.v1.plan`
+
+**Stability: public.** The document `matrix plan --json` prints and `plan_config` returns.
+
+**The decision it hides.** How composition resolves a run's settings from the config tiers,
+the agent definitions and each extension's typed config. A reader (often an agent deciding
+whether to run) sees every value the run will use, and where it came from, without reading
+any of those.
+
+**Members.** `tool`, `sources`, `inputs`, `stages`, `components`, `agents`,
+`agent_runtimes`, `model_runtimes`, the call counts (`agent_calls_min`, `agent_calls_max`,
+`model_calls_min`, `model_calls_max`), `store`, `settings` and `warnings`. Each of `settings`
+is `{path, value, origin, file, note}`: the key path; the value as composition will use it;
+`origin`, one of `config` (with the `file` that set it), `definition`, `extension` and
+`matrix`; and a `note` where a value's meaning is not in the value (`deadline_s: null` is no
+deadline).
+
+**Defaults.** None of its own: a plan reports defaults, and makes none. Every limit is
+listed, the run's and each component's, as are every option of the store, of each runtime and
+observer, of each component's config, and each agent's `model`, `tools` and `max_turns`. The
+run's `deadline_s` defaults to null, no deadline, and the plan says so.
+
+**Failure behaviour.** A config that does not compose or wire is the error envelope with
+every problem, and no plan; a `limits.components` name that is no component is one of them.
+Nothing is run or called. Each component's limits in `settings` are those the executor runs
+it under (`tests/test_plan_and_run.py` rebuilds them from the plan and compares).
+
+**What it cannot say.** The model an agent's runtime picks when the agent names none: the
+plan reports the agent's `model` as unset, left to the runtime, and the runtime's own options
+(its `default_model`, where it has one) with their sources. A hardline runtime's registry
+default is hardline's to resolve.

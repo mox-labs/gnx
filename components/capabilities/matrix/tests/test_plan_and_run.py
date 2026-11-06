@@ -179,6 +179,142 @@ def test_limits_naming_a_component_that_is_not_configured(
     assert found["allowed"] == ["review"]
 
 
+def _settings(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {setting["path"]: setting for setting in plan["settings"]}
+
+
+def test_the_plan_shows_every_limit_and_marks_each_default_as_one(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A plan of a config that sets no limits still shows what bounds the run: no deadline
+    (said so), no concurrency cap, the grace and cleanup periods, the failure policy and the
+    retry policy, each as matrix's own default; and each component's, the run's."""
+    code, plan, _ = _cli(capsys, "plan", "--json")
+    assert code == 0 and "limits" not in plan
+    found = _settings(plan)
+    expected = {
+        "matrix.limits.deadline_s": None,
+        "matrix.limits.concurrency": None,
+        "matrix.limits.grace_s": 5.0,
+        "matrix.limits.cleanup_s": 30.0,
+        "matrix.limits.on_failure": "fast",
+        "matrix.limits.retry.attempts": 1,
+        "matrix.limits.retry.errors": ["transient"],
+    }
+    for path, value in expected.items():
+        assert (found[path]["value"], found[path]["origin"], found[path]["file"]) == (
+            value,
+            "matrix",
+            None,
+        ), path
+    assert "no deadline" in found["matrix.limits.deadline_s"]["note"]
+    assert "no cap" in found["matrix.limits.concurrency"]["note"]
+    own = found["matrix.limits.components.review.deadline_s"]
+    assert (own["value"], own["origin"]) == (None, "matrix")
+    assert own["note"].startswith("the run's matrix.limits.deadline_s: no deadline")
+    store = (found["matrix.store.type"], found["matrix.store.root"], found["matrix.store.fsync"])
+    assert [(s["value"], s["origin"]) for s in store] == [
+        ("jsonl", "matrix"),
+        (".matrix/runs", "extension"),
+        (False, "extension"),
+    ]
+
+
+def test_a_value_a_file_sets_names_the_file(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The file that set a value is named, when two configs are read one above the other; a
+    component's own limit is its own, and what it leaves is the run's."""
+    (project / "live.yaml").write_text(
+        "matrix:\n  limits:\n    deadline_s: 600\n"
+        "    components: {review: {grace_s: 1, retry: {attempts: 3}}}\n"
+    )
+    code, plan, _ = _cli(capsys, "plan", "live.yaml", "--json")
+    assert code == 0, plan
+    found = _settings(plan)
+    # Each file as the plan's sources name it.
+    live = next(source for source in plan["sources"] if source.endswith("live.yaml"))
+    project_file = str(project / "matrix.yaml")
+    assert project_file in plan["sources"]
+    run = found["matrix.limits.deadline_s"]
+    assert (run["value"], run["origin"], run["file"], run["note"]) == (600.0, "config", live, "")
+    inherited = found["matrix.limits.components.review.deadline_s"]
+    assert (inherited["value"], inherited["file"]) == (600.0, live)
+    assert inherited["note"] == "the run's matrix.limits.deadline_s"
+    own = found["matrix.limits.components.review.grace_s"]
+    assert (own["value"], own["origin"], own["file"], own["note"]) == (1.0, "config", live, "")
+    attempts = found["matrix.limits.components.review.retry.attempts"]
+    assert (attempts["value"], attempts["origin"]) == (3, "config")
+    backoff = found["matrix.limits.components.review.retry.backoff_s"]
+    assert (backoff["value"], backoff["origin"]) == (1.0, "matrix")  # a retry given whole
+    runtime = found["matrix.agent_runtimes.offline.default"]
+    assert (runtime["origin"], runtime["file"]) == ("config", project_file)
+    family = found["matrix.agent_runtimes.offline.family"]
+    assert (family["value"], family["origin"]) == ("mock", "extension")
+
+
+def test_the_plans_limits_are_the_ones_the_run_keeps(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Falsifier of the plan: each component's limits, rebuilt from what the plan says, are
+    the ones the executor runs it under."""
+    (project / "matrix.yaml").write_text(
+        CONFIG + "  limits: {cleanup_s: 9, retry: {attempts: 2, errors: [timeout]},"
+        " components: {review: {deadline_s: 30}}}\n"
+    )
+    code, plan, _ = _cli(capsys, "plan", "--json")
+    assert code == 0, plan
+    found = _settings(plan)
+    limits = matrix.compose(matrix.load_config()).limits
+    at = "matrix.limits.components.review"
+    planned = tuple(found[f"{at}.{key}"]["value"] for key in ("deadline_s", "grace_s", "cleanup_s"))
+    assert planned == limits.of("review")
+    retry = {key: found[f"{at}.retry.{key}"]["value"] for key in matrix.Retry.model_fields}
+    assert matrix.Retry.model_validate(retry) == limits.retry_of("review")
+
+
+def test_each_agents_model_tools_and_turns_say_where_they_came_from(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An agent's model given inline is the config's; one its definition file gives is the
+    definition's; one neither gives is left to its runtime, and the plan says so."""
+    agents = project / "agents"
+    agents.mkdir()
+    (agents / "writer.md").write_text(
+        "---\nname: writer\nmodel: sonnet\nmax_turns: 4\n---\nWrite.\n"
+    )
+    (project / "matrix.yaml").write_text(
+        CONFIG.replace(
+            "  agents:\n",
+            "  definitions: [agents]\n  agents:\n    writer: {runtime: offline}\n",
+        )
+    )
+    code, plan, _ = _cli(capsys, "plan", "--json")
+    assert code == 0, plan
+    found = _settings(plan)
+    inline, written = found["matrix.agents.reviewer.model"], found["matrix.agents.writer.model"]
+    assert (inline["value"], inline["origin"]) == ("m1", "config")
+    assert (written["value"], written["origin"]) == ("sonnet", "definition")
+    assert written["note"] == "from the definition 'writer'"
+    assert (
+        found["matrix.agents.writer.max_turns"]["value"],
+        found["matrix.agents.writer.max_turns"]["origin"],
+    ) == (4, "definition")
+    unset = found["matrix.agents.reviewer.tools"]
+    assert (unset["value"], unset["origin"]) == (None, "extension")
+    assert unset["note"] == "unset: the agent runtime's own default"
+
+
+def test_the_human_plan_lists_each_setting_and_who_set_it(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, text, _ = _cli(capsys, "plan")
+    assert code == 0
+    assert "settings (each effective value, and who set it):" in text
+    assert "  matrix.limits.deadline_s = null  (matrix; no deadline:" in text
+    assert f'  matrix.agents.reviewer.model = "m1"  (config {project / "matrix.yaml"})' in text
+
+
 def test_a_named_config_sits_above_the_tiers_and_can_be_standard_input(
     project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

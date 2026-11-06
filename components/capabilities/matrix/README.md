@@ -418,7 +418,10 @@ matrix run live.yaml --only --input acme.v1.diff=diffs.jsonl  # recorded in its 
 file that set it, and how many agent sessions and model calls a run makes
 (`agent_calls_min`, `agent_calls_max`, `model_calls_min`, `model_calls_max`; a maximum is
 null when a component other than an agent or a model step needs `agents` or
-`model_runtimes`, and so may make sessions of its own). matrix states no cost and keeps no spending ceiling: a run's cost is not
+`model_runtimes`, and so may make sessions of its own). Its `settings` are the effective
+value of every key the run is made from, each with who set it: a config file (named), an
+agent definition, an extension's own default, or matrix's. A default is listed as one, so a
+plan of a config that sets no `deadline_s` says the run has no deadline. matrix states no cost and keeps no spending ceiling: a run's cost is not
 something it can measure, so it does not pretend to. The per-call token cap stays (owner ruling
 2026-10-22): `max_tokens` bounds each reply, not a run's cost. `run` prints the run id, where the record is, and its
 files: `run.json`, one `<kind>.jsonl` per kind (an agent step's reply row carries the task as
