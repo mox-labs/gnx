@@ -154,8 +154,9 @@ offers `output` (`exit_code`, `stdout`, `stderr`, `truncated`). The `exit-status
 
 **Defaults.** `cwd`: `.`; `timeout`: `60s`; `code`: 0; each stream kept: its last 64 KiB.
 
-**Failure behaviour.** A threshold, a margin or a guardrail on a `check` is refused
-(`decision_inapplicable`); a primary that is not a boolean is refused (`metric_shape`). A
+**Failure behaviour.** A threshold, a margin or a guardrail on a `check`, or on any genre
+that gives no verdict (`characterize`), is refused (`decision_inapplicable`); a primary
+that is not a boolean is refused (`metric_shape`). A
 command that cannot start, or runs past its `timeout`, is the harness's failure, so the check
 is inconclusive, never failed. A command that exits is an observation, whatever its code.
 

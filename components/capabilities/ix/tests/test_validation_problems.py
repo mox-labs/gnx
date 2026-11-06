@@ -8,6 +8,7 @@ decides, and whether a metric is judged is its sensor's word, not the author's.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -1150,3 +1151,43 @@ def test_too_few_repeats_is_one_problem_with_one_fix(
     problems = [p for p in _problems({**evaluate_data, "repeats": 1}, vocabulary)]
     (only,) = [p for p in problems if p.kind == "repeats_below_min"]
     assert "genre evaluate" in only.message
+
+
+class TestAGenreWithNoVerdict:
+    """Regression: ``characterize`` accepted a ``threshold`` and a ``margin`` and ignored
+    them, so an author who wrote one was told nothing and decided nothing."""
+
+    def _characterize(self, compare_data: dict[str, Any], **changes: Any) -> dict[str, Any]:
+        data = copy.deepcopy(compare_data)
+        data["genre"], data["factors"] = "characterize", {"size": ["1MiB", "1GiB"]}
+        data["subjects"] = {"buffered": data["subjects"]["buffered"]}
+        for key in ("comparison", "margin"):
+            del data[key]
+        return {**data, **changes}
+
+    @pytest.mark.parametrize(
+        ("change", "path"),
+        [
+            ({"threshold": {"op": "<", "value": 300}}, "threshold"),
+            ({"margin": "5%"}, "margin"),
+            ({"guardrails": [{"metric": "ttfb", "threshold": {"op": "<", "value": 9}}]},
+             "guardrails.0"),
+        ],
+    )  # fmt: skip
+    def test_a_threshold_or_a_margin_it_never_reads_is_refused_at_its_key(
+        self,
+        compare_data: dict[str, Any],
+        vocabulary: Vocabulary,
+        change: dict[str, Any],
+        path: str,
+    ) -> None:
+        examined = examine(self._characterize(compare_data, **change), vocabulary)
+        (refused,) = [p for p in examined.problems if p.path == path]
+        assert refused.kind == "decision_inapplicable"
+        assert "characterize gives no verdict" in refused.message
+        assert refused.got == "characterize"
+
+    def test_without_one_it_is_valid(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        assert examine(self._characterize(compare_data), vocabulary).problems == ()

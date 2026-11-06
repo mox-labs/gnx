@@ -136,6 +136,9 @@ form below.
 
 ### Fixed
 
+- **A `characterize` refuses a threshold, a margin or a guardrail** it never reads
+  (`decision_inapplicable` at its key, saying the genre gives no verdict); it accepted and
+  ignored them. Any genre that gives no verdict does the same.
 - **A collected file too large to keep is no reading, not a failing one.** A file over the
   probe's limit was left out, and `function-test` then read it as not written, a failure of
   the agent; it is listed as `files_too_large`, and a sensor reading it fails to read.

@@ -123,6 +123,7 @@ def _against_genre(experiment: Experiment, genre: Genre) -> list[Problem]:
         *_comparison(experiment, genre),
         *_repeats(experiment, genre),
         *_guardrail_forms(experiment, genre),
+        *_unread(experiment, genre),
     ]
 
 
@@ -227,8 +228,9 @@ def _repeats(experiment: Experiment, genre: Genre) -> list[Problem]:
 
 
 def _guardrail_forms(experiment: Experiment, genre: Genre) -> list[Problem]:
-    """A guardrail with a margin, in a genre with no control to be within a margin of."""
-    if genre.role(CONTROL) is not None:
+    """A guardrail with a margin, in a genre with no control to be within a margin of; a genre
+    that reads no guardrail at all refuses it whole (:func:`_unread`)."""
+    if genre.role(CONTROL) is not None or genre.verdict_form == "none" or observes(genre.analysis):
         return []
     return [
         problem(
@@ -487,19 +489,25 @@ def _decidable(
     return problems
 
 
-def _observation(experiment: Experiment, genre: Genre, instruments: Instruments) -> list[Problem]:
-    """What an analysis that observes (a check) cannot read: a primary that is not a boolean,
-    and a threshold, a margin or a guardrail, which it never reads, so that none is mistaken
-    for part of the verdict."""
+def _unread(experiment: Experiment, genre: Genre) -> list[Problem]:
+    """A threshold, a margin or a guardrail written for a genre whose analysis never reads
+    one: one that gives no verdict (estimates only), or one that observes (a check). Each is
+    refused at its key, so that none is mistaken for part of a verdict that ignores it."""
     label = schema.short(genre.name)
-    problems = [
+    if genre.verdict_form == "none":
+        why, fix = "gives no verdict: it estimates only", "use a genre that decides on one"
+    elif observes(genre.analysis):
+        why = "decides whether the primary held on every trial, observed"
+        fix = "to hold a rate to a threshold, use a genre that estimates one"
+    else:
+        return []
+    return [
         problem(
             path,
             kind="decision_inapplicable",
-            message=f"genre {label} decides whether the primary held on every trial, "
-            f"observed; it reads no {noun}",
-            fix=f"remove {path.split('.')[0]!r}; to hold a rate to a threshold, use a genre "
-            "that estimates one",
+            message=f"genre {label} {why}; it reads no {noun}, so the {noun} would be ignored",
+            fix=f"remove {path.split('.')[0]!r}; {fix}",
+            got=label,
         )
         for path, noun, given in [
             ("threshold", "threshold", experiment.threshold is not None),
@@ -511,6 +519,13 @@ def _observation(experiment: Experiment, genre: Genre, instruments: Instruments)
         ]
         if given
     ]
+
+
+def _observation(experiment: Experiment, genre: Genre, instruments: Instruments) -> list[Problem]:
+    """What an analysis that observes (a check) cannot decide on: a primary that is not a
+    boolean."""
+    label = schema.short(genre.name)
+    problems: list[Problem] = []
     metric = instruments.metrics.get(experiment.primary.metric) if experiment.primary else None
     if metric is not None and metric.shape != "boolean":
         problems.append(
