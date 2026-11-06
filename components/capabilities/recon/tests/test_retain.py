@@ -1,7 +1,8 @@
-"""``retain:`` (ruling B4): which sealed windows a stream keeps. ``all`` (the default) removes
-nothing; a rule removes the oldest sealed windows it does not keep, and leaves a tombstone for
-each, so a hole in the chain reads as retention, not loss. A window not sealed is never
-removed, and the newest is always kept."""
+"""``retain:`` (ruling B4): which sealed windows a stream keeps, applied by the observe layer
+as each window is sealed (step M3: the stream's writer tells it each one, under its hold).
+``all`` (the default) removes nothing; a rule removes the oldest sealed windows it does not
+keep, and leaves a tombstone for each, so a hole in the chain reads as retention, not loss. A
+window not sealed is never removed, and the newest is always kept."""
 
 from __future__ import annotations
 
@@ -11,7 +12,8 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from recon.adapters._out.mission_layout import STATE
-from recon.domain.stream import RetainSpec, WindowSpec, window_id
+from recon.core.domain.stream import RetainSpec, WindowSpec, window_id
+from recon.observe.application.retention import Retention
 from tests.recon_fakes import VirtualClock, files_of, landing, window_kept
 from tests.test_streams import Script, _plan, _run
 
@@ -19,7 +21,20 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from recon.adapters._out.archive_files import ArchiveFiles
-    from recon.domain.stream import Retain
+    from recon.core.domain.archives import Hold
+    from recon.core.domain.documents import WindowOutcome
+    from recon.core.domain.stream import Retain
+
+
+def _retaining(store: ArchiveFiles, clock: VirtualClock, rule: Retain) -> Any:
+    """What a stream's run tells each window sealed, as the observe layer has it: retention
+    applied under the stream's hold."""
+    retention, sizes = Retention(store, clock), dict[str, int]()
+
+    def sealed(hold: Hold, window: WindowOutcome) -> None:
+        retention.window(hold, "m", "s", rule, window, sizes)
+
+    return sealed
 
 
 def _stream(
@@ -28,9 +43,9 @@ def _stream(
     clock = VirtualClock()
     store = files_of(tmp_path, clock)
     plan = _plan(WindowSpec(seconds=10))
-    plan = type(plan)(**{**plan.__dict__, "retain": retain})
     timeline = [(i * every, {"seq": i}) for i in range(count)]
-    _, outcomes, _ = _run(tmp_path, clock, plan, Script(clock, timeline), store=store)
+    _, outcomes, _ = _run(tmp_path, clock, plan, Script(clock, timeline), store=store,
+                          sealed=_retaining(store, clock, retain))  # fmt: skip
     return store, outcomes
 
 
@@ -80,9 +95,9 @@ class TestRules:
         dead = made.ref
 
         plan = _plan(WindowSpec(seconds=10))
-        plan = type(plan)(**{**plan.__dict__, "retain": RetainSpec(archives=1)})
         timeline = [(i * 1.0, {"seq": i}) for i in range(30)]
-        _run(tmp_path, clock, plan, Script(clock, timeline), store=store)
+        _run(tmp_path, clock, plan, Script(clock, timeline), store=store,
+             sealed=_retaining(store, clock, RetainSpec(archives=1)))  # fmt: skip
 
         kept = store.archives("m", stream="s")
         assert dead in kept, "a window its writer never sealed is kept, as evidence"

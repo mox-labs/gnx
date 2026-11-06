@@ -18,8 +18,8 @@ import yaml
 import recon
 from recon.adapters._out.archive_files import ArchiveFiles, StoredTable
 from recon.composition import root
-from recon.domain.archives import ArchiveRef, NewRecords
-from recon.domain.models import ReconConfig
+from recon.core.domain.archives import ArchiveRef, NewRecords
+from recon.core.domain.models import ReconConfig
 from tests.recon_fakes import (
     FixedClock,
     LandedThrough,
@@ -35,9 +35,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
     from pathlib import Path
 
-    from recon.domain.archives import Landed
-    from recon.domain.capture import CaptureLog
-    from recon.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.archives import Landed
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.models import CollectorEntry, SourceEntry
 
 
 def _until(read: Callable[[], recon.RecordsSince], records: int) -> recon.RecordsSince:
@@ -208,7 +208,7 @@ class TestAReadIsBoundedInBytes:
     def test_watch_reads_again_at_once_while_a_bound_cuts_its_reads(self, tmp_path: Path) -> None:
         project = self._archive(tmp_path, [400, 400, 400])
         clock = FixedClock()
-        reads = list(root({}, project=project, clock=clock).watch("m", max_bytes=500))
+        reads = list(root({}, project=project, clock=clock).observation.watch("m", max_bytes=500))
         assert [read.count for read in reads] == [1, 1, 1]
         assert clock.slept == [], "a cut read is followed at once, not after the interval"
 
@@ -229,7 +229,7 @@ def test_watch_finds_its_archive_once_not_at_every_read(tmp_path: Path) -> None:
     clock = FixedClock()
     watching = root({}, project=tmp_path, clock=clock,
                     archives=lambda home: Counting(home, clock))  # fmt: skip
-    reads = list(watching.watch("m", max_records=1))
+    reads = list(watching.observation.watch("m", max_records=1))
     assert len(reads) == 3 and len(listed) == 1
 
 
@@ -465,7 +465,7 @@ class TestNoReceiverSlowsTheWrite:
             plugins=plugins_with(x=Slow()),
             archives=lambda home: WrappingArchives(home, clock, Timed),
             channel=lambda: ThreadChannel(queue=2, drain_s=0.2),
-        ).survey("m", on_event=on_event)
+        ).observation.survey("m", on_event=on_event)
         archive = kept(project, surveyed)
         files = {p.name: p.read_bytes() for p in sorted(archive.iterdir()) if p.is_file()}
         return surveyed, files, written[1] - written[0]
@@ -512,9 +512,9 @@ class TestNoReceiverSlowsTheWrite:
         done: list[recon.SurveyDocument] = []
         surveying = threading.Thread(
             target=lambda: done.append(
-                root({}, project=tmp_path, channel=lambda: ThreadChannel(drain_s=0.3)).survey(
-                    "m"
-                )  # fmt: skip
+                root(
+                    {}, project=tmp_path, channel=lambda: ThreadChannel(drain_s=0.3)
+                ).observation.survey("m")  # fmt: skip
             ),
             daemon=True,
         )
@@ -550,7 +550,7 @@ def test_opentelemetry_spans_nest_while_the_queue_is_behind() -> None:
 
     from recon.adapters._out.event_channel import ThreadChannel
     from recon.adapters._out.otel_telemetry import OtelEvents
-    from recon.domain.telemetry import Telemetry
+    from recon.core.domain.telemetry import Telemetry
 
     exporter = InMemorySpanExporter()
     provider = TracerProvider()

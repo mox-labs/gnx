@@ -2,10 +2,10 @@
 name: recon
 description: "Writes, plans and runs recon missions: one YAML file that names sources (HTTP APIs, shell commands, web pages, MCP servers, capture logs) and what to ask them; recon collects the answers into timestamped JSONL archives and answers SQL over them with DuckDB. This skill should be used when the user asks to \"collect data from an API\", \"build a dataset from several sources\", \"mine a codebase with ripgrep or git log\", \"snapshot an API over time\", \"normalize API responses\", \"query collected records with SQL\", \"collect from an MCP server\", \"capture MCP tool results\", \"write a recon mission\", \"watch a survey as it runs\", or runs recon survey, recon query, recon watch or recon init."
 metadata:
-  version: "0.17.0"
+  version: "0.18.0"
 ---
 
-# recon 0.17.0: collect from many sources into tables SQL can query
+# recon 0.18.0: collect from many sources into tables SQL can query
 
 recon runs a mission: one YAML file that lists sources (the catalog) and what to ask each of them (the collectors). recon checks the file and shows every request, command and MCP call it would make, then fetches, runs or calls them, reshapes each answer into records with a declarative `normalize:` spec, and writes one JSONL table per collector and source into a timestamped archive. `recon query` answers SQL over an archive, so a large result is read a few rows at a time instead of loaded whole. recon uses no model: it runs exactly the file you wrote.
 
@@ -24,7 +24,7 @@ Do not use recon:
 The plugin carries this text; the `recon` command is a separate Python package. Check with `recon --version`. Install with:
 
 ```
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.17.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.18.0#subdirectory=components/capabilities/recon"
 ```
 
 If `recon` is missing, say so; do not improvise it with curl and jq, because the archive layout and the query surface are what make the output reusable. A `cli` collector runs whatever program its command names (`rg`, `git`, `gh`), which must be installed too.
@@ -82,7 +82,7 @@ Do these in order. Every command takes `--json`: it then prints one JSON documen
 4. **Normalize.** Write `normalize:` from the shape you saw, raise the limits, plan again (step 2), then survey.
 5. **Query.** `recon query <name> "<SQL>" --json`. Each table is a view named after its output, with every character but a letter, a digit or `_` turned into `_` (`oa-works` is `oa_works`, `v1.2` is `v1_2`); SQL matches the name without regard to case. Two outputs that would be one view (`a-b` and `a_b`, `Foo` and `foo`) are a plan problem, as is an output name holding `/`, `\` or `..`, or not starting with a letter, a digit or `_`. The document names the archive the rows came from by its id, `archive` (what `--archive` takes); no document says where an archive is kept, and none needs to: every read goes through recon. Each row is an object keyed by column, so a name the SQL gives twice (`SELECT a.id, b.id`) is made unique in `columns` and in every row: `id`, `id_1`. The SQL is DuckDB's; a refused query exits 10 with DuckDB's message in the `fix`. To count the items of a list column, unnest it in a subquery and group outside it (DuckDB does not unnest beside `count(*)`): `SELECT author, count(*) AS n FROM (SELECT unnest(authors) AS author FROM papers) GROUP BY author ORDER BY n DESC`.
 
-A survey with failed tables still writes its archive, marked incomplete, and lists every table's status; its exit code says what to do about the failures. `recon status --json` lists missions, their latest archive, and the installed collector types and transforms; `recon status <name> --json` lists every archive of that mission, oldest first, as `missions[0].history`: each archive's `id`, `started_at`, `finished_at`, `state` and `tables`. `state`: `complete`, `incomplete` or `writing`; for an incomplete one, `ended` says whether its survey `finished` (a table failed), was `stopped` on request, or `crashed`.
+A survey with failed tables still writes its archive, marked incomplete, and lists every table's status; its exit code says what to do about the failures. `recon types --json` lists each collector type with its config's JSON Schema, `recon schema` the mission file's; `--root <dir>` (or `RECON_ROOT`) picks the project. `recon status --json` lists missions and their latest archive; `recon status <name> --json` lists every archive of that mission, oldest first, as `missions[0].history`: each archive's `id`, `started_at`, `finished_at`, `state` and `tables`. `state`: `complete`, `incomplete` or `writing`; for an incomplete one, `ended` says whether its survey `finished` (a table failed), was `stopped` on request, or `crashed`.
 
 **Watch.** `recon watch <name> --json` follows an archive as a survey writes it, a `recon.v1.records-since` line per read, and returns when the survey ends: `--stream` of a `--forever` stream never returns. To follow, poll: `--once` reads once and returns, and the next call passes the `cursor` it printed as `--cursor` (with `--archive`, or `--stream`). Records of a table later `retracted` are void. Flags, defaults, refusals, `state`, `ended` and the library calls: `recon --skill -r live-reading`.
 
@@ -182,15 +182,15 @@ These are all the keys there are: an unknown key at the top level, in a source, 
 
 A `cli` command without a source times out after 300 seconds, otherwise after the source's `timeout`; the command and everything it started are then killed.
 
-**Bounds in time.** A source's `timeout` bounds each send of a request in wall time, from connecting to the body's last byte, redirects included, so a slow server cannot hold a table for longer; a send past it is retried like any timeout. Each redirect draws a `rate_limit` token. `deadline:` at the top bounds the whole survey and `deadline:` on a collector each of its tables: a request, a wait for the rate limit or a retry, and a command are all cut to what is left, a table cut short fails as `transient` (exit 5) with a fix naming the `deadline:` to raise, every table not started by the survey's deadline fails the same way, and the archive is still finished, marked incomplete. A failed command's error ends with the last of its stderr. The command's stdin is empty, so a tool that reads stdin when it has no path argument gets nothing from it: give it an explicit path (`rg --json TODO .`). With `patterns:`, each record carries the `_pattern` that produced it.
+**Bounds in time.** A source's `timeout` bounds each send of a request in wall time, from connecting to the body's last byte, redirects included; a send past it is retried like any timeout. Each redirect draws a `rate_limit` token. `deadline:` at the top bounds the whole survey and `deadline:` on a collector each of its tables: a request, a wait for the rate limit or a retry, and a command are all cut to what is left, a table cut short fails as `transient` (exit 5) with a fix naming the `deadline:` to raise, every table not started by the survey's deadline fails the same way, and the archive is still finished, marked incomplete. A failed command's error ends with the last of its stderr. The command's stdin is empty, so a tool that reads stdin when it has no path argument gets nothing from it: give it an explicit path (`rg --json TODO .`). With `patterns:`, each record carries the `_pattern` that produced it.
 
 ## Normalize
 
-A spec maps each output column to a path into the record, optionally piped through a transform: `title: title`, `pdf: "openAccessPdf.url"`, `first: "authors.0.name"`, `authors: "authors.*.name"` (the rest of the path from every item), `abstract: "abstract_inverted_index|$inverted_index"`. A path that does not resolve gives `null`. Built-in transforms: `$html2text`, `$inverted_index`, `$join`, `$first`, `$markitdown` (a local file under the mission or a `local` source, to markdown; a file it cannot read or convert fails the table). An unknown transform is a plan problem. The full syntax: `recon --skill -r normalize-spec`.
+A spec maps each output column to a path into the record, optionally piped through a transform: `title: title`, `pdf: "openAccessPdf.url"`, `first: "authors.0.name"`, `authors: "authors.*.name"` (the rest of the path from every item), `abstract: "abstract_inverted_index|$inverted_index"`. A path that does not resolve gives `null`. Built-in transforms: `$html2text`, `$inverted_index`, `$join`, `$first`, `$markitdown` (a local file under the mission or a `local` source, to markdown; a file it cannot read or convert fails the table). An unknown transform, or a column whose name starts with `_` (recon's own), is a plan problem. The full syntax: `recon --skill -r normalize-spec`.
 
 ## Reading results
 
-Everything a survey lands is read through recon, never from its files: where and how an archive is kept is recon's own, and changes without notice. An archive is named by its id, which `recon status <name> --json` lists, oldest first, under `missions[0].history`.
+Everything a survey lands is read through recon, never from its files: where and how an archive is kept is recon's own, and changes without notice. An archive is named by its id (`missions[0].history`).
 
 `query` reads the latest archive unless `--archive <archive id>` names another, and reports `state: incomplete` for an incomplete archive, whose rows may be partial, or `state: writing`: the table being written is not a view yet. Beside each table's view, three schemas of views read the same records:
 

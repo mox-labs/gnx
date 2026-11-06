@@ -17,7 +17,7 @@ the file now there, it is read from its start, and the stretch whose lines may b
 reported as a gap (``CollectorContext.gaps``). A line longer than the source's ``max_bytes``
 fails the stream, rather than being held in memory.
 
-Registered as the built-in collector type ``tail`` (entry-point group ``recon.collectors``):
+The built-in collector type ``tail``, registered at ``recon.collector`` (``recon._matrix``):
 ``unbounded`` (its records do not end) and ``paced_by: recon`` (it reads the next line when
 recon is ready, so a full buffer holds it back and loses nothing).
 """
@@ -33,18 +33,18 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from recon.domain.clock import LONGEST_WAIT
-from recon.domain.collector import CollectorType
-from recon.domain.errors import CollectionError
-from recon.domain.stream import POSITION_FIELD, Gap
+from recon.core.domain.clock import LONGEST_WAIT
+from recon.core.domain.collector import CollectorType
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.stream import POSITION_FIELD, Gap
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from recon.domain.capture import CaptureLog
-    from recon.domain.clock import Clock
-    from recon.domain.models import CollectorEntry, SourceEntry
-    from recon.domain.stream import GapLog
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.clock import Clock
+    from recon.core.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.stream import GapLog
 
 _READ = 65536
 

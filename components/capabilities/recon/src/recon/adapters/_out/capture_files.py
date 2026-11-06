@@ -23,15 +23,15 @@ import uuid
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from recon.adapters._out.private_files import make_dirs, open_file, write_file
-from recon.domain.capture import CAPTURE_LOG_NAME, CAPTURE_SCHEMA, CaptureKind, redact_headers
-from recon.domain.documents import Capture
-from recon.domain.errors import CollectionError
+from recon.core.domain.capture import CAPTURE_LOG_NAME, CAPTURE_SCHEMA, CaptureKind, redact_headers
+from recon.core.domain.documents import Capture
+from recon.core.domain.errors import CollectionError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-    from recon.domain.clock import Clock
+    from recon.core.domain.clock import Clock
 
 _BODY_PATH = re.compile(r"^raw/[0-9a-f]{64}$")
 _SCHEMA = re.compile(r"^recon\.v([0-9]+)\.capture$")

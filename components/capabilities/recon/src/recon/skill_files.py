@@ -11,7 +11,7 @@ from __future__ import annotations
 from importlib import resources
 from typing import TYPE_CHECKING
 
-from recon.domain.errors import UsageError
+from recon.core.domain.errors import UsageError
 
 if TYPE_CHECKING:
     from importlib.resources.abc import Traversable

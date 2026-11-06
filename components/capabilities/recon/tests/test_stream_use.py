@@ -25,8 +25,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from recon.composition import Recon
-    from recon.domain.capture import CaptureLog
-    from recon.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.models import CollectorEntry, SourceEntry
 
 
 class Feed:
@@ -99,7 +99,7 @@ class TestReconStream:
         feed = Feed(clock, 1.0, 100)
         _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
 
-        document = _root(tmp_path, clock, feed).stream("m", "events")
+        document = _root(tmp_path, clock, feed).observation.stream("m", "events")
 
         assert document.windows == 1
         assert document.last_window is not None
@@ -118,8 +118,8 @@ class TestReconStream:
         _mission(tmp_path, {"window": {"records": 5}, "retain": "all"})
         recon_ = _root(tmp_path, clock, feed)
 
-        first = recon_.stream("m", "events", windows=2)
-        second = recon_.stream("m", "events", windows=1)
+        first = recon_.observation.stream("m", "events", windows=2)
+        second = recon_.observation.stream("m", "events", windows=1)
 
         assert (first.windows, first.records) == (2, 10)
         assert feed.started == [None, 9], "the second run went on after the last kept"
@@ -147,10 +147,10 @@ class TestReconStream:
         feed = Feed(clock, 1.0, 30)
         _mission(tmp_path, {"window": {"records": 5}, "retain": "all"})
         recon_ = _root(tmp_path, clock, feed)
-        recon_.stream("m", "events", windows=2)
-        recon_.stream("m", "events", windows=1)
+        recon_.observation.stream("m", "events", windows=2)
+        recon_.observation.stream("m", "events", windows=1)
 
-        [stream] = recon_.status("m").missions[0].streams
+        [stream] = recon_.observation.status("m").missions[0].streams
         assert stream.history is not None and [w.id for w in stream.history][-1] == (
             stream.latest.id if stream.latest else None
         )
@@ -164,7 +164,9 @@ class TestReconStream:
         assert gap.resumed is True and gap.from_ == second.closed_at
         document = stream.history[-1].document()
         assert "path" not in document and document["window"]["sources"][0]["gaps"][0]["from"]
-        assert recon_.status().missions[0].streams[0].history is None, "only of one mission"
+        assert recon_.observation.status().missions[0].streams[0].history is None, (
+            "only of one mission"
+        )
 
     @pytest.mark.parametrize(
         ("kwargs", "match"),
@@ -183,7 +185,7 @@ class TestReconStream:
             kwargs["until"] = clock.now() - timedelta(seconds=1)
 
         with pytest.raises(recon.UsageError, match=match) as raised:
-            _root(tmp_path, clock, Feed(clock, 1.0, 3)).stream("m", "events", **kwargs)
+            _root(tmp_path, clock, Feed(clock, 1.0, 3)).observation.stream("m", "events", **kwargs)
         assert raised.value.fix
 
     def test_a_collector_that_is_no_stream_is_named(self, tmp_path: Path) -> None:
@@ -191,14 +193,14 @@ class TestReconStream:
         _mission(tmp_path, {"window": {"seconds": 10}}, snapshot=True)
 
         with pytest.raises(recon.NotFoundError, match="no stream 'now'") as raised:
-            _root(tmp_path, clock, Feed(clock, 1.0, 3)).stream("m", "now")
+            _root(tmp_path, clock, Feed(clock, 1.0, 3)).observation.stream("m", "now")
         assert raised.value.details["allowed"] == ["events"]
 
     def test_until_ends_the_stream_at_that_time(self, tmp_path: Path) -> None:
         clock = VirtualClock()
         _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
 
-        document = _root(tmp_path, clock, Feed(clock, 1.0, 100)).stream(
+        document = _root(tmp_path, clock, Feed(clock, 1.0, 100)).observation.stream(
             "m", "events", until=clock.now() + timedelta(seconds=25)
         )
 
@@ -214,7 +216,7 @@ class TestASurveyRunsOneWindow:
         clock = VirtualClock()
         _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"}, snapshot=True)
 
-        document = _root(tmp_path, clock, Feed(clock, 1.0, 100)).survey("m")
+        document = _root(tmp_path, clock, Feed(clock, 1.0, 100)).observation.survey("m")
 
         assert document.status == "complete"
         assert [t.name for t in document.tables] == ["now"]
@@ -264,11 +266,11 @@ class TestWatchAcrossWindows:
         feed = Feed(clock, 1.0, 25, ends=True)
         _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
         recon_ = _root(tmp_path, clock, feed)
-        recon_.stream("m", "events", forever=True)
-        [mission] = recon_.status("m").missions
+        recon_.observation.stream("m", "events", forever=True)
+        [mission] = recon_.observation.status("m").missions
         first = mission.streams[0].first
 
-        reads = list(recon_.watch("m", stream="events", archive=first, max_records=4))
+        reads = list(recon_.observation.watch("m", stream="events", archive=first, max_records=4))
 
         seqs = [r["record"]["seq"] for read in reads for r in read.table_records]
         assert seqs == list(range(25))
@@ -279,12 +281,14 @@ class TestWatchAcrossWindows:
         clock = VirtualClock()
         _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
         recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 100))
-        recon_.stream("m", "events", windows=1)
-        read = recon_.read_since("m", stream="events")
+        recon_.observation.stream("m", "events", windows=1)
+        read = recon_.observation.read_since("m", stream="events")
         _mission(tmp_path, {"window": {"seconds": 10}, "retain": {"archives": 1}})
-        recon_.stream("m", "events", windows=2)  # the window the cursor is in is retired
+        recon_.observation.stream(
+            "m", "events", windows=2
+        )  # the window the cursor is in is retired
 
-        after = recon_.read_since("m", read.cursor, stream="events")
+        after = recon_.observation.read_since("m", read.cursor, stream="events")
 
         assert after.archive != read.archive
         assert [r["record"]["seq"] for r in after.table_records][:1] == [18], "window 2's first"
@@ -292,7 +296,9 @@ class TestWatchAcrossWindows:
         assert after.retired_range is not None, "a read that jumps windows says which it jumped"
         assert (after.retired_range.first, after.retired_range.count) == (read.archive, 2)
         assert after.retired_range.last == stones[-1]
-        assert recon_.read_since("m", after.cursor, stream="events").retired_range is None
+        assert (
+            recon_.observation.read_since("m", after.cursor, stream="events").retired_range is None
+        )
 
     def test_a_watcher_attached_changes_no_byte_of_the_stream(self, tmp_path: Path) -> None:
         """B10 #9: the same stream, with and without a reader following it as it is written."""
@@ -309,7 +315,7 @@ class TestWatchAcrossWindows:
                 follow = (project, feed.go, states)
                 reader = threading.Thread(target=_follow, args=follow, daemon=True)
                 reader.start()
-            recon_.stream("m", "events", forever=True)
+            recon_.observation.stream("m", "events", forever=True)
             if reader is not None:
                 reader.join(10)
             trees.append(_tree(project / ".recon" / "m" / "streams" / "events"))
@@ -325,11 +331,11 @@ class TestQueryAcrossWindows:
         clock = VirtualClock()
         _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
         recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 35, ends=True))
-        recon_.stream("m", "events", forever=True)
+        recon_.observation.stream("m", "events", forever=True)
         opened = clock.now() - timedelta(seconds=clock.monotonic())
 
-        every = recon_.query("m", "SELECT count(*) AS n FROM events", stream="events")
-        later = recon_.query(
+        every = recon_.collection.query("m", "SELECT count(*) AS n FROM events", stream="events")
+        later = recon_.collection.query(
             "m",
             "SELECT min(seq) AS lo, count(*) AS n FROM events",
             stream="events",
@@ -337,7 +343,7 @@ class TestQueryAcrossWindows:
         )
 
         assert every.rows == [{"n": 35}]
-        status = recon_.status("m").missions[0].streams[0]
+        status = recon_.observation.status("m").missions[0].streams[0]
         assert every.window_range is not None and status.latest is not None
         assert (every.window_range.first, every.window_range.last, every.window_range.count) == (
             status.first,
@@ -352,15 +358,15 @@ class TestQueryAcrossWindows:
     def test_a_query_of_many_windows_warns_how_to_narrow_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from recon.application import use_cases
+        from recon.core.application import collection
 
-        monkeypatch.setattr(use_cases, "MANY_WINDOWS", 3)
+        monkeypatch.setattr(collection, "MANY_WINDOWS", 3)
         clock = VirtualClock()
         _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
         recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 35, ends=True))
-        recon_.stream("m", "events", forever=True)
+        recon_.observation.stream("m", "events", forever=True)
 
-        rows = recon_.query("m", "SELECT count(*) AS n FROM events", stream="events")
+        rows = recon_.collection.query("m", "SELECT count(*) AS n FROM events", stream="events")
 
         [warning] = [w for w in rows.warnings if w["kind"] == "windows_many"]
         assert warning["got"] == 4 and "--since" in warning["fix"]
@@ -369,12 +375,12 @@ class TestQueryAcrossWindows:
         clock = VirtualClock()
         _mission(tmp_path, {"window": {"records": 3}, "retain": "all"})
         recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 100))
-        recon_.stream("m", "events")
+        recon_.observation.stream("m", "events")
         _mission(tmp_path, {"window": {"records": 4}, "retain": "all"})
-        recon_.stream("m", "events")
+        recon_.observation.stream("m", "events")
 
         with pytest.raises(recon.QueryError, match="configs") as raised:
-            recon_.query("m", "SELECT count(*) FROM events", stream="events")
+            recon_.collection.query("m", "SELECT count(*) FROM events", stream="events")
         assert raised.value.fix and "--since" in raised.value.fix
 
 
@@ -383,9 +389,9 @@ class TestStatus:
         clock = VirtualClock()
         _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
         recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 100))
-        recon_.stream("m", "events", windows=2)
+        recon_.observation.stream("m", "events", windows=2)
 
-        [mission] = recon_.status("m").missions
+        [mission] = recon_.observation.status("m").missions
         [stream] = mission.streams
 
         assert (stream.name, stream.state, stream.windows) == ("events", "complete", 2)
@@ -480,7 +486,9 @@ class TestTheCommandLine:
         clock = VirtualClock()
         _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
         events: list[dict[str, Any]] = []
-        _root(tmp_path, clock, Feed(clock, 1.0, 30)).stream("m", "events", on_event=events.append)
+        _root(tmp_path, clock, Feed(clock, 1.0, 30)).observation.stream(
+            "m", "events", on_event=events.append
+        )
         again = VirtualClock()
 
         result = CliRunner().invoke(

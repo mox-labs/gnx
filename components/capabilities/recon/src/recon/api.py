@@ -1,28 +1,33 @@
-"""The library API: thin functions over the composition root.
+"""The library API: ``open()``, and thin functions over a default session.
 
-Each returns a versioned document (``recon.v1.<shape>``) whose ``document()`` is what the
-command line prints under ``--json``, or raises a
-:class:`~recon.ReconError` whose ``kind`` says what to do next. Missions live under
-``<root>/.recon/``: ``root`` is the project, by default the git root of the working
-directory (or the working directory outside a repository), and a ``local`` source's
-relative ``url`` is relative to it too, so a caller need not change directory. A config
-path of ``-`` reads standard input. The root is built on each call, so importing ``recon``
-wires nothing and a call sees the plugins and the environment of that moment.
+``open(root, extensions=, landing=)`` gives a session, :class:`~recon.Recon`, whose
+``collection`` and ``observation`` are the two layers' operations. Each function below is one
+of them, run over the default session of its ``root``: opened on the first call for that
+project and kept, so importing ``recon`` wires nothing, and a call sees the environment of
+that moment. Each returns a versioned document (``recon.v1.<shape>``) whose ``document()`` is
+what the command line prints under ``--json``, or raises a :class:`~recon.ReconError` whose
+``kind`` says what to do next. Missions live under ``<root>/.recon/``: ``root`` is the project,
+by default the git root of the working directory (or the working directory outside a
+repository), and a ``local`` source's relative ``url`` is relative to it too, so a caller need
+not change directory. A config is the mission's own, a file (``-``: standard input), or a value
+(a ``ReconConfig`` or a mapping), which is never written as the mission's.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from recon.domain.archives import READ_MAX_BYTES, READ_MAX_RECORDS, WATCH_INTERVAL_S
+from recon.core.domain.archives import READ_MAX_BYTES, READ_MAX_RECORDS, WATCH_INTERVAL_S
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Iterator
+    from collections.abc import Callable, Collection, Iterable, Iterator
     from datetime import datetime
     from pathlib import Path
 
+    from recon._matrix import Register
     from recon.composition import Recon
-    from recon.domain.documents import (
+    from recon.core.domain.archives import Store
+    from recon.core.domain.documents import (
         Capture,
         ChangesSince,
         DeliverDocument,
@@ -32,22 +37,56 @@ if TYPE_CHECKING:
         RecordsSince,
         ScheduleDocument,
         SchedulesDocument,
+        SchemaDocument,
         StatusDocument,
         StreamDocument,
         SubscriptionDocument,
         SurveyDocument,
         TemplatesDocument,
         TickDocument,
+        TypesDocument,
     )
-    from recon.domain.errors import Problem
-    from recon.domain.schedule import Platform
-    from recon.domain.stream import Stop
+    from recon.core.domain.errors import Problem
+    from recon.core.domain.missions import ConfigGiven
+    from recon.core.domain.schedule import Platform
+    from recon.core.domain.stream import Stop
 
 
 def _root(project: Path | None) -> Recon:
-    from recon.composition import root
+    from recon.composition import default
 
-    return root(project=project)
+    return default(project)
+
+
+def open(  # noqa: A001 (the library's entry point)
+    root: Path | None = None,
+    *,
+    extensions: Iterable[Register] = (),
+    landing: Store | None = None,
+) -> Recon:
+    """recon opened over the project ``root`` (default: the git root of the working directory,
+    or the working directory outside a repository): a session whose ``collection`` is the
+    collect core's operations and whose ``observation`` is the observe layer's.
+    ``extensions`` are in-process extensions, each ``register(registry)`` called with the
+    session's matrix registry to register at recon's points (``recon.collector``,
+    ``recon.transform``) beside what is installed, under type URLs of their own (UsageError
+    for one registered already); ``landing`` is where its acts land
+    and are read back (default: the project's archive directory). Each call opens a session of
+    its own."""
+    from recon.composition import open_session
+
+    return open_session(root, extensions=extensions, landing=landing)
+
+
+def types(*, root: Path | None = None) -> TypesDocument:
+    """Every collector type a mission may name, with its config's JSON Schema, how its records
+    end and what it can do; every source kind; every transform. ``recon.v1.types``."""
+    return _root(root).collection.types()
+
+
+def schema() -> SchemaDocument:
+    """The JSON Schema of a mission's config. ``recon.v1.mission-config``."""
+    return _root(None).collection.schema()
 
 
 def init(
@@ -64,13 +103,13 @@ def init(
     Idempotent: a mission that already has this config is left as it is (``outcome:
     unchanged``). Raises ConflictError when it has a different one, unless ``replace``
     (``outcome: replaced``); a new mission's is ``created``."""
-    return _root(root).init(name, template=template, config=config, replace=replace)
+    return _root(root).collection.init(name, template=template, config=config, replace=replace)
 
 
 def plan(
     name: str,
     *,
-    config: Path | None = None,
+    config: ConfigGiven = None,
     replace: bool = False,
     stream: str | None = None,
     windows: int | None = None,
@@ -96,7 +135,7 @@ def plan(
     how long the run is (``stream.windows``, one by default). A run of an entry with
     ``range:`` says the span it would ask for (``range``); ``interval``, ``rebase`` and
     ``restart`` are :func:`survey`'s."""
-    return _root(root).plan(
+    return _root(root).observation.plan(
         name, config=config, replace=replace, stream=stream, windows=windows, until=until,
         forever=forever, interval=interval, rebase=rebase, restart=restart, check=check,
     )  # fmt: skip
@@ -105,7 +144,7 @@ def plan(
 def survey(
     name: str,
     *,
-    config: Path | None = None,
+    config: ConfigGiven = None,
     replace: bool = False,
     on_event: Callable[[dict[str, Any]], None] | None = None,
     interval: tuple[datetime, datetime] | None = None,
@@ -122,7 +161,7 @@ def survey(
     entry for that span instead, a backfill that moves no checkpoint; ``rebase`` names outputs
     that go on from their checkpoint under a changed request, ``restart`` outputs that begin
     again from ``range.start`` (``recon --skill -r ranges``)."""
-    return _root(root).survey(
+    return _root(root).observation.survey(
         name, config=config, replace=replace, on_event=on_event,
         interval=interval, rebase=rebase, restart=restart,
     )  # fmt: skip
@@ -135,7 +174,7 @@ def stream(
     windows: int | None = None,
     until: datetime | None = None,
     forever: bool = False,
-    config: Path | None = None,
+    config: ConfigGiven = None,
     replace: bool = False,
     on_event: Callable[[dict[str, Any]], None] | None = None,
     stop: Stop | None = None,
@@ -157,7 +196,7 @@ def stream(
     NotFoundError for a name that is no stream of the mission, ReconError (``busy``) while
     another writer holds the stream. A window whose source failed is in the document:
     :func:`stream_failure` turns it into the error to act on."""
-    return _root(root).stream(
+    return _root(root).observation.stream(
         name, stream, windows=windows, until=until, forever=forever, config=config,
         replace=replace, on_event=on_event, stop=stop,
     )  # fmt: skip
@@ -169,7 +208,7 @@ def status(mission: str | None = None, *, root: Path | None = None) -> StatusDoc
     Given ``mission``, that mission alone, the one entry of ``missions``, with every archive
     it has (id, times, state, tables) as its ``history``: the ids ``query`` takes as
     ``archive``. Raises NotFoundError for a mission that does not exist."""
-    return _root(root).status(mission)
+    return _root(root).observation.status(mission)
 
 
 def query(
@@ -194,7 +233,7 @@ def query(
     every window, the one ``archive`` names, or those meeting ``[since, until)`` (times with
     their zones), which ``window_range`` says. Windows collected under different configs are
     refused (QueryError), with the ranges to narrow to."""
-    return _root(root).query(name, sql, archive=archive, stream=stream, since=since,
+    return _root(root).collection.query(name, sql, archive=archive, stream=stream, since=since,
                              until=until, baseline=baseline)  # fmt: skip
 
 
@@ -224,7 +263,7 @@ def read_since(
     With ``stream``, a read of that stream's latest window (or the window ``archive`` names,
     or where ``cursor`` left off): ``archive`` is the window read, and a read that ends a
     sealed window with a later one there returns that one's cursor and ``more``."""
-    return _root(root).read_since(name, cursor, archive=archive, stream=stream,
+    return _root(root).observation.read_since(name, cursor, archive=archive, stream=stream,
                                   max_records=max_records, max_bytes=max_bytes)  # fmt: skip
 
 
@@ -249,7 +288,7 @@ def watch(
     With ``stream``, follow that stream from its latest window (or the one ``archive``
     names) into every window after it; ends once nothing extends the stream and its last
     window is read to its end."""
-    return _root(root).watch(
+    return _root(root).observation.watch(
         name, cursor, archive=archive, stream=stream, interval_s=interval_s,
         max_records=max_records, max_bytes=max_bytes,
     )  # fmt: skip
@@ -275,7 +314,7 @@ def changes_since(
     untrusted. ``retired_range`` names the archives ``retain:`` removed before the cursor
     reached them. Raises NotFoundError for an output no entry with ``changes:`` makes, and
     UsageError for a cursor recon did not give for this output, or a bound below 1."""
-    return _root(root).changes_since(
+    return _root(root).observation.changes_since(
         name, output, cursor, max_records=max_records, max_bytes=max_bytes
     )
 
@@ -298,7 +337,7 @@ def subscribe(
     ``cursor`` once they are acted on. Raises NotFoundError for a subscription the config does
     not declare, ReconError ``busy`` while another consumer holds it (one at a time), and
     UsageError for a cursor of another output."""
-    return _root(root).subscribe(
+    return _root(root).observation.subscribe(
         name, subscription, cursor, max_records=max_records, max_bytes=max_bytes
     )
 
@@ -310,14 +349,14 @@ def ack(
     from it. ``recon.v1.subscription``, ``outcome`` ``acked``, or ``unchanged`` for the cursor
     acked already. Monotone: a cursor before the one acked is refused (UsageError), so a
     consumer that acks late never moves it back."""
-    return _root(root).ack(name, subscription, cursor)
+    return _root(root).observation.ack(name, subscription, cursor)
 
 
 def unsubscribe(name: str, subscription: str, *, root: Path | None = None) -> SubscriptionDocument:
     """Remove what is kept of the subscription: its acked cursor and its dead letters.
     ``recon.v1.subscription``, ``outcome`` ``removed``, or ``absent`` when nothing was kept.
     While the config declares it, its next read starts from the first archive."""
-    return _root(root).unsubscribe(name, subscription)
+    return _root(root).observation.unsubscribe(name, subscription)
 
 
 def deliver(
@@ -334,7 +373,7 @@ def deliver(
     (``delivery_failed``, ``delivery_dead_lettered``), never raised. A scheduled tick runs this
     after its survey. Raises NotFoundError for a subscription the config does not declare,
     UsageError for one with no ``deliver:``."""
-    return _root(root).deliver(name, subscription=subscription)
+    return _root(root).observation.deliver(name, subscription=subscription)
 
 
 def configure_telemetry() -> list[Problem]:
@@ -351,13 +390,13 @@ def configure_telemetry() -> list[Problem]:
 
 def templates() -> TemplatesDocument:
     """The built-in templates. ``recon.v1.templates``."""
-    return _root(None).templates()
+    return _root(None).collection.templates()
 
 
 def capture(name: str, payload: Any, *, root: Path | None = None) -> Capture:
     """Append a Claude Code ``PostToolUse`` hook payload to the mission's capture log.
     ``recon.v1.capture``: the line as written."""
-    return _root(root).capture(name, payload)
+    return _root(root).collection.capture(name, payload)
 
 
 def schedule_install(
@@ -371,7 +410,7 @@ def schedule_install(
     another it replaces the schedule (``replaced``), and each tick holds the config to the
     digest installed. Raises ConfigError for a mission with no ``schedule:``, NotFoundError for
     no mission, ReconError (``run_failed``) when the scheduler refuses."""
-    return _root(root).schedule_install(name, platform=platform)
+    return _root(root).observation.schedule_install(name, platform=platform)
 
 
 def schedule_remove(
@@ -379,14 +418,14 @@ def schedule_remove(
 ) -> ScheduleDocument:
     """Unload and remove the mission's schedule: ``removed``, or ``absent`` when there was
     none. ``recon.v1.schedule``."""
-    return _root(root).schedule_remove(name, platform=platform)
+    return _root(root).observation.schedule_remove(name, platform=platform)
 
 
 def schedule_list(
     *, platform: Platform | None = None, root: Path | None = None
 ) -> SchedulesDocument:
     """The schedules installed for the project's missions. ``recon.v1.schedules``."""
-    return _root(root).schedule_list(platform=platform)
+    return _root(root).observation.schedule_list(platform=platform)
 
 
 def schedule_status(
@@ -396,7 +435,7 @@ def schedule_status(
     config changed since (a ``config_changed`` warning: its ticks are refused until it is
     installed again), when its next tick is due, its last tick, how late it is, and the ticks
     skipped in a row (a ``schedule_overrun`` warning from the second). ``recon.v1.schedules``."""
-    return _root(root).schedule_status(mission, platform=platform)
+    return _root(root).observation.schedule_status(mission, platform=platform)
 
 
 def schedule_tick(name: str, *, config_sha256: str, root: Path | None = None) -> TickDocument:
@@ -410,4 +449,4 @@ def schedule_tick(name: str, *, config_sha256: str, root: Path | None = None) ->
     again; ReconError (``busy``) when another survey holds the mission, ``details.skips``
     counting the ticks skipped so in a row. A tick run late under ``missed: skip`` runs no
     survey (``skipped_by: missed``)."""
-    return _root(root).schedule_tick(name, config_sha256=config_sha256)
+    return _root(root).observation.schedule_tick(name, config_sha256=config_sha256)

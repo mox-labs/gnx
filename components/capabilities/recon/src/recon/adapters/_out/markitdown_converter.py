@@ -34,8 +34,8 @@ import io
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from recon.domain.converters import ConversionResult
-from recon.domain.errors import CollectionError
+from recon.core.domain.converters import ConversionResult
+from recon.core.domain.errors import CollectionError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -119,7 +119,7 @@ def markitdown_path(path: Any, *, roots: Sequence[Path] = (), base: Path | None 
 
     Handles what the web collector's converter handles, with the same confined markitdown
     (the module docstring lists what is left out, audio among it). Registered under the
-    entry-point group ``recon.transforms`` as ``markitdown``.
+    ``recon.transform`` point as ``markitdown``.
 
     A relative path is relative to ``base``, the directory its record came from (a ``cli``
     collector binds the directory its command ran in), else to the working directory.

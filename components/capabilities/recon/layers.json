@@ -1,16 +1,44 @@
 {
   "language": "python",
-  "about": "recon's layers, checked by tests/test_layering.py on every test run with the shared checker (components/capabilities/_testing/layers.py), which reads a map as slick crafting-aces' layer-check.py does, so the same file runs under that script too. Adopted from the layer map the 2026-10-22 review drew (its v2, at 1580c81) and fitted to recon as it now is: application/collectors.py, deadlines, httpx2 in place of httpx, and the path-free storage ports of 0.17 (domain/archives.py: Landing, Archives, ArchiveQuery), whose file layout is the file store's alone (adapters/_out/mission_layout.py). recon keeps its ports in domain/ beside the model, so 'domain' is the four places' domain plus ports. 'why' keys are read by neither checker.",
-  "scan": ["src/recon/**/*.py"],
+  "about": "recon's layers, checked by tests/test_layering.py on every test run with the shared checker (components/capabilities/_testing/layers.py), which reads a map as slick crafting-aces' layer-check.py does, so the same file runs under that script too. Two layers (recon 0.18, step M3): the collect core (src/recon/core: one act fetched, captured, converted, normalized and landed with its checkpoint; the plan of one act; query) and the observe layer (src/recon/observe: span planning, schedules, windows over time, follow, change derivation after the seal, subscriptions, delivery, status). The core never imports the observe layer; the observe layer reaches the core only through recon.core's __all__ (an allowance here is a prefix, so test_layering holds every observe file to that __all__ by name). Each layer keeps its ports in its domain/ beside its model. 'why' keys are read by neither checker.",
+  "scan": [
+    "src/recon/**/*.py"
+  ],
   "scan_why": "Every Python file in the package. Tests are out of scan: a test reaches adapters by design.",
   "layers": [
     {
-      "name": "domain",
-      "files": ["src/recon/domain/**/*.py"],
-      "allow": ["__future__", "collections", "contextlib", "dataclasses", "datetime", "fnmatch",
-                "functools", "html", "inspect", "pathlib", "re", "shlex", "threading", "typing",
-                "urllib", "pydantic", "recon.domain"],
-      "forbid": ["opentelemetry", "duckdb", "httpx2", "httpx", "markitdown", "yaml", "open"],
+      "name": "core_domain",
+      "files": [
+        "src/recon/core/domain/**/*.py"
+      ],
+      "allow": [
+        "__future__",
+        "collections",
+        "contextlib",
+        "dataclasses",
+        "datetime",
+        "fnmatch",
+        "functools",
+        "html",
+        "inspect",
+        "pathlib",
+        "re",
+        "shlex",
+        "threading",
+        "typing",
+        "urllib",
+        "pydantic",
+        "recon.core.domain"
+      ],
+      "forbid": [
+        "opentelemetry",
+        "duckdb",
+        "httpx2",
+        "httpx",
+        "markitdown",
+        "yaml",
+        "open"
+      ],
       "why": {
         "stdlib": "recon's PURE_STDLIB (tests/test_layering.py): pathlib names a location and datetime is the type the clock port returns; touching the filesystem or reading the clock through them is caught by test_layering's effect scan",
         "shlex": "splitting a command line given as a string into words, to find the packages a scheduled command fetches (domain/schedule.py's unpinned); no stream is handed it, so it reads no file",
@@ -21,43 +49,201 @@
       }
     },
     {
-      "name": "application",
-      "files": ["src/recon/application/**/*.py"],
-      "allow": ["__future__", "collections", "contextlib", "dataclasses", "datetime", "fnmatch",
-                "functools", "hashlib", "hmac", "html", "inspect", "json", "pathlib", "re", "threading",
-                "typing", "urllib", "pydantic", "recon.domain", "recon.application"],
-      "forbid": ["opentelemetry", "duckdb", "httpx2", "httpx", "markitdown", "yaml", "open"],
+      "name": "core_application",
+      "files": [
+        "src/recon/core/application/**/*.py"
+      ],
+      "allow": [
+        "__future__",
+        "collections",
+        "contextlib",
+        "dataclasses",
+        "datetime",
+        "fnmatch",
+        "functools",
+        "hashlib",
+        "hmac",
+        "html",
+        "inspect",
+        "json",
+        "pathlib",
+        "re",
+        "threading",
+        "typing",
+        "urllib",
+        "pydantic",
+        "recon.core.domain",
+        "recon.core.application"
+      ],
+      "forbid": [
+        "opentelemetry",
+        "duckdb",
+        "httpx2",
+        "httpx",
+        "markitdown",
+        "yaml",
+        "open"
+      ],
       "why": {
         "hashlib, json": "the config's sha256 in the archive's meta, a hook payload's body, and a stream's records as the buffer holds them (test_layering's LAYER_STDLIB)",
         "hmac": "compare_digest alone: a change cursor's signature compared in constant time (application/subscriptions.py)",
         "threading": "a stream's pump and ticker threads and its bounded buffer (application/stream.py), where ruling B1 puts them; every wait for time goes through the clock port (test_layering's LAYER_STDLIB)",
-        "recon.domain, recon.application": "the use cases run over the ports, in the domain's types"
+        "recon.core.domain, recon.core.application": "the core's services run one act over its ports, in its domain's types"
+      }
+    },
+    {
+      "name": "core_api",
+      "files": [
+        "src/recon/core/__init__.py"
+      ],
+      "allow": [
+        "recon.core"
+      ],
+      "why": {
+        "recon.core": "the core's public names, re-exported from its domain and application: what the observe layer and any outside driver may use"
+      }
+    },
+    {
+      "name": "observe_domain",
+      "files": [
+        "src/recon/observe/domain/**/*.py"
+      ],
+      "allow": [
+        "__future__",
+        "collections",
+        "contextlib",
+        "dataclasses",
+        "datetime",
+        "fnmatch",
+        "functools",
+        "html",
+        "inspect",
+        "pathlib",
+        "re",
+        "shlex",
+        "threading",
+        "typing",
+        "urllib",
+        "pydantic",
+        "recon.core",
+        "recon.observe.domain"
+      ],
+      "forbid": [
+        "opentelemetry",
+        "duckdb",
+        "httpx2",
+        "httpx",
+        "markitdown",
+        "yaml",
+        "open"
+      ],
+      "why": {
+        "stdlib": "recon's PURE_STDLIB (tests/test_layering.py): pathlib names a location and datetime is the type the clock port returns; touching the filesystem or reading the clock through them is caught by test_layering's effect scan",
+        "pydantic": "every published document and config model is a pydantic model",
+        "html, re, fnmatch": "a projected scheduler file's escaping, a delivery's text cleaned of escapes, a match: glob: string work alone",
+        "recon.core": "the core's public names alone (recon.core.__all__, held by test_layering): the config a schedule, a subscription or a range is read from",
+        "forbid": "the adapters' technologies, YAML, and the builtin open, which no import shows"
+      }
+    },
+    {
+      "name": "observe_application",
+      "files": [
+        "src/recon/observe/application/**/*.py"
+      ],
+      "allow": [
+        "__future__",
+        "collections",
+        "contextlib",
+        "dataclasses",
+        "datetime",
+        "fnmatch",
+        "functools",
+        "hashlib",
+        "hmac",
+        "html",
+        "inspect",
+        "json",
+        "pathlib",
+        "re",
+        "threading",
+        "typing",
+        "urllib",
+        "pydantic",
+        "recon.core",
+        "recon.observe"
+      ],
+      "forbid": [
+        "opentelemetry",
+        "duckdb",
+        "httpx2",
+        "httpx",
+        "markitdown",
+        "yaml",
+        "open"
+      ],
+      "why": {
+        "hashlib, json": "the config's sha256 in the archive's meta, a hook payload's body, and a stream's records as the buffer holds them (test_layering's LAYER_STDLIB)",
+        "hmac": "compare_digest alone: a change cursor's signature compared in constant time (application/subscriptions.py)",
+        "threading": "a stream's pump and ticker threads and its bounded buffer (application/stream.py), where ruling B1 puts them; every wait for time goes through the clock port (test_layering's LAYER_STDLIB)",
+        "recon.core, recon.observe": "the observe layer's services, over the core's public names alone (recon.core.__all__, held by test_layering) and the observe layer's own domain"
+      }
+    },
+    {
+      "name": "observe_api",
+      "files": [
+        "src/recon/observe/__init__.py"
+      ],
+      "allow": [],
+      "why": {
+        "nothing": "the observe layer's package marker; its services are reached through the composition root"
       }
     },
     {
       "name": "adapter_support",
-      "files": ["src/recon/adapters/_out/parsing.py", "src/recon/adapters/_out/user_agent.py",
-                "src/recon/adapters/_out/http_source.py", "src/recon/adapters/_out/private_files.py",
-                "src/recon/adapters/_out/credentials.py", "src/recon/adapters/_out/file_locks.py",
-                "src/recon/adapters/_out/mission_layout.py"],
-      "allow": ["*", "recon.domain", "recon.adapters._out.credentials",
-                "recon.adapters._out.private_files"],
-      "forbid": ["yaml"],
+      "files": [
+        "src/recon/adapters/_out/parsing.py",
+        "src/recon/adapters/_out/user_agent.py",
+        "src/recon/adapters/_out/http_source.py",
+        "src/recon/adapters/_out/private_files.py",
+        "src/recon/adapters/_out/credentials.py",
+        "src/recon/adapters/_out/file_locks.py",
+        "src/recon/adapters/_out/mission_layout.py"
+      ],
+      "allow": [
+        "*",
+        "recon.core.domain",
+        "recon.adapters._out.credentials",
+        "recon.adapters._out.private_files"
+      ],
+      "forbid": [
+        "yaml"
+      ],
       "why": {
         "*": "body parsing (xmltodict, lazily), the distribution's version for the User-Agent, how a request to an HTTP source is addressed and carries its credential (shared by api and sse), the modes every file and directory of a mission is made with (ruling A2: shared by the stores and the cli collector's capture), where every source kind's credential comes from (a variable, a file, a helper's headers: shared by api, sse and mcp, ruling A1), the flock a store holds on a mission's file and the bounded log it appends to (shared by the archive, schedule and subscription stores), and where a mission's files are (mission_layout: the one map of a mission's name, an archive's reference and a stream's name to directories, shared by every file store and the composition root)",
-        "recon.domain": "the errors a bad body raises; these helpers hold no port and reach no adapter",
+        "recon.core.domain": "the errors a bad body raises; these helpers hold no port and reach no adapter",
         "recon.adapters._out.credentials": "http_source sends the credential the shared resolver gives",
         "recon.adapters._out.private_files": "a lock file and a log are made private, as every file of a mission is"
       }
     },
     {
       "name": "file_store",
-      "files": ["src/recon/adapters/_out/archive_files.py", "src/recon/adapters/_out/capture_files.py",
-                "src/recon/adapters/_out/event_log.py", "src/recon/adapters/_out/mission_files.py",
-                "src/recon/adapters/_out/subscription_files.py"],
-      "allow": ["*", "recon.domain", "recon.adapters._out.capture_files",
-                "recon.adapters._out.event_log", "recon.adapters._out.private_files",
-                "recon.adapters._out.file_locks", "recon.adapters._out.mission_layout"],
+      "files": [
+        "src/recon/adapters/_out/archive_files.py",
+        "src/recon/adapters/_out/capture_files.py",
+        "src/recon/adapters/_out/event_log.py",
+        "src/recon/adapters/_out/mission_files.py",
+        "src/recon/adapters/_out/subscription_files.py"
+      ],
+      "allow": [
+        "*",
+        "recon.core.domain",
+        "recon.adapters._out.capture_files",
+        "recon.adapters._out.event_log",
+        "recon.adapters._out.private_files",
+        "recon.adapters._out.file_locks",
+        "recon.adapters._out.mission_layout",
+        "recon.observe.domain"
+      ],
       "why": {
         "*": "one technology, the local filesystem, and YAML for the archive's meta and the mission's config",
         "mission_layout": "where a mission's files are: the one map every file store shares",
@@ -68,15 +254,28 @@
     },
     {
       "name": "collectors",
-      "files": ["src/recon/adapters/_out/api_collector.py", "src/recon/adapters/_out/capture_collector.py",
-                "src/recon/adapters/_out/cli_collector.py", "src/recon/adapters/_out/mcp_collector.py",
-                "src/recon/adapters/_out/web_collector.py", "src/recon/adapters/_out/tail_collector.py",
-                "src/recon/adapters/_out/sse_collector.py"],
-      "allow": ["*", "recon.domain", "recon.adapters._out.parsing",
-                "recon.adapters._out.user_agent", "recon.adapters._out.capture_files",
-                "recon.adapters._out.http_source", "recon.adapters._out.private_files",
-                "recon.adapters._out.credentials"],
-      "forbid": ["yaml"],
+      "files": [
+        "src/recon/adapters/_out/api_collector.py",
+        "src/recon/adapters/_out/capture_collector.py",
+        "src/recon/adapters/_out/cli_collector.py",
+        "src/recon/adapters/_out/mcp_collector.py",
+        "src/recon/adapters/_out/web_collector.py",
+        "src/recon/adapters/_out/tail_collector.py",
+        "src/recon/adapters/_out/sse_collector.py"
+      ],
+      "allow": [
+        "*",
+        "recon.core.domain",
+        "recon.adapters._out.parsing",
+        "recon.adapters._out.user_agent",
+        "recon.adapters._out.capture_files",
+        "recon.adapters._out.http_source",
+        "recon.adapters._out.private_files",
+        "recon.adapters._out.credentials"
+      ],
+      "forbid": [
+        "yaml"
+      ],
       "why": {
         "*": "each collector type's own technology: a child process for cli, the MCP client (fastmcp, the mcp SDK, jsonschema) for mcp, the local filesystem for tail, nothing beyond the requester port for api, web and sse",
         "parsing, user_agent, http_source, private_files, credentials": "the shared helpers (private_files: the cli collector tees its stdout into the archive's capture; credentials: every source kind's credential reference, ruling A1)",
@@ -85,10 +284,21 @@
     },
     {
       "name": "scheduler",
-      "files": ["src/recon/adapters/_out/schedulers.py", "src/recon/adapters/_out/schedule_files.py"],
-      "allow": ["*", "recon.domain", "recon.adapters._out.private_files",
-                "recon.adapters._out.file_locks", "recon.adapters._out.mission_layout"],
-      "forbid": ["yaml"],
+      "files": [
+        "src/recon/adapters/_out/schedulers.py",
+        "src/recon/adapters/_out/schedule_files.py"
+      ],
+      "allow": [
+        "*",
+        "recon.core.domain",
+        "recon.adapters._out.private_files",
+        "recon.adapters._out.file_locks",
+        "recon.adapters._out.mission_layout",
+        "recon.observe.domain"
+      ],
+      "forbid": [
+        "yaml"
+      ],
       "why": {
         "*": "the operating system's schedulers, each by its own command run as an argument list (launchctl, systemctl --user, crontab), and the mission's install record as JSON",
         "mission_layout": "the install record and the tick log are kept in the mission's directory, found through the one map of it",
@@ -98,60 +308,130 @@
     },
     {
       "name": "query",
-      "files": ["src/recon/adapters/_out/duckdb_query.py"],
-      "allow": ["*", "recon.domain", "recon.adapters._out.private_files"],
-      "forbid": ["yaml"],
+      "files": [
+        "src/recon/adapters/_out/duckdb_query.py"
+      ],
+      "allow": [
+        "*",
+        "recon.core.domain",
+        "recon.adapters._out.private_files",
+        "recon.observe.domain"
+      ],
+      "forbid": [
+        "yaml"
+      ],
       "why": {
-        "recon.domain only": "which files make an archive is the archive adapter's secret; the query reads the tables the adapter it is built with names (its TableFiles protocol, met structurally), never the layout, and imports no other adapter",
+        "recon.core.domain only": "which files make an archive is the archive adapter's secret; the query reads the tables the adapter it is built with names (its TableFiles protocol, met structurally), never the layout, and imports no other adapter",
         "private_files": "the large join's directory under the mission is made private, as every directory of a mission is (ruling A2; round-4 review F7)"
       }
     },
     {
       "name": "other_driven",
-      "files": ["src/recon/adapters/__init__.py", "src/recon/adapters/_out/__init__.py",
-                "src/recon/adapters/_out/event_channel.py", "src/recon/adapters/_out/http_requester.py",
-                "src/recon/adapters/_out/markitdown_converter.py",
-                "src/recon/adapters/_out/otel_telemetry.py", "src/recon/adapters/_out/system_clock.py",
-                "src/recon/adapters/_out/command_deliverer.py"],
-      "allow": ["*", "recon.domain"],
-      "forbid": ["yaml"],
+      "files": [
+        "src/recon/adapters/__init__.py",
+        "src/recon/adapters/_out/__init__.py",
+        "src/recon/adapters/_out/event_channel.py",
+        "src/recon/adapters/_out/http_requester.py",
+        "src/recon/adapters/_out/markitdown_converter.py",
+        "src/recon/adapters/_out/otel_telemetry.py",
+        "src/recon/adapters/_out/system_clock.py",
+        "src/recon/adapters/_out/command_deliverer.py"
+      ],
+      "allow": [
+        "*",
+        "recon.core.domain",
+        "recon.observe.domain"
+      ],
+      "forbid": [
+        "yaml"
+      ],
       "why": {
         "*": "one technology each behind one port: httpx2 and tenacity (Requester), markitdown (DocumentConverter), OpenTelemetry (EventSink), the system clock (Clock), a child process given a delivery on its standard input (Deliverer)",
-        "recon.domain only": "an adapter reaches the port it implements, and no other adapter"
+        "recon.core.domain only": "an adapter reaches the port it implements, and no other adapter"
       }
     },
     {
       "name": "adapters_in",
-      "files": ["src/recon/adapters/_in/**/*.py"],
-      "allow": ["*", "recon"],
-      "forbid": ["yaml"],
+      "files": [
+        "src/recon/adapters/_in/**/*.py"
+      ],
+      "allow": [
+        "*",
+        "recon"
+      ],
+      "forbid": [
+        "yaml"
+      ],
       "why": {
         "*": "rich-click, rich and signal handling",
         "recon": "a driving adapter reaches recon through 'import recon' alone. The entry admits every recon.* path, since an allowance is a prefix; test_layering holds every file under adapters/_in to recon.__all__"
       }
     },
     {
+      "name": "seam",
+      "files": [
+        "src/recon/_matrix.py"
+      ],
+      "allow": [
+        "*",
+        "recon.core.domain",
+        "recon.composition"
+      ],
+      "forbid": [
+        "yaml"
+      ],
+      "why": {
+        "*": "matrix (its registry, its component contract, its errors: single_importer below), pydantic for the members' configs, and asyncio to run the synchronous core on a worker thread (ruling R16)",
+        "recon.core.domain": "the descriptors a point's entries build, the rows the members exchange, and the errors a refusal is said as",
+        "recon.composition": "recon's built-ins, which only the composition root names, and the session a member runs over"
+      }
+    },
+    {
       "name": "root",
-      "files": ["src/recon/composition.py"],
-      "allow": ["*", "recon"],
-      "forbid": ["yaml"],
+      "files": [
+        "src/recon/composition.py"
+      ],
+      "allow": [
+        "*",
+        "recon"
+      ],
+      "forbid": [
+        "yaml"
+      ],
       "why": {
         "*, recon": "the composition root: the one file that chooses adapters (test_layering holds this too)"
       }
     },
     {
       "name": "facade",
-      "files": ["src/recon/__init__.py", "src/recon/api.py", "src/recon/skill_files.py"],
-      "allow": ["*", "recon.api", "recon.composition", "recon.domain", "recon.skill_files"],
-      "forbid": ["yaml"],
+      "files": [
+        "src/recon/__init__.py",
+        "src/recon/api.py",
+        "src/recon/skill_files.py"
+      ],
+      "allow": [
+        "*",
+        "recon.api",
+        "recon.composition",
+        "recon.core.domain",
+        "recon.skill_files",
+        "recon._matrix"
+      ],
+      "forbid": [
+        "yaml"
+      ],
       "why": {
-        "recon.composition, recon.domain": "the library API names the root and the domain, never an adapter or a use case",
-        "*": "importlib for the version and the packaged skill files"
+        "recon.composition, recon.core.domain": "the library API names the root and the core's documents and errors, never an adapter or a service",
+        "*": "importlib for the version and the packaged skill files",
+        "recon._matrix": "the type of an extension given to recon.open (Register), named for the type checker alone"
       }
     },
     {
       "name": "package_data",
-      "files": ["src/recon/assets/__init__.py", "src/recon/configs/__init__.py"],
+      "files": [
+        "src/recon/assets/__init__.py",
+        "src/recon/configs/__init__.py"
+      ],
       "allow": [],
       "why": {
         "nothing": "empty package markers for importlib.resources (the skill text, the templates)"
@@ -159,18 +439,58 @@
     }
   ],
   "single_importer": [
-    {"name": "httpx2", "only": "src/recon/adapters/_out/http_requester.py"},
-    {"name": "tenacity", "only": "src/recon/adapters/_out/http_requester.py"},
-    {"name": "duckdb", "only": "src/recon/adapters/_out/duckdb_query.py"},
-    {"name": "opentelemetry", "only": "src/recon/adapters/_out/otel_telemetry.py"},
-    {"name": "markitdown", "only": "src/recon/adapters/_out/markitdown_converter.py"},
-    {"name": "xmltodict", "only": "src/recon/adapters/_out/parsing.py"},
-    {"name": "rich_click", "only": "src/recon/adapters/_in/cli.py"},
-    {"name": "fastmcp", "only": "src/recon/adapters/_out/mcp_collector.py"},
-    {"name": "mcp", "only": "src/recon/adapters/_out/mcp_collector.py"},
-    {"name": "mcp_types", "only": "src/recon/adapters/_out/mcp_collector.py"},
-    {"name": "jsonschema", "only": "src/recon/adapters/_out/mcp_collector.py"},
-    {"name": "referencing", "only": "src/recon/adapters/_out/mcp_collector.py"}
+    {
+      "name": "httpx2",
+      "only": "src/recon/adapters/_out/http_requester.py"
+    },
+    {
+      "name": "tenacity",
+      "only": "src/recon/adapters/_out/http_requester.py"
+    },
+    {
+      "name": "duckdb",
+      "only": "src/recon/adapters/_out/duckdb_query.py"
+    },
+    {
+      "name": "opentelemetry",
+      "only": "src/recon/adapters/_out/otel_telemetry.py"
+    },
+    {
+      "name": "markitdown",
+      "only": "src/recon/adapters/_out/markitdown_converter.py"
+    },
+    {
+      "name": "xmltodict",
+      "only": "src/recon/adapters/_out/parsing.py"
+    },
+    {
+      "name": "rich_click",
+      "only": "src/recon/adapters/_in/cli.py"
+    },
+    {
+      "name": "fastmcp",
+      "only": "src/recon/adapters/_out/mcp_collector.py"
+    },
+    {
+      "name": "mcp",
+      "only": "src/recon/adapters/_out/mcp_collector.py"
+    },
+    {
+      "name": "mcp_types",
+      "only": "src/recon/adapters/_out/mcp_collector.py"
+    },
+    {
+      "name": "jsonschema",
+      "only": "src/recon/adapters/_out/mcp_collector.py"
+    },
+    {
+      "name": "referencing",
+      "only": "src/recon/adapters/_out/mcp_collector.py"
+    },
+    {
+      "name": "matrix",
+      "only": "src/recon/_matrix.py"
+    }
   ],
-  "single_importer_why": "one file per technology, each behind one port; the MCP client is the mcp collector's alone, and it reaches httpx2 only through the SDK's own client. YAML is two files by design, the archive store writing the archive's meta and the mission store reading the mission's config, so it is confined to the file store by 'forbid' in every other layer rather than by a single_importer rule"
+  "single_importer_why": "one file per technology, each behind one port; the MCP client is the mcp collector's alone, and it reaches httpx2 only through the SDK's own client. YAML is two files by design, the archive store writing the archive's meta and the mission store reading the mission's config, so it is confined to the file store by 'forbid' in every other layer rather than by a single_importer rule; matrix is named by recon/_matrix.py alone, so a move of the harness contract to slick changes one module (owner ruling, REQ \u00a72; RUBRIC H6)"
 }

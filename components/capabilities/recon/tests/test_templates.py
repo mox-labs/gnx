@@ -42,14 +42,14 @@ from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.mcp_collector import McpCollector
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
-from recon.application.captures import record_hook_payload
-from recon.domain.collector import CollectorContext
-from recon.domain.deadline import Deadline
-from recon.domain.http import HttpResponse
-from recon.domain.models import CollectorEntry, SourceEntry
-from recon.domain.normalize import BUILTIN_TRANSFORMS
-from recon.domain.ratelimit import RateLimiter
-from recon.domain.telemetry import Telemetry
+from recon.core.application.captures import record_hook_payload
+from recon.core.domain.collector import CollectorContext
+from recon.core.domain.deadline import Deadline
+from recon.core.domain.http import HttpResponse
+from recon.core.domain.models import CollectorEntry, SourceEntry
+from recon.core.domain.normalize import BUILTIN_TRANSFORMS
+from recon.core.domain.ratelimit import RateLimiter
+from recon.core.domain.telemetry import Telemetry
 from tests.recon_fakes import FixedClock, NoConverter, ScriptedRequester, ScriptedShell
 
 FIXTURES = Path(__file__).parent / "fixtures" / "templates"

@@ -14,9 +14,9 @@ from typing import TYPE_CHECKING
 import pytest
 
 from recon.adapters._out.mission_layout import STATE
-from recon.domain.archives import ArchiveRef
-from recon.domain.errors import EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT, ReconError
-from recon.domain.stream import window_id
+from recon.core.domain.archives import ArchiveRef
+from recon.core.domain.errors import EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT, ReconError
+from recon.core.domain.stream import window_id
 from tests.recon_fakes import files_of
 
 if TYPE_CHECKING:

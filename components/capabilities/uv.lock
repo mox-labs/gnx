@@ -2384,7 +2384,7 @@ wheels = [
 
 [[package]]
 name = "recon"
-version = "0.17.0"
+version = "0.18.0"
 source = { editable = "recon" }
 dependencies = [
     { name = "duckdb" },
@@ -2392,6 +2392,7 @@ dependencies = [
     { name = "httpx2" },
     { name = "jsonschema" },
     { name = "markitdown", extra = ["all"] },
+    { name = "matrix" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
@@ -2412,6 +2413,7 @@ requires-dist = [
     { name = "httpx2", specifier = ">=2.10,<3" },
     { name = "jsonschema", specifier = ">=4.20" },
     { name = "markitdown", extras = ["all"], specifier = ">=0.1.0" },
+    { name = "matrix", editable = "matrix" },
     { name = "opentelemetry-api", specifier = ">=1.27" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.27" },
     { name = "opentelemetry-sdk", specifier = ">=1.27" },

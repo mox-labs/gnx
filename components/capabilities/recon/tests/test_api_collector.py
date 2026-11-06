@@ -14,12 +14,12 @@ from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
-from recon.domain.capture import REDACTED
-from recon.domain.errors import NoRecordsError
-from recon.domain.http import HttpResponse
-from recon.domain.models import AuthConfig, CollectorEntry, SourceEntry
-from recon.domain.normalize import resolve_path, to_records
-from recon.domain.substitution import find_unresolved, substitute
+from recon.core.domain.capture import REDACTED
+from recon.core.domain.errors import NoRecordsError
+from recon.core.domain.http import HttpResponse
+from recon.core.domain.models import AuthConfig, CollectorEntry, SourceEntry
+from recon.core.domain.normalize import resolve_path, to_records
+from recon.core.domain.substitution import find_unresolved, substitute
 from tests.recon_fakes import collector_entry
 
 
@@ -338,8 +338,8 @@ class TestParams:
     def test_an_unresolved_placeholder_is_a_plan_problem(self) -> None:
         """Changed requirement: the collector refused at run time what the plan already
         refuses, so the survey never reaches it."""
-        from recon.application.plan import build_plan
         from recon.composition import load_plugins
+        from recon.core.application.plan import build_plan
 
         raw = {
             "catalog": [{"name": "s", "url": "https://x"}],
@@ -427,8 +427,8 @@ class TestParamsAndVars:
         assert sent["params"] == {"per_page": "5"}
 
     def test_a_placeholder_vars_does_not_fill_is_a_plan_problem(self) -> None:
-        from recon.application.plan import build_plan
         from recon.composition import load_plugins
+        from recon.core.application.plan import build_plan
 
         raw = {
             "catalog": [{"name": "s", "url": "https://x.test"}],
@@ -446,8 +446,8 @@ class TestALiteralBrace:
     ``unresolved {login}``. ``{{`` and ``}}`` are a literal brace, as in Python's format."""
 
     def _plan(self, collector: dict[str, Any]) -> Any:
-        from recon.application.plan import build_plan
         from recon.composition import load_plugins
+        from recon.core.application.plan import build_plan
 
         raw = {
             "catalog": [{"name": "s", "url": "https://x.test"}],

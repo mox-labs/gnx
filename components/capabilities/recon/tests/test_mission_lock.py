@@ -21,7 +21,7 @@ from recon.adapters._in.cli import main
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.system_clock import SystemClock
 from recon.composition import root
-from recon.domain.errors import EXIT_CODES, EXIT_MEANINGS, ReconError
+from recon.core.domain.errors import EXIT_CODES, EXIT_MEANINGS, ReconError
 from tests.recon_fakes import plugins_with
 
 if TYPE_CHECKING:
@@ -29,8 +29,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from recon.composition import Recon
-    from recon.domain.capture import CaptureLog
-    from recon.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.models import CollectorEntry, SourceEntry
 
 
 def _store(project: Path) -> ArchiveFiles:
@@ -134,12 +134,14 @@ class TestOneSurveyAtATime:
         _mission(tmp_path)
         slow = Slow()
         first: list[Any] = []
-        running = threading.Thread(target=lambda: first.append(_root(tmp_path, slow).survey("m")))
+        running = threading.Thread(
+            target=lambda: first.append(_root(tmp_path, slow).observation.survey("m"))
+        )
         running.start()
         try:
             assert slow.inside.wait(10)
             with pytest.raises(ReconError) as raised:
-                _root(tmp_path, Slow()).survey("m")
+                _root(tmp_path, Slow()).observation.survey("m")
         finally:
             slow.go.set()
             running.join(10)
@@ -148,7 +150,9 @@ class TestOneSurveyAtATime:
         assert raised.value.details["pid"] == os.getpid()
         [archive] = (tmp_path / ".recon" / "m" / "archive").iterdir()
         assert first[0].archive == archive.name and first[0].status == "complete"
-        assert _root(tmp_path, slow).survey("m").status == "complete", "free once it returned"
+        assert _root(tmp_path, slow).observation.survey("m").status == "complete", (
+            "free once it returned"
+        )
 
     def test_two_overlapping_surveys_with_changes_tell_each_change_once(
         self, tmp_path: Path
@@ -164,18 +168,20 @@ class TestOneSurveyAtATime:
         slow, second = Slow(), Slow()
         second.go.set()  # were it let in, it would run to its end at once
         first: list[Any] = []
-        running = threading.Thread(target=lambda: first.append(_root(tmp_path, slow).survey("m")))
+        running = threading.Thread(
+            target=lambda: first.append(_root(tmp_path, slow).observation.survey("m"))
+        )
         running.start()
         try:
             assert slow.inside.wait(10)
             with pytest.raises(ReconError) as raised:
-                _root(tmp_path, second).survey("m")
+                _root(tmp_path, second).observation.survey("m")
         finally:
             slow.go.set()
             running.join(10)
         later = Slow()
         later.go.set()
-        again = _root(tmp_path, later).survey("m")
+        again = _root(tmp_path, later).observation.survey("m")
 
         assert raised.value.kind == "busy" and not second.inside.is_set(), "refused before it ran"
         assert first[0].status == "complete" and again.status == "complete"
@@ -190,7 +196,7 @@ class TestOneSurveyAtATime:
     def test_the_command_line_exits_11_with_the_envelope(self, tmp_path: Path) -> None:
         _mission(tmp_path)
         slow = Slow()
-        running = threading.Thread(target=lambda: _root(tmp_path, slow).survey("m"))
+        running = threading.Thread(target=lambda: _root(tmp_path, slow).observation.survey("m"))
         running.start()
         try:
             assert slow.inside.wait(10)
@@ -211,11 +217,11 @@ class TestOneSurveyAtATime:
         """Planning writes nothing, so it holds nothing."""
         _mission(tmp_path)
         slow = Slow()
-        running = threading.Thread(target=lambda: _root(tmp_path, slow).survey("m"))
+        running = threading.Thread(target=lambda: _root(tmp_path, slow).observation.survey("m"))
         running.start()
         try:
             assert slow.inside.wait(10)
-            assert _root(tmp_path, Slow()).plan("m").valid
+            assert _root(tmp_path, Slow()).observation.plan("m").valid
         finally:
             slow.go.set()
             running.join(10)
@@ -226,6 +232,6 @@ class TestOneSurveyAtATime:
         (tmp_path / ".recon" / "m" / "config.yaml").write_text("collectors: [{name: a}]\n")
 
         with _store(tmp_path).hold("m"), pytest.raises(ReconError) as raised:
-            _root(tmp_path, Slow()).survey("m")
+            _root(tmp_path, Slow()).observation.survey("m")
 
         assert raised.value.kind == "config"

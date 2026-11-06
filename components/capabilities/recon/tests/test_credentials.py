@@ -18,12 +18,12 @@ from pydantic import ValidationError
 
 from recon.adapters._out.credentials import resolve_reference
 from recon.adapters._out.http_requester import HttpRequester
-from recon.application.plan import build_plan
 from recon.composition import load_plugins, root
-from recon.domain.capture import REDACTED
-from recon.domain.errors import CollectionError
-from recon.domain.models import AuthConfig, SourceEntry
-from recon.domain.ratelimit import RateLimiter
+from recon.core.application.plan import build_plan
+from recon.core.domain.capture import REDACTED
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.models import AuthConfig, SourceEntry
+from recon.core.domain.ratelimit import RateLimiter
 from tests.recon_fakes import FixedClock, kept
 from tests.test_paginated_survey import BASE, PagedApi
 
@@ -49,7 +49,7 @@ def _survey(
     (project / ".recon" / "m").mkdir(parents=True, exist_ok=True)
     (project / ".recon" / "m" / "config.yaml").write_text(yaml.safe_dump(mission))
     recon = root(env, project=project, requester=lambda telemetry, deadline, limiter: api)
-    return recon.survey("m")
+    return recon.observation.survey("m")
 
 
 class TestTheGrammar:

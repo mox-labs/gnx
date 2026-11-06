@@ -62,7 +62,7 @@ them and does not enforce them.
 ### 2. Source entries → outbound credentials (`api` and `sse` collectors)
 
 A source entry names where its secret is, in the one grammar every source kind uses
-(ruling A1, `recon.domain.credentials`): `auth.token: env:NAME`, a variable, read through an
+(ruling A1, `recon.core.domain.credentials`): `auth.token: env:NAME`, a variable, read through an
 injected `Mapping` that defaults to `os.environ`; or `auth.token: file:PATH`, a file. It is
 sent as a header (`auth.header`), a query parameter (`auth.param`), or both. Or
 `auth.headers_helper` names a command, run once a survey through the shell with the
@@ -409,7 +409,7 @@ injection channel, and, through a command, an execution one.
   that carry a source's content are marked `"untrusted": true` in their documents' JSON
   schemas (`recon.v1.changes-since`'s `rows[].key` and `rows[].record`, `recon.v1.delivery`'s
   `key` and `fields`, and a failing row's `error`, what its command said, which may quote the
-  row; `recon.domain.documents.UNTRUSTED`). A warning's message, which is no
+  row; `recon.core.domain.documents.UNTRUSTED`). A warning's message, which is no
   schema-marked field, never quotes it: a delivery's warning says where what the command said
   is kept (Vector, re-check). recon wraps no text in markers such
   as `<untrusted>`: the text could close them itself.

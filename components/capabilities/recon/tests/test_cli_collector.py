@@ -15,8 +15,8 @@ import pytest
 
 from recon.adapters._out.cli_collector import STDERR_TAIL_BYTES, CliCollector, PopenRunner
 from recon.adapters._out.parsing import parse_line as _parse_line
-from recon.domain.errors import CollectionError
-from recon.domain.models import SourceEntry
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.models import SourceEntry
 from tests.recon_fakes import collector_entry
 
 
@@ -286,7 +286,7 @@ class TestPopenRunnerFailures:
         whose stdin is a pipe this test holds open."""
         survey = (
             "from recon.adapters._out.cli_collector import CliCollector\n"
-            "from recon.domain.models import CollectorEntry\n"
+            "from recon.core.domain.models import CollectorEntry\n"
             "entry = CollectorEntry(name='c', type='cli', run='cat')\n"
             "print(list(CliCollector().collect(entry, None)))\n"
         )

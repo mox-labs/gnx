@@ -3,8 +3,8 @@ unsubscribe, deliver, schedule, templates, capture.
 
 An inbound adapter over the library API and nothing else: every call goes through
 ``recon``'s declared names, so a program importing ``recon`` gets exactly what these
-commands print. ``main(obj=...)`` runs the commands over the operations given instead, a
-root built with other ports: that is how a test drives the command line.
+commands print. ``main(obj=...)`` runs the commands over the session given instead, one
+built with other ports: that is how a test drives the command line.
 
 Data goes to stdout and commentary to stderr. ``--json`` prints one versioned document
 (``watch --json``: one a line, a read each). A
@@ -26,7 +26,7 @@ import sys
 import traceback
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, get_args
 
 import rich_click as click
 from rich.console import Console
@@ -82,13 +82,20 @@ def _telemetry_warnings() -> list[dict[str, Any]]:
     return [warning.document() for warning in recon.configure_telemetry()]
 
 
-def _operations() -> Any:
-    """What the commands run: ``recon``'s library API, or what the caller of ``main`` passed
-    as its ``obj``, the same operations over other ports (a test's root, built by
-    ``recon.composition.root`` with fakes)."""
+def _session(project: Path | None = None) -> recon.Recon:
+    """The recon the commands run over: ``recon.open`` over ``project``, or else the project
+    ``--root`` (or ``RECON_ROOT``) names, or else the one around the working directory; or what
+    the caller of ``main`` passed as its ``obj``, a session over other ports (a test's, built
+    by ``recon.composition.root`` with fakes)."""
     context = click.get_current_context(silent=True)
-    given = context.find_root().obj if context is not None else None
-    return recon if given is None else given
+    if context is None:
+        return recon.open(project)
+    top = context.find_root()
+    if top.obj is not None:
+        session: recon.Recon = top.obj
+        return session
+    given = top.meta.get("recon.root")
+    return recon.open(project or (given.resolve() if given is not None else None))
 
 
 def _interrupt(signum: int, frame: FrameType | None) -> NoReturn:
@@ -183,8 +190,16 @@ class _Group(click.RichGroup):
     metavar="NAME",
     help="With --skill: print one reference instead (" + ", ".join(recon.skill_references()) + ")",
 )
+@click.option(
+    "--root",
+    type=click.Path(file_okay=False, path_type=Path),
+    envvar="RECON_ROOT",
+    default=None,
+    help="The project whose missions to use (default: $RECON_ROOT, else the git root of the "
+    "working directory, or the working directory outside a repository)",
+)
 @click.pass_context
-def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
+def main(ctx: click.Context, skill: bool, reference: str | None, root: Path | None) -> None:
     """recon: one YAML file names the sources and what to ask them; recon plans it, collects
     the answers into JSONL tables, and answers SQL over them.
 
@@ -200,7 +215,9 @@ def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
     recon schedule install my-scan        run it by the OS scheduler, as schedule: says
     recon subscribe my-scan new-mail      what changed, as a subscription: says; then ack
     recon status                          missions, archives, installed plugins
+    recon types --json                    each collector type, its config's schema
     """
+    ctx.meta["recon.root"] = root
     if reference is not None and not skill:
         raise recon.UsageError("-r/--reference is used with --skill", fix="recon --skill -r <name>")
     if skill:
@@ -245,7 +262,7 @@ def init(
     recon init gh-audit --template github-audit
     recon init review -c path/to/catalog.yaml
     """
-    document = _operations().init(name, template=template, config=config, replace=replace)
+    document = _session().collection.init(name, template=template, config=config, replace=replace)
     if as_json:
         _emit(document.document())
         return
@@ -356,9 +373,11 @@ def survey(
     """
     _checked_with_dry_run(check, dry_run, f"recon survey {name} --dry-run --check")
     setup = _telemetry_warnings()
-    ranged = {"interval": interval, "rebase": rebase, "restart": restart}
     if dry_run:
-        plan = _operations().plan(name, config=config, replace=replace, check=check, **ranged)
+        plan = _session().observation.plan(
+            name, config=config, replace=replace, check=check, interval=interval,
+            rebase=rebase, restart=restart,
+        )  # fmt: skip
         plan = plan.model_copy(update={"warnings": setup + plan.warnings})
         if as_json:
             _emit(plan.document())
@@ -367,9 +386,9 @@ def survey(
         return
     if not as_json:
         _print_warnings(setup)
-    document = _operations().survey(
+    document = _session().observation.survey(
         name, config=config, replace=replace, on_event=None if as_json else _print_event,
-        **ranged,
+        interval=interval, rebase=rebase, restart=restart,
     )  # fmt: skip
     document = document.model_copy(update={"warnings": setup + document.warnings})
     if as_json:
@@ -469,7 +488,7 @@ def stream(
     )
     setup = _telemetry_warnings()
     if dry_run:
-        plan = _operations().plan(
+        plan = _session().observation.plan(
             name, config=config, replace=replace, stream=collector, windows=windows,
             until=until, forever=forever, check=check,
         )  # fmt: skip
@@ -483,7 +502,7 @@ def stream(
         _print_warnings(setup)
     stop = recon.StreamStop()
     with _stopping(stop, as_json=as_json):
-        document = _operations().stream(
+        document = _session().observation.stream(
             name, collector, windows=windows, until=until, forever=forever, config=config,
             replace=replace, on_event=None if as_json else _print_event, stop=stop,
         )  # fmt: skip
@@ -653,7 +672,7 @@ def status(mission: str | None, as_json: bool) -> None:
     recon status
     recon status my-scan --json
     """
-    document = _operations().status(mission)
+    document = _session().observation.status(mission)
     if as_json:
         _emit(document.document())
         return
@@ -803,7 +822,7 @@ def query(
     recon query my-feed "SELECT count(*) FROM events" --stream events --since 2026-10-24T00:00Z
     """
     setup = _telemetry_warnings()
-    document = _operations().query(
+    document = _session().collection.query(
         name, sql, archive=archive, stream=stream, since=since, until=until, baseline=baseline
     )
     document = document.model_copy(update={"warnings": setup + document.warnings})
@@ -920,7 +939,7 @@ def watch(
                   "written[/]")  # fmt: skip
     if stream is not None:
         given["stream"] = stream
-    for read in _operations().watch(name, cursor, archive=archive, **given):
+    for read in _session().observation.watch(name, cursor, archive=archive, **given):
         if as_json:
             click.echo(json.dumps(read.document(), default=str))
         else:
@@ -983,7 +1002,7 @@ def subscribe(
     recon ack my-mail new-mail <cursor>
     """
     given: dict[str, Any] = {} if max_bytes is None else {"max_bytes": max_bytes}
-    read = _operations().subscribe(name, subscription, cursor, **given)
+    read = _session().observation.subscribe(name, subscription, cursor, **given)
     if as_json:
         _emit(read.document())
         return
@@ -1008,7 +1027,7 @@ def ack(name: str, subscription: str, cursor: str, as_json: bool) -> None:
     Monotone: a cursor before the one acked is refused (exit 2), and the one acked again
     changes nothing (outcome: unchanged).
     """
-    document = _operations().ack(name, subscription, cursor)
+    document = _session().observation.ack(name, subscription, cursor)
     if as_json:
         _emit(document.document())
     else:
@@ -1026,7 +1045,7 @@ def unsubscribe(name: str, subscription: str, as_json: bool) -> None:
     While the config declares it, its next read starts from the first archive; remove it
     from subscriptions: too to end it. Outcome: removed, or absent when nothing was kept.
     """
-    document = _operations().unsubscribe(name, subscription)
+    document = _session().observation.unsubscribe(name, subscription)
     if as_json:
         _emit(document.document())
     else:
@@ -1058,7 +1077,7 @@ def deliver(name: str, subscription: str | None, as_json: bool) -> None:
     recon deliver my-mail --json
     recon deliver my-mail --subscription new-mail
     """
-    document = _operations().deliver(name, subscription=subscription)
+    document = _session().observation.deliver(name, subscription=subscription)
     if as_json:
         _emit(document.document())
         return
@@ -1078,9 +1097,12 @@ def deliver(name: str, subscription: str | None, as_json: bool) -> None:
 # --- schedule ----------------------------------------------------------------------------
 
 
+#: The schedulers a schedule is projected onto, as ``--platform`` names them.
+Platform = Literal["launchd", "systemd", "cron"]
+
 _platform_option = click.option(
     "--platform",
-    type=click.Choice(["launchd", "systemd", "cron"]),
+    type=click.Choice(get_args(Platform)),
     default=None,
     help="The scheduler (default: the host's: launchd on macOS, systemd's user timers on "
     "Linux where they run, else cron)",
@@ -1137,7 +1159,7 @@ def _print_schedules(document: recon.SchedulesDocument) -> None:
 @click.argument("name")
 @_platform_option
 @_json_option
-def install(name: str, platform: str | None, as_json: bool) -> None:
+def install(name: str, platform: Platform | None, as_json: bool) -> None:
     """Install the mission's schedule: write the scheduler's files (owner-only) and load them.
 
     Again with the same config, it changes nothing (outcome: unchanged); with another, it
@@ -1148,7 +1170,7 @@ def install(name: str, platform: str | None, as_json: bool) -> None:
     recon schedule install my-scan --json
     recon schedule install my-scan --platform cron
     """
-    document = _operations().schedule_install(name, platform=platform)
+    document = _session().observation.schedule_install(name, platform=platform)
     if as_json:
         _emit(document.document())
     else:
@@ -1158,9 +1180,9 @@ def install(name: str, platform: str | None, as_json: bool) -> None:
 @schedule.command(name="list", epilog=EXIT_CODES)
 @_platform_option
 @_json_option
-def list_(platform: str | None, as_json: bool) -> None:
+def list_(platform: Platform | None, as_json: bool) -> None:
     """List the schedules installed for this project's missions."""
-    document = _operations().schedule_list(platform=platform)
+    document = _session().observation.schedule_list(platform=platform)
     if as_json:
         _emit(document.document())
     else:
@@ -1171,10 +1193,10 @@ def list_(platform: str | None, as_json: bool) -> None:
 @click.argument("name")
 @_platform_option
 @_json_option
-def remove(name: str, platform: str | None, as_json: bool) -> None:
+def remove(name: str, platform: Platform | None, as_json: bool) -> None:
     """Unload and remove the mission's schedule (outcome: removed, or absent when there was
     none). The mission and its archives stay."""
-    document = _operations().schedule_remove(name, platform=platform)
+    document = _session().observation.schedule_remove(name, platform=platform)
     if as_json:
         _emit(document.document())
     else:
@@ -1185,11 +1207,11 @@ def remove(name: str, platform: str | None, as_json: bool) -> None:
 @click.argument("mission", required=False)
 @_platform_option
 @_json_option
-def schedule_status(mission: str | None, platform: str | None, as_json: bool) -> None:
+def schedule_status(mission: str | None, platform: Platform | None, as_json: bool) -> None:
     """Each schedule of the project, or MISSION's: whether it is installed, whether its
     config changed since (then its ticks are refused: install it again), and when its next
     tick is due."""
-    document = _operations().schedule_status(mission, platform=platform)
+    document = _session().observation.schedule_status(mission, platform=platform)
     if as_json:
         _emit(document.document())
     else:
@@ -1223,10 +1245,10 @@ def tick(name: str, project: Path, config_sha256: str, as_json: bool) -> None:
     survey's otherwise.
     """
     os.chdir(project)
-    operations = _operations()
-    # The project given, not the one found around it: a root passed in is one already.
-    given = {"root": project.resolve()} if operations is recon else {}
-    document = operations.schedule_tick(name, config_sha256=config_sha256, **given)
+    # The project given, not the one found around it: a session passed in is one already.
+    document = _session(project.resolve()).observation.schedule_tick(
+        name, config_sha256=config_sha256
+    )
     if as_json:
         _emit(document.document())
     elif document.survey is not None:
@@ -1246,12 +1268,51 @@ def tick(name: str, project: Path, config_sha256: str, as_json: bool) -> None:
 @_json_option
 def templates(as_json: bool) -> None:
     """List the built-in templates `recon init -t` takes."""
-    document = _operations().templates()
+    document = _session().collection.templates()
     if as_json:
         _emit(document.document())
         return
     for item in document.templates:
         out.print(f"  [bold]{item.name}[/]  {escape(item.description)}")
+
+
+@main.command(epilog=EXIT_CODES)
+@_json_option
+def types(as_json: bool) -> None:
+    """Every collector type a mission may name as type:, installed or given: whose it is, what
+    it can touch, how its records end, what it can do, and (with --json) its config's JSON
+    Schema; then each source kind, and each transform a normalize spec may name.
+
+    \b
+    recon types
+    recon types --json
+    """
+    document = _session().collection.types()
+    if as_json:
+        _emit(document.document())
+        return
+    for item in document.collectors:
+        effects = ", ".join(item.effects) if isinstance(item.effects, list) else item.effects
+        what = ", ".join(item.capabilities) or "-"
+        out.print(f"  [bold]{item.type}[/]  {escape(item.summary)}  [dim]({item.origin}; "
+                  f"effects: {effects or 'none'}; {item.records_kind}; {what})[/]")  # fmt: skip
+    if document.sources:
+        out.print(
+            "source kinds: " + ", ".join(f"{s.kind} ({s.added_by})" for s in document.sources)
+        )
+    out.print("transforms: " + ", ".join(document.transforms))
+
+
+@main.command(epilog=EXIT_CODES)
+def schema() -> None:
+    """The JSON Schema of a mission's config, as a recon.v1.mission-config document on stdout:
+    the keys recon reads in every mission. A collector entry's and a source's own keys are
+    their type's (recon types --json gives each one's schema).
+
+    \b
+    recon schema
+    """
+    _emit(_session().collection.schema().document())
 
 
 @main.command(epilog=EXIT_CODES)
@@ -1281,7 +1342,7 @@ def capture(name: str, as_json: bool) -> None:
             f"stdin is not JSON ({exc})",
             fix="pipe one PostToolUse hook payload (a JSON object) to recon capture",
         ) from exc
-    line = _operations().capture(name, payload)
+    line = _session().collection.capture(name, payload)
     if as_json:
         _emit(line.document())
         return

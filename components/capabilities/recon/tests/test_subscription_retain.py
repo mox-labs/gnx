@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from recon.composition import root
-from recon.domain.subscriptions import Delivered
+from recon.observe.domain.delivery import Delivered
 from tests.recon_fakes import VirtualClock, plugins_with
 from tests.test_changes import Surveys, _Feed, _stream_mission, _windows
 
@@ -50,11 +50,14 @@ class TestASubscriptionHoldsItsArchives:
         for messages in ((A,), (A, B), (A, B, C)):
             surveys.survey(*messages)
         assert len(_archives(tmp_path)) == 3, "retain: {archives: 1} held back by the subscription"
-        for document in (surveys.recon.status("m"), surveys.recon.plan("m")):
+        for document in (
+            surveys.recon.observation.status("m"),
+            surveys.recon.observation.plan("m"),
+        ):
             [warning] = _behind(document)
             assert warning["path"] == "subscriptions.0" and warning["got"] == 2
             assert "all" in warning["message"] and warning["fix"]
-        read = surveys.recon.subscribe("m", "all")
+        read = surveys.recon.observation.subscribe("m", "all")
         assert [row.key for row in read.rows] == [{"id": "a"}, {"id": "b"}, {"id": "c"}]
 
     def test_acking_lets_them_go(self, tmp_path: Path) -> None:
@@ -62,8 +65,10 @@ class TestASubscriptionHoldsItsArchives:
         surveys = Surveys(tmp_path)
         for messages in ((A,), (A, B), (A, B, C)):
             surveys.survey(*messages)
-        surveys.recon.ack("m", "all", surveys.recon.subscribe("m", "all").cursor)
-        assert _behind(surveys.recon.status("m")) == []
+        surveys.recon.observation.ack(
+            "m", "all", surveys.recon.observation.subscribe("m", "all").cursor
+        )
+        assert _behind(surveys.recon.observation.status("m")) == []
         surveys.survey(A, B, C, D)
         assert len(_archives(tmp_path)) == 1, "the newest, which holds D's row, alone"
 
@@ -74,7 +79,9 @@ class TestASubscriptionHoldsItsArchives:
         surveys = Surveys(tmp_path)
         surveys.survey(A, B)
         first = _archives(tmp_path)[0]
-        surveys.recon.ack("m", "all", surveys.recon.subscribe("m", "all", max_records=1).cursor)
+        surveys.recon.observation.ack(
+            "m", "all", surveys.recon.observation.subscribe("m", "all", max_records=1).cursor
+        )
         surveys.survey(A, B)  # no change: an empty change table holds nothing
         surveys.survey(A, B, C)
         assert first in _archives(tmp_path), "b is in it, unacked"
@@ -86,7 +93,7 @@ class TestASubscriptionHoldsItsArchives:
         for messages in ((A,), (A, B), (A, B, C)):
             surveys.survey(*messages)
         _mission(tmp_path, [])
-        assert _behind(surveys.recon.status("m")) == []
+        assert _behind(surveys.recon.observation.status("m")) == []
         surveys.survey(A, B, C)
         assert len(_archives(tmp_path)) == 1
 
@@ -99,12 +106,12 @@ class TestASubscriptionHoldsItsArchives:
         records = [{"id": k} for k in "abcdef"]
         recon = root({}, project=tmp_path, clock=VirtualClock(),
                      plugins=plugins_with(feed=_Feed(records)))  # fmt: skip
-        recon.stream("m", "s", windows=3)
+        recon.observation.stream("m", "s", windows=3)
         assert len(_windows(tmp_path)) == 3
-        [warning] = _behind(recon.status("m"))
+        [warning] = _behind(recon.observation.status("m"))
         assert warning["got"] == 2
-        recon.ack("m", "log", recon.subscribe("m", "log").cursor)
-        recon.stream("m", "s", windows=1)
+        recon.observation.ack("m", "log", recon.observation.subscribe("m", "log").cursor)
+        recon.observation.stream("m", "s", windows=1)
         assert len(_windows(tmp_path)) == 1
 
 
@@ -142,7 +149,7 @@ class TestTheHoldIsBounded:
         recording = Recording()
         recon = root({}, project=tmp_path, clock=surveys.clock, deliverer=recording,
                      requester=lambda t, d, r: surveys.inbox)  # fmt: skip
-        document = recon.deliver("m")
+        document = recon.observation.deliver("m")
         assert [w["kind"] for w in document.warnings] == ["changes_retired"]
         assert document.deliveries[0].retired_range is not None
         assert len(recording.given) == 2, "b and c, what was kept"
@@ -169,6 +176,6 @@ class TestTheHoldIsBounded:
 
     def test_the_default_is_30_days_and_the_plan_says_so(self, tmp_path: Path) -> None:
         _mission(tmp_path, [{"name": "all", "output": "inbox"}])
-        plan = Surveys(tmp_path).recon.plan("m")
+        plan = Surveys(tmp_path).recon.observation.plan("m")
         said = {value.path: (value.value, value.origin) for value in plan.provenance}
         assert said["subscriptions.0.max_lag"] == (2592000.0, "recon")

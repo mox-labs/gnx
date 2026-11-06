@@ -1,5 +1,44 @@
 # Changelog — recon
 
+## 0.18.0 — 2026-11-06
+
+### Two layers: the collect core and the observe layer (M3)
+
+- **`recon.core`** runs one act: it plans a mission's runs, fetches each source, captures what came back, normalizes it, and lands each table with its checkpoint in one seal, and it answers SQL over what was landed (`Collection`, its driving port). **`recon.observe`** collects over time: the span each ranged table asks for after what it committed, what changed, retention, schedules, subscriptions and their delivery, following an archive or a stream, status (`Observation`). The core never imports the observe layer, and the observe layer uses only `recon.core.__all__`, as any outside driver would: two import-contract tests, each with a planted violation, and `layers.json` maps every module to its layer.
+- **What changed is derived after the seal** (ruling R9), into the same archive, through `Hold.derive(ref)`, which opens a sealed archive again under its writer lock so it reads `writing` while its change table and told index are written. The act's commit (its tables and ranges) never waits on it, and a failure to derive is the table's `changes.error` and a `changes_failed` warning, no longer an unfinished archive. Change rows, cursors and acks read as before.
+- **A pending table** (sealed `finished` under the mission's config with no change summary: its writer died between the seal and the deriving) holds a change reader, and the next survey or stream run of that config derives it in its own archive first.
+- **`recon.open(root)`** gives a session, `recon.Recon`, whose `collection` and `observation` are the two layers' operations; the command line drives one.
+
+### Values in, discovery out (M4)
+
+- **`recon.open(root, *, extensions=, landing=)`** (ruling R15): in-process extensions, and the store acts land in (one recon's query engine reads, else `usage`). The module functions run over one session per project, opened on first use: no root is rebuilt per call.
+- **A config may be a value** (a `ReconConfig` or a mapping), planned as a file's data, hashed as its canonical JSON, never written as the mission's `config.yaml`; each archive it lands keeps it under `config`, every URL reported as recon reports one, so no credential reaches the meta.
+- **`recon types [--json]`** (`recon.v1.types`): each collector type, its origin, effects, `records_kind`, capabilities and config JSON Schema; each source kind; each transform. **`recon schema`** (`recon.v1.mission-config`): the mission file's JSON Schema.
+- **`--root DIR`** and **`RECON_ROOT`** on the command line.
+- **The plan's `provenance` gives every effective value** of the config's own keys, as written (`mission`) or filled in (`recon`), the older defaults among them (a source's `timeout`, `max_bytes`, `auth`, an entry's `type_url`, `deadline`, `preserve_raw`), with a note where unset means something (ruling G2).
+
+### The matrix seam and recon's extension points (M5)
+
+- **recon depends on `matrix>=0.9,<0.10`** and names it in one module, `recon/_matrix.py` (a `single_importer` rule and a test).
+- **`recon.collector` and `recon.transform` are points on matrix's registry** (ruling R2). The built-ins register from recon's own `matrix.extensions` entry point; a config names a built-in by its short name (`type: api`, `$html2text`) and anyone else's by its type URL (`type: acme.v1.collector.sql`), ruling R3. Code using recon registers its own in-process: `recon.open(extensions=[register])`.
+- **Optional members are declared protocols** (ruling G3): a collector's `close` and `requirements`, a requester's `close` and `follow`, a telemetry sink's `around`, `trace_headers` and `close` (`recon.core.domain.optional`), each read with `isinstance`.
+
+### The component face (M6)
+
+- **Three flow members at matrix's `component` point** (ruling R4): `recon.v1.component.plan` provides `recon.v1.span`; `recon.v1.component.collect` requires spans and provides `recon.v1.act`, one row as each act seals, so a killed run keeps every act it sealed (`records: true` hands each sealed table's records over too); `recon.v1.component.changes` requires acts and provides `recon.v1.change`. Payload schemas for the three kinds; each kind renamable (`kinds:`, ruling R7). The core runs on a worker thread of its own (ruling R16). A harness that schedules recon itself leaves `plan` out and gives the spans.
+
+### Changed (breaking)
+
+- **`recon.application` and `recon.domain` are gone**: their modules are under `recon.core` and `recon.observe`. `application/use_cases.py` and its `Recon` are deleted; `recon.composition.root()` returns the session.
+- **The `recon.collectors` and `recon.transforms` entry-point groups are gone**: a package registers at `recon.collector` and `recon.transform` from its `matrix.extensions` entry point.
+- **A normalize column may not start with `_`** (ruling R18): that prefix is recon's own.
+- **A survey that dies in its change phase reads `finished`**, its tables sealed before their changes (R9); a told index or change table that cannot be written no longer makes the archive incomplete.
+- **Each session loads every installed `matrix.extensions` entry point**, so it imports each installed package's registration (ix's, where ix is installed).
+
+### Not in this release
+
+- **Collector contract v2** (`Body` and `Record` items, `Paged`, the core capturing, converting, extracting and normalizing for every type, converters and source kinds as points, `web` folded into `api`, a conformance kit): the design record (`docs/design/2026-11-06-record.md`, M5-1) says why. The provider contract changes once more when it lands.
+
 ## 0.17.0 — 2026-11-06
 
 ### Ranges: source time asked for once, run after run

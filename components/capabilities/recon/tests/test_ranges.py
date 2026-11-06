@@ -1,7 +1,7 @@
 """Ranges (owner rulings R1, R5 and R-TOMB): ``range:`` asks a snapshot entry's source for its
 time step by step, run after run, and the core fills ``{range.*}`` in any type's settings.
 
-- **The plan** (:func:`~recon.domain.ranges.plan_range`, pure): a continuing range goes on from
+- **The plan** (:func:`~recon.core.domain.ranges.plan_range`, pure): a continuing range goes on from
   its checkpoint, a fixed one stops at ``end``, a rolling one reads the latest ``last`` again;
   every run ends ``settle`` behind now, asks at most ``max_steps`` steps, and says a backlog.
 - **The checkpoint** moves only when the table's archive commits (its meta recorded, the table
@@ -24,13 +24,12 @@ from click.testing import CliRunner
 from pydantic import BaseModel, ConfigDict
 
 from recon.adapters._in.cli import main
-from recon.application.plan import build_plan
-from recon.application.ranges import committed_intervals, request_digest
 from recon.composition import root
-from recon.domain.collector import CollectorType
-from recon.domain.errors import CollectionError, ConfigError, UsageError
-from recon.domain.models import CollectorEntry
-from recon.domain.ranges import (
+from recon.core.application.plan import build_plan
+from recon.core.domain.collector import CollectorType
+from recon.core.domain.errors import CollectionError, ConfigError, UsageError
+from recon.core.domain.models import CollectorEntry
+from recon.core.domain.ranges import (
     DEFAULT_MAX_STEPS,
     DEFAULT_SETTLE_S,
     DEFAULT_STEP_S,
@@ -41,10 +40,11 @@ from recon.domain.ranges import (
     fill,
     interval_of,
     iso,
-    plan_range,
     unknown_placeholders,
     uses_range,
 )
+from recon.observe.application.ranges import committed_intervals, request_digest
+from recon.observe.domain.spans import plan_range
 from tests.recon_fakes import FixedClock, files_of, kept, plugins_with
 
 if TYPE_CHECKING:
@@ -52,10 +52,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from recon.composition import Recon
-    from recon.domain.capture import CaptureLog
-    from recon.domain.collector import Collector, Plugins
-    from recon.domain.errors import Problem
-    from recon.domain.models import SourceEntry
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.collector import Collector, Plugins
+    from recon.core.domain.errors import Problem
+    from recon.core.domain.models import SourceEntry
 
 NOW = datetime(2026, 10, 24, 12, 0, 30, 250000, tzinfo=UTC)
 #: ``NOW`` less the default settle, to the whole second.
@@ -413,7 +413,7 @@ class TestSurveys:
     def test_a_survey_asks_each_step_and_tags_each_record_with_it(self, tmp_path: Path) -> None:
         mission = Mission(tmp_path, range={"step": 1800, "start": iso(HORIZON - HOUR)})
 
-        document = mission.recon.survey("m")
+        document = mission.recon.observation.survey("m")
 
         assert document.status == "complete"
         assert mission.steps.asked == [(iso(HORIZON - HOUR), iso(HORIZON - HOUR / 2)),
@@ -431,10 +431,10 @@ class TestSurveys:
 
     def test_the_next_survey_goes_on_from_the_checkpoint(self, tmp_path: Path) -> None:
         mission = Mission(tmp_path)
-        mission.recon.survey("m")
+        mission.recon.observation.survey("m")
         mission.clock.advance(1800)
 
-        document = mission.recon.survey("m")
+        document = mission.recon.observation.survey("m")
 
         assert mission.steps.asked[-1] == (iso(HORIZON), iso(HORIZON + HOUR / 2))
         [table] = document.tables
@@ -444,14 +444,14 @@ class TestSurveys:
 
     def test_a_failed_survey_commits_nothing_so_the_next_asks_again(self, tmp_path: Path) -> None:
         mission = Mission(tmp_path)
-        mission.recon.survey("m")
+        mission.recon.observation.survey("m")
         mission.clock.advance(600)
         mission.steps.fails = True
 
-        failed = mission.recon.survey("m")
+        failed = mission.recon.observation.survey("m")
         mission.steps.fails = False
         mission.clock.advance(600)
-        again = mission.recon.survey("m")
+        again = mission.recon.observation.survey("m")
 
         assert failed.status == "incomplete"
         [table] = again.tables
@@ -462,11 +462,11 @@ class TestSurveys:
 
     def test_a_backfill_moves_no_checkpoint_and_says_an_overlap(self, tmp_path: Path) -> None:
         mission = Mission(tmp_path)
-        mission.recon.survey("m")
+        mission.recon.observation.survey("m")
         mission.clock.advance(60)
         asked = (HORIZON - 3 * HOUR, HORIZON - HOUR / 2)
 
-        document = mission.recon.survey("m", interval=asked)
+        document = mission.recon.observation.survey("m", interval=asked)
 
         assert [w["kind"] for w in document.warnings if w["kind"].startswith("range")] == [
             "range_overlaps"
@@ -475,26 +475,26 @@ class TestSurveys:
         assert table.range is not None and table.range.from_ == "override"
         assert mission.committed() == [Interval(HORIZON - HOUR, HORIZON)]
         mission.clock.advance(60)
-        mission.recon.survey("m")
+        mission.recon.observation.survey("m")
         assert mission.steps.asked[-1][0] == iso(HORIZON), "on from the checkpoint, as before"
 
     def test_a_changed_request_is_refused_until_rebased_or_restarted(self, tmp_path: Path) -> None:
         start = HORIZON - 2 * HOUR
         mission = Mission(tmp_path, range={"start": iso(start), "max_steps": 1})
-        mission.recon.survey("m")
+        mission.recon.observation.survey("m")
         mission.write(range={"start": iso(start), "max_steps": 1}, until="{range.last}")
         mission.clock.advance(60)
 
         with pytest.raises(ConfigError) as refused:
-            mission.recon.survey("m")
+            mission.recon.observation.survey("m")
         [problem] = refused.value.problems
         assert problem.kind == "checkpoint_request_changed"
         with pytest.raises(UsageError):
-            mission.recon.survey("m", rebase=["other"])
+            mission.recon.observation.survey("m", rebase=["other"])
 
-        rebased = mission.recon.survey("m", rebase=["metrics"])
+        rebased = mission.recon.observation.survey("m", rebase=["metrics"])
         mission.clock.advance(60)
-        restarted = mission.recon.survey("m", restart=["metrics"])
+        restarted = mission.recon.observation.survey("m", restart=["metrics"])
 
         assert rebased.tables[0].range is not None and restarted.tables[0].range is not None
         assert (rebased.tables[0].range.from_, rebased.tables[0].range.start) == (
@@ -502,7 +502,7 @@ class TestSurveys:
         assert (restarted.tables[0].range.from_, restarted.tables[0].range.start) == (
             "restart", iso(start))  # fmt: skip
         mission.clock.advance(60)
-        [after] = mission.recon.survey("m").tables
+        [after] = mission.recon.observation.survey("m").tables
         assert after.range is not None
         assert (after.range.from_, after.range.start) == ("checkpoint", iso(start + HOUR)), (
             "a restart's range is the latest committed, so the next goes on from it"
@@ -511,10 +511,10 @@ class TestSurveys:
     def test_retention_keeps_the_checkpoint_in_the_tombstone(self, tmp_path: Path) -> None:
         mission = Mission(tmp_path, retain={"archives": 1}, range={"step": 600})
         for _ in range(3):
-            mission.recon.survey("m")
+            mission.recon.observation.survey("m")
             mission.clock.advance(600)
 
-        document = mission.recon.survey("m")
+        document = mission.recon.observation.survey("m")
 
         archives = tmp_path / ".recon" / "m" / "archive"
         lines = (archives / "retired.jsonl").read_text().splitlines()
@@ -529,7 +529,7 @@ class TestSurveys:
     def test_the_plan_says_the_interval_and_the_first_step_asked(self, tmp_path: Path) -> None:
         mission = Mission(tmp_path, range={"step": 1800})
 
-        plan = mission.recon.plan("m")
+        plan = mission.recon.observation.plan("m")
 
         [run] = plan.runs
         assert run["range"] == {"start": iso(HORIZON - HOUR / 2), "end": iso(HORIZON),
@@ -539,9 +539,9 @@ class TestSurveys:
 
     def test_status_reads_each_tables_range_back(self, tmp_path: Path) -> None:
         mission = Mission(tmp_path)
-        mission.recon.survey("m")
+        mission.recon.observation.survey("m")
 
-        [status] = mission.recon.status("m").missions
+        [status] = mission.recon.observation.status("m").missions
         assert status.latest is not None
         [table] = status.latest.tables
         assert table.range is not None and table.range.end == iso(HORIZON)
@@ -554,7 +554,7 @@ class TestSurveys:
             )  # fmt: skip
         )
         with pytest.raises(UsageError):
-            mission.recon.plan("m", interval=(HORIZON - HOUR, HORIZON))
+            mission.recon.observation.plan("m", interval=(HORIZON - HOUR, HORIZON))
 
 
 class TestTheCli:

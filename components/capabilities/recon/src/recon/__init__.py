@@ -7,7 +7,7 @@ The names below are the library API: the operations (each returns a versioned do
 the skill text, the errors and the tables of error kinds and exit codes, and
 :class:`StreamStop`, which stops a running stream. The command line calls these and nothing
 else. Collector types and transforms are extensions: their contract is
-``recon.domain.collector``. Telemetry goes through OpenTelemetry's API only; an
+``recon.core.domain.collector``. Telemetry goes through OpenTelemetry's API only; an
 application installs the SDK (:func:`configure_telemetry`, or its own setup).
 """
 
@@ -21,6 +21,7 @@ from recon.api import (
     configure_telemetry,
     deliver,
     init,
+    open,
     plan,
     query,
     read_since,
@@ -29,15 +30,17 @@ from recon.api import (
     schedule_remove,
     schedule_status,
     schedule_tick,
+    schema,
     status,
     stream,
     subscribe,
     survey,
     templates,
+    types,
     unsubscribe,
     watch,
 )
-from recon.domain.documents import (
+from recon.core.domain.documents import (
     Capture,
     ChangesSince,
     DeliverDocument,
@@ -48,6 +51,7 @@ from recon.domain.documents import (
     RecordsSince,
     ScheduleDocument,
     SchedulesDocument,
+    SchemaDocument,
     StatusDocument,
     StreamDocument,
     SubscriptionDocument,
@@ -55,12 +59,13 @@ from recon.domain.documents import (
     TableOutcome,
     TemplatesDocument,
     TickDocument,
+    TypesDocument,
     WindowOutcome,
     error_document,
     stream_failure,
     survey_failure,
 )
-from recon.domain.errors import (
+from recon.core.domain.errors import (
     ERROR_KINDS,
     EXIT_CODES,
     EXIT_MEANINGS,
@@ -78,17 +83,17 @@ from recon.domain.errors import (
 from recon.skill_files import skill, skill_references
 
 if TYPE_CHECKING:
-    from recon.composition import StreamStop
+    from recon.composition import Recon, StreamStop
 
 
 def __getattr__(name: str) -> Any:
-    """``StreamStop`` is the application's, which the facade reaches only through the
-    composition root, as each operation does: on first use, so ``import recon`` wires
+    """``StreamStop`` and the session type ``Recon`` are the composition root's, which the
+    facade reaches as each operation does: on first use, so ``import recon`` wires
     nothing."""
-    if name == "StreamStop":
-        from recon.composition import StreamStop
+    if name in ("StreamStop", "Recon"):
+        from recon.composition import Recon, StreamStop
 
-        return StreamStop
+        return {"StreamStop": StreamStop, "Recon": Recon}[name]
     raise AttributeError(f"module 'recon' has no attribute {name!r}")
 
 
@@ -116,10 +121,12 @@ __all__ = [
     "Problem",
     "QueryError",
     "QueryRows",
+    "Recon",
     "ReconError",
     "RecordsSince",
     "ScheduleDocument",
     "SchedulesDocument",
+    "SchemaDocument",
     "StatusDocument",
     "StreamDocument",
     "StreamStop",
@@ -128,6 +135,7 @@ __all__ = [
     "TableOutcome",
     "TemplatesDocument",
     "TickDocument",
+    "TypesDocument",
     "UsageError",
     "WindowOutcome",
     "__version__",
@@ -138,6 +146,7 @@ __all__ = [
     "deliver",
     "error_document",
     "init",
+    "open",
     "plan",
     "query",
     "read_since",
@@ -146,6 +155,7 @@ __all__ = [
     "schedule_remove",
     "schedule_status",
     "schedule_tick",
+    "schema",
     "skill",
     "skill_references",
     "status",
@@ -155,6 +165,7 @@ __all__ = [
     "survey",
     "survey_failure",
     "templates",
+    "types",
     "unsubscribe",
     "watch",
 ]

@@ -1,5 +1,5 @@
-"""Archives as directories of JSONL files: the :class:`~recon.domain.archives.Landing` and
-:class:`~recon.domain.archives.Archives` ports over the local filesystem. Every location below
+"""Archives as directories of JSONL files: the :class:`~recon.core.domain.archives.Landing` and
+:class:`~recon.core.domain.archives.Archives` ports over the local filesystem. Every location below
 is this module's decision; no port says any of it.
 
 ::
@@ -40,7 +40,7 @@ is; else ``incomplete``. Whether a writer is alive is known on its own host only
 **Holds.** :meth:`ArchiveFiles.hold` takes the mission's own ``writer.lock`` (a survey's
 hold) or its stream's (a stream's), an ``flock`` that stays when it is let go, so no two
 writers ever hold two files of one name. A stream's window id starts with its index
-(:func:`~recon.domain.stream.window_id`), so the index its one writer gives each new window is
+(:func:`~recon.core.domain.stream.window_id`), so the index its one writer gives each new window is
 one no other writer gives. The stream is ``writing`` while its lock is held, and otherwise
 reads as its last window.
 
@@ -103,7 +103,7 @@ from recon.adapters._out.mission_layout import (
     stream_dir,
 )
 from recon.adapters._out.private_files import DIR_MODE, make_dirs, open_file, write_file
-from recon.domain.archives import (
+from recon.core.domain.archives import (
     RESERVED_OUTPUTS,
     SIDECARS,
     Abandoned,
@@ -114,18 +114,18 @@ from recon.domain.archives import (
     TableEnds,
     TableRecord,
 )
-from recon.domain.capture import CAPTURE_LOG_NAME
-from recon.domain.changes import CHANGES_SUFFIX
-from recon.domain.errors import QueryError, ReconError, UsageError
-from recon.domain.stream import window_index
-from recon.domain.type_url import DEFAULT_RECORDS_TYPE_URL
+from recon.core.domain.capture import CAPTURE_LOG_NAME
+from recon.core.domain.changes import CHANGES_SUFFIX
+from recon.core.domain.errors import NotFoundError, QueryError, ReconError, UsageError
+from recon.core.domain.stream import window_index
+from recon.core.domain.type_url import DEFAULT_RECORDS_TYPE_URL
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
     from pathlib import Path
 
-    from recon.domain.archives import Hold, Landed
-    from recon.domain.clock import Clock
+    from recon.core.domain.archives import Hold, Landed
+    from recon.core.domain.clock import Clock
 
 INCOMPLETE_MARKER = ".incomplete"
 
@@ -269,6 +269,28 @@ class ArchiveFiles:
                 making.rmdir()
             raise
         return _Landed(self, ArchiveRef(mission, archive_id, stream, index), archive, descriptor)
+
+    def _derive(self, ref: ArchiveRef) -> _Landed:
+        """A sealed archive opened again under its own writer lock, so it reads ``writing``
+        while what is derived from it is written."""
+        archive = archive_dir(self._root, ref)
+        if not (archive / "meta.yaml").exists():
+            raise NotFoundError(
+                f"archive {ref.id} of {ref.mission} was never sealed, so nothing is derived "
+                "from it",
+                fix=f"recon status {ref.mission} lists its archives",
+                details={"archive": ref.id},
+            )
+        try:
+            descriptor = hold(archive / WRITER_LOCK)
+        except OSError as exc:
+            raise ReconError(
+                f"archive {ref.id} of {ref.mission} is held by another writer",
+                kind="busy",
+                fix="wait for it to end, then run again",
+                details={"archive": ref.id},
+            ) from exc
+        return _Landed(self, ref, archive, descriptor)
 
     def _give_index(self, mission: str, archive_id: str) -> int:
         """Record ``archive_id`` as the mission's next archive and return its index: one more
@@ -622,7 +644,7 @@ def _busy(lock: Path, mission: str, stream: str | None) -> ReconError:
 
 
 class _Hold:
-    """A writer's hold (:class:`~recon.domain.archives.Hold`) through one ArchiveFiles."""
+    """A writer's hold (:class:`~recon.core.domain.archives.Hold`) through one ArchiveFiles."""
 
     def __init__(self, store: ArchiveFiles, mission: str, stream: str | None) -> None:
         self._store = store
@@ -637,18 +659,30 @@ class _Hold:
         finally:
             landed.release()
 
+    @contextlib.contextmanager
+    def derive(self, ref: ArchiveRef) -> Iterator[Landed]:
+        self._held(ref, "derive from")
+        landed = self._store._derive(ref)
+        try:
+            yield landed
+        finally:
+            landed.release()
+
     def retire(self, ref: ArchiveRef, tombstone: Mapping[str, Any]) -> None:
+        self._held(ref, "retire")
+        self._store._retire(ref, tombstone)
+
+    def _held(self, ref: ArchiveRef, act: str) -> None:
         if (ref.mission, ref.stream) != (self._mission, self._stream):
             raise UsageError(
                 f"archive {ref.id} is not one of what this writer holds",
-                fix="retire an archive under the hold of its own mission or stream",
+                fix=f"{act} an archive under the hold of its own mission or stream",
                 details={"archive": ref.id},
             )
-        self._store._retire(ref, tombstone)
 
 
 class _Landed:
-    """One archive being written (:class:`~recon.domain.archives.Landed`)."""
+    """One archive being written (:class:`~recon.core.domain.archives.Landed`)."""
 
     def __init__(
         self, store: ArchiveFiles, ref: ArchiveRef, archive: Path, descriptor: int

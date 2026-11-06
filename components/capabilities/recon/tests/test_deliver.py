@@ -33,12 +33,12 @@ from recon.adapters._out.command_deliverer import CommandDeliverer
 from recon.adapters._out.mission_layout import STATE
 from recon.adapters._out.subscription_files import SubscriptionFiles
 from recon.adapters._out.system_clock import SystemClock
-from recon.application.plan import build_plan
-from recon.application.schedules import offset_s
 from recon.composition import load_plugins, root
-from recon.domain.documents import ChangesSince, Delivery
-from recon.domain.schedule import ScheduleHost
-from recon.domain.subscriptions import Delivered, clean
+from recon.core.application.plan import build_plan
+from recon.core.domain.documents import ChangesSince, Delivery
+from recon.observe.application.schedules import offset_s
+from recon.observe.domain.delivery import Delivered, clean
+from recon.observe.domain.scheduling import ScheduleHost
 from tests.recon_fakes import FixedClock
 from tests.test_changes import Inbox
 from tests.test_schedule_install import FakeRunner, Host
@@ -92,7 +92,7 @@ class Mail:
         if isinstance(self.clock, FixedClock):
             self.clock.advance(1)
         self.inbox.messages = list(messages)
-        self.recon.survey("m")
+        self.recon.observation.survey("m")
 
 
 def _messages(n: int, start: int = 0) -> list[dict[str, Any]]:
@@ -107,7 +107,7 @@ class TestABurstIsAFewRuns:
         recording = Recording()
         mail = Mail(tmp_path, recording)
         mail.survey(*_messages(500))
-        document = mail.recon.deliver("m")
+        document = mail.recon.observation.deliver("m")
         assert len(recording.given) <= 11
         assert [d["kind"] for d in recording.given] == ["change"] * 10 + ["summary"]
         assert [d["key"]["id"] for d in recording.given[:10]] == [f"m{i}" for i in range(10)]
@@ -118,9 +118,12 @@ class TestABurstIsAFewRuns:
         assert document.warnings == []
 
         recording.given.clear()
-        assert mail.recon.deliver("m").deliveries[0].delivered == 0 and recording.given == []
+        assert (
+            mail.recon.observation.deliver("m").deliveries[0].delivered == 0
+            and recording.given == []
+        )
         mail.survey(*_messages(503))
-        mail.recon.deliver("m")
+        mail.recon.observation.deliver("m")
         assert [d["key"]["id"] for d in recording.given] == ["m500", "m501", "m502"]
 
     def test_max_per_tick_is_the_mission_s_and_the_plan_says_each_default(
@@ -130,9 +133,9 @@ class TestABurstIsAFewRuns:
         recording = Recording()
         mail = Mail(tmp_path, recording)
         mail.survey(*_messages(5))
-        mail.recon.deliver("m")
+        mail.recon.observation.deliver("m")
         assert [d["kind"] for d in recording.given] == ["change", "change", "summary"]
-        plan = mail.recon.plan("m")
+        plan = mail.recon.observation.plan("m")
         said = {value.path: (value.value, value.origin) for value in plan.provenance}
         at = "subscriptions.0.deliver"
         assert said[f"{at}.max_per_tick"] == (2, "mission")
@@ -155,14 +158,14 @@ class TestAPoisonRow:
         mail.survey(*_messages(5))
         mission = tmp_path / ".recon" / "m"
         for attempt in (1, 2):
-            document = mail.recon.deliver("m")
+            document = mail.recon.observation.deliver("m")
             [run] = document.deliveries
             assert run.failing is not None and run.failing.attempts == attempt and run.more
             assert run.failing.error == "it chokes on m2"
             assert [w["kind"] for w in document.warnings] == ["delivery_failed"]
         held = [d["key"]["id"] for d in poison.given]
         assert held == ["m0", "m1", "m2", "m2"], "the rows after it wait"
-        document = mail.recon.deliver("m")
+        document = mail.recon.observation.deliver("m")
         [run] = document.deliveries
         assert (run.delivered, run.dead_lettered, run.failing) == (2, 1, None)
         assert [w["kind"] for w in document.warnings] == ["delivery_dead_lettered"]
@@ -171,7 +174,7 @@ class TestAPoisonRow:
         [letter] = [json.loads(line) for line in (mission / "subscriptions" / "new.dead.jsonl")
                     .read_text().splitlines()]  # fmt: skip
         assert letter["attempts"] == 3 and letter["delivery"]["key"] == {"id": "m2"}
-        assert mail.recon.status("m").missions[0].subscriptions[0].dead_letters == 1
+        assert mail.recon.observation.status("m").missions[0].subscriptions[0].dead_letters == 1
 
     def test_what_the_command_said_is_in_no_warning_s_message(self, tmp_path: Path) -> None:
         """Vector, re-check: a command's stderr may quote the row it was given, and a warning's
@@ -184,7 +187,7 @@ class TestAPoisonRow:
         mail.survey(*_messages(2))
         messages = []
         for _ in range(3):
-            document = mail.recon.deliver("m")
+            document = mail.recon.observation.deliver("m")
             messages += [(w["kind"], w["message"]) for w in document.warnings]
         assert [kind for kind, _ in messages] == ["delivery_failed"] * 2 + [
             "delivery_dead_lettered"
@@ -202,7 +205,7 @@ class TestAPoisonRow:
         summary = Recording(lambda d: Delivered(d["kind"] != "summary", 1, said))
         mail = Mail(other, summary)
         mail.survey(*_messages(14))
-        document = mail.recon.deliver("m")
+        document = mail.recon.observation.deliver("m")
         [warning] = document.warnings
         assert warning["kind"] == "delivery_failed" and said not in warning["message"]
 
@@ -220,7 +223,7 @@ class TestAPoisonRow:
         mail = Mail(tmp_path, recording)
         mail.survey(*_messages(3))
         for _ in range(3):
-            mail.recon.deliver("m")
+            mail.recon.observation.deliver("m")
         assert [d["key"]["id"] for d in recording.given] == ["m0", "m1", "m1", "m1", "m2"]
         assert SubscriptionFiles(tmp_path / STATE).dead_letters("m", "new") == 0
 
@@ -243,12 +246,12 @@ class TestADeadline:
         mail = Mail(tmp_path, CommandDeliverer({}), clock=SystemClock())
         mail.survey(*_messages(20))
         started = time.monotonic()
-        document = mail.recon.deliver("m")
+        document = mail.recon.observation.deliver("m")
         took = time.monotonic() - started
         [run] = document.deliveries
         assert took < 1.0 + 0.5, f"{took:.2f}s for a deadline of 1 s"
         assert 1 <= run.delivered < 10 and run.more and run.coalesced == 0
-        on = mail.recon.deliver("m").deliveries[0]
+        on = mail.recon.observation.deliver("m").deliveries[0]
         assert on.delivered >= 1, "the rest are the next delivery's"
 
     def test_a_command_that_hangs_is_stopped_at_its_timeout(self, tmp_path: Path) -> None:
@@ -260,7 +263,7 @@ class TestADeadline:
         mail = Mail(tmp_path, CommandDeliverer({}), clock=SystemClock())
         mail.survey(*_messages(2))
         started = time.monotonic()
-        document = mail.recon.deliver("m")
+        document = mail.recon.observation.deliver("m")
         assert time.monotonic() - started < 5
         [run] = document.deliveries
         assert run.delivered == 0 and run.failing is not None
@@ -299,7 +302,7 @@ class TestAHostileSubjectStaysInert:
         _mission(tmp_path, {**_script(tmp_path, body, str(out)), **deliver})
         mail = Mail(tmp_path, CommandDeliverer({"PATH": "/usr/bin:/bin"}))
         mail.survey({"id": "x1", "subject": HOSTILE, "from": "mallory@evil.test"})
-        document = mail.recon.deliver("m")
+        document = mail.recon.observation.deliver("m")
         assert document.deliveries[0].delivered == 1, document.warnings
         return out.read_bytes().splitlines(), tmp_path
 
@@ -350,7 +353,7 @@ class TestAHostileSubjectStaysInert:
         env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "MAIL_TOKEN": "sk-SENTINEL"}
         mail = Mail(tmp_path, CommandDeliverer(env))
         mail.survey(*_messages(1))
-        mail.recon.deliver("m")
+        mail.recon.observation.deliver("m")
         given = json.loads(out.read_text())
         assert "MAIL_TOKEN" not in given and "sk-SENTINEL" not in out.read_text()
         assert given.get("PATH") == "/usr/bin:/bin"
@@ -370,8 +373,8 @@ class TestAHostileSubjectStaysInert:
         inbox.messages = _messages(1)
         recon = root({"PATH": f"{inside}:/usr/bin:/bin"}, project=tmp_path, clock=FixedClock(),
                      requester=lambda t, d, r: inbox)  # fmt: skip
-        recon.survey("m")
-        recon.deliver("m")
+        recon.observation.survey("m")
+        recon.observation.deliver("m")
         path = json.loads(out.read_text())["PATH"].split(":")
         assert str(inside) not in path and "/usr/bin" in path
 
@@ -383,7 +386,7 @@ class TestAHostileSubjectStaysInert:
         row = ChangesSince.model_json_schema()["$defs"]["ChangeRow"]["properties"]
         assert row["record"]["untrusted"] is True and row["key"]["untrusted"] is True
         # Vector N2: what a command said when it failed may quote the row it was given.
-        from recon.domain.documents import DeliverDocument, SubscriptionDocument
+        from recon.core.domain.documents import DeliverDocument, SubscriptionDocument
 
         for document in (DeliverDocument, SubscriptionDocument):
             failing = document.model_json_schema()["$defs"]["SubscriptionFailing"]["properties"]
@@ -513,12 +516,12 @@ class TestAcksInADelivery:
         mail = Mail(tmp_path, recording)
         mail.survey(*_messages(3))
         with pytest.raises(SystemExit):
-            mail.recon.deliver("m")
+            mail.recon.observation.deliver("m")
         state = SubscriptionFiles(tmp_path / STATE).state("m", "new")
         assert state is not None
-        acked = mail.recon.changes_since("m", "inbox", state.cursor)
+        acked = mail.recon.observation.changes_since("m", "inbox", state.cursor)
         assert [row.key for row in acked.rows] == [{"id": "m1"}, {"id": "m2"}]
-        mail.recon.deliver("m")
+        mail.recon.observation.deliver("m")
         ids = [d["id"] for d in recording.given]
         assert ids[1] == ids[2], "the row given before the crash is given again, same id"
         assert [d["key"]["id"] for d in recording.given] == ["m0", "m1", "m1", "m2"]
@@ -533,7 +536,7 @@ class TestAcksInADelivery:
         store = SubscriptionFiles(tmp_path / STATE)
         store.hold("m", "new")
         try:
-            document = mail.recon.deliver("m")
+            document = mail.recon.observation.deliver("m")
         finally:
             store.release("m", "new")
         [run] = document.deliveries
@@ -555,29 +558,29 @@ class TestAcksInADelivery:
             raise OSError(28, "No space left on device")
 
         monkeypatch.setattr(SubscriptionFiles, "keep", full)
-        document = mail.recon.deliver("m")
+        document = mail.recon.observation.deliver("m")
         [run] = document.deliveries
         assert run.more and [w["kind"] for w in document.warnings] == ["delivery_failed"]
         assert "free space" in document.warnings[0]["fix"]
         monkeypatch.undo()
 
-        from recon.domain.subscriptions import SubscriptionState
+        from recon.observe.domain.delivery import SubscriptionState
 
         kept = SubscriptionState(output="outbox", cursor="c1")
         SubscriptionFiles(tmp_path / STATE).keep("m", "new", kept)
-        document = mail.recon.deliver("m")
+        document = mail.recon.observation.deliver("m")
         assert [w["kind"] for w in document.warnings] == ["delivery_failed"]
         assert "unsubscribe" in document.warnings[0]["fix"]
         SubscriptionFiles(tmp_path / STATE).remove("m", "new")
 
-        from recon.application.subscriptions import ChangeReader
-        from recon.domain.errors import ReconError
+        from recon.core.domain.errors import ReconError
+        from recon.observe.application.subscriptions import ChangeReader
 
         def unreadable(*args: Any, **kw: Any) -> None:
             raise ReconError("the archive went", kind="store", fix="survey again")
 
         monkeypatch.setattr(ChangeReader, "read", unreadable)
-        document = mail.recon.deliver("m")
+        document = mail.recon.observation.deliver("m")
         assert [w["kind"] for w in document.warnings] == ["delivery_failed"]
         assert document.warnings[0]["fix"] == "survey again"
 
@@ -592,21 +595,21 @@ class TestAcksInADelivery:
         recording = Recording()
         mail = Mail(tmp_path, recording)
         mail.survey(*_messages(5))
-        mail.recon.deliver("m")
+        mail.recon.observation.deliver("m")
         before = {d["id"] for d in recording.given}
         (tmp_path / ".recon" / "m" / "changes.key").unlink()
         recording.given.clear()
-        document = mail.recon.deliver("m")
+        document = mail.recon.observation.deliver("m")
         [warning] = document.warnings
         assert recording.given == [] and warning["kind"] == "delivery_failed"
         assert "changes.key" in warning["message"] and "recon unsubscribe m new" in warning["fix"]
-        from recon.domain.errors import UsageError
+        from recon.core.domain.errors import UsageError
 
         with pytest.raises(UsageError) as refused:
-            mail.recon.subscribe("m", "new")
+            mail.recon.observation.subscribe("m", "new")
         assert "recon unsubscribe m new" in (refused.value.fix or "")
-        mail.recon.unsubscribe("m", "new")
-        mail.recon.deliver("m")
+        mail.recon.observation.unsubscribe("m", "new")
+        mail.recon.observation.deliver("m")
         assert [d["kind"] for d in recording.given] == ["change", "change", "summary"]
         assert recording.given[-1]["count"] == 3
         assert not before & {d["id"] for d in recording.given}, "new ids: a replay"
@@ -619,11 +622,13 @@ class TestAcksInADelivery:
         recording = Recording()
         mail = Mail(tmp_path, recording)
         mail.survey(*_messages(1))
-        assert [run.subscription for run in mail.recon.deliver("m").deliveries] == ["new"]
-        from recon.domain.errors import UsageError
+        assert [run.subscription for run in mail.recon.observation.deliver("m").deliveries] == [
+            "new"
+        ]
+        from recon.core.domain.errors import UsageError
 
         with pytest.raises(UsageError):
-            mail.recon.deliver("m", subscription="pulled")
+            mail.recon.observation.deliver("m", subscription="pulled")
 
 
 class TestThePlan:
@@ -771,8 +776,8 @@ class TestATickDelivers:
         recording = Recording()
         clock = FixedClock(SLOT + timedelta(seconds=2))
         recon = self._root(tmp_path, host, clock, inbox, recording)
-        digest = recon.schedule_install("m", platform="launchd").config_sha256 or ""
-        tick = recon.schedule_tick("m", config_sha256=digest)
+        digest = recon.observation.schedule_install("m", platform="launchd").config_sha256 or ""
+        tick = recon.observation.schedule_tick("m", config_sha256=digest)
         assert tick.survey is not None and tick.deliveries is not None
         assert [d["key"]["id"] for d in recording.given] == ["m0", "m1"]
         assert tick.deliveries.deliveries[0].delivered == 2
@@ -795,11 +800,11 @@ class TestATickDelivers:
         failing = Recording(lambda d: Delivered(False, 1, "the notifier is down"))
         clock = FixedClock(SLOT + timedelta(seconds=2))
         recon = self._root(tmp_path, host, clock, inbox, failing)
-        digest = recon.schedule_install("m", platform="launchd").config_sha256 or ""
-        recon.schedule_tick("m", config_sha256=digest)
+        digest = recon.observation.schedule_install("m", platform="launchd").config_sha256 or ""
+        recon.observation.schedule_tick("m", config_sha256=digest)
         clock.advance(EVERY)
         inbox.messages = _messages(2)
-        tick = recon.schedule_tick("m", config_sha256=digest)
+        tick = recon.observation.schedule_tick("m", config_sha256=digest)
         lines = (tmp_path / ".recon" / "m" / "schedule.log").read_text().splitlines()
         logged = [json.loads(line)["warning_kinds"] for line in lines]
         assert "delivery_failed" in logged[0]
@@ -824,8 +829,8 @@ class TestATickDelivers:
 
         clock = FixedClock(SLOT + timedelta(seconds=2))
         recon = self._root(tmp_path, host, clock, inbox, Recording(holds_the_mission))
-        digest = recon.schedule_install("m", platform="launchd").config_sha256 or ""
-        tick = recon.schedule_tick("m", config_sha256=digest)
+        digest = recon.observation.schedule_install("m", platform="launchd").config_sha256 or ""
+        tick = recon.observation.schedule_tick("m", config_sha256=digest)
         assert tick.deliveries is not None and tick.deliveries.deliveries[0].delivered == 1
 
     def test_a_tick_refused_for_a_changed_config_delivers_nothing(self, tmp_path: Path) -> None:
@@ -838,15 +843,15 @@ class TestATickDelivers:
         recording = Recording()
         clock = FixedClock(SLOT + timedelta(seconds=2))
         recon = self._root(tmp_path, host, clock, inbox, recording)
-        digest = recon.schedule_install("m", platform="launchd").config_sha256 or ""
+        digest = recon.observation.schedule_install("m", platform="launchd").config_sha256 or ""
         config = tmp_path / ".recon" / "m" / "config.yaml"
         changed = yaml.safe_load(config.read_text())
         changed["subscriptions"][0]["deliver"]["command"] = "/tmp/evil"
         config.write_text(yaml.safe_dump(changed))
-        from recon.domain.errors import ReconError
+        from recon.core.domain.errors import ReconError
 
         with pytest.raises(ReconError) as refused:
-            recon.schedule_tick("m", config_sha256=digest)
+            recon.observation.schedule_tick("m", config_sha256=digest)
         assert refused.value.kind == "stale" and recording.given == []
 
 

@@ -17,7 +17,8 @@ import pytest
 import yaml
 
 from recon.adapters._out.mission_layout import STATE
-from recon.application.stream import (
+from recon.composition import root
+from recon.core.application.stream import (
     Arrivals,
     ConservationError,
     Stream,
@@ -26,17 +27,16 @@ from recon.application.stream import (
     StreamRun,
     StreamStop,
 )
-from recon.composition import root
-from recon.domain.archives import ArchiveRef
-from recon.domain.models import CollectorEntry
-from recon.domain.stream import (
+from recon.core.domain.archives import ArchiveRef
+from recon.core.domain.models import CollectorEntry
+from recon.core.domain.stream import (
     POSITION_FIELD,
     BufferSpec,
     Overflow,
     Windowing,
     WindowSpec,
 )
-from recon.domain.telemetry import Telemetry
+from recon.core.domain.telemetry import Telemetry
 from tests.recon_fakes import (
     LandedThrough,
     StalledArchives,
@@ -53,10 +53,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from recon.adapters._out.archive_files import ArchiveFiles
-    from recon.domain.archives import TableEnds
-    from recon.domain.clock import Clock
-    from recon.domain.documents import WindowOutcome
-    from recon.domain.telemetry import EventCallback, EventSink
+    from recon.core.domain.archives import Hold, TableEnds
+    from recon.core.domain.clock import Clock
+    from recon.core.domain.documents import WindowOutcome
+    from recon.core.domain.telemetry import EventCallback, EventSink
 
 
 class Script:
@@ -146,16 +146,21 @@ def _run(
     normalize: Callable[[dict[str, Any]], dict[str, Any]] = dict,
     stop: StreamStop | None = None,
     on_window: Callable[[WindowOutcome], None] | None = None,
+    sealed: Callable[[Hold, WindowOutcome], None] | None = None,
     gaps: StreamGaps | None = None,
 ) -> tuple[StreamRun, list[WindowOutcome], list[dict[str, Any]]]:
     store = store or files_of(project, clock)
     events: list[dict[str, Any]] = []
     outcomes: list[WindowOutcome] = []
 
-    def sealed(outcome: WindowOutcome) -> None:
+    told = sealed
+
+    def sealed_(hold: Hold, outcome: WindowOutcome) -> None:
         outcomes.append(outcome)
         if on_window is not None:
             on_window(outcome)
+        if told is not None:
+            told(hold, outcome)
 
     stream = Stream(store, store, clock, "test", telemetry=_telemetry(events))
     run = stream.run(
@@ -166,7 +171,7 @@ def _run(
         close=source.close,
         windows=windows,
         preserve_raw=preserve_raw,
-        on_window=sealed,
+        sealed=sealed_,
         stop=stop,
         gaps=gaps,
     )
@@ -476,7 +481,12 @@ class TestDropsAreWarnedByCause:
         outcomes: list[WindowOutcome] = []
         writer = threading.Thread(
             target=lambda: stream.run(
-                "m", plan, source.records, dict, close=source.close, on_window=outcomes.append
+                "m",
+                plan,
+                source.records,
+                dict,
+                close=source.close,
+                sealed=lambda hold, outcome: outcomes.append(outcome),
             )  # fmt: skip
         )
         writer.start()
@@ -951,8 +961,16 @@ class TestDeterminism:
             table = (archive / f"{window.table.name}.jsonl").read_bytes()
             assert _meta(tmp_path / "streamed", window)["stream"]["reproducible"] is True
             assert table.count(b"\n") >= 7, "the window holds records to replay"
-            assert _replayed(tmp_path / f"replay-{window.index}", archive) == table
-            assert _members(_frames(archive), spec, window.index)
+            # Changed requirement (ruling R18): a column starting with _ is recon's own, so a
+            # replay through a mission's normalize: makes every record's content and not its
+            # _position; each position is the one its arrival's capture frame holds.
+            kept = [json.loads(line) for line in table.splitlines()]
+            positions = [record.pop(POSITION_FIELD) for record in kept]
+            replayed = _replayed(tmp_path / f"replay-{window.index}", archive)
+            assert [json.loads(line) for line in replayed.splitlines()] == kept
+            frames = _frames(archive)
+            assert [frame["record"][POSITION_FIELD] for frame in frames] == positions
+            assert _members(frames, spec, window.index)
 
         # Check the checker: one arrival moved across the boundary leaves the window.
         frames = _frames(_kept(tmp_path / "streamed", sealed[0]))
@@ -1011,18 +1029,19 @@ def _members(frames: list[dict[str, Any]], spec: WindowSpec, index: int) -> bool
 
 def _replayed(project: Path, window: Path) -> bytes:
     """The window's table, collected again by recon's own ``capture`` collector from the
-    window's capture alone, shaped as the stream shaped it, on a clock at another epoch."""
+    window's capture alone, shaped as the stream shaped it (recon's own ``_position`` aside),
+    on a clock at another epoch."""
     mission = project / ".recon" / "replay"
     mission.mkdir(parents=True)
     (project / ".git").mkdir()
-    shaped = {"n": "record.seq", POSITION_FIELD: f"record.{POSITION_FIELD}"}
+    shaped = {"n": "record.seq"}
     collector = {"name": "s", "type": "capture", "path": str(window / "captures.jsonl"),
                  "normalize": shaped}  # fmt: skip
     config = yaml.safe_dump({"collectors": [collector]}, sort_keys=False)
     (mission / "config.yaml").write_text(config)
     later = VirtualClock(datetime(2031, 6, 7, 8, 9, 10, tzinfo=UTC))
 
-    document = root({}, project=project, clock=later).survey("replay")
+    document = root({}, project=project, clock=later).observation.survey("replay")
 
     assert document.status == "complete", document.warnings
     [table] = document.tables

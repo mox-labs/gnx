@@ -11,7 +11,7 @@ URL or a DOCX download. Returns Iterator[dict] —
 yields one record, `{url, title, content, status_code, content_type}`, which a
 `normalize:` spec may reshape like any other.
 
-Registered as the built-in collector type ``web`` (entry-point group ``recon.collectors``).
+Registered as the built-in collector type ``web`` (at ``recon.collector``, ``recon._matrix``).
 """
 
 from __future__ import annotations
@@ -22,20 +22,20 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
-from recon.domain.collector import CollectorType
-from recon.domain.errors import Problem
-from recon.domain.http import reported_url
-from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize
-from recon.domain.substitution import find_unresolved, substitute
+from recon.core.domain.collector import CollectorType
+from recon.core.domain.errors import Problem
+from recon.core.domain.http import reported_url
+from recon.core.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize
+from recon.core.domain.substitution import find_unresolved, substitute
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
-    from recon.domain.capture import CaptureLog
-    from recon.domain.collector import Transform
-    from recon.domain.converters import DocumentConverter
-    from recon.domain.http import HttpResponse, Requester
-    from recon.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.collector import Transform
+    from recon.core.domain.converters import DocumentConverter
+    from recon.core.domain.http import HttpResponse, Requester
+    from recon.core.domain.models import CollectorEntry, SourceEntry
 
 _MAX_CONTENT_CHARS = 100_000
 

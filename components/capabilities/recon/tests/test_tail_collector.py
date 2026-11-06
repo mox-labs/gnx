@@ -14,14 +14,14 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from recon.adapters._out.tail_collector import TailCollector, collector_type
-from recon.domain.models import CollectorEntry, SourceEntry
+from recon.core.domain.models import CollectorEntry, SourceEntry
 from tests.recon_fakes import VirtualClock
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from recon.domain.stream import Gap
+    from recon.core.domain.stream import Gap
 
 
 class Gaps:

@@ -22,12 +22,12 @@ from pydantic import ValidationError
 
 from recon.adapters._out.http_requester import HttpRequester, classify_http_failure
 from recon.adapters._out.system_clock import SystemClock
-from recon.domain.clock import LONGEST_WAIT
-from recon.domain.deadline import Deadline
-from recon.domain.errors import CollectionError
-from recon.domain.http import HttpResponse
-from recon.domain.models import AuthConfig, RateLimitConfig, SourceEntry
-from recon.domain.ratelimit import RateLimiter
+from recon.core.domain.clock import LONGEST_WAIT
+from recon.core.domain.deadline import Deadline
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.http import HttpResponse
+from recon.core.domain.models import AuthConfig, RateLimitConfig, SourceEntry
+from recon.core.domain.ratelimit import RateLimiter
 from tests.recon_fakes import FixedClock, HurriedClock
 
 

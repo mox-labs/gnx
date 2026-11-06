@@ -1,11 +1,15 @@
 # recon — contracts
 
-What each surface touched in 0.17.0 promises: the decision it hides, its members, its defaults, how it fails, and how stable it is (ruling G6). The surfaces recon 0.17.0 did not touch (the collector contract, `root()`, the component face) are described where they live and get theirs as they are refactored.
+What each surface touched in 0.17.0 and 0.18.0 promises: the decision it hides, its members, its defaults, how it fails, and how stable it is (ruling G6). The surface not yet refactored, the collector contract (`recon.core.domain.collector`), is described where it lives and gets its section with contract v2.
 
 "Stable" means: a change that breaks a caller is a major version of the document schema (`recon.v2.*`) or, for a library call or a default, a line under "Changed (breaking)" in the CHANGELOG, never silent. A field or kind added is not breaking: a reader ignores a field it does not know, and handles a kind it does not know by the exit code.
 
 ## Contents
 
+- [The two layers](#the-two-layers)
+- [Opening recon, and what a mission may name](#opening-recon-and-what-a-mission-may-name)
+- [Extension points](#extension-points)
+- [The component face](#the-component-face)
 - [Ranges: `range:`](#ranges-range)
 - [The plan](#the-plan)
 - [Queries over archives](#queries-over-archives)
@@ -13,11 +17,59 @@ What each surface touched in 0.17.0 promises: the decision it hides, its members
 - [The storage ports](#the-storage-ports)
 - [The mission store](#the-mission-store)
 
+## The two layers
+
+**Hides:** which layer a concern belongs to. The collect core (`recon.core`) knows one act: fetching one span of a source, capturing it, normalizing it, landing it with its checkpoint in one seal; the plan of an act; SQL over what was landed. The observe layer (`recon.observe`) knows acts over time: which span each run asks for, what changed (derived into each archive after its seal), retention, schedules, subscriptions and their delivery, following, status. The test for a new concern: does it need to know about an act other than the one running? Then it is the observe layer's.
+
+**Members.** `recon.core.__all__`: the core's public names, what the observe layer and any outside driver use, its driving port `Collection` (`prepare`, `read`, `hold`, `snapshot`, `stream`, `query`, `describe`, `preflight`, `init`, `templates`, `capture`) among them. `recon.open(root=None)` gives a session, `recon.Recon`, whose `collection` is the core's port and whose `observation` the observe layer's (`plan`, `survey`, `stream`, `status`, `read_since`, `watch`, `changes_since`, `subscribe`, `ack`, `unsubscribe`, `deliver`, `schedule_*`). The module functions are those operations.
+
+**Guarantees.** The core never imports the observe layer; the observe layer imports nothing of the core but `recon.core`'s names (`tests/test_layering.py`, with a planted violation of each). An act the core runs alone lands and commits whole; what changed is derived after its seal (ruling R9). A table sealed under the mission's config with no change summary is **pending**: a change reader waits on it, and the next survey or stream run of that config derives it in its own archive before anything newer.
+
+**Stability:** beta. `recon.core.__all__` is the surface a later split of the layers into two packages keeps; until then a name may move between the layers in a minor release, said in the CHANGELOG.
+
+## Opening recon, and what a mission may name
+
+**Hides:** where recon's state is and what it was built with. A session is opened over values; nothing is discovered behind a caller's back but the installed plugins, once per session.
+
+**Members.** `recon.open(root=None, *, extensions=None, landing=None)` gives a session (`recon.Recon`). `extensions`: in-process extensions, each a `register(registry)` called with the session's registry ([Extension points](#extension-points)). `landing`: where its acts land and are read back (a `Store`: `Landing` and `Archives`), which recon's query engine must read. A config is the mission's own, a file (`-`: standard input), or a value (a `ReconConfig` or a mapping). `recon.types()` (`recon.v1.types`): each collector type, its origin, effects, `records_kind`, capabilities and config JSON Schema; each source kind; each transform. `recon.schema()` (`recon.v1.mission-config`): the config's JSON Schema. The command line: `--root DIR` (or `RECON_ROOT`), `recon types [--json]`, `recon schema`.
+
+**Defaults.** The project is the git root of the working directory, else the working directory. No extensions. The landing is the project's archive directory. The module functions run over one session per project, opened on first use and kept for the process.
+
+**Failure.** `usage` (exit 2): an extension that takes an installed name, a landing recon cannot query. A value config that is invalid fails as a file does (`config`, exit 3, every problem).
+
+**Guarantees.** A value config is never written as the mission's `config.yaml`; each archive it lands keeps it as data under `config` in its meta, every URL in it reported as recon reports one (user information and signature parameters redacted). The plan's `provenance` gives every effective value of the config's own keys, as written (`mission`) or filled in (`recon`), with a note where unset means something.
+
+**Stability:** beta. `extensions` are `register(registry)` callables on matrix's registry ([Extension points](#extension-points)).
+
+## Extension points
+
+**Hides:** how an extension reaches recon, and the harness contract recon is built on (matrix's registry today, slick's later): one module, `recon/_matrix.py`, names matrix.
+
+**Members.** Two points on matrix's `Registry`, owned by `recon`: `recon.collector` (an entry builds a `recon.core.domain.collector.CollectorType`; a config names it `type:`) and `recon.transform` (an entry builds a callable; a normalize spec names it `path|$name`). A built-in by its short name (`api`, `$html2text`), anyone else's by its type URL (`acme.v1.collector.sql`, `$acme.v1.transform.redact`). An installed package registers from its `matrix.extensions` entry point, a callable `register(registry)`; code using recon passes the same callables to `recon.open(extensions=[...])`. Optional members of a contract are protocols of their own (`recon.core.domain.optional`: `SupportsClose`, `SupportsRequirements`, `SupportsFollow`, `SupportsAround`, `SupportsTraceHeaders`), read with `isinstance`.
+
+**Failure.** An installed extension that fails to load is quarantined whole (matrix's rule), every entry it registered with it, and reported (`recon status`, `recon types --json`, a plan's `plugin_broken` warning). An in-process one matrix refuses is `usage` (exit 2). An entry that builds the wrong kind of thing is reported broken. A normalize column whose name starts with `_` is a plan problem: the prefix is recon's own (ruling R18).
+
+**Stability:** experimental. The collector contract changes once more (contract v2: items, `Paged`, the core normalizing every type); the point names and the naming rule are kept.
+
+## The component face
+
+**Hides:** how a harness drives recon: matrix's component contract, kept in `recon/_matrix.py` alone.
+
+**Members.** At matrix's `component` point: `recon.v1.component.plan` (requires nothing; provides `recon.v1.span`, one row per table: `snapshot`, `window`, or a range's `continuing`, `fixed` or `rolling` span with its `steps`), `recon.v1.component.collect` (requires `recon.v1.span`; provides `recon.v1.act`, one row per act as it seals: its archive, its stream when a window, its tables as sealed, each range the checkpoint it committed), `recon.v1.component.changes` (requires `recon.v1.act`; provides `recon.v1.change`, each change row with its mission and output). Config: `mission`, `root` (default: the directory the host composed for, matrix's `cwd` need), `kinds` (`span`, `act`, `change`, each renamable); `collect` takes `records: true` too. Payload schemas `recon.v1.span`, `recon.v1.act`, `recon.v1.change` (`recon.core.domain.documents`).
+
+**Defaults.** By reference: an act's row names its archive, and its records stay there; `records: true` hands each sealed table's records over as rows of its entry's `type_url`.
+
+**Guarantees.** An act's row is durable in the run's store when the act's archive is sealed, so a run killed mid-way keeps every act it sealed; the run's stop asks a stream's window to seal. A kind with no provider is a run input: a harness that schedules recon itself gives `recon.v1.span` rows and leaves `plan` out, and every ranged table of the mission must have one.
+
+**Failure.** A member whose mission cannot be planned is refused when it is built (matrix's `ConfigError`). A span of another mission or output, or a ranged table given none, is `usage` when the run reaches `collect`.
+
+**Stability:** beta. The kinds and their payloads are open vocabularies: a reader ignores a field it does not know.
+
 ## Ranges: `range:`
 
 **Hides:** which source time a ranged table asks for on each run, and how that survives failures, kills, overlapping runs and retention. A mission says what kind of time it wants; recon decides the interval, the steps and the checkpoint.
 
-**Members.** On a snapshot collector entry, `range:` with `start`, `end`, `last`, `step`, `settle`, `max_steps`, `align` (`recon.domain.ranges.RangeSpec`). The kind is which keys are written: `continuing` (neither `end` nor `last`), `fixed` (`start` and `end`), `rolling` (`last`). The placeholders `{range.start}`, `{range.end}`, `{range.last}`, each with an optional `:iso`, `:epoch`, `:epoch_ms` or `:date`, filled by the core into the type's own settings before the type sees them. Every record of a ranged table carries `_range` (`{start, end}`); every outcome of one (`recon.v1.survey` `tables[]`, the archive's meta, `recon.v1.status`) carries `range` (`start`, `end`, `kind`, `from`, `request`, `steps`). `recon survey --range START..END`, `--rebase OUTPUT`, `--restart OUTPUT`; the library's `interval=(start, end)`, `rebase=`, `restart=` on `recon.plan` and `recon.survey`.
+**Members.** On a snapshot collector entry, `range:` with `start`, `end`, `last`, `step`, `settle`, `max_steps`, `align` (`recon.core.domain.ranges.RangeSpec`). The kind is which keys are written: `continuing` (neither `end` nor `last`), `fixed` (`start` and `end`), `rolling` (`last`). The placeholders `{range.start}`, `{range.end}`, `{range.last}`, each with an optional `:iso`, `:epoch`, `:epoch_ms` or `:date`, filled by the core into the type's own settings before the type sees them. Every record of a ranged table carries `_range` (`{start, end}`); every outcome of one (`recon.v1.survey` `tables[]`, the archive's meta, `recon.v1.status`) carries `range` (`start`, `end`, `kind`, `from`, `request`, `steps`). `recon survey --range START..END`, `--rebase OUTPUT`, `--restart OUTPUT`; the library's `interval=(start, end)`, `rebase=`, `restart=` on `recon.plan` and `recon.survey`.
 
 **Defaults** (each in the plan's `provenance` with its origin): `step` 3600 s (a rolling range's: its `last`), `settle` 60 s, `max_steps` 24, `align` none, `start` none (the first run asks for one step back from the horizon). The horizon is `now - settle`, to the whole second, floored to `align`. Intervals are half-open.
 
@@ -65,11 +117,11 @@ What each surface touched in 0.17.0 promises: the decision it hides, its members
 
 **Hides:** durability, exclusion, layout, retention and the medium (owner ruling G5). No port carries a path.
 
-**Members** (`recon.domain.archives`, Protocols): `Landing.hold(mission, stream=)` gives a `Hold`, which `begin(id)`s a `Landed` and `retire(ref, tombstone)`s a sealed archive. `Landed`: `ref`, `write`, `ends`, `keep`, `mark`, `captures`, `events`, `record` (the commit point), `complete`. `Archives`: `archives`, `streams`, `state`, `stream_state`, `meta`, `records`, `sidecar`, `last_record`, `read_since`, `size`, `retired`, `retired_count`, `abandoned`. `ArchiveQuery`: `run(refs, sql, baseline=)`, `unreadable(ref)`. Writing is apart from reading; `ArchiveRef(mission, id, stream, index)` names an archive, ordered by `rank`. The file adapter (`ArchiveFiles`) implements the first two; `DuckdbQuery` the third.
+**Members** (`recon.core.domain.archives`, Protocols): `Landing.hold(mission, stream=)` gives a `Hold`, which `begin(id)`s a `Landed`, `derive(ref)`s a sealed archive (a `Landed` again, for what is derived from its own tables), and `retire(ref, tombstone)`s a sealed archive. `Landed`: `ref`, `write`, `ends`, `keep`, `mark`, `captures`, `events`, `record` (the commit point), `complete`. `Archives`: `archives`, `streams`, `state`, `stream_state`, `meta`, `records`, `sidecar`, `last_record`, `read_since`, `size`, `retired`, `retired_count`, `abandoned`. `ArchiveQuery`: `run(refs, sql, baseline=)`, `unreadable(ref)`. Writing is apart from reading; `ArchiveRef(mission, id, stream, index)` names an archive, ordered by `rank`. The file adapter (`ArchiveFiles`) implements the first two; `DuckdbQuery` the third.
 
 **Defaults.** Holds, locking, retention's mechanics and the layout are the file adapter's alone (`mission_layout.py`).
 
-**Failure.** A second writer of what is held: `busy` (exit 11, the holder's pid). A taken id: `store`. `record` replaces the meta whole or not at all; a writer that dies before it leaves tables no reader counts.
+**Failure.** A second writer of what is held: `busy` (exit 11, the holder's pid). A taken id: `store`. `derive` of an archive never sealed: `not_found`; of one another writer holds: `busy`. While derived from, an archive reads `writing`; what it was marked (complete or not) and every table it sealed are left as they were. `record` replaces the meta whole or not at all; a writer that dies before it leaves tables no reader counts.
 
 **Stability:** recon's own ports, not an extension point: `root(archives=...)` lets a test stand in for them. They may change in a minor release, said in the CHANGELOG.
 

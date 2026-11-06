@@ -1,6 +1,7 @@
-"""Ports carry no representation (owner ruling G5): no domain port names a filesystem path,
-or a mission's directory, in any signature. Read from the source, every member of every
-``Protocol`` the domain declares, so a port that grows a path fails here before it ships.
+"""Ports carry no representation (owner ruling G5): no domain port names a filesystem path, or a
+mission's directory, in any signature. Read from the source, every member of every ``Protocol``
+either layer's domain declares (the core's and the observe layer's), so a port that grows a
+path fails here before it ships.
 
 A path that is a person's own, not recon's storage, may cross a port: the project a mission
 belongs to, a config file someone names, the directory a ``local`` source names, and where a
@@ -14,7 +15,8 @@ from pathlib import Path
 
 import pytest
 
-DOMAIN = Path(__file__).resolve().parents[1] / "src" / "recon" / "domain"
+SRC = Path(__file__).resolve().parents[1] / "src" / "recon"
+DOMAINS = (SRC / "core" / "domain", SRC / "observe" / "domain")
 
 #: The members that may name a person's own location, each with why it is not storage.
 PERSONS_OWN = {
@@ -32,7 +34,7 @@ STORAGE_WORDS = re.compile(r"\b(mission_dir|archive_dir|scratch|capture_path|str
 def _protocols() -> dict[str, list[tuple[str, str]]]:
     """Each domain Protocol's members, by ``Class.member``: its signature as written."""
     found: dict[str, list[tuple[str, str]]] = {}
-    for module in sorted(DOMAIN.glob("*.py")):
+    for module in sorted(m for domain in DOMAINS for m in domain.glob("*.py")):
         tree = ast.parse(module.read_text())
         for node in tree.body:
             if not isinstance(node, ast.ClassDef):
@@ -98,7 +100,7 @@ def test_a_port_that_grows_a_path_is_found(tmp_path: Path, monkeypatch: pytest.M
         "class Planted(Protocol):\n"
         "    def where(self, mission_dir: 'Path') -> None: ...\n"
     )
-    monkeypatch.setattr(f"{__name__}.DOMAIN", planted)
+    monkeypatch.setattr(f"{__name__}.DOMAINS", (planted,))
     [(member, signature)] = _protocols()["planted.Planted"]
     assert member == "where" and re.search(r"\bPath\b", signature)
     with pytest.raises(AssertionError):

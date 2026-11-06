@@ -32,8 +32,8 @@ captures and its filters kept none, or the ``extract`` fits none of the bodies i
 capture whose body the ``extract`` does not fit is skipped when others give records: a log
 holds many tools' results.
 
-Registered as the built-in collector type ``capture`` (entry-point group
-``recon.collectors``).
+Registered as the built-in collector type ``capture`` (at ``recon.collector``,
+``recon._matrix``).
 """
 
 from __future__ import annotations
@@ -47,19 +47,19 @@ from pydantic import BaseModel, ConfigDict
 
 from recon.adapters._out.capture_files import read_captures
 from recon.adapters._out.parsing import parse_body, parse_line
-from recon.domain.capture import CAPTURE_LOG_NAME
-from recon.domain.collector import CollectorType
-from recon.domain.errors import CollectionError, NoRecordsError
-from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, to_records
-from recon.domain.paginate import position
-from recon.domain.stream import POSITION_FIELD
+from recon.core.domain.capture import CAPTURE_LOG_NAME
+from recon.core.domain.collector import CollectorType
+from recon.core.domain.errors import CollectionError, NoRecordsError
+from recon.core.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, to_records
+from recon.core.domain.paginate import position
+from recon.core.domain.stream import POSITION_FIELD
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
-    from recon.domain.capture import CaptureLog
-    from recon.domain.collector import Transform
-    from recon.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.collector import Transform
+    from recon.core.domain.models import CollectorEntry, SourceEntry
 
 #: The mission's external capture log, fed by ``recon capture``.
 DEFAULT_CAPTURE_PATH = f"captures/{CAPTURE_LOG_NAME}"

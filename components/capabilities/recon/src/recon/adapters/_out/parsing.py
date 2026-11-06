@@ -1,7 +1,7 @@
 """Response-body parsing shared by the api and capture collectors.
 
 A body becomes records in three steps: parse it by format, navigate to the record array
-with ``extract``, and keep the objects (``recon.domain.normalize.to_records``). The same
+with ``extract``, and keep the objects (``recon.core.domain.normalize.to_records``). The same
 steps apply whether recon fetched the body just now (api) or something else fetched it
 earlier (capture).
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from recon.domain.errors import CollectionError
+from recon.core.domain.errors import CollectionError
 
 #: Namespaces stripped (None) or shortened when parsing XML, so normalize paths stay short:
 #: xmltodict joins a short name to the element with ``:``, giving ``arxiv:primary_category``.

@@ -45,7 +45,7 @@ How httpx2 (2.10) is used, each choice checked against its source:
   as httpx2's per-phase timeout, and the body is read against it chunk by chunk. Past it the
   send fails as a read timeout (``transient``, retried). A wait for a hop's token is the
   limiter's, not the server's, so it does not count against ``timeout``. A deadline the
-  mission set (:mod:`recon.domain.deadline`) shortens all of these when less is left, and a
+  mission set (:mod:`recon.core.domain.deadline`) shortens all of these when less is left, and a
   wait for a token, a backoff or a Retry-After that would end past it fails the request at
   once.
 * **TLS** is verified against the operating system's trust store, through ``truststore``,
@@ -72,18 +72,18 @@ from typing import TYPE_CHECKING, Any
 import httpx2
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
-from recon.domain.errors import CollectionError, ErrorKind
-from recon.domain.http import LONG_LINE, HttpResponse, reported_url
-from recon.domain.telemetry import HTTP_REQUEST, Telemetry
+from recon.core.domain.errors import CollectionError, ErrorKind
+from recon.core.domain.http import LONG_LINE, HttpResponse, reported_url
+from recon.core.domain.telemetry import HTTP_REQUEST, Telemetry
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from datetime import datetime
 
-    from recon.domain.clock import Clock
-    from recon.domain.deadline import Deadline
-    from recon.domain.models import SourceEntry
-    from recon.domain.ratelimit import RateLimiter
+    from recon.core.domain.clock import Clock
+    from recon.core.domain.deadline import Deadline
+    from recon.core.domain.models import SourceEntry
+    from recon.core.domain.ratelimit import RateLimiter
 
 
 #: The longest Retry-After a survey waits out. A server that asks for longer (a spent daily
@@ -645,7 +645,7 @@ class HttpRequester:
         headers: dict[str, str] | None = None,
         max_line: int | None = None,
     ) -> Iterator[_LiveBody]:
-        """One GET whose body is read as it arrives (``recon.domain.http.LiveBody``), for a
+        """One GET whose body is read as it arrives (``recon.core.domain.http.LiveBody``), for a
         body that does not end: server-sent events. A token is drawn from the source's rate
         limit first; a connect, and each read, times out after the source's ``timeout``; a
         status other than success fails it as :meth:`request` would, with no retry, since a

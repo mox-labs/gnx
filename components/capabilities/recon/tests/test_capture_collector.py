@@ -11,10 +11,10 @@ import recon
 from recon.adapters._out.capture_collector import CaptureCollector, body_format
 from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.system_clock import SystemClock
-from recon.application.captures import record_hook_payload
-from recon.domain.documents import Capture
-from recon.domain.errors import CollectionError, ConfigError, NoRecordsError
-from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
+from recon.core.application.captures import record_hook_payload
+from recon.core.domain.documents import Capture
+from recon.core.domain.errors import CollectionError, ConfigError, NoRecordsError
+from recon.core.domain.models import CollectorEntry, ReconConfig, SourceEntry
 from tests.recon_fakes import run_survey as run
 
 

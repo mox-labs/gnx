@@ -1,22 +1,17 @@
 """The composition root: the one place adapters meet ports.
 
-It discovers the installed collector types and transforms, which are entry-point groups that
-recon's own built-ins register through exactly as a third-party package would (see
-``[project.entry-points]`` in pyproject.toml)::
-
-    recon.collectors   name → a ``CollectorType``    (config ``type: <name>``)
-    recon.transforms   name → a callable             (normalize ``path|$<name>``)
-
-A plugin that fails to import, or that registers the wrong kind of object, is reported as a
-``BrokenPlugin`` and left out; every other plugin still loads. When two packages register
-the same name, recon's own registration wins and the other is reported.
+It names recon's built-in collector types and transforms (:func:`builtins`), which recon
+registers on matrix's registry from its ``matrix.extensions`` entry point exactly as a third
+party registers its own (``recon._matrix``, the one module that names matrix); and it reads the
+installed ones back from there (:func:`load_plugins`). A plugin that fails to load is reported
+as a ``BrokenPlugin`` and left out; every other plugin still loads.
 
 :func:`root` binds the rest: missions as files under the project root, archives as
 directories of JSONL, DuckDB for queries, the system clock, httpx2 for HTTP, a shell for
 commands, markitdown for documents, and telemetry to two sinks: the survey's event log in its
 archive, always, and OpenTelemetry's API, which exports only when the application has
 installed an SDK. It holds no policy of its own: what each collector type is handed, and what
-recon holds every type to, is the application's (``recon.application.collectors``).
+recon holds every type to, is the application's (``recon.core.application.collectors``).
 
 recon is a library here, so the root never installs OpenTelemetry's SDK: OpenTelemetry's
 guidance is that libraries use the API and applications configure the SDK.
@@ -27,16 +22,17 @@ command line is such an application.
 from __future__ import annotations
 
 import os
+import threading
+from dataclasses import dataclass
 from functools import partial
-from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from recon import __version__
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.cli_collector import PopenRunner
 from recon.adapters._out.command_deliverer import CommandDeliverer
-from recon.adapters._out.duckdb_query import DuckdbJoin, DuckdbQuery
+from recon.adapters._out.duckdb_query import DuckdbJoin, DuckdbQuery, TableFiles
 from recon.adapters._out.event_channel import ThreadChannel
 from recon.adapters._out.markitdown_converter import MarkitdownConverter
 from recon.adapters._out.mission_files import MissionFiles, find_project
@@ -54,130 +50,96 @@ from recon.adapters._out.schedulers import (
 from recon.adapters._out.subscription_files import SubscriptionFiles
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
-from recon.application.changes import MEMORY_KEYS
-from recon.application.collectors import (
-    COLLECTORS_GROUP,
+from recon.core.application.collection import Collection
+from recon.core.application.collectors import (
     CollectorPorts,
     SurveyCollectors,
     build_collectors,
 )
-from recon.application.stream import StreamStop as StreamStop
-from recon.application.use_cases import Recon as Recon
-from recon.domain.collector import BrokenPlugin, CollectorType, Plugins
-from recon.domain.schedule import ScheduleHost
-from recon.domain.telemetry import Telemetry
+from recon.core.application.stream import StreamStop as StreamStop
+from recon.core.domain.errors import UsageError
+from recon.core.domain.normalize import BUILTIN_TRANSFORMS
+from recon.core.domain.telemetry import Telemetry
+from recon.observe.application.changes import MEMORY_KEYS
+from recon.observe.application.observation import Observation
+from recon.observe.domain.scheduling import ScheduleHost
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
     from datetime import datetime
 
-    from recon.application.use_cases import ChannelFactory
-    from recon.domain.changes import KeyJoin
-    from recon.domain.clock import Clock
-    from recon.domain.collector import Transform
-    from recon.domain.converters import DocumentConverter
-    from recon.domain.deadline import Deadline
-    from recon.domain.errors import Problem
-    from recon.domain.http import Requester
-    from recon.domain.models import ReconConfig
-    from recon.domain.paginate import PageLog
-    from recon.domain.ratelimit import RateLimiter
-    from recon.domain.schedule import Platform, Scheduler
-    from recon.domain.shell import ShellRunner
-    from recon.domain.stream import GapLog
-    from recon.domain.subscriptions import Deliverer
-    from recon.domain.telemetry import Channel, EventSink
-
-TRANSFORMS_GROUP = "recon.transforms"
-
-type Discover = Callable[[str], Iterable[EntryPoint]]
+    from recon._matrix import Register
+    from recon.core.application.collection import ChannelFactory
+    from recon.core.domain.archives import Store
+    from recon.core.domain.clock import Clock
+    from recon.core.domain.collector import CollectorType, Plugins, Transform
+    from recon.core.domain.converters import DocumentConverter
+    from recon.core.domain.deadline import Deadline
+    from recon.core.domain.errors import Problem
+    from recon.core.domain.http import Requester
+    from recon.core.domain.models import ReconConfig
+    from recon.core.domain.paginate import PageLog
+    from recon.core.domain.ratelimit import RateLimiter
+    from recon.core.domain.schedule import Platform
+    from recon.core.domain.shell import ShellRunner
+    from recon.core.domain.stream import GapLog
+    from recon.core.domain.telemetry import Channel, EventSink
+    from recon.observe.domain.delivery import Deliverer
+    from recon.observe.domain.joins import KeyJoin
+    from recon.observe.domain.scheduling import Scheduler
 
 #: Builds a survey's Requester, reporting through the survey's telemetry, keeping to its
 #: deadline and drawing from its rate limiter, which every collector of the survey shares.
 type RequesterFactory = Callable[[Telemetry, Deadline, RateLimiter], Requester]
 
 
-def _discover(group: str) -> list[EntryPoint]:
-    return list(entry_points(group=group))
+@dataclass(frozen=True)
+class Recon:
+    """recon, opened over one project: the collect core's driving port (``collection``: an
+    act planned and run, a stream read into windows, SQL over what was landed, missions made)
+    and the observe layer's (``observation``: a mission planned and surveyed over time, its
+    streams, what changed, subscriptions and their delivery, schedules, status)."""
+
+    collection: Collection
+    observation: Observation
 
 
-def _load(
-    group: str, accept: Callable[[Any], bool], expected: str, discover: Discover
-) -> tuple[dict[str, Any], list[BrokenPlugin]]:
-    found = _ours_first(discover(group))
-    loaded: dict[str, Any] = {}
-    broken: list[BrokenPlugin] = []
-    for ep in found:
-        if ep.name in loaded:
-            origin = next(e.value for e in found if e.name == ep.name)
-            error = f"name already registered by {origin}"
-            broken.append(BrokenPlugin(group, ep.name, ep.value, error))
-            continue
-        try:
-            obj = ep.load()
-        except Exception as exc:  # a plugin's import error must not break the others
-            broken.append(BrokenPlugin(group, ep.name, ep.value, f"{type(exc).__name__}: {exc}"))
-            continue
-        if not accept(obj):
-            error = f"expected {expected}, got {type(obj).__name__}"
-            broken.append(BrokenPlugin(group, ep.name, ep.value, error))
-            continue
-        loaded[ep.name] = obj
-    return loaded, broken
-
-
-def load_collector_types(
-    discover: Discover = _discover,
-) -> tuple[dict[str, CollectorType], list[BrokenPlugin]]:
-    """Installed collector types by config name, and the plugins that failed to load."""
-    return _load(
-        COLLECTORS_GROUP,
-        lambda obj: isinstance(obj, CollectorType),
-        "a recon.domain.collector.CollectorType",
-        discover,
+def builtins() -> tuple[dict[str, CollectorType], dict[str, Transform]]:
+    """recon's own collector types and transforms, by their short names: what recon registers
+    at its points (``recon._matrix.register``)."""
+    from recon.adapters._out import (
+        api_collector,
+        capture_collector,
+        cli_collector,
+        markitdown_converter,
+        mcp_collector,
+        sse_collector,
+        tail_collector,
+        web_collector,
     )
 
-
-def load_transforms(
-    discover: Discover = _discover,
-) -> tuple[dict[str, Transform], list[BrokenPlugin]]:
-    """Installed normalize transforms by name (no ``$``), and the ones that failed to load."""
-    return _load(TRANSFORMS_GROUP, callable, "a callable", discover)
-
-
-def load_plugins(discover: Discover = _discover) -> Plugins:
-    """Every installed collector type and transform, the plugins that failed to load, and
-    the package that registered each collector type."""
-    types, broken_types = load_collector_types(discover)
-    transforms, broken_transforms = load_transforms(discover)
-    packages = {
-        name: package
-        for name, package in _packages(COLLECTORS_GROUP, discover).items()
-        if name in types
+    collectors = {
+        "api": api_collector.collector_type,
+        "cli": cli_collector.collector_type,
+        "web": web_collector.collector_type,
+        "capture": capture_collector.collector_type,
+        "mcp": mcp_collector.collector_type,
+        "tail": tail_collector.collector_type,
+        "sse": sse_collector.collector_type,
     }
-    return Plugins(types, transforms, broken_types + broken_transforms, packages)
+    to_markdown: Transform = markitdown_converter.markitdown_path
+    transforms: dict[str, Transform] = {**BUILTIN_TRANSFORMS, "markitdown": to_markdown}
+    return collectors, transforms
 
 
-def _packages(group: str, discover: Discover) -> dict[str, str]:
-    """The package (the distribution, as installed) of each name's entry point in ``group``
-    that :func:`_load` keeps: recon's own before any other's. A name whose entry point has no
-    package found is left out."""
-    packages: dict[str, str] = {}
-    seen: set[str] = set()
-    for ep in _ours_first(discover(group)):
-        if ep.name in seen:
-            continue  # shadowed: _load refused it
-        seen.add(ep.name)
-        package = getattr(ep.dist, "name", None)
-        if isinstance(package, str):
-            packages[ep.name] = package
-    return packages
+def load_plugins(extensions: Iterable[Register] = ()) -> Plugins:
+    """Every collector type and transform registered at recon's points on matrix's registry,
+    recon's own and every installed extension's, and each of ``extensions`` registers
+    in-process; with what failed to load. Raises UsageError for an extension given that takes
+    a type URL registered already."""
+    from recon import _matrix
 
-
-def _ours_first(found: Iterable[EntryPoint]) -> list[EntryPoint]:
-    """``found`` with recon's own registrations first, so a third party cannot shadow a
-    built-in, each part by name."""
-    return sorted(found, key=lambda ep: (getattr(ep.dist, "name", None) != "recon", ep.name))
+    return _matrix.plugins(extensions)
 
 
 def root(
@@ -186,7 +148,7 @@ def root(
     project: Path | None = None,
     clock: Clock | None = None,
     plugins: Plugins | None = None,
-    archives: Callable[[Path], ArchiveFiles] | None = None,
+    archives: Callable[[Path], Store] | None = None,
     requester: RequesterFactory | None = None,
     shell: ShellRunner | None = None,
     converter: DocumentConverter | None = None,
@@ -228,6 +190,13 @@ def root(
     missions = MissionFiles(found, clock)
     home = missions.root
     store = archives(home) if archives is not None else ArchiveFiles(home, clock)
+    if not isinstance(store, TableFiles):
+        raise UsageError(
+            f"the landing given ({type(store).__name__}) keeps its tables where recon's query "
+            "engine cannot read them",
+            fix="land into recon's archive directory (no landing), or one built over another "
+            "directory: recon.open(landing=...) with recon's own archive store",
+        )
     ports = CollectorPorts(
         requester=requester or partial(_http_requester, clock),
         converter=converter or MarkitdownConverter(),
@@ -263,7 +232,7 @@ def root(
     host = schedule_host or ScheduleHost(
         this_recon(), safe_path(process_env.get("PATH", ""), project=found)
     )
-    return Recon(
+    collection = Collection(
         missions=missions,
         landing=store,
         archives=store,
@@ -276,6 +245,12 @@ def root(
         version=__version__,
         root_found_by=found_by,
         channel=channel or ThreadChannel,
+    )
+    observation = Observation(
+        collection=collection,
+        missions=missions,
+        archives=store,
+        clock=clock,
         schedulers=schedulers or partial(_scheduler, process_env),
         schedule_store=ScheduleFiles(home),
         schedule_host=host,
@@ -285,6 +260,38 @@ def root(
         subscriptions=SubscriptionFiles(home),
         deliverer=deliverer or CommandDeliverer(process_env, path=host.path),
     )
+    return Recon(collection, observation)
+
+
+def open_session(
+    project: Path | None = None,
+    *,
+    extensions: Iterable[Register] = (),
+    landing: Store | None = None,
+) -> Recon:
+    """recon opened over ``project`` (default: the git root of the working directory, or the
+    working directory outside a repository), with the installed collector types and transforms
+    and the ones each of ``extensions`` registers in-process, its acts landing in ``landing``
+    (default: the project's archive directory). Each call opens a session of its own."""
+    plugins = load_plugins(extensions)
+    given = None if landing is None else (lambda home: landing)
+    return root(project=project, plugins=plugins, archives=given)
+
+
+#: The session each project's module functions run over, made on first use.
+_DEFAULTS: dict[tuple[Path, bool], Recon] = {}
+_DEFAULTS_HELD = threading.Lock()
+
+
+def default(project: Path | None = None) -> Recon:
+    """The session the module functions run over for ``project`` (None: the project the working
+    directory is in, found again each call), opened once and kept: the plugins and adapters of
+    its first use, the environment as it is at each call."""
+    key = (project.resolve(), True) if project is not None else (find_project(Path.cwd())[0], False)
+    with _DEFAULTS_HELD:
+        if key not in _DEFAULTS:
+            _DEFAULTS[key] = root(project=project)
+        return _DEFAULTS[key]
 
 
 def _scheduler(env: Mapping[str, str], platform: Platform | None) -> Scheduler:

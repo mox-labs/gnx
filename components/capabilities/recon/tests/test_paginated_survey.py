@@ -13,17 +13,17 @@ from urllib.parse import parse_qsl, urlsplit
 import pytest
 import yaml
 
-from recon.application.plan import build_plan
 from recon.composition import load_plugins, root
-from recon.domain.http import HttpResponse
+from recon.core.application.plan import build_plan
+from recon.core.domain.http import HttpResponse
 from tests.recon_fakes import files_of, kept, run_survey
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from recon.domain.collector import Plugins
-    from recon.domain.models import SourceEntry
+    from recon.core.domain.collector import Plugins
+    from recon.core.domain.models import SourceEntry
 
 BASE = "https://api.test"
 
@@ -134,7 +134,7 @@ def _survey(tmp_path: Path, api: PagedApi, mission: dict[str, Any]) -> tuple[Pat
     recon = _root(tmp_path, api)
     (tmp_path / ".recon" / "m").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".recon" / "m" / "config.yaml").write_text(yaml.safe_dump(mission))
-    document = recon.survey("m")
+    document = recon.observation.survey("m")
     return kept(tmp_path, document), document
 
 
@@ -198,7 +198,7 @@ class TestEveryPageOnceInOrder:
                      requester=lambda telemetry, deadline, limiter: api)  # fmt: skip
         (tmp_path / ".recon" / "m").mkdir(parents=True)
         (tmp_path / ".recon" / "m" / "config.yaml").write_text(yaml.safe_dump(mission))
-        archive = kept(tmp_path, recon.survey("m"))
+        archive = kept(tmp_path, recon.observation.survey("m"))
 
         assert api.sent[1]["params"] == {"api_key": "s3cret"}, "the key goes with each page"
         assert api.sent[1]["url"] == f"{BASE}/items?page=1"

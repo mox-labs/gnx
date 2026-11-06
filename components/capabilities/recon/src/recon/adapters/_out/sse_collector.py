@@ -34,7 +34,7 @@ connection that is made and later ends spends none of it, so a healthy quiet str
 as long as it is asked. A status a retry cannot fix (401, 403: ``auth``; 404 and the rest:
 ``run_failed``) fails it at once.
 
-Registered as the built-in collector type ``sse`` (entry-point group ``recon.collectors``):
+Registered as the built-in collector type ``sse`` (at ``recon.collector``, ``recon._matrix``):
 ``unbounded`` and ``paced_by: source``, since a server sends whether recon is ready or not.
 """
 
@@ -56,20 +56,21 @@ from recon.adapters._out.http_source import (
     described_credential,
 )
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
-from recon.domain.collector import CollectorType
-from recon.domain.errors import CollectionError, Problem
-from recon.domain.http import LONG_LINE, reported_url
-from recon.domain.stream import POSITION_FIELD, BufferSpec, Gap
+from recon.core.domain.collector import CollectorType
+from recon.core.domain.errors import CollectionError, Problem
+from recon.core.domain.http import LONG_LINE, reported_url
+from recon.core.domain.optional import SupportsFollow
+from recon.core.domain.stream import POSITION_FIELD, BufferSpec, Gap
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
     from datetime import datetime
 
-    from recon.domain.capture import CaptureLog
-    from recon.domain.clock import Clock
-    from recon.domain.http import LiveBody, Requester
-    from recon.domain.models import CollectorEntry, SourceEntry
-    from recon.domain.stream import GapLog
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.clock import Clock
+    from recon.core.domain.http import LiveBody, Requester
+    from recon.core.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.stream import GapLog
 
 #: The longest wait before a reconnect, in seconds, however many attempts have failed.
 _MOST_WAIT_S = 30.0
@@ -150,8 +151,7 @@ class SseCollector:
     ) -> Iterator[dict[str, Any]]:
         settings = SseSettings.model_validate(entry.settings)
         assert source is not None and settings.endpoint is not None  # the plan holds both
-        follow = getattr(self._requester, "follow", None)
-        if follow is None:
+        if not isinstance(self._requester, SupportsFollow):
             raise CollectionError(
                 "this survey's requester reads no body as it arrives, which an sse collector needs",
                 kind="config",
@@ -173,7 +173,8 @@ class SseCollector:
                 headers["Last-Event-ID"] = last
             connected = False
             try:
-                with follow(source, url, params=params, headers=headers, max_line=cap) as body:
+                with self._requester.follow(source, url, params=params, headers=headers,
+                                            max_line=cap) as body:  # fmt: skip
                     self._body = body
                     connected, failed = True, 0
                     if self._closed.is_set():

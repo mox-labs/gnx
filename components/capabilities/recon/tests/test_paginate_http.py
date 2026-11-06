@@ -61,7 +61,7 @@ def test_every_page_draws_a_token_and_is_retried_as_a_request_is(tmp_path: Path)
     clock = FixedClock()
     with PagedServer(5, 1, refuse={2: [429]}, retry_after=2) as server:
         _write(tmp_path, "m", _mission(server.url, source={"rate_limit": {"rps": 1, "burst": 1}}))
-        document = root({}, project=tmp_path, clock=clock).survey("m")
+        document = root({}, project=tmp_path, clock=clock).observation.survey("m")
 
     assert document.status == "complete", document.warnings
     assert _ids(kept(tmp_path, document) / "items.jsonl") == [0, 1, 2, 3, 4]
@@ -103,7 +103,7 @@ def test_each_page_draws_one_token_from_the_spy_and_a_fault_at_page_k_fails_the_
     with PagedServer(4, 1) as server:
         _write(tmp_path, "m", _mission(server.url, source={"rate_limit": {"rps": 5, "burst": 2}}))
         document = root({}, project=tmp_path, clock=clock,
-                        requester=_spied(clock, spies)).survey("m")  # fmt: skip
+                        requester=_spied(clock, spies)).observation.survey("m")  # fmt: skip
     assert document.status == "complete"
     pages = len(server.asked)
     assert pages == 4 and [s.acquired for s in spies] == [["api"] * pages], "a token a page"
@@ -112,7 +112,7 @@ def test_each_page_draws_one_token_from_the_spy_and_a_fault_at_page_k_fails_the_
     with PagedServer(4, 1, refuse={2: [503, 503, 503]}) as server:
         _write(tmp_path, "n", _mission(server.url))
         document = root({}, project=tmp_path, clock=clock,
-                        requester=_spied(clock, spies)).survey("n")  # fmt: skip
+                        requester=_spied(clock, spies)).observation.survey("n")  # fmt: skip
     [table] = document.tables
     assert (table.status, table.error.kind if table.error else None) == ("error", "transient")
     assert len(spies[0].acquired) == server.hits, "every send, retries too, drew its token"
@@ -126,7 +126,7 @@ def test_a_crawl_kept_raw_replays_from_its_captures_byte_for_byte(tmp_path: Path
     with PagedServer(7, 3) as server:
         _write(tmp_path, "m", _mission(server.url, normalize={"title": "title"},
                                        top={"preserve_raw": True}))  # fmt: skip
-        archive = kept(tmp_path, root({}, project=tmp_path).survey("m"))
+        archive = kept(tmp_path, root({}, project=tmp_path).observation.survey("m"))
     log = archive / "captures.jsonl"
     assert len(log.read_text().splitlines()) == 3, "a capture a page"
 
@@ -134,7 +134,7 @@ def test_a_crawl_kept_raw_replays_from_its_captures_byte_for_byte(tmp_path: Path
         _write(tmp_path, name, {"collectors": [
             {"name": "items", "type": "capture", "path": str(log), "extract": "items",
              "normalize": {"title": "title"}}]})  # fmt: skip
-        surveyed = root({}, project=tmp_path).survey(name)
+        surveyed = root({}, project=tmp_path).observation.survey(name)
         return (kept(tmp_path, surveyed) / "items.jsonl").read_bytes()
 
     original = (archive / "items.jsonl").read_bytes()
@@ -181,7 +181,7 @@ def test_a_survey_killed_mid_crawl_reads_crashed_and_the_next_starts_again(
 
         server.release.set()
         asked = len(server.asked)
-        document = root({}, project=tmp_path).survey("m")
+        document = root({}, project=tmp_path).observation.survey("m")
 
     assert server.asked[asked] is None, "the next survey starts at the first page"
     assert _ids(kept(tmp_path, document) / "items.jsonl") == list(range(6))

@@ -19,16 +19,16 @@ from typing import TYPE_CHECKING, Any
 import pytest
 import yaml
 
-from recon.application.schedules import offset_s
 from recon.composition import root
-from recon.domain.ranges import iso
-from recon.domain.schedule import ScheduleHost
+from recon.core.domain.ranges import iso
+from recon.observe.application.schedules import offset_s
+from recon.observe.domain.scheduling import ScheduleHost
 from tests.recon_fakes import FixedClock, kept
 from tests.test_schedule_install import FakeRunner, Host
 
 if TYPE_CHECKING:
     from recon.composition import Recon
-    from recon.domain.documents import SurveyDocument
+    from recon.core.domain.documents import SurveyDocument
 
 SERVER = str(Path(__file__).parent / "mcp_server.py")
 EVERY = 600
@@ -76,13 +76,17 @@ def host(tmp_path: Path) -> Host:
 def test_each_tick_asks_the_tool_for_the_next_span_once(tmp_path: Path, host: Host) -> None:
     _mission(tmp_path)
     clock = FixedClock(SLOT + timedelta(seconds=3))
-    digest = _root(tmp_path, host, clock).schedule_install("m", platform="launchd").config_sha256
+    digest = (
+        _root(tmp_path, host, clock)
+        .observation.schedule_install("m", platform="launchd")
+        .config_sha256
+    )
     assert digest is not None
 
     surveys = []
     for advance in (0, EVERY, EVERY, 3 * EVERY):  # the last after two ticks slept through
         clock.advance(advance)
-        tick = _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest)
+        tick = _root(tmp_path, host, clock).observation.schedule_tick("m", config_sha256=digest)
         assert tick.survey is not None and tick.survey.status == "complete", tick
         surveys.append(tick.survey)
 
@@ -113,7 +117,7 @@ def test_the_plan_shows_the_tool_asked_with_the_first_steps_bounds(
     _mission(tmp_path)
     clock = FixedClock(SLOT)
 
-    plan = _root(tmp_path, host, clock).plan("m")
+    plan = _root(tmp_path, host, clock).observation.plan("m")
 
     [run] = plan.runs
     assert run["range"]["from"] == "default" and run["range"]["steps"] == 1

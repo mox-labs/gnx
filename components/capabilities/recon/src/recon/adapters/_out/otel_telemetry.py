@@ -32,15 +32,15 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Any
 
-from recon.domain.errors import Problem
-from recon.domain.telemetry import COLLECT, HTTP_REQUEST
+from recon.core.domain.errors import Problem
+from recon.core.domain.telemetry import COLLECT, HTTP_REQUEST
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from contextlib import AbstractContextManager
     from datetime import datetime
 
-    from recon.domain.telemetry import Event
+    from recon.core.domain.telemetry import Event
 
 #: The semantic conventions recon's attributes follow.
 SCHEMA_URL = "https://opentelemetry.io/schemas/1.44.0"
@@ -62,7 +62,7 @@ EXPORT_VARIABLES = (
 
 #: The tag of this release, which the install fix names: recon is installed from the
 #: repository at its tag, never from a branch whose head may be another release.
-RELEASE_TAG = "recon-v0.17.0"
+RELEASE_TAG = "recon-v0.18.0"
 
 _INSTALL_FIX = (
     "reinstall recon, which depends on the OpenTelemetry SDK and its OTLP exporter: uv tool "

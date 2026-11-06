@@ -16,8 +16,8 @@ from packaging.requirements import Requirement
 
 from recon.adapters._out.archive_files import StoredTable
 from recon.adapters._out.duckdb_query import SQL_DOCS, UNNEST_DOCS, DuckdbQuery
-from recon.domain.archives import ArchiveRef, Rows
-from recon.domain.errors import QueryError
+from recon.core.domain.archives import ArchiveRef, Rows
+from recon.core.domain.errors import QueryError
 from tests.recon_fakes import FixedClock, files_of, landing
 
 ARCHIVE_ID = "2026-01-01-000000-000000"
@@ -281,7 +281,7 @@ class TestTimestamps:
             "from recon.adapters._out.archive_files import ArchiveFiles\n"
             "from recon.adapters._out.duckdb_query import DuckdbQuery\n"
             "from recon.adapters._out.system_clock import SystemClock\n"
-            "from recon.domain.archives import ArchiveRef\n"
+            "from recon.core.domain.archives import ArchiveRef\n"
             "query = DuckdbQuery(ArchiveFiles(Path(sys.argv[1]) / '.recon', SystemClock()))\n"
             "rows = query.run([ArchiveRef('m', sys.argv[3])], sys.argv[2])\n"
             "print(*(value.isoformat() for value in rows.rows[0]), sep='\\n')\n"
@@ -321,8 +321,8 @@ class TestTimestamps:
             "from recon.adapters._out.archive_files import ArchiveFiles\n"
             "from recon.adapters._out.duckdb_query import DuckdbQuery\n"
             "from recon.adapters._out.system_clock import SystemClock\n"
-            "from recon.domain.archives import ArchiveRef\n"
-            "from recon.domain.errors import QueryError\n"
+            "from recon.core.domain.archives import ArchiveRef\n"
+            "from recon.core.domain.errors import QueryError\n"
             "store = ArchiveFiles(Path(sys.argv[1]) / '.recon', SystemClock())\n"
             "try:\n"
             "    DuckdbQuery(store).run([ArchiveRef('m', sys.argv[3])], sys.argv[2])\n"

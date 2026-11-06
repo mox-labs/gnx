@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from recon.composition import root
-from recon.domain.archives import ArchiveRef
+from recon.core.domain.archives import ArchiveRef
 from tests.paged_server import PagedServer
 from tests.recon_fakes import FixedClock, archive_path, files_of
 
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
     import pytest
 
-    from recon.domain.documents import StreamDocument
+    from recon.core.domain.documents import StreamDocument
 
 CLI = "import sys; from recon.adapters._in.cli import main; sys.exit(main())"
 PAGINATE = {"type": "cursor", "next": "meta.next", "param": "cursor"}
@@ -53,7 +53,7 @@ def _project(project: Path, url: str, window: dict[str, Any], **entry: Any) -> N
 
 
 def _stream(project: Path, **bound: Any) -> StreamDocument:
-    return root({}, project=project, clock=FixedClock()).stream("m", "items", **bound)
+    return root({}, project=project, clock=FixedClock()).observation.stream("m", "items", **bound)
 
 
 def _windows(project: Path) -> list[Path]:
@@ -226,7 +226,7 @@ class TestKilledMidCrawl:
 
             broken = tmp_path / "broken"
             shutil.copytree(tmp_path / ".recon", broken / ".recon")
-            from recon.application import stream as stream_module
+            from recon.core.application import stream as stream_module
 
             with monkeypatch.context() as patched:
                 patched.setattr(stream_module, "crawl_resume", lambda *args, **kwargs: None)
@@ -297,7 +297,7 @@ class TestTheSourceMovedUnderTheCrawl:
         [shifted] = [w for w in warnings if w["kind"] == "paginate_shifted"]
         assert shifted["got"] == 1 and shifted["fix"]
 
-        from recon.domain import paginate
+        from recon.core.domain import paginate
 
         monkeypatch.setattr(paginate, "found_at", lambda contents, mark, i: i)
         ids, _ = run(tmp_path / "by-index")
@@ -324,7 +324,7 @@ class TestTheSourceMovedUnderTheCrawl:
         [shifted] = [w for w in warnings if w["kind"] == "paginate_shifted"]
         assert shifted["got"] == -1
 
-        from recon.domain import paginate
+        from recon.core.domain import paginate
 
         monkeypatch.setattr(paginate, "found_at", lambda contents, mark, i: i)
         ids, _ = run(tmp_path / "by-index")
@@ -398,8 +398,8 @@ class TestTicksWhoseTokensExpire:
         from datetime import UTC, datetime, timedelta
 
         from recon.adapters._out.schedule_files import SCHEDULE_LOG
-        from recon.application.schedules import offset_s
-        from recon.domain.schedule import ScheduleHost
+        from recon.observe.application.schedules import offset_s
+        from recon.observe.domain.scheduling import ScheduleHost
         from tests.test_schedule_install import FakeRunner, Host
 
         every = 600
@@ -417,9 +417,9 @@ class TestTicksWhoseTokensExpire:
             scheduled = ScheduleHost("/opt/recon/bin/recon", ("/usr/bin", "/bin"))
             recon = root({"PATH": "/usr/bin:/bin"}, project=tmp_path, clock=clock,
                          schedulers=host.scheduler, schedule_host=scheduled)  # fmt: skip
-            digest = recon.schedule_install("m", platform="launchd").config_sha256 or ""
+            digest = recon.observation.schedule_install("m", platform="launchd").config_sha256 or ""
             for _ in range(ticks):
-                documents.append(recon.schedule_tick("m", config_sha256=digest))
+                documents.append(recon.observation.schedule_tick("m", config_sha256=digest))
                 server.expire()
                 clock.advance(every)
         log = (tmp_path / ".recon" / "m" / SCHEDULE_LOG).read_text().splitlines()

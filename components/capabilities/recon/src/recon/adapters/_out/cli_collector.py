@@ -7,7 +7,7 @@ drained as the command runs and its tail kept for the error message, so a comman
 writes a lot to it cannot block on a full pipe. stdin is empty: a command that reads it
 (``rg`` given no path) reads nothing, rather than waiting on recon's own stdin.
 
-Registered as the built-in collector type ``cli`` (entry-point group ``recon.collectors``).
+Registered as the built-in collector type ``cli`` (at ``recon.collector``, ``recon._matrix``).
 """
 
 from __future__ import annotations
@@ -21,24 +21,24 @@ import threading
 from collections.abc import Generator
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
 from recon.adapters._out.parsing import parse_line
-from recon.domain.collector import CollectorType
-from recon.domain.errors import CollectionError, Problem
-from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, bound
-from recon.domain.substitution import substitute
+from recon.core.domain.collector import CollectorType
+from recon.core.domain.errors import CollectionError, Problem
+from recon.core.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, bound
+from recon.core.domain.substitution import substitute
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
 
-    from recon.domain.capture import CaptureLog
-    from recon.domain.collector import Transform
-    from recon.domain.deadline import Deadline
-    from recon.domain.models import CollectorEntry, SourceEntry
-    from recon.domain.shell import ShellRunner
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.collector import Transform
+    from recon.core.domain.deadline import Deadline
+    from recon.core.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.shell import ShellRunner
 
 #: The most of a command's stderr kept for its error message: the end, where the reason is.
 STDERR_TAIL_BYTES = 4096
@@ -58,6 +58,14 @@ class CliSettings(BaseModel):
 
 def _settings(entry: CollectorEntry) -> CliSettings:
     return CliSettings.model_validate(entry.settings)
+
+
+@runtime_checkable
+class _Killable(Protocol):
+    """Lines a shell runner gave that can be killed from another thread (``_Command``'s); a
+    runner's that cannot (a test's) end when they are closed."""
+
+    def kill(self) -> None: ...
 
 
 class _Command(Generator[str, None, int]):
@@ -223,9 +231,8 @@ class CliCollector:
         """Kill the command in flight, from any thread, and start no other: a stream's
         source that goes quiet (``tail -f``) ends so, its process group with it."""
         self._closed.set()
-        kill = getattr(self._running, "kill", None)
-        if kill is not None:
-            kill()
+        if isinstance(self._running, _Killable):
+            self._running.kill()
 
     def collect(
         self,
