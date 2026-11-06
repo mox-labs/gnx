@@ -48,7 +48,7 @@ The command runs in a shell, as a `cli` collector's does; a failure, or output t
 
 The credential goes to the server's origin and nowhere else: a redirect to another host is not followed. A 401 or 403 fails the table as `auth` (exit 6).
 
-`timeout` bounds each call, the first one's start of the server included (`npx -y` downloads the package on first use: give it time). `rate_limit` holds for every call, a listing included.
+`timeout` bounds each call, the first one's start of the server included (`npx -y` downloads the package on first use: give it time). `rate_limit` holds for every call, a listing included: one call a second unless the source says more, recon's default for a source whose limits it does not know, so give a server of your own what it takes (`rate_limit: {rps: 20, burst: 5}`).
 
 ## 2. Name the calls
 

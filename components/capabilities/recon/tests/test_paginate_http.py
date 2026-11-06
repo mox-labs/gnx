@@ -27,10 +27,15 @@ if TYPE_CHECKING:
 CLI = "import sys; from recon.adapters._in.cli import main; sys.exit(main())"
 
 
+#: The test server's rate limit, unless a test gives its own: the default of a source whose
+#: limits are unknown (1 request a second) would only slow a crawl these tests read.
+LOCAL_RATE = {"rps": 100, "burst": 10}
+
+
 def _mission(url: str, **entry: Any) -> dict[str, Any]:
     source, top = entry.pop("source", {}), entry.pop("top", {})
     return {
-        "catalog": [{"name": "api", "url": url, **source}],
+        "catalog": [{"name": "api", "url": url, "rate_limit": LOCAL_RATE, **source}],
         "collectors": [
             {"name": "items", "type": "api", "source": "api", "endpoint": "/items",
              "extract": "items",

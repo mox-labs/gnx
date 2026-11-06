@@ -135,7 +135,7 @@ catalog:                       # where to look; optional
     url: <base URL, or a directory for local>   # required, but by an mcp stdio source
     auth: {token: env:<VAR>, header: <Header-Name>, param: <query param>, prefix: "Bearer "}
     # or auth: {headers_helper: <command>}
-    rate_limit: {rps: 10.0, burst: 3}   # tokens a second (> 0), most held (>= 1)
+    rate_limit: {rps: 1.0, burst: 1}    # requests a second (> 0), most at once (>= 1); raise to what it allows
     timeout: 60                # seconds a send may take, first byte to last (> 0)
     max_bytes: 50000000        # largest response body; a larger one fails the table
     user_agent: <string>       # default: recon/<version> (+https://github.com/mox-labs/gnx)

@@ -32,7 +32,13 @@ from recon.domain.changes import CHANGES_SUFFIX, changes_output
 from recon.domain.credentials import env_name
 from recon.domain.documents import SourcedValue
 from recon.domain.errors import Problem
-from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
+from recon.domain.models import (
+    DEFAULT_BURST,
+    DEFAULT_RPS,
+    CollectorEntry,
+    ReconConfig,
+    SourceEntry,
+)
 from recon.domain.normalize import path_problem, spec_problems
 from recon.domain.paginate import COUNTED, crawl_floor_s
 from recon.domain.ranges import BOUNDS, FORMATS, unknown_placeholders, uses_range
@@ -315,6 +321,7 @@ def build_plan(
     problems += found
     provenance += values
 
+    provenance += _rate_limits(sources, used_sources)
     if is_directory is not None:
         problems += _directory_problems(sources, used_sources, is_directory, base)
     warnings += _credential_warnings(sources, used_sources - refused, env, plugins)
@@ -1407,6 +1414,33 @@ def _changes_problems(i: int, entry: CollectorEntry, is_stream: bool) -> list[Pr
             )
         )
     return problems
+
+
+def _rate_limits(sources: list[tuple[int, SourceEntry]], used: set[str]) -> list[SourcedValue]:
+    """The ``rate_limit`` in effect for each source a run uses, but a ``local`` one, which is
+    sent nothing: as written, or recon's default for a source whose limits it does not know
+    (ruling R12), each key left out a default."""
+    values = []
+    for i, source in sources:
+        if source.name not in used or source.type == "local":
+            continue
+        rate = source.rate_limit
+        written = rate.model_fields_set if "rate_limit" in source.model_fields_set else set()
+        defaulted = [key for key in ("rps", "burst") if key not in written]
+        note = (
+            "" if not defaulted else
+            f"recon's default for a source whose limits it does not know ({DEFAULT_RPS:g} "
+            f"request a second, {DEFAULT_BURST} at once): set rate_limit: to what the source "
+            "allows" if len(defaulted) == 2 else
+            f"{defaulted[0]}: recon's default"
+        )  # fmt: skip
+        values.append(SourcedValue(
+            path=f"catalog.{i}.rate_limit",
+            value={"rps": rate.rps, "burst": rate.burst},
+            origin="mission" if written else "recon",
+            note=note,
+        ))  # fmt: skip
+    return values
 
 
 def _ranged(

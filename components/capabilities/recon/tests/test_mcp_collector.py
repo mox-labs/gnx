@@ -32,8 +32,11 @@ from tests.recon_fakes import FixedClock, building, run_survey
 
 SERVER = str(Path(__file__).parent / "mcp_server.py")
 
-#: The fixture as a catalog source recon starts over stdio.
-STDIO = {"name": "fixture", "type": "mcp", "command": sys.executable, "args": [SERVER]}
+#: The fixture as a catalog source recon starts over stdio, given a rate of its own: these tests
+#: are of the calls, which the default of a source whose limits are unknown (1 a second) would
+#: only slow.
+STDIO = {"name": "fixture", "type": "mcp", "command": sys.executable, "args": [SERVER],
+         "rate_limit": {"rps": 100, "burst": 10}}  # fmt: skip
 
 
 def _survey(project: Path, collectors: list[dict[str, Any]], **kwargs: Any) -> Any:

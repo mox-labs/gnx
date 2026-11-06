@@ -77,16 +77,27 @@ class AuthConfig(BaseModel):
         return self
 
 
+#: By default, the requests a second a source is sent (ruling R12): recon does not know a
+#: source's limits unless the mission says them, so it asks politely, and a mission whose
+#: source allows more says so (``rate_limit: {rps, burst}``).
+DEFAULT_RPS = 1.0
+
+#: By default, the requests a source may be sent at once, saved up while idle: none beyond
+#: the one each second.
+DEFAULT_BURST = 1
+
+
 class RateLimitConfig(BaseModel):
     """Per-source rate limiting via token bucket: ``rps`` tokens a second, at most ``burst``
     held. Each is positive: a bucket that never refills, or holds no token, never lets a
     request go. ``rps`` is finite (no rate is written ``.inf``), and an empty bucket's wait
-    for a token, ``1 / rps``, is one the clock can sleep (:data:`LONGEST_WAIT`)."""
+    for a token, ``1 / rps``, is one the clock can sleep (:data:`LONGEST_WAIT`). The defaults
+    are :data:`DEFAULT_RPS` and :data:`DEFAULT_BURST`, for a source whose limits are unknown."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    rps: float = Field(default=10.0, gt=0, allow_inf_nan=False)
-    burst: int = Field(default=3, ge=1)
+    rps: float = Field(default=DEFAULT_RPS, gt=0, allow_inf_nan=False)
+    burst: int = Field(default=DEFAULT_BURST, ge=1)
 
     @field_validator("rps")
     @classmethod
