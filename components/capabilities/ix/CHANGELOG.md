@@ -50,6 +50,17 @@
   preflight; a review and a stand-in see the entry as written. An adapter that read an
   option with a fallback of its own reads it as given. `python_checks`' `run_cases` and
   `run_grader` take their `timeout_s` from the caller, always.
+- **The plan digest is over a declared, versioned form, and the registration freezes the
+  same form.** A registration's `design` is `ix.v1.registered-design` (`design_form`),
+  built key by key from the design rather than dumped from its fields, and the plan digest
+  is the digest of that form with the experiment's operative digest, the probe set's, the
+  trial count and the schedule's. An internal rename moves no digest and leaves no value
+  uncompared; a key added later is left out when absent. The hypothesis sentences and the
+  provenance are not in the form (they were never compared), so a registration holds
+  neither. Every plan digest moves once with this release, with the defaults above: amend
+  each registration once. The example plans' digests, and the `--skill` examples' of each
+  built-in genre, are pinned by `tests/test_plan_digest.py`: a change that moves one
+  updates the literal and says here which registrations to amend.
 - **A judge asked to read each response fewer than once is refused** at validate
   (`option_invalid` at `sensors.<n>.repeats`); it was quietly read once.
 - **ix's `matrix.extensions` entry point is `ix.composition.entry_point:register`**, renamed

@@ -105,7 +105,7 @@ and the sensor from the metric: `timing` provides `latency`. `ix plan` shows eac
 where it came from, the decision first:
 
 ```
-delay-slower  compare (ix.v1.genre.compare)  plan 49f385a0c04b
+delay-slower  compare (ix.v1.genre.compare)  plan 7b6ed29d74c6
 Question:     Is a server that waits 50% longer per request faster than the one it would replace?
 Decides:      candidate is better than baseline on latency p50
 Comparison:   superiority
@@ -428,12 +428,16 @@ was refused and why.
 ## Registration
 
 `ix register` writes `<file-stem>.registration.json` beside the experiment. It stores the
-design as resolved, what the file sets and what the genre supplies (comparison, margin,
-threshold, guardrails, control, repeats, seed, order, calibration, estimators, the analysis
-and its parameters, the sensors), with the digests of the probe set, the experiment and the
-plan, and the digest of each file and folder the subjects and sensors name: the skills,
-plugins (each folder a `*` matches), fixtures and agent `definition`, a sensor's `graders`
-or `rubric_file`, and any option a kind declares a `path` or `paths`. A `command` (a
+design as resolved, what the file sets, what the genre supplies and what each kind defaults
+(comparison, margin, threshold, guardrails, control, repeats, seed, order, calibration,
+estimators, the analysis and its parameters, the sensors, the defaults by entry), in a
+declared form of its own, `ix.v1.registered-design`, with the digests of the probe set, the
+experiment and the plan. The plan's digest is computed over that same form, built key by
+key, so a rename inside ix's records moves no digest; a release that moves one says so in
+the changelog, with the registrations to amend. The record also holds the digest of each file
+and folder the subjects and sensors name: the skills, plugins (each folder a `*` matches),
+fixtures and agent `definition`, a sensor's `graders` or `rubric_file`, and any option a kind
+declares a `path` or `paths`. A `command` (a
 `process` subject's, relative to its `cwd`; an agent session's `setup`) adds each item that
 names a file: `[python3, server.py]` digests `server.py`, and `["./proxy", --config,
 env/a.yaml]` the program and its config. A program found on PATH is not the experiment's.
@@ -450,7 +454,8 @@ env/a.yaml]` the program and its config. A program found on PATH is not the expe
   shows up here, because its values were frozen and not just its name.
 - A kind's default is frozen with the design (`defaults`, by entry): one that a later ix
   declares otherwise is a deviation, as a genre's value is.
-- A comment, key order or a default written out is not a deviation. A reworded `question` or
+- A comment, key order or a value the file's own schema defaults written out
+  (`environment: {kind: none}`) is not a deviation. A reworded `question` or
   `rationale` changes the experiment's digest and not the plan's.
 - `ix register` on a changed experiment is refused (exit 7, `conflict`) and the record is
   kept.

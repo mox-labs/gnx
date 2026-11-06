@@ -9,11 +9,13 @@ need holds here, is added by the caller that can ask the adapters (``requirement
 depends on the host, not the experiment, so it is in no digest.
 
 **The digest.** ``digest`` identifies what a run would do. It is over the experiment's
-operative digest, the design, the probe set, the trial count and the list of trials in the
-order a run carries them out (``schedule_digest``). It is stable against a
-comment, key order, a default written out, a reworded question, note or description, and
-a field a later ix adds with a default. It changes when a value a run
-would use changes, including one the genre supplied.
+operative digest, the design in the form a registration freezes
+(:func:`~ix.domain.registration.design_form`, ``ix.v1.registered-design``), the probe set,
+the trial count and the list of trials in the order a run carries them out
+(``schedule_digest``). It is stable against a comment, key order, a value the file's own
+schema defaults written out, a reworded question, note or description, a field a later ix
+adds to the plan document, and a rename inside the design's records. It changes when a
+value a run would use changes, including one the genre supplied or a kind defaults.
 """
 
 from __future__ import annotations
@@ -34,9 +36,10 @@ from ix.domain.design import (
 )
 from ix.domain.experiment import Level, cells
 from ix.domain.genre import Calibration, Order, VerdictForm
-from ix.domain.kind import UNFROZEN_METRIC_FIELDS, fill, seconds
+from ix.domain.kind import fill, seconds
 from ix.domain.problem import Problem
-from ix.domain.schema import Record, canonical
+from ix.domain.registration import design_form
+from ix.domain.schema import Record
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -361,14 +364,10 @@ def plan_digest(
 ) -> str:
     """The digest of what a run would do; see the module docstring for what it is stable
     against."""
-    resolved = canonical(design, exclude={"hypotheses", "provenance"})
-    for metric in resolved.get("metrics", []):
-        for field in UNFROZEN_METRIC_FIELDS:
-            metric.pop(field, None)
     return schema.digest(
         {
             "experiment": experiment.digest(operative=True),
-            "design": resolved,
+            "design": design_form(design),
             "probes": probes.digest,
             "trials": trials,
             "schedule": schedule_digest,

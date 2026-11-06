@@ -267,14 +267,6 @@ class Metric(Record):
         return self
 
 
-#: A metric's fields that neither a plan's digest nor a registration holds: its prose
-#: (``description``), and ``contended``, which is not prose but admission policy, a property
-#: of the instrument read where it is used: validation applies it to the width at every
-#: validate, plan, register and run, so a sensor that declares a metric contended after a
-#: registration refuses the run (it fails closed) rather than ungating it.
-UNFROZEN_METRIC_FIELDS: frozenset[str] = frozenset({"description", "contended"})
-
-
 class Confusion(Record):
     """For a sensor that names what was expected and what it observed in each trial (a skill
     that should fire, the one that did): the ``detail`` keys that hold the two, and the label

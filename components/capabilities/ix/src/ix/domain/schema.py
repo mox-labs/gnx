@@ -14,7 +14,9 @@ segments are legal is the one type-URL grammar of the registry, given to ix as a
 :data:`Grammar`.
 
 **Digests are over meaning.** :func:`canonical` dumps a record without the fields that still
-hold their defaults; :mod:`ix.domain.plan` says what that makes a digest stable against.
+hold their defaults; :mod:`ix.domain.plan` says what that makes a digest stable against. The
+plan digest reads the design through a declared form (``ix.v1.registered-design``,
+:func:`ix.domain.registration.design_form`), never through a record's field names.
 """
 
 from __future__ import annotations
@@ -39,6 +41,8 @@ GENRE: Final = "ix.v1.genre"
 KIND: Final = "ix.v1.kind"
 VALIDATION: Final = "ix.v1.validation"
 DESIGN: Final = "ix.v1.design"
+#: The design as a registration freezes it and the plan digest reads it.
+REGISTERED_DESIGN: Final = "ix.v1.registered-design"
 PLAN: Final = "ix.v1.plan"
 GENRES: Final = "ix.v1.genres"
 KINDS: Final = "ix.v1.kinds"
@@ -126,11 +130,9 @@ class Stored(BaseModel):
         return data
 
 
-def canonical(record: BaseModel, *, exclude: set[str] | None = None) -> dict[str, Any]:
+def canonical(record: BaseModel) -> dict[str, Any]:
     """A record's meaning: its fields that differ from their defaults, as JSON data."""
-    data: dict[str, Any] = record.model_dump(
-        mode="json", by_alias=True, exclude_defaults=True, exclude=exclude
-    )
+    data: dict[str, Any] = record.model_dump(mode="json", by_alias=True, exclude_defaults=True)
     return data
 
 

@@ -378,8 +378,9 @@ class TestRegister:
         assert stored["probes_digest"] == plan.probes.digest
         assert stored["ix_version"] == ix.__version__ and stored["registered_at"]
         design = stored["design"]
-        resolved = ix.resolve(file).document()
-        assert set(design) == set(resolved) - {"provenance"}
+        # Changed requirement (review D4): the record holds the design in its declared form,
+        # the one the plan digest reads, not a dump of the design's own fields.
+        assert design["schema"] == "ix.v1.registered-design"
         assert [metric["name"] for metric in design["metrics"]] == ["ttfb"]
         assert design["sensors"][0]["kind"] == "ix.v1.sensor.timing"
         # What the genre supplied is in the record, not just the genre's name.
@@ -392,7 +393,9 @@ class TestRegister:
         assert design["primary"] == {"metric": "ttfb", "statistic": "p99", "estimator": "mean"}
         assert design["margin"] == {"value": 5.0, "basis": "relative"}
         assert design["comparison"] == "non-inferiority" and design["control"] == "buffered"
-        assert design["hypotheses"] == ["streaming is at most 5% worse than buffered on ttfb p99"]
+        assert design["defaults"]["probes.download"]["timeout"] == "60s"
+        # The hypothesis is rendered from the genre and the values above: prose, not frozen.
+        assert "hypotheses" not in design and "provenance" not in design
 
     def test_the_record_is_named_after_the_file(
         self, compare_data: dict[str, Any], tmp_path: Path
