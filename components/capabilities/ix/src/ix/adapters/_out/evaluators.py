@@ -60,12 +60,13 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from functools import cache
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
-from ix.adapters._out.matrix_agents import MODEL_RUNTIME, STAND_IN, runtime_requirement
+from ix.adapters._out.matrix_agents import STAND_IN, runtime_requirement
 from ix.domain.kind import placeholders
 from ix.domain.ports import Requirement, Sensed, StoodIn
 from ix.domain.problem import Problem, problem
+from ix.extension import MODEL_RUNTIME
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator, Sequence
@@ -74,9 +75,9 @@ if TYPE_CHECKING:
     from pydantic_evals.evaluators import Evaluator
     from pydantic_evals.otel import SpanTree, SpanTreeRecordingError
 
-    from ix.adapters._out.matrix_agents import Runtimes
     from ix.domain.ports import Surroundings
     from ix.domain.run import Interaction, Target
+    from ix.extension import JudgeModels, Runtimes
 
 #: The kind this sensor carries out, and the key its watch is kept under in an interaction.
 KIND = "ix.v1.sensor.evaluator"
@@ -103,17 +104,6 @@ READS_NO_SPANS = frozenset(
 
 #: Why a trial's spans are not there, when the watch kept none and said nothing.
 UNWATCHED = "no spans were kept for this trial: the evaluator sensor did not watch it"
-
-
-class JudgeModels(Protocol):
-    """Where a judge evaluator's model comes from, as the composition root hands it over:
-    a pydantic-ai ``Model`` that makes its calls through a matrix model runtime."""
-
-    def model(self, runtime: str, model: str | None, config: Mapping[str, Any]) -> Any:
-        """The pydantic-ai ``Model`` for ``model`` on the model runtime named ``runtime``,
-        built with ``config``. Raises ``IxError`` (with a ``fix``), ``matrix.MatrixError`` or
-        ``ValueError`` when there is none to give."""
-        ...
 
 
 class NoSpansError(ValueError):

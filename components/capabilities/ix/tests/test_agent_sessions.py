@@ -25,7 +25,7 @@ from ix.adapters._out.agent_sensors import (
     ToolUsageSensor,
     UsageSensor,
 )
-from ix.adapters._out.matrix_agents import AgentSessionSubject, PromptProbe, Sessions
+from ix.adapters._out.matrix_agents import AgentSessionSubject, PromptProbe, SessionTable
 from ix.adapters._out.matrix_calls import ModelCallSubject
 from ix.adapters._out.matrix_judge import STAND_IN_REPLY, JudgeSensor
 from ix.adapters._out.matrix_process import MatrixLauncher
@@ -166,7 +166,7 @@ async def _ask(
 ) -> tuple[Mapping[str, Mapping[str, Any]], Path, bool]:
     """Reach a subject, apply the prompt probe, release: what the probe left, the working
     directory the session had, and whether a stand-in answered."""
-    sessions = Sessions()
+    sessions = SessionTable()
     reached = AgentSessionSubject(sessions, runtimes, MatrixLauncher())
     async with reached.reach("agent", subject or _subject(), base=str(base)) as target:
         assert set(target.facets) == {"respondent", "workdir"}
@@ -449,7 +449,7 @@ def _unmet(found: Sequence[Requirement]) -> str | None:
 class TestPreflight:
     def _unstartable(self, tmp_path: Path, scripted: Scripted | None = None, **options: Any) -> Any:
         adapter = AgentSessionSubject(
-            Sessions(), Runtimes(scripted or Scripted(_reply())), MatrixLauncher()
+            SessionTable(), Runtimes(scripted or Scripted(_reply())), MatrixLauncher()
         )
         return _unmet(adapter.requirements(_subject(**options).options, base=str(tmp_path)))
 
@@ -469,7 +469,7 @@ class TestPreflight:
         """Regression: ``runtime`` defaulted to claude-sdk, and an experiment and a fixture
         that named none started paid sessions. Nothing is built for a subject without one."""
         runtimes = Runtimes(Scripted(_reply()))
-        adapter = AgentSessionSubject(Sessions(), runtimes, MatrixLauncher())
+        adapter = AgentSessionSubject(SessionTable(), runtimes, MatrixLauncher())
         unnamed = SubjectConfig.model_validate({"kind": "agent-session", "max_turns": 1})
         said = _unmet(adapter.requirements(unnamed.options, base=str(tmp_path)))
         assert said is not None and said.startswith("runtime:")
@@ -491,7 +491,7 @@ class TestPreflight:
         read as filled per cell, since the mapping's text holds a brace, so its runtime was
         never built or checked before the run."""
         runtimes = Runtimes(Scripted(_reply()))
-        adapter = AgentSessionSubject(Sessions(), runtimes, MatrixLauncher())
+        adapter = AgentSessionSubject(SessionTable(), runtimes, MatrixLauncher())
         subject = _subject(runtime_options={"permission_mode": "plan"})
         assert _unmet(adapter.requirements(subject.options, base=str(tmp_path))) is None
         assert runtimes.built == [
@@ -528,7 +528,7 @@ class TestReview:
         **options: Any,
     ) -> set[tuple[str, str]]:
         runtimes = Runtimes(Scripted(_reply()), takes=takes, does=does)
-        adapter = AgentSessionSubject(Sessions(), runtimes, MatrixLauncher())
+        adapter = AgentSessionSubject(SessionTable(), runtimes, MatrixLauncher())
         found = adapter.review({"runtime": runtime, **options}, around)
         return {(problem.path, problem.kind) for problem in found}
 
@@ -620,7 +620,7 @@ class TestReview:
         from its registration: an option outside it is unknown, and plugins on a runtime
         that mounts none are inapplicable, whatever the runtime is called."""
         runtimes = Runtimes(Scripted(_reply()), takes=MOCK)
-        adapter = AgentSessionSubject(Sessions(), runtimes, MatrixLauncher())
+        adapter = AgentSessionSubject(SessionTable(), runtimes, MatrixLauncher())
         found = adapter.review(
             {
                 "runtime": "mock", "skills": ["s"], "plugins": ["p"],
@@ -637,7 +637,7 @@ class TestReview:
         assert "matrix describe matrix.v1.agent-runtime.mock" in (unknown.fix or "")
         # A runtime nothing registered is the preflight's to report, not the review's.
         unregistered = AgentSessionSubject(
-            Sessions(), Runtimes(Scripted(_reply()), takes=None), MatrixLauncher()
+            SessionTable(), Runtimes(Scripted(_reply()), takes=None), MatrixLauncher()
         )
         assert (
             unregistered.review(
@@ -650,7 +650,9 @@ class TestReview:
     def test_a_missing_runtime_is_left_to_the_declaration(self, tmp_path: Path) -> None:
         """The kind's declaration reports it (``option_missing``); the review adds no second
         problem for the same mistake."""
-        adapter = AgentSessionSubject(Sessions(), Runtimes(Scripted(_reply())), MatrixLauncher())
+        adapter = AgentSessionSubject(
+            SessionTable(), Runtimes(Scripted(_reply())), MatrixLauncher()
+        )
         assert adapter.review({"tools": []}, _around(tmp_path, ("activation", {}))) == []
 
     def test_options_filled_per_cell_wait_for_the_cell(self, tmp_path: Path) -> None:
@@ -659,7 +661,9 @@ class TestReview:
 
 class TestStandIn:
     def test_a_session_stands_in_on_mock_with_the_runtimes_config_set_aside(self) -> None:
-        adapter = AgentSessionSubject(Sessions(), Runtimes(Scripted(_reply())), MatrixLauncher())
+        adapter = AgentSessionSubject(
+            SessionTable(), Runtimes(Scripted(_reply())), MatrixLauncher()
+        )
         stood = adapter.stand_in(
             {
                 "runtime": "claude-sdk", "skills": ["s"], "plugins": ["p"],
@@ -676,7 +680,7 @@ class TestStandIn:
         assert adapter.stand_in({"runtime": "mock"}).notes == ()
 
     def test_a_probe_without_a_canned_reply_says_what_the_mock_replies(self) -> None:
-        probe = PromptProbe(Sessions())
+        probe = PromptProbe(SessionTable())
         assert probe.stand_in({"prompt": "x", "mock_response": "y"}).notes == ()
         assert "no mock_response" in probe.stand_in({"prompt": "x"}).notes[0]
 
@@ -692,7 +696,7 @@ class TestStandIn:
         }  # fmt: skip
 
     def test_a_model_call_stands_in_on_mock_with_the_runtimes_config_set_aside(self) -> None:
-        adapter = ModelCallSubject(Sessions(), Runtimes(ScriptedModel()))
+        adapter = ModelCallSubject(SessionTable(), Runtimes(ScriptedModel()))
         stood = adapter.stand_in(
             {"runtime": "hardline", "model": "fast", "runtime_options": {"temperature": 0}}
         )
@@ -1230,7 +1234,7 @@ async def _call_trial(
     runtimes: Runtimes, probe: Mapping[str, Any], **options: Any
 ) -> tuple[Mapping[str, Mapping[str, Any]], bool]:
     """Reach a ``model-call`` subject, apply the prompt probe, release."""
-    sessions = Sessions()
+    sessions = SessionTable()
     subject = SubjectConfig.model_validate({"kind": "model-call", "runtime": "hardline", **options})
     async with ModelCallSubject(sessions, runtimes).reach("model", subject, base=".") as target:
         assert set(target.facets) == {"respondent"}  # no working directory
@@ -1303,7 +1307,7 @@ class TestAModelCall:
 
     def test_the_preflight_asks_the_runtime_to_resolve_the_model(self) -> None:
         runtimes = Runtimes(ScriptedModel(_call()))
-        adapter = ModelCallSubject(Sessions(), runtimes)
+        adapter = ModelCallSubject(SessionTable(), runtimes)
 
         def subject(**options: Any) -> SubjectConfig:
             return SubjectConfig.model_validate(
@@ -1322,7 +1326,7 @@ class TestAModelCall:
         function test of a written file, and files to collect never can be read, so
         validate refuses each before any trial runs. The reply, its usage and every other
         sensor apply."""
-        adapter = ModelCallSubject(Sessions(), Runtimes(ScriptedModel(), takes=None))
+        adapter = ModelCallSubject(SessionTable(), Runtimes(ScriptedModel(), takes=None))
         collect = ProbeConfig(id="p", kind="prompt", options={"prompt": "x", "collect": ["a"]})
         around = _around(
             tmp_path, ("activation", {}), ("tool-usage", {"tool": "memex"}),
@@ -1343,7 +1347,7 @@ class TestAModelCall:
         assert adapter.review({"runtime": "hardline"}, reads_the_reply) == []
 
     def test_an_option_the_model_runtime_does_not_declare_is_unknown(self, tmp_path: Path) -> None:
-        adapter = ModelCallSubject(Sessions(), Runtimes(ScriptedModel(), takes=MOCK))
+        adapter = ModelCallSubject(SessionTable(), Runtimes(ScriptedModel(), takes=MOCK))
         found = adapter.review(
             {"runtime": "mock", "runtime_options": {"temperature": 0}}, _around(tmp_path)
         )
@@ -1353,7 +1357,7 @@ class TestAModelCall:
 
 
 def test_sessions_are_shared_by_handle_only() -> None:
-    sessions = Sessions()
+    sessions = SessionTable()
     with pytest.raises(HarnessError, match="no session"):
         sessions["gone"]
 

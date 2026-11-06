@@ -52,13 +52,14 @@ from ix.adapters._out.matrix_runs import Runs as RunRecords
 from ix.adapters._out.subjects import ProcessSubject
 from ix.application import running
 from ix.composition import RUNS_DIRECTORY, Root
-from ix.composition.extension import POINTS, register_run_path
+from ix.composition.entry_point import register_run_path
 from ix.composition.settings import IxSettings
 from ix.domain import schema
 from ix.domain.kind import Metric
 from ix.domain.ports import Liveness, Preflight, Sensed
 from ix.domain.report import report as build_report
 from ix.domain.run import CALIBRATION, Failure, HarnessError, Interaction, Reading, Target
+from ix.extension import POINTS
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping

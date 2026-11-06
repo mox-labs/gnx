@@ -23,9 +23,9 @@ from ix.domain.run import HarnessError, SubjectError, Target
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
 
-    from ix.adapters._out.processes import Launcher
     from ix.domain.experiment import SubjectConfig
     from ix.domain.ports import Surroundings
+    from ix.extension import Launcher
 
 #: How long a started program has to come up when the subject does not say.
 STARTUP_TIMEOUT_S = 30.0

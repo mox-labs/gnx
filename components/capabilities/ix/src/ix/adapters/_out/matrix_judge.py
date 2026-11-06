@@ -48,8 +48,6 @@ from typing import TYPE_CHECKING, Any
 import matrix
 
 from ix.adapters._out.matrix_agents import (
-    AGENT_RUNTIME,
-    MODEL_RUNTIME,
     STAND_IN,
     released,
     runtime_requirement,
@@ -57,13 +55,14 @@ from ix.adapters._out.matrix_agents import (
 from ix.domain.kind import placeholders
 from ix.domain.ports import Requirement, Sensed, StoodIn
 from ix.domain.problem import Problem, problem
+from ix.extension import AGENT_RUNTIME, MODEL_RUNTIME
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from ix.adapters._out.matrix_agents import Point, Runtimes
     from ix.domain.ports import Surroundings
     from ix.domain.run import Interaction, Target
+    from ix.extension import Point, Runtimes
 
 #: The judge's two options, each naming a runtime at one of matrix's points.
 PORTS: dict[str, Point] = {"model_runtime": MODEL_RUNTIME, "agent_runtime": AGENT_RUNTIME}

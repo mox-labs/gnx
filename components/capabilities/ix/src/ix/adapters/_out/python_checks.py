@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from ix.adapters._out.processes import Launcher
+    from ix.extension import Launcher
 
 #: How long a check may take when the experiment does not say.
 TIMEOUT_S = 30.0

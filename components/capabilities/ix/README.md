@@ -307,19 +307,33 @@ adapter that skips its check on a placeholder still checks the rest.
 
 An adapter plugs in through matrix's registry, as every extension does. A package declares
 its kind as data at the `ix.kind` entry point, and registers the adapter from its
-`matrix.extensions` entry point at ix's point for the family (`ix.subject`, `ix.probe`,
-`ix.sensor`, `ix.environment`) under the kind's type URL. ix resolves every adapter it runs
-that way, its own included, so a new one needs no edit to ix. An adapter declares what it
-needs built: `launcher` to start processes, `runtimes` to run an agent or make a model call
-on matrix's runtimes (at its `agent-runtime` or `model-runtime` point), `sessions` to share
-an agent session or a model call between a subject and a probe, by the handle the subject
-offers as its `respondent` facet. Each family's point holds what is registered there to its
-port (`Subject`, `Probe`, `Sensor`, `Environment` in `ix.domain.ports`): a class that lacks
-one of its members is refused at registration.
+`matrix.extensions` entry point at ix's point for the family (`ix.extension.POINTS`:
+`ix.subject`, `ix.probe`, `ix.sensor`, `ix.environment`) under the kind's type URL. ix
+resolves every adapter it runs that way, its own included, so a new one needs no edit to ix.
+Everything an adapter author writes against is in one public module, `ix.extension`, and
+ix's own adapters import it as a third party's do. An adapter declares what it needs built,
+each a keyword its factory takes, with the Protocol of what it is given:
+
+| need | given | for |
+|---|---|---|
+| `launcher` (`LAUNCHER`) | a `Launcher` | starting processes, each in a group of its own that ends whole |
+| `runtimes` (`RUNTIMES`) | `Runtimes` | running an agent or making a model call on matrix's runtimes, at its `agent-runtime` or `model-runtime` point |
+| `sessions` (`SESSIONS`) | `Sessions` | sharing an agent session or a model call (a `Respondent`) between a subject and a probe, by the handle the subject offers as its `respondent` facet |
+| `judge_models` (`JUDGE_MODELS`) | `JudgeModels` | a pydantic-ai `Model` that makes its calls through a matrix model runtime, as a pydantic-evals judge needs |
+
+Each family's point holds what is registered there to its port (`ix.extension.PORTS`:
+`Subject`, `Probe`, `Sensor`, `Environment`): a class that lacks one of its members is
+refused at registration. What else an adapter can say is a separate optional Protocol, read
+with `isinstance`: `Preflight`, `Review`, `StandIn`, `SpanReader`, `Liveness`, and for the
+scope a run hands an environment, `Traced` and `Recorded` (with the `Attribution` it
+yields). `JudgeModels` and `SpanReader` have one user each and are provisional.
 
 ```python
+from ix.extension import LAUNCHER, POINTS
+
+
 def register(registry):
-    registry.register("ix.subject", "acme.v1.subject.echo", EchoSubject, needs={"launcher"})
+    registry.register(POINTS["subject"], "acme.v1.subject.echo", EchoSubject, needs={LAUNCHER})
 ```
 
 `ix validate` holds an experiment to the declarations:
@@ -757,9 +771,10 @@ ix.plan(experiment.model_copy(update={"repeats": 9})).trials.total  # 243
 `Kind`); the errors (`IxError`, `ConfigError`, `NotFoundError`, `InvalidExperimentError`,
 `RegistrationConflictError`, `UnregisteredError`, `UsageError`); and the tables
 `PROBLEM_KINDS`, `ERROR_KINDS`, `EXIT_CODES`, `EXIT_MEANINGS` and `EXIT_NEXT`. Every part of
-those records (`SubjectConfig`, `Margin`, `Decision`, `Interval`, ...) and every port an
-extension implements (`Subject`, `Probe`, `Sensor`, `Environment`) is exported from
-`ix.domain`, the one public path to them; the modules inside it are not public.
+those records (`SubjectConfig`, `Margin`, `Decision`, `Interval`, ...) is exported from
+`ix.domain`, the one public path to them; the modules inside it are not public. What an
+extension implements and is handed (the ports, the needs, `Target`, `SubjectError`,
+`HarnessError`) is `ix.extension`'s.
 
 `ix.run` returns a report for every run that started, however it ended: `Report.status` is
 `completed`, `interrupted` or `failed`, and `Report.exit_code` is what a command should exit

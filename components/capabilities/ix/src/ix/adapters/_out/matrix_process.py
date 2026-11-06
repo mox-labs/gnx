@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 class MatrixLauncher:
-    """:class:`~ix.adapters._out.processes.Launcher` over ``matrix.process``."""
+    """:class:`~ix.extension.Launcher` over ``matrix.process``."""
 
     async def start(self, argv: Sequence[str], **options: Any) -> asyncio.subprocess.Process:
         return await groups.start(argv, **options)

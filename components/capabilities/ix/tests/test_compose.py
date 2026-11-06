@@ -29,10 +29,10 @@ from ix.adapters._out.compose import ComposeEnvironment, ownership_file
 from ix.adapters._out.matrix_process import MatrixLauncher
 from ix.application import running
 from ix.composition import Root
-from ix.composition.extension import POINTS
 from ix.domain import schema
 from ix.domain.experiment import EnvironmentConfig
 from ix.domain.run import HarnessError
+from ix.extension import POINTS
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping

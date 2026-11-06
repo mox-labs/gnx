@@ -9,10 +9,10 @@ opens a
 :class:`Session`: an agent definition and the runtime that will play it, nothing started yet.
 The target carries the session's handle (``respondent``) and its directory (``workdir``),
 never the session itself; the ``prompt`` probe looks it up by its handle in the
-:class:`Sessions` both were built with. Leaving the subject closes the session and removes
-the directory, however the trial ended. A ``model-call`` subject
+:class:`~ix.extension.Sessions` both were built with. Leaving the subject closes the
+session and removes the directory, however the trial ended. A ``model-call`` subject
 (:mod:`ix.adapters._out.matrix_calls`) opens a call under a handle the same way, and the
-probe asks either alike: each is a :class:`Respondent`.
+probe asks either alike: each is a :class:`~ix.extension.Respondent`.
 
 **What runs the agent is matrix's.** A session builds its runtime from the registry's
 ``agent-runtime`` point by name (``claude-sdk``, ``mock``, or any agent runtime installed).
@@ -67,7 +67,7 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from glob import glob
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal
 
 import matrix
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -79,13 +79,14 @@ from ix.domain.kind import fill, placeholders, seconds
 from ix.domain.ports import Requirement, StoodIn
 from ix.domain.problem import Problem, problem
 from ix.domain.run import HarnessError, SubjectError, Target
+from ix.extension import AGENT_RUNTIME
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 
-    from ix.adapters._out.processes import Launcher
     from ix.domain.experiment import SubjectConfig
     from ix.domain.ports import Surroundings
+    from ix.extension import Launcher, Respondent, Runtimes, Sessions
 
 #: How long one session (every round of it) may take when the probe does not say.
 SESSION_TIMEOUT_S = 600.0
@@ -102,11 +103,6 @@ COLLECT_LIMIT = 1_000_000
 
 #: The runtime ports' reasons that say the agent or model never had a fair attempt.
 HARNESS_REASONS = frozenset({"unavailable", "rate_limited", "timeout", "auth", "incapable"})
-
-#: matrix's two runtime points: an agent session (a loop and tools) and one model call.
-type Point = Literal["agent-runtime", "model-runtime"]
-AGENT_RUNTIME: Final = "agent-runtime"
-MODEL_RUNTIME: Final = "model-runtime"
 
 #: The runtime a dry run puts a subject on, at its own point: matrix's ``mock``, canned
 #: replies, no model called.
@@ -147,60 +143,6 @@ TEST_FEEDBACK = (
     "\n{failures}\n\nGive the corrected answer in full.\n\nTask:\n{prompt}\n\n"
     "Your previous answer:\n{response}"
 )
-
-
-class Runtimes(Protocol):
-    """matrix's runtimes, at its two points, as the composition root hands them over. A
-    ``name`` is a runtime's short name at that point (``claude-sdk``) or its type URL."""
-
-    def build(
-        self, point: Point, name: str, config: Mapping[str, Any], *, cwd: str | None = None
-    ) -> Any:
-        """The runtime registered at ``point`` as ``name``, built with ``config``; ``cwd`` is
-        where an agent runtime runs its sessions. Raises ``matrix.MatrixError``, or ix's
-        ``NotFoundError`` for a name nothing registered there."""
-        ...
-
-    def stand_in(self, point: Point, name: str) -> bool:
-        """Whether the runtime declares itself a stand-in (``Entry.stand_in``): its replies
-        are canned, not a model's. Raises as :meth:`build` does for an unknown name."""
-        ...
-
-    def takes(self, point: Point, name: str) -> frozenset[str] | None:
-        """The keys the runtime's config declares; an empty set for one that takes no
-        config, None for a name nothing registered there."""
-        ...
-
-    def drives(self, point: Point, name: str) -> dict[str, str]:
-        """Each distribution the runtime drives (``claude-agent-sdk`` for ``claude-sdk``), as
-        its registration declares, with its installed version (``not installed`` for one
-        that is not); none for a runtime that declares none. Raises as :meth:`build` does
-        for an unknown name."""
-        ...
-
-    def capabilities(
-        self, point: Point, name: str, config: Mapping[str, Any]
-    ) -> matrix.AgentCapabilities | None:
-        """What sessions on the runtime do when it is built with ``config``, as the runtime
-        declares (whether they load skills, whether their tools can write): None for one that
-        declares nothing, a config it refuses, or a name nothing registered there. Asks
-        nothing of the host."""
-        ...
-
-
-class Respondent(Protocol):
-    """What a ``prompt`` probe puts its prompt to, by the handle a subject opened it under:
-    an agent :class:`Session`, or a model call."""
-
-    #: Whether a stand-in answers: canned replies, not a model's.
-    simulated: bool
-
-    async def answer(
-        self, prompt: str, options: Mapping[str, Any]
-    ) -> Mapping[str, Mapping[str, Any]]:
-        """Put ``prompt`` and return what was left behind, by facet: ``response`` and
-        ``usage``. ``options`` are the probe's. Raises the runtime's error as it stands."""
-        ...
 
 
 class Loop(BaseModel):
@@ -318,7 +260,7 @@ def _cost(rounds: Sequence[Round]) -> float | None:
 @dataclass
 class Session:
     """One trial's agent: what it is, where it runs, and how it is asked. A
-    :class:`Respondent`."""
+    :class:`~ix.extension.Respondent`."""
 
     name: str
     runtime: str
@@ -440,10 +382,10 @@ class Session:
         return {"response": response, "usage": usage}
 
 
-class Sessions:
-    """What is open now, by handle: the agent sessions and model calls subjects opened, so
-    that a subject and a probe built over the same table share a live one while a target
-    carries only its handle."""
+class SessionTable:
+    """:class:`~ix.extension.Sessions`, in this process: the agent sessions and model calls
+    subjects opened, so that a subject and a probe built over the same table share a live one
+    while a target carries only its handle."""
 
     def __init__(self) -> None:
         self._open: dict[str, Respondent] = {}

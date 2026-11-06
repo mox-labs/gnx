@@ -24,9 +24,10 @@ from typing import TYPE_CHECKING, Any
 from matrix import Registry, default_registry
 
 from ix.adapters._out.environments import NoEnvironment
-from ix.composition.extension import POINTS, register_run_path
+from ix.composition.entry_point import register_run_path
 from ix.domain import schema
 from ix.domain.run import HarnessError, SubjectError, Target
+from ix.extension import POINTS
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping

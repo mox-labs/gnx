@@ -1,7 +1,7 @@
 """The ``compose`` environment: a docker compose project brought up before the trials and down
 after them, for experiments whose subjects need several services around them.
 
-Every docker command goes through the :class:`~ix.adapters._out.processes.Launcher`, so a
+Every docker command goes through the :class:`~ix.extension.Launcher`, so a
 command that hangs is ended with its process group, and a test can put a fake ``docker`` on
 the path.
 
@@ -48,10 +48,10 @@ from ix.domain.run import HarnessError
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from ix.adapters._out.processes import Launcher
     from ix.domain.experiment import EnvironmentConfig
     from ix.domain.ports import Scope
     from ix.domain.run import Bindings
+    from ix.extension import Launcher
 
 #: How long the stack may take to come up, and healthy, when the experiment does not say.
 WAIT_TIMEOUT_S = 120.0

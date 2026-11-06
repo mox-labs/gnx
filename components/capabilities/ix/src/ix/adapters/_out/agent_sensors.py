@@ -25,9 +25,9 @@ from ix.domain.problem import Problem, problem
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from ix.adapters._out.processes import Launcher
     from ix.domain.ports import Measured, Surroundings
     from ix.domain.run import Interaction, Target
+    from ix.extension import Launcher
 
 #: What a probe's truth says should happen, for the sensors that read an ``expectation``.
 MUST_TRIGGER = "must_trigger"

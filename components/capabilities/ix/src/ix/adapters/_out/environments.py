@@ -17,10 +17,10 @@ from ix.domain.ports import StoodIn
 from ix.domain.run import HarnessError
 
 if TYPE_CHECKING:
-    from ix.adapters._out.processes import Launcher
     from ix.domain.experiment import EnvironmentConfig
     from ix.domain.ports import Requirement, Scope
     from ix.domain.run import Bindings
+    from ix.extension import Launcher
 
 
 class NoEnvironment:

@@ -45,9 +45,9 @@ from ix.domain.run import HarnessError, SubjectError
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from ix.adapters._out.processes import Launcher
     from ix.domain.ports import Requirement
     from ix.domain.run import Target
+    from ix.extension import Launcher
 
 #: Time allowed beyond the load itself for k6 to start, stop and write its summary.
 OVERHEAD_S = 60.0

@@ -33,7 +33,7 @@ from ix.adapters._in.cli import main
 from ix.adapters._out.matrix_agents import Loop
 from ix.adapters._out.otel_tracing import OtelTracer
 from ix.composition import Root, using
-from ix.composition.extension import register
+from ix.composition.entry_point import register
 from ix.composition.settings import IxSettings
 
 if TYPE_CHECKING:

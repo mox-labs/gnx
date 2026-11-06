@@ -32,7 +32,7 @@ from pydantic_evals.otel import _context_in_memory_span_exporter as capture
 import ix
 from ix.adapters._out.evaluators import KIND, EvaluatorSensor, NoSpansError
 from ix.composition import Root
-from ix.composition.extension import register
+from ix.composition.entry_point import register
 from ix.composition.settings import IxSettings
 from ix.domain.run import Interaction, Target
 

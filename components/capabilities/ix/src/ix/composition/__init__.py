@@ -50,7 +50,7 @@ from matrix import (
 )
 
 from ix.adapters._in.matrix_components import COMPOSITION, NEED
-from ix.adapters._out.matrix_agents import AGENT_RUNTIME, MODEL_RUNTIME, Point, Sessions
+from ix.adapters._out.matrix_agents import SessionTable
 from ix.adapters._out.matrix_documents import (
     STDIN_SOURCE,
     GenreFiles,
@@ -70,7 +70,6 @@ from ix.application import running
 from ix.application import skill as skill_document
 from ix.application.experiments import Examined, FolderProbes, Vocabulary
 from ix.application.running import Kit
-from ix.composition.extension import JUDGE_MODELS, LAUNCHER, POINTS, RUNTIMES, SESSIONS
 from ix.composition.settings import IxSettings
 from ix.domain import schema
 from ix.domain.design import entries_in_use
@@ -85,6 +84,16 @@ from ix.domain.provenance import Provenance, RuntimeOrigin, named_files
 from ix.domain.report import Report, Runs
 from ix.domain.report import report as build_report
 from ix.domain.report import summary as summarize
+from ix.extension import (
+    AGENT_RUNTIME,
+    JUDGE_MODELS,
+    LAUNCHER,
+    MODEL_RUNTIME,
+    POINTS,
+    RUNTIMES,
+    SESSIONS,
+    Point,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
@@ -358,7 +367,7 @@ class Root:
         self._runtimes = _Runtimes(self._registry, lambda: self._settings().matrix.models)
         self._supplies = {
             LAUNCHER: MatrixLauncher(),
-            SESSIONS: Sessions(),
+            SESSIONS: SessionTable(),
             RUNTIMES: self._runtimes,
             JUDGE_MODELS: _JudgeModels(self._runtimes),
         }

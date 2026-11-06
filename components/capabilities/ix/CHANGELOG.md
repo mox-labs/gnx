@@ -2,7 +2,34 @@
 
 ## Unreleased
 
+### Changed (breaking)
+
+- **The extension contract is one public module, `ix.extension`** (the name is provisional
+  until the owner picks one). It holds everything an adapter author writes against: the
+  extension points (`POINTS`) and the port each holds to (`PORTS`); the four needs
+  (`LAUNCHER`, `RUNTIMES`, `SESSIONS`, `JUDGE_MODELS`) with the Protocol of what each is
+  given (`Launcher`, `Runtimes`, `Sessions` with the `Respondent` it holds, `JudgeModels`)
+  and matrix's runtime points (`AGENT_RUNTIME`, `MODEL_RUNTIME`, `Point`); the family
+  ports and every optional role (`Preflight`, `Review`, `StandIn`, `SpanReader`,
+  `Liveness`, and for a scope `Traced`, `Recorded` with its `Attribution`); the records and
+  errors an adapter speaks in (`Target`, `Interaction`, `Sensed`, `Requirement`,
+  `Surroundings`, `StoodIn`, `SubjectError`, `HarnessError`, ...); and the option helpers
+  (`seconds`, `arrivals`, `placeholders`, `problem`). The need Protocols were private
+  (`Launcher` in `ix.adapters._out.processes`, `Runtimes`, `Respondent` and the sessions
+  table in `matrix_agents`, `JudgeModels` in `evaluators`), and `SpanReader`, `Recorded`
+  and `Attribution` were exported nowhere; ix's own adapters now import them from
+  `ix.extension` as a third party's do. `JudgeModels` and `SpanReader` are provisional.
+  Import the ports from `ix.extension`: `ix.domain` no longer exports them, nor `Target`,
+  `Bindings`, `SubjectError`, `HarnessError` or `TrialError`. `ix.domain` holds what ix
+  returns; `ix.extension` what an extension implements and is handed.
+- **ix's `matrix.extensions` entry point is `ix.composition.entry_point:register`**, renamed
+  from `ix.composition.extension` so that it is not mistaken for the public contract. It
+  registers ix's run path and its adapters, and declares nothing a third party uses.
+
 ### Fixed
+
+- **README lists all four needs**, `judge_models` among them, in a table with the Protocol
+  each gives; it listed three, and the fourth was documented only in a private module.
 
 - **An override on a run that gives a verdict is refused in one place, in one wording.**
   `--repeats` and `--trials-in-flight` on a run that is neither `--exploratory` nor

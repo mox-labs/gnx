@@ -3,7 +3,7 @@
 **A trial is one model call.** A model call is not an agent session: it has no loop, no
 tools, no turns and no working directory. Reaching a ``model-call`` subject opens a
 :class:`Call` under a handle (``respondent``) in the
-:class:`~ix.adapters._out.matrix_agents.Sessions` the ``prompt`` probe shares; the probe puts
+:class:`~ix.extension.Sessions` the ``prompt`` probe shares; the probe puts
 its prompt, and the call makes one request through :meth:`matrix.ModelRuntime.call`.
 Leaving the subject closes the handle.
 
@@ -50,12 +50,9 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from ix.adapters._out.matrix_agents import (
     ACTIVATION,
     CANNED,
-    MODEL_RUNTIME,
     RESPONDENT,
     STAND_IN,
     TOOL_USAGE,
-    Runtimes,
-    Sessions,
     built,
     carried_out,
     released,
@@ -66,12 +63,14 @@ from ix.domain.kind import placeholders
 from ix.domain.ports import Requirement, StoodIn
 from ix.domain.problem import Problem, problem
 from ix.domain.run import HarnessError, Target
+from ix.extension import MODEL_RUNTIME
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
 
     from ix.domain.experiment import SubjectConfig
     from ix.domain.ports import Surroundings
+    from ix.extension import Runtimes, Sessions
 
 FUNCTION_TEST = "ix.v1.sensor.function-test"
 
@@ -105,7 +104,7 @@ class CallOptions(BaseModel):
 @dataclass
 class Call:
     """One trial's model call: the runtime it is made on, and how it is asked. A
-    :class:`~ix.adapters._out.matrix_agents.Respondent`."""
+    :class:`~ix.extension.Respondent`."""
 
     options: CallOptions
     simulated: bool
