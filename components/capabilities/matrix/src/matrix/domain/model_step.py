@@ -76,7 +76,7 @@ from matrix.domain.template import check_template, json_document, render
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from matrix.domain.component import Inputs, RunContext
+    from matrix.domain.component import Context, Inputs
     from matrix.domain.model_call import ModelCall
     from matrix.domain.observer import Observer
     from matrix.domain.ports._out.model_runtime import ModelRuntime
@@ -160,7 +160,7 @@ class ModelStep:
         where = f"model-step on {self._config.runtime!r}"
         return render(self._config.prompt, self._config.inputs, inputs, where=where)
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         close = getattr(self._runtime, "aclose", None)
         if callable(close):  # the runtime's connections close in the loop that made them
             ctx.defer(close)

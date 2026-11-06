@@ -29,6 +29,7 @@ from matrix import (
     AgentRuntimeError,
     BoundAgent,
     CompilationError,
+    Context,
     Executor,
     Limits,
     MatrixConfig,
@@ -163,31 +164,26 @@ async def test_a_row_names_the_sessions_its_component_ran_since_its_last_hand_ov
     assert {e.component for e in run.construct.provenance(SESSION)} == {"two"}
 
 
-async def test_a_component_can_ask_which_sessions_its_next_row_will_name() -> None:
-    """``ctx.sessions()`` is what the ledger entry of the component's next row will name, so
-    a component can put the sessions behind a row in the row itself."""
+async def test_a_row_can_carry_the_sessions_behind_it_in_itself() -> None:
+    """A component that puts the sessions behind a row in the row itself takes them from a
+    scope around the work, and names the same ones in its ledger entry."""
     runtime = MockAgentRuntime(MockAgentRuntimeConfig(default="ok"))
     agent = BoundAgent(AgentDefinition(name="a"), runtime)
-    seen: list[tuple[int, ...]] = []
 
-    class _Asks:
+    class _Carries:
         requires = frozenset({TASK})
         provides = frozenset({"acme.v1.out"})
 
-        async def run(self, inputs: Any, ctx: Any) -> None:
-            await agent.run("one")
-            await agent.run("two")
-            seen.append(ctx.sessions())
-            ctx.provide("acme.v1.out", "first")
-            seen.append(ctx.sessions())
-            await agent.run("three")
-            seen.append(ctx.sessions())
-            ctx.provide("acme.v1.out", "second")
+        async def run(self, inputs: Any, ctx: Context) -> None:
+            for task in (("one", "two"), ("three",)):
+                async with ctx.attributed() as behind:
+                    for each in task:
+                        await agent.run(each)
+                ctx.provide("acme.v1.out", list(behind.sessions()), sessions=behind.sessions())
 
-    run = await Executor().run(wire({"asks": _Asks()}, inputs=[TASK]), {TASK: "go"})
-    assert seen == [(0, 1), (), (2,)]
+    run = await Executor().run(wire({"carries": _Carries()}, inputs=[TASK]), {TASK: "go"})
+    assert run.rows("acme.v1.out") == ([0, 1], [2])
     assert [e.sessions for e in run.construct.provenance("acme.v1.out")] == [(0, 1), (2,)]
-    assert RunContext("r", "alone").sessions() == ()  # outside a run, none
 
 
 OUT = "acme.v1.out"
@@ -207,13 +203,12 @@ async def test_concurrent_tasks_under_one_component_each_see_exactly_their_own_s
     opens (``ctx.attributed()``) names exactly the sessions made in its own task, and so does
     the ledger entry of the row each hands over with them. Neither claims the other's."""
     seen: dict[str, tuple[int, ...]] = {}
-    left: list[tuple[int, ...]] = []
 
     class _Trials:
         requires = frozenset({TASK})
         provides = frozenset({OUT})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             turn = {"a": asyncio.Event(), "b": asyncio.Event()}
 
             async def trial(me: str, other: str) -> None:
@@ -230,14 +225,14 @@ async def test_concurrent_tasks_under_one_component_each_see_exactly_their_own_s
             async with asyncio.TaskGroup() as group:
                 group.create_task(trial("a", "b"))
                 group.create_task(trial("b", "a"))
-            left.append(ctx.sessions())
+            ctx.provide(OUT, "after")
 
     run = await Executor().run(wire({"trials": _Trials()}, inputs=[TASK]), {TASK: "go"})
     assert _labels(run, tuple(range(6))) == ["a0", "b0", "a1", "b1", "a2", "b2"]
     assert seen == {"a": (0, 2, 4), "b": (1, 3, 5)}
     named = {run.rows(OUT)[e.row]: e.sessions for e in run.construct.provenance(OUT)}
-    assert named == seen
-    assert left == [()]  # every session was named by the row of its own trial
+    # Every session was named by the row of its own trial: none is left for a plain row.
+    assert named == {**seen, "after": ()}
 
 
 async def test_a_scope_holds_its_task_s_sessions_and_its_child_tasks_and_nests() -> None:
@@ -250,7 +245,7 @@ async def test_a_scope_holds_its_task_s_sessions_and_its_child_tasks_and_nests()
         requires = frozenset({TASK})
         provides = frozenset({OUT})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             go, late = asyncio.Event(), asyncio.Event()
 
             async def sibling() -> None:
@@ -293,26 +288,22 @@ async def test_a_scope_holds_its_task_s_sessions_and_its_child_tasks_and_nests()
 
 async def test_a_row_handed_over_with_its_sessions_leaves_the_rest_to_the_next_row() -> None:
     """``provide(kind, row, sessions=...)`` names exactly those sessions. The ones it did
-    not name are still the component's unnamed sessions (``ctx.sessions()``), and its next
-    plain hand-over names them, as it would have without a scope."""
-    seen: list[tuple[int, ...]] = []
+    not name are still the component's unnamed sessions, and its next plain hand-over names
+    them, as it would have without a scope."""
 
     class _Mixed:
         requires = frozenset({TASK})
         provides = frozenset({OUT})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             _fake("loose")
             async with ctx.attributed() as trial:
                 _fake("trial")
-            seen.append(ctx.sessions())
             ctx.provide(OUT, "trial", sessions=trial.sessions())
-            seen.append(ctx.sessions())
             ctx.provide(OUT, "rest")
             ctx.provide(OUT, "none", sessions=())
 
     run = await Executor().run(wire({"mixed": _Mixed()}, inputs=[TASK]), {TASK: "go"})
-    assert seen == [(0, 1), (0,)]
     assert [e.sessions for e in run.construct.provenance(OUT)] == [(1,), (0,), ()]
 
 
@@ -325,7 +316,7 @@ async def test_a_row_may_name_only_sessions_its_own_component_ran() -> None:
         requires = frozenset({TASK})
         provides = frozenset({"acme.v1.first"})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> Any:
+        async def run(self, inputs: Any, ctx: Context) -> Any:
             _fake("theirs")
             return {"acme.v1.first": "done"}
 
@@ -336,7 +327,7 @@ async def test_a_row_may_name_only_sessions_its_own_component_ran() -> None:
         def __init__(self, claimed: tuple[int, ...]) -> None:
             self._claimed = claimed
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             _fake("mine")
             ctx.provide(OUT, "claimed", sessions=self._claimed)
 
@@ -358,7 +349,7 @@ async def test_a_scope_does_not_take_the_sessions_of_a_run_started_inside_it() -
         requires = frozenset({TASK})
         provides = frozenset({OUT})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             _fake("inner")
 
     seen: list[tuple[int, ...]] = []
@@ -367,7 +358,7 @@ async def test_a_scope_does_not_take_the_sessions_of_a_run_started_inside_it() -
         requires = frozenset({TASK})
         provides = frozenset({"acme.v1.first"})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             async with ctx.attributed() as scope:
                 await Executor().run(wire({"inner": _Inner()}, inputs=[TASK]), {TASK: "x"})
                 _fake("outer")
@@ -398,7 +389,7 @@ async def test_a_trial_cancelled_mid_session_names_its_own_sessions_the_cancelle
         requires = frozenset({TASK})
         provides = frozenset({OUT})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             async def held() -> None:
                 async with ctx.attributed() as scopes["held"]:
                     _fake("held0")
@@ -438,7 +429,7 @@ async def test_a_scope_left_by_an_exception_is_final_and_names_only_its_own() ->
         requires = frozenset({TASK})
         provides = frozenset({OUT})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             _fake("before")
             try:
                 async with ctx.attributed() as trial:

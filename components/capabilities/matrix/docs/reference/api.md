@@ -13,8 +13,11 @@ from matrix import (
     type_url,
     # components and wiring
     Component,
+    Context,
     Inputs,
     RunContext,
+    NEEDS,
+    Need,
     Wiring,
     wire,
     # execution
@@ -211,7 +214,7 @@ Structural and `runtime_checkable`: implement the shape, no base class.
 |------|------|
 | `requires` | a collection of kinds: the data it reads |
 | `provides` | a collection of kinds: the data it writes |
-| `run` | `async (inputs: Inputs, ctx: RunContext) -> Mapping[str, Any] \| None` |
+| `run` | `async (inputs: Inputs, ctx: Context) -> Mapping[str, Any] \| None` |
 
 `run` returns a mapping of kind to rows: a `list` or `tuple` is several rows, anything else is
 one row. It may return `None`. It may also hand rows over while it runs, with `ctx.provide`,
@@ -228,10 +231,11 @@ Nothing else is in it. `inputs.one(kind)` returns the single row and raises `Loo
 unless there is exactly one. A kind the component does not require raises `KeyError` listing
 those it does.
 
-### `RunContext`
+### `Context` (Protocol)
 
 What a component may know about its run, and ask of it. It says nothing about other
-components.
+components. Structural and `runtime_checkable`: a component annotates `ctx: Context`, and
+`RunContext` is the executor's implementation.
 
 | Attribute / method | Meaning |
 |--------------------|---------|
@@ -243,13 +247,13 @@ components.
 | `emit(name, **fields)` | emit one event |
 | `measure(name, value, *, unit="", kind="gauge", **attrs)` | record a number as a `matrix.measure` event; `kind` is `gauge`, `counter` or `histogram` |
 | `span(name, **fields)` | an async context manager emitting `<name>.start` and `<name>.end` (`status`, `duration_ms`); OpenTelemetry gets only its number and boolean fields unless content is asked for ([the `otel` observer](#the-otel-observer)) |
-| `sessions()` | the rows of `matrix.v1.session` the component has run that no row it handed over has named yet, failed ones included: what the ledger entry of its next row will name unless it names its own. Without `attributed()`, the sessions since it last handed a row over. A row that should name its sessions itself reads them here. `()` outside a run |
-| `attributed()` | an async context manager giving an `Attribution`: `async with ctx.attributed() as trial:` names in `trial.sessions()` exactly the sessions made in this task, and in tasks started inside the block, while it is open. Work done concurrently in one component (trials in flight) opens one per task and hands each row over with its own sessions |
+| `attributed()` | an async context manager giving an `Attribution`: `async with ctx.attributed() as trial:` names in `trial.sessions()` exactly the sessions made in this task, and in tasks started inside the block, while it is open. Work done concurrently in one component (trials in flight) opens one per task and hands each row over with its own sessions; a row that carries the sessions behind it in itself takes them from a scope too |
 
 `provide` is synchronous. When it returns, the row has been validated against the kind's
 registered schema, appended to the Construct, and is durable in the run's store. Its ledger
-entry names the sessions behind it: by default every one `sessions()` gives, or, with
-`provide(kind, row, sessions=trial.sessions())`, exactly those; either way they are named
+entry names the sessions behind it: by default every session the component ran that no row
+it handed over has named yet, failed ones included; with
+`provide(kind, row, sessions=trial.sessions())`, exactly those. Either way they are named
 from then on, and the rest stay for the next row. It raises
 `ContractError` for a kind the component does not provide, a row that fails the schema, or a
 named session the component did not run, and
@@ -259,11 +263,36 @@ whatever the component does with the exception). Once the store has failed, ever
 
 A name given to `emit`, `measure` or `span` is dotted lower-case with at least two segments,
 and not under `matrix.*`; anything else is a `ContractError`. After the component has ended
-every one of these calls is ignored, and the first is reported as `matrix.component.late`. A
-`RunContext` built by hand (`RunContext("run", "name")`, for testing a component alone)
-keeps nothing, but refuses what a run refuses: a bad event, measure or span name, a measure
-`kind` outside `gauge`, `counter`, `histogram`, or a value that is not a number, each a
-`ContractError`. So a component's unit test catches what the run would.
+every one of these calls is ignored, and the first is reported as `matrix.component.late`.
+
+### `RunContext`
+
+The executor's `Context`, one per component per run. Built by hand
+(`RunContext("run", "name")`, for testing a component alone) it keeps nothing, and
+`attributed()` names no session, but it refuses what a run refuses: a bad event, measure or
+span name, a measure `kind` outside `gauge`, `counter`, `histogram`, or a value that is not a
+number, each a `ContractError`. So a component's unit test catches what the run would.
+
+### `NEEDS` and `Need`
+
+The shared things composition hands an extension that declares it needs them
+(`registry.register(..., needs={"agents"})`), each handed to its `build` by name. `NEEDS`
+maps each name to a `Need` (`name`, `type`, `summary`, `stability`, `components_only`):
+
+| Need | Type | What | Stability |
+|------|------|------|-----------|
+| `agents` | `Mapping[str, Agent]` | every agent the config binds, bound to its agent runtime, by name | stable |
+| `model_runtimes` | `Mapping[str, ModelRuntime]` | every model runtime the config builds, by name | stable |
+| `schemas` | `Mapping[str, type[BaseModel]]` | the registered payload schemas, by kind | stable |
+| `cwd` | `str \| None` | the working directory the host composed for (`compose(context={"cwd": ...})`); None when it gave none, which is the process's | stable |
+| `name` | `str` | the component's name in the run; components only | stable |
+| `models` | `dict[str, Any] \| None` | the config's `models` section, a hardline registry; None when it sets none | beta |
+| `model_runtime_entries` | `Mapping[str, Entry]` | the registry entry of each model runtime the config builds, by name | beta |
+
+A host hands needs of its own through `compose(context={...})` (ix hands its components
+`ix_kit`); a `context` key that names one of the needs above other than `cwd` is a
+`ConfigError`, since composition supplies them. A build that names a need nobody supplied is
+a `ConfigError` naming it. `matrix describe` prints each entry's needs with their types.
 
 ### `wire`
 
@@ -473,7 +502,7 @@ component's type, config and each need it is handed (`Container.wire` above). `C
 `await process.spawn(ctx, argv, *, grace_s=5.0, **options) -> asyncio.subprocess.Process`
 starts `argv` in its own process group and defers killing that group with the run: SIGTERM,
 then SIGKILL once `grace_s` has passed with the group still alive. `options` go to
-`asyncio.create_subprocess_exec`. `ctx` is the component's `RunContext`, or anything with its
+`asyncio.create_subprocess_exec`. `ctx` is the component's `Context`, or anything with its
 `defer` (`process.Deferring`). `await process.kill_group(proc, grace_s=5.0)` does the kill
 directly; only the first call for a process signals. A child that moves itself to another
 session is not reached.
@@ -556,7 +585,7 @@ call = await call_model(runtime, request, name="judge")  # call.session: the row
 `call_sent`, `call_session` and `record_session` are the parts `call_model` is made of, for a
 caller that records a call made some other way.
 
-`Attribution` is what `RunContext.attributed()` gives: `sessions() -> tuple[int, ...]`, the
+`Attribution` is what `Context.attributed()` gives: `sessions() -> tuple[int, ...]`, the
 rows of this table recorded in the scope's task, and in tasks started inside it, while it was
 open, in the order recorded. A scope opened inside another names its sessions in both; one
 that has been left names no more, so what it gives then is final. A session made in another
@@ -929,7 +958,7 @@ declare their own with `add_point`, named under their own root (ix declares `ix.
 | `type_url` | `str` | |
 | `build` | `Callable` | called as `build(validated_config, **needs)`, or `build(**needs)` when `config` is `None`. For `payload-type`, the model itself |
 | `config` | `type[BaseModel] \| None` | the model its settings validate against |
-| `needs` | `frozenset[str]` | shared things composition must hand it: `agents`, `model_runtimes`, `model_runtime_entries` (each composed model runtime's registry entry, by name), `schemas` (kind to its registered model), `models`, `cwd`, keys of `compose(context=...)`, and for a component `name`, its name in the run |
+| `needs` | `frozenset[str]` | shared things composition must hand it: [the needs](#needs-and-need), and keys of `compose(context=...)` |
 | `summary` | `str` | |
 | `stability` | `"stable" \| "beta" \| "experimental"` | default `beta` |
 | `origin` | `str` | the distribution that registered it; `(direct)` for a direct call |
@@ -1508,7 +1537,7 @@ and installs no telemetry provider.
 - `base_dir` anchors relative `definitions` directories that `load_config` did not already
   resolve; defaults to the working directory.
 - `source` is the key every problem's path starts with (`matrix.agents.triage.runtime`).
-- `context` supplies shared needs, such as `{"cwd": "/path"}`, to extensions that declare them.
+- `context` is what the host hands the extensions that declare they need it: `cwd` (`{"cwd": "/path"}`), and needs of its own. A key that names another of [the needs](#needs-and-need) is a `ConfigError`.
 
 Every problem is reported at once, in one `ConfigError`, each with its key path, the legal
 values and, for a config from `load_config`, the file that set it. An agent whose agent
@@ -1530,7 +1559,7 @@ the config names one.
 | `agent_runtime(name)` | `AgentRuntime`; `NotFoundError` listing configured agent runtimes |
 | `model_runtime(name)` | `ModelRuntime`; `NotFoundError` listing configured model runtimes |
 | `bind(definition, runtime)` | a `BoundAgent` on the configured agent runtime named `runtime`, with the container's observers |
-| `needs()` | the shared needs: `agents`, `model_runtimes`, `model_runtime_entries`, `schemas`, `models`, `cwd`, plus `context` keys |
+| `needs()` | the value of each of [the needs](#needs-and-need) but `name`, which `wire` adds for each component, and each `context` key |
 | `wire(components=None, *, inputs=None)` | a `Wiring`. Each `{name, type, config}` entry (a `ComponentConfig` or a mapping) is built from the registry's `component` entries and the result wired, with the registry's payload schemas and each component's `fingerprint`: a digest of its type, its config and each need it is handed (an `agent-step`'s own agent, a `model-step`'s own model runtime, every agent or model runtime for another component that needs them, `models`, and `cwd`, the process's when none was given), where an agent counts by its definition, its runtime's config and needs, and the runtime's optional `resolved`, and a model runtime by its config, needs and `resolved` (the `hardline` runtime's registry, from `matrix.models` or hardline's own tiers). A need a host adds through `context` is not in it, nor are `schemas` or the code. Both arguments default to the config's `matrix.components` and `matrix.inputs`, and then problem paths start `matrix.`. Entries that cannot be built and wiring problems are reported together, in one `CompilationError`. A component that declares the need `name` is handed its own |
 | `executor(observers=())` | an `Executor` with the container's observers (and these), given `cancel_on_signals`, and a `trace` that reads OpenTelemetry's current span for each session row |
 | `async run(inputs=None, *, run_id=None, reuse_from=None, observers=())` | runs the configured components in the configured store within the configured limits; `run_id` defaults to `<UTC time>-<4 hex digits>`. `reuse_from` takes that run's inputs and reuses what it can |

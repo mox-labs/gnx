@@ -154,6 +154,16 @@ def test_describe_shows_the_config_schema(capsys: pytest.CaptureFixture[str]) ->
     assert code == 0 and data["entries"][0]["config"]["properties"]["default"]
 
 
+def test_describe_shows_each_need_with_its_type(capsys: pytest.CaptureFixture[str]) -> None:
+    code, data, _ = _cli(capsys, "describe", "matrix.v1.model-step", "--json")
+    needs = {n["name"]: (n["type"], n["stability"]) for n in data["entries"][0]["needs"]}
+    assert needs == {
+        "model_runtime_entries": ("Mapping[str, Entry]", "beta"),
+        "model_runtimes": ("Mapping[str, ModelRuntime]", "stable"),
+        "schemas": ("Mapping[str, type[BaseModel]]", "stable"),
+    }
+
+
 def test_describe_unknown_is_not_found_with_a_json_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

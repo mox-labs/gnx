@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from matrix.domain.agent import AgentResponse
-    from matrix.domain.component import Inputs, RunContext
+    from matrix.domain.component import Context, Inputs
     from matrix.domain.ports._out.agent_runtime import Agent
 
 AGENT_STEP = "matrix.v1.agent-step"
@@ -105,7 +105,7 @@ class AgentStep:
         where = f"agent-step for {self._config.agent!r}"
         return render(self._config.task, self._config.inputs, inputs, where=where)
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         task = self.render(inputs)
         response: AgentResponse = await self._agent.run(task)
         response = response.model_copy(update={"task": task})

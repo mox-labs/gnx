@@ -26,7 +26,7 @@ dependencies = [
     # [tool.uv.sources] resolves it, from a checkout and from a git URL alike. Bounded to the
     # minor ix is built against: before 1.0 a matrix minor may break. matrix brings every agent
     # and model runtime, and the OpenTelemetry SDK and OTLP exporters: there are no extras.
-    "matrix>=0.8,<0.9",
+    "matrix>=0.9,<0.10",
     # Pydantic's maintained continuation of httpx, the stack's one HTTP client; bounded to
     # the major tested.
     "httpx2>=2.10,<3",

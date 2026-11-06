@@ -26,9 +26,9 @@ and runs what a config declares from the command line: `matrix plan`, then `matr
 
 ```bash
 # the library, in a project
-uv add "matrix @ git+https://github.com/mox-labs/gnx@matrix-v0.8.0#subdirectory=components/capabilities/matrix"
+uv add "matrix @ git+https://github.com/mox-labs/gnx@matrix-v0.9.0#subdirectory=components/capabilities/matrix"
 # the matrix command
-uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.8.0#subdirectory=components/capabilities/matrix"
+uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.9.0#subdirectory=components/capabilities/matrix"
 ```
 
 matrix is installed from its repository at the release's tag; it is not on a package index,
@@ -466,31 +466,32 @@ shares its runtimes, agents and definitions; `--only` keeps it to itself. Exit c
 `matrix --help` lists each with what to do next. Under `--json` a failure is one
 `matrix.v1.error` envelope on stderr, its problems structured.
 
-## The stable public API
+## What is promised
 
-Before 1.0 a minor release may break anything; from this release, what a minor release
-changes only by addition, with a changelog entry, is:
+One surface is stable: **the component-author contract**, what a component and its
+registration are written against.
 
-- **Components and runs**: `Component`, `Inputs`, `RunContext`, `wire`, `Wiring`, `Executor`,
-  `Limits`, `ComponentLimits`, `Retry`, `Run`, `ComponentEnding`, `ComponentFailure`,
-  `ReleaseOutcome`, `Construct`, `LedgerEntry`, `LEDGER`, `Ref`, `REF`, `process`.
-- **Agents**: `AgentDefinition`, `AgentResponse`, `AgentRuntime`, `Agent`, `BoundAgent`,
-  `AGENT_STEP`, `AGENT_RESPONSE`, `TASK`.
-- **Config and composition**: `load_config`, `discover_sources`, `MatrixConfig`, `Config`,
-  `compose`, `Container`, `default_registry`, `Registry`.
-- **Loading**: `load`, `load_each`, `Problem`.
-- **Errors**: `MatrixError` and its subclasses, `RunCancelled`, `EXIT_CODES`.
-- **On the wire**: the `matrix.v1.*` document schemas, the `matrix.extensions` entry-point
-  group, the type-URL grammar, the config tiers and keys, the run directory layout.
+- `Component`, `Context` and `Inputs`, as their protocols and `Inputs` declare them;
+  `Attribution`, which `Context.attributed()` gives.
+- The kind grammar (`<namespace>.v<N>.<name>`, checked by `check_type_url`) and the rule that
+  each kind has one provider.
+- `Registry.register` and `Registry.register_payload`, with their options.
+- The `matrix.extensions` entry-point group, whose entries are `register(registry) -> None`.
+- `NEEDS`: the needs marked `stable`, their names and types.
+- The stop protocol: `ctx.stopping`, then `grace_s`, then cancellation; `ctx.defer`, called
+  once at the end of every run, last first.
+- `ContractError`, what breaking that contract raises.
 
-Every other exported name is public but may still change in a minor release, said in the
-changelog: the extension-author surface (`Entry`, `Extension`, `Failure`, `Loader`,
-`DocumentSource`, `Document`, `BesideFile`, `Accumulate`, `ConstructStore`, `RunWriter`,
-the stores, `Reuse`, the observers' types), the session table (`Session`, `SESSION`,
-`digest`, `agent_session`, `call_sent`, `call_session`, `record_session`, `Attribution`), the
-model step's call path (`call_model`), the command's document records (`Catalog`, `Plan`,
-...) and telemetry (`configure_telemetry`, `Telemetry`). Names under
-`matrix.domain`, `matrix.adapters` and `matrix.composition` are internal.
+It changes only by addition. A break needs a major release, or, before 1.0, a minor release
+whose changelog says so and that carries the migration of every consumer in this repository.
+`tests/test_contract.py` pins each of these, so a change to one is deliberate.
+[CONTRACT.md](CONTRACT.md) states each.
+
+Everything else exported from `matrix` is public and may change in a minor release, said in
+the changelog, when matrix and its consumers in this repository change together: the
+executor and its records, the ports and their stores, runtimes and observers, the session
+table, composition and config, the loader, the documents the command prints, and telemetry.
+Names under `matrix.domain`, `matrix.adapters` and `matrix.composition` are internal.
 
 ## Documentation
 

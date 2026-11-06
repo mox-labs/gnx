@@ -15,7 +15,7 @@
 * **Loading**: ``load`` and ``load_each`` read YAML and markdown documents as the pydantic
   type the caller names, reporting every problem as a :class:`Problem` with its key path.
 
-The README lists which of these names are the stable public API.
+The README says which of these are promised: the component-author contract alone.
 
 A type URL is ``<namespace>.v<N>.<name>``: lowercase segments joined by dots, checked by
 :func:`check_type_url`.
@@ -56,7 +56,7 @@ from .composition.documents import (
 from .composition.telemetry import Telemetry, configure_telemetry
 from .domain.agent import AgentCapabilities, AgentDefinition, AgentResponse, BoundAgent
 from .domain.agent_step import AGENT_RESPONSE, AGENT_STEP, TASK, AgentStep, AgentStepConfig
-from .domain.component import LEDGER, Component, Inputs, RunContext, Wiring, wire
+from .domain.component import LEDGER, Component, Context, Inputs, RunContext, Wiring, wire
 from .domain.config import (
     AgentConfig,
     ComponentConfig,
@@ -118,6 +118,7 @@ from .domain.model_step import (
     ModelStepConfig,
     call_model,
 )
+from .domain.needs import NEEDS, Need
 from .domain.observer import Event, EventPolicy, Observer, RecordingObserver
 from .domain.ports._out.agent_runtime import RUNTIME_LOGGER, Agent, AgentRuntime
 from .domain.ports._out.construct_store import ConstructStore, RunWriter
@@ -162,6 +163,7 @@ __all__ = [
     "LEDGER",
     "MODEL_CALL",
     "MODEL_STEP",
+    "NEEDS",
     "PROMPT",
     "REF",
     "RUNTIME_LOGGER",
@@ -199,6 +201,7 @@ __all__ = [
     "Construct",
     "ConstructStore",
     "Container",
+    "Context",
     "ContractError",
     "Document",
     "DocumentSource",
@@ -225,6 +228,7 @@ __all__ = [
     "ModelRuntimeError",
     "ModelStep",
     "ModelStepConfig",
+    "Need",
     "NotFoundError",
     "Observer",
     "ObserverConfig",

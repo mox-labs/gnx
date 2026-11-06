@@ -131,7 +131,7 @@ def test_entries_describe_themselves_for_agents() -> None:
         "agent-runtime", "matrix.v1.agent-runtime.claude-sdk"
     )
     described = entry.describe()
-    assert described["needs"] == ["cwd"]
+    assert [(n["name"], n["type"]) for n in described["needs"]] == [("cwd", "str | None")]
     assert "permission_mode" in described["config"]["properties"]
 
 

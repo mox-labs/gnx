@@ -348,6 +348,50 @@ def test_a_component_handed_the_agents_is_fingerprinted_by_them() -> None:
     assert fingerprint("judge strictly") != fingerprint("judge kindly")
 
 
+class _Kitted:
+    requires = ("acme.v1.in",)
+    provides = ("acme.v1.out",)
+
+    def __init__(self, **needs: object) -> None:
+        self.needs = needs
+
+    async def run(self, inputs: object, ctx: object) -> None:
+        return None
+
+
+def _kitted(**context: object) -> object:
+    registry = default_registry(discover=False)
+    registry.register("component", "acme.v1.kitted", _Kitted, needs={"acme_kit", "cwd", "name"})
+    container = compose(
+        _config(components=[{"name": "k", "type": "acme.v1.kitted"}], inputs=["acme.v1.in"]),
+        registry=registry,
+        context=context,
+    )
+    return container.wire().components["k"]
+
+
+def test_a_host_hands_over_needs_of_its_own_and_the_working_directory() -> None:
+    built = _kitted(acme_kit="the kit", cwd="/srv")
+    assert isinstance(built, _Kitted)
+    assert built.needs == {"acme_kit": "the kit", "cwd": "/srv", "name": "k"}
+
+
+def test_a_need_the_host_does_not_hand_over_is_refused_naming_it() -> None:
+    with pytest.raises(ConfigError) as raised:
+        _kitted()
+    (found,) = raised.value.problems
+    assert found.path == "matrix.components.k.config"
+    assert "acme_kit" in found.message
+    assert "hands over acme_kit, with compose(context=...)" in str(found.fix)
+
+
+@pytest.mark.parametrize("taken", ["agents", "model_runtimes", "schemas", "models"])
+def test_a_host_cannot_hand_over_a_need_composition_supplies(taken: str) -> None:
+    with pytest.raises(ConfigError, match=f"context names {taken}") as raised:
+        compose(_config(), registry=default_registry(discover=False), context={taken: {}})
+    assert raised.value.details["allowed"] == ["cwd"]
+
+
 def test_extension_runtime_registers_by_entry_point(monkeypatch: pytest.MonkeyPatch) -> None:
     """A third party's runtime arrives the way matrix's own do, under its own namespace."""
 

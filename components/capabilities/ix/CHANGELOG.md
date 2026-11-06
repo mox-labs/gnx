@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- **Built against matrix 0.9** (`matrix>=0.9,<0.10`). ix's three run-path components take
+  matrix's `Context`, the protocol, rather than its `RunContext` class.
+
 ### Fixed
 
 - **`examples/delay-server` accepts every connection that arrives at once** (up to 128).

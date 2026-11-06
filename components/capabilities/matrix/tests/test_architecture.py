@@ -196,9 +196,10 @@ def test_the_api_reference_lists_every_exported_name_and_no_other() -> None:
     assert listed == set(matrix.__all__), listed ^ set(matrix.__all__)
 
 
-def test_the_names_the_readme_calls_stable_are_exported() -> None:
+def test_the_names_the_readme_promises_are_exported() -> None:
     text = (PACKAGE / "README.md").read_text()
-    section = text[text.index("## The stable public API") : text.index("## Documentation")]
-    stable = section[: section.index("Every other exported name")]
-    named = set(re.findall(r"`([A-Za-z_]+)`", stable)) - {"matrix", "v1"}
+    section = text[text.index("## What is promised") : text.index("## Documentation")]
+    stable = section[: section.index("Everything else exported")]
+    # A config key and a stability, which are quoted words but not names.
+    named = set(re.findall(r"`([A-Za-z_]+)`", stable)) - {"grace_s", "stable"}
     assert named and named <= set(matrix.__all__), named - set(matrix.__all__)

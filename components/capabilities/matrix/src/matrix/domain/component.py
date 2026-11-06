@@ -14,7 +14,8 @@ returns, a :class:`Wiring`, can be run any number of times.
 
 A component's **name** is the name of the configured instance: one component class may be used
 twice in a run under two names. It receives :class:`Inputs`, the rows of the kinds it requires
-and nothing else, and a :class:`RunContext`. It never sees the record of the run.
+and nothing else, and a :class:`Context`: what it may know of its run and ask of it, declared
+here as a protocol. :class:`RunContext` is the executor's. It never sees the record of the run.
 """
 
 from __future__ import annotations
@@ -69,8 +70,6 @@ class ContextHooks(Protocol):
 
     def span(self, name: str, fields: dict[str, Any]) -> AbstractAsyncContextManager[None]: ...
 
-    def sessions(self) -> tuple[int, ...]: ...
-
 
 class _Detached:
     """Hooks for a context built outside a run (a component under a unit test). Nothing is
@@ -95,40 +94,76 @@ class _Detached:
         check_event_name(name, what="span")
         yield
 
-    def sessions(self) -> tuple[int, ...]:
-        return ()
 
-
-class RunContext:
+@runtime_checkable
+class Context(Protocol):
     """What a component may know about the run it is part of, and ask of it. Nothing about
-    its neighbours.
+    its neighbours. Structural: a component annotates against it without importing matrix
+    at run time; :class:`RunContext` is the executor's.
 
     ``provide(kind, row)`` hands over one row of a kind the component provides, *while it is
     still running*. When the call returns the row has been checked against the kind's schema,
     is part of the run's record, and is durable in the run's store. A component that works
-    for hours hands its rows over as it makes them, and killing it loses none of them.
+    for hours hands its rows over as it makes them, and killing it loses none of them. The
+    row's ledger entry names the rows of ``matrix.v1.session`` behind it: by default every
+    session the component ran that no row it handed over has named yet; with ``sessions``,
+    exactly those, which must be its own (else :class:`ContractError`).
+
+    ``attributed()`` opens a scope that names only the sessions one block made, in its own
+    task and the tasks it starts: work done concurrently in one component (trials in flight)
+    opens one per task and hands each row over with its own,
+    ``provide(kind, row, sessions=scope.sessions())``.
 
     ``stopping`` is set when the run asks the component to finish now: its deadline passed,
     another component failed, or the run was cancelled. A component that returns soon after
     keeps what it returns; one that does not is cancelled after the grace period.
+    ``deadline`` is that deadline as a ``time.monotonic()`` time, or None when it has none.
 
     ``defer(release)`` hands the run something to undo. Every deferred release is called once
     when the run ends, in reverse order, whether the run completed, failed or was cancelled.
 
-    ``sessions()`` names the rows of ``matrix.v1.session`` the component has run that no row
-    it handed over has named yet: the ones its next row's ledger entry will name.
-    ``attributed()`` opens a scope that names only the sessions one block made, in its own
-    task and the tasks it starts: work done concurrently in one component (trials in flight)
-    hands each row over with its own sessions, ``provide(kind, row, sessions=...)``.
-
     ``emit``, ``measure`` and ``span`` are the component's telemetry: events on the run's
-    channel, under a name the component namespaces with its own root (``acme.probe.sample``;
-    ``matrix.*`` is matrix's). They are never part of the result, and may be dropped under
-    load.
+    channel, under a name the component namespaces with its own root (``acme.probe.sample``).
+    A name that is not namespaced, or is under ``matrix.*``, which is matrix's, is a
+    :class:`ContractError`. They are never part of the result, and may be dropped under load.
 
-    Outside a run (a context built by hand) nothing is recorded, released or emitted. After
-    the component has ended, each of these is ignored and reported once as
+    After the component has ended, each of these is ignored and reported once as
     ``matrix.component.late``.
+    """
+
+    @property
+    def run_id(self) -> str: ...
+
+    @property
+    def component(self) -> str: ...
+
+    @property
+    def deadline(self) -> float | None: ...
+
+    @property
+    def stopping(self) -> asyncio.Event: ...
+
+    def provide(self, kind: str, row: Any, /, *, sessions: Iterable[int] | None = None) -> None: ...
+
+    def defer(self, release: Release) -> None: ...
+
+    def emit(self, name: str, /, **fields: Any) -> None: ...
+
+    def measure(
+        self, name: str, value: float, /, *, unit: str = "", kind: str = "gauge", **attrs: Any
+    ) -> None: ...
+
+    def span(self, name: str, /, **fields: Any) -> AbstractAsyncContextManager[None]: ...
+
+    def attributed(self) -> AbstractAsyncContextManager[Attribution]: ...
+
+
+class RunContext:
+    """The executor's :class:`Context`, one per component per run.
+
+    Built by hand (``RunContext("run", "name")``), it is a context outside any run, for
+    testing a component alone: nothing is recorded, released or emitted, ``attributed()``
+    names no session, and a name or a measurement a run would refuse is refused here too.
     """
 
     def __init__(
@@ -147,21 +182,12 @@ class RunContext:
         self._hooks: ContextHooks = hooks if hooks is not None else _Detached()
 
     def provide(self, kind: str, row: Any, /, *, sessions: Iterable[int] | None = None) -> None:
-        """Hand over one row of ``kind`` now. Recorded and durable when this returns.
-
-        Its ledger entry names ``sessions``, rows of ``matrix.v1.session`` this component
-        ran (an :class:`Attribution`'s); by default, every one no row has named yet
-        (:meth:`sessions`). Naming a session this component did not run is a
-        :class:`ContractError`."""
         self._hooks.provide(kind, row, None if sessions is None else tuple(sessions))
 
     def defer(self, release: Release) -> None:
-        """Register ``release`` (sync or async, no arguments) to run when the run ends."""
         self._hooks.defer(release)
 
     def emit(self, name: str, /, **fields: Any) -> None:
-        """Raises :class:`ContractError` for a ``name`` that is not namespaced, or is under
-        ``matrix.*``."""
         self._hooks.emit(name, fields)
 
     def measure(
@@ -185,20 +211,12 @@ class RunContext:
         agent calls made inside it are its children."""
         return self._hooks.span(name, fields)
 
-    def sessions(self) -> tuple[int, ...]:
-        """The rows of ``matrix.v1.session`` this component has run that no row it handed
-        over has named yet, failed ones included: the sessions the ledger entry of its next
-        row will name unless it names its own. Without :meth:`attributed`, those it ran since
-        it last handed a row over. A component that wants a row to name its sessions itself
-        reads them here."""
-        return self._hooks.sessions()
-
     def attributed(self) -> AbstractAsyncContextManager[Attribution]:
         """``async with ctx.attributed() as trial:`` names in ``trial.sessions()`` exactly
         the sessions made in this task, and in the tasks started inside the block, while it
         is open; none that a concurrent task of this component made. Scopes nest: an outer
-        one names the inner one's sessions too. Every session is still the component's
-        (:meth:`sessions`) until a row names it. Outside a run it names none."""
+        one names the inner one's sessions too. A session a scope names is still the
+        component's until a row names it."""
         return attributed()
 
     def __repr__(self) -> str:
@@ -244,9 +262,10 @@ class Component(Protocol):
     """An executable unit. Structural: implement it without importing matrix.
 
     ``requires`` and ``provides`` are collections of kinds. ``run`` receives the rows of the
-    kinds it requires and its context. Rows of the kinds it provides leave it two ways, and it
-    may use both: handed over as it goes with ``ctx.provide(kind, row)``, and returned, as a
-    mapping of kind to one row or to a list or tuple of rows. It may return nothing.
+    kinds it requires and its :class:`Context`. Rows of the kinds it provides leave it two
+    ways, and it may use both: handed over as it goes with ``ctx.provide(kind, row)``, and
+    returned, as a mapping of kind to one row or to a list or tuple of rows. It may return
+    nothing.
 
     The component's name is the name it is given in the run (see :func:`wire`), so the same
     class can be used twice. Configuration arrives when the component is built, never through
@@ -259,7 +278,7 @@ class Component(Protocol):
     @property
     def provides(self) -> Collection[str]: ...
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> Mapping[str, Any] | None: ...
+    async def run(self, inputs: Inputs, ctx: Context) -> Mapping[str, Any] | None: ...
 
 
 @dataclass(frozen=True)

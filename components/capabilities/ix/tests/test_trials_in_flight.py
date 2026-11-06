@@ -35,11 +35,11 @@ from click.testing import CliRunner
 from ix_fakes import LOG, FakeSubject, FakeTiming, experiment, fake_registry
 from matrix import (
     TASK,
+    Context,
     Executor,
     JsonlConstructStore,
     Limits,
     MatrixConfig,
-    RunContext,
     Session,
     compose,
     digest,
@@ -128,7 +128,7 @@ class TestEachTrialNamesItsOwnSessions:
             requires = frozenset({TASK})
             provides = frozenset({schema.INTERACTION})
 
-            async def run(self, inputs: Any, ctx: RunContext) -> None:
+            async def run(self, inputs: Any, ctx: Context) -> None:
                 kit = _kit(_Answering())
                 async with asyncio.TaskGroup() as group:
                     running_now = [
@@ -166,7 +166,7 @@ class TestEachTrialNamesItsOwnSessions:
             requires = frozenset({TASK})
             provides = frozenset({schema.INTERACTION})
 
-            async def run(self, inputs: Any, ctx: RunContext) -> None:
+            async def run(self, inputs: Any, ctx: Context) -> None:
                 for trial in trials:
                     interaction = await running.invoke(trial, setup, _kit(_Answering()), ctx)
                     landed.append(interaction)
@@ -996,7 +996,7 @@ def _sensed(
         requires = frozenset({TASK})
         provides = frozenset({schema.READING})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             found.extend(
                 await running.sense(setup, kit, trials=trials, interactions=interactions, scope=ctx)
             )

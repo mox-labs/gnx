@@ -21,11 +21,11 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (  # noqa: E4
 )
 
 from matrix import (  # noqa: E402
+    Context,
     Event,
     EventPolicy,
     Executor,
     Inputs,
-    RunContext,
     RunError,
     wire,
 )
@@ -55,7 +55,7 @@ class Emit:
     requires: tuple[str, ...] = ()
     provides = ("acme.v1.text",)
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         return {"acme.v1.text": "x"}
 
 
@@ -63,7 +63,7 @@ class Probe:
     requires: tuple[str, ...] = ()
     provides = ("acme.v1.text",)
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         async with ctx.span("acme.probe"):
             ctx.measure("acme.rss", 7.0, unit="By", host="a")
             ctx.measure("acme.requests", 3, kind="counter")
@@ -145,7 +145,7 @@ class _UsesLibraries:
     def __init__(self, agent: Any) -> None:
         self.agent = agent
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         with _LIBRARY.start_as_current_span("library.in-component"):
             pass
         async with ctx.span("acme.fetch"):
@@ -301,7 +301,7 @@ async def test_an_event_a_component_emits_opens_no_span_whatever_its_name() -> N
         requires: tuple[str, ...] = ()
         provides = ("acme.v1.text",)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+        async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
             ctx.emit("acme.trial.start", seq=1)
             ctx.emit("acme.trial.end", seq=1)
             return {"acme.v1.text": "x"}
@@ -342,7 +342,7 @@ async def test_an_observer_whose_around_fails_is_logged_and_the_run_goes_on(
         requires: tuple[str, ...] = ()
         provides = ("acme.v1.text",)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+        async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
             raise ValueError("the work's own")
 
     broken = [Broken("enter"), Broken("end"), Broken("exit")]
@@ -450,7 +450,7 @@ class _Asks:
     def __init__(self, agent: Any) -> None:
         self.agent = agent
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         return {"acme.v1.text": (await self.agent.run("go")).content}
 
 
@@ -599,7 +599,7 @@ class _Leaky:
     def __init__(self, agent: Any, refuses: Any) -> None:
         self.agent, self.refuses = agent, refuses
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         from matrix import AgentRuntimeError
 
         def release() -> None:
@@ -692,7 +692,7 @@ async def test_a_failed_session_keeps_its_task_in_the_record_and_on_no_span_or_m
         requires: tuple[str, ...] = ()
         provides = ("acme.v1.text",)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+        async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
             await refuses.run(f"{_SECRET} task")
             return {"acme.v1.text": "x"}
 
@@ -732,7 +732,7 @@ async def test_the_span_names_are_the_pinned_ones() -> None:
         requires: tuple[str, ...] = ()
         provides = ("acme.v1.text",)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+        async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
             ctx.defer(lambda: None)
             async with ctx.span("acme.probe"):
                 return {"acme.v1.text": (await agent.run("go")).content}

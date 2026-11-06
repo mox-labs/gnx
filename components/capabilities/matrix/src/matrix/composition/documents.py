@@ -27,6 +27,7 @@ from matrix.composition.container import build_store, compose, default_registry
 from matrix.domain.agent_step import AGENT_STEP
 from matrix.domain.errors import ConfigError, NotFoundError, UsageError, invalid
 from matrix.domain.model_step import MODEL_STEP
+from matrix.domain.needs import described
 from matrix.domain.ports._out.construct_store import damaged_of, location_of
 from matrix.domain.problems import Problem, problem, sourced
 
@@ -77,13 +78,24 @@ class Catalog(_Document):
     failures: list[CatalogFailure]
 
 
+class NeedDescription(_Document):
+    """One need an extension declares, from matrix's table or the host's own."""
+
+    name: str
+    #: The type of what is handed over; None for a need of the host's own.
+    type: str | None
+    summary: str
+    #: ``stable`` or ``beta``; None for a need of the host's own.
+    stability: str | None
+
+
 class ExtensionDescription(_Document):
     point: str
     type_url: str
     summary: str
     stability: str
     origin: str
-    needs: list[str]
+    needs: list[NeedDescription]
     stand_in: bool = False
     drives: list[str] = []
     #: The JSON schema its config must meet; None when it takes none.
@@ -302,7 +314,7 @@ def describe_extension(type_url: str, *, registry: Registry | None = None) -> Ex
                 summary=e.summary,
                 stability=e.stability,
                 origin=e.origin,
-                needs=sorted(e.needs),
+                needs=[NeedDescription.model_validate(need) for need in described(e.needs)],
                 stand_in=e.stand_in,
                 drives=list(e.drives),
                 config=None if e.config is None else e.config.model_json_schema(),

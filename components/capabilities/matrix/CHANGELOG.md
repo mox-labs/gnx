@@ -2,6 +2,43 @@
 
 All notable changes to matrix. Versions follow semver; before 1.0 a minor may break.
 
+## 0.9.0 — 2026-11-06
+
+### Changed (breaking)
+
+- **One surface is promised: the component-author contract.** `Component`, `Context`,
+  `Inputs`, `Attribution`, the kind grammar and the one-provider rule,
+  `Registry.register` and `register_payload`, the `matrix.extensions` group, the stable
+  needs, the stop protocol and `ContractError` change only by addition; `tests/test_contract.py`
+  pins them, and `CONTRACT.md` states them. Everything else exported is public and changes
+  with its consumers in this repository, said here. The 0.6 list (the executor, the agent
+  types, composition, config keys, the record layout) is no longer promised: it named more
+  than could be kept.
+- **`ctx.sessions()` is gone.** A row that carries the sessions behind it in itself takes
+  them from a scope, `async with ctx.attributed() as behind:`, and hands itself over with
+  `sessions=behind.sessions()`. A row handed over without `sessions` still names every
+  session the component ran that no row has named yet. Its one reader was a diff around each
+  trial, which `attributed()` replaced in 0.8.
+- **`matrix describe` gives each need its type.** An entry's `needs` in `matrix.v1.extension`
+  is a list of `{name, type, summary, stability}`, from the needs table; a need of the host's
+  own has `type` and `stability` null. `Entry.describe()` gives the same. The catalog keeps
+  the names.
+- **A `compose(context=...)` key that names one of matrix's needs** (`agents`,
+  `model_runtimes`, `schemas`, `models`, `model_runtime_entries`, `name`) is a `ConfigError`:
+  composition supplies those, and a host's value silently replaced them. `cwd`, and needs of
+  the host's own, are handed over as before.
+
+### Added
+
+- **`Context`**, the protocol a component's `run(inputs, ctx)` is written against: the ten
+  members of `RunContext` that remain, declared. `RunContext` is the executor's
+  implementation, and built by hand the context of a unit test, as before. matrix's own steps
+  and `process.spawn` take a `Context`.
+- **`NEEDS` and `Need`**: the table of the shared needs composition hands an extension, each
+  with its type, what it is and its stability (`models` and `model_runtime_entries` are
+  `beta`). Composition supplies exactly these, the skill prints them, and a missing need's fix
+  says whether matrix or the host hands it over.
+
 ## 0.8.0 — 2026-10-24
 
 ### Added

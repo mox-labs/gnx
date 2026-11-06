@@ -7,7 +7,7 @@ killed run keeps every trial it finished; ``sense`` requires the interactions an
 inputs. Each component needs :data:`NEED`, the :class:`~ix.application.running.Kit` of
 adapters the run uses, and passes its matrix context on as the run's scope, traced by the
 kit's tracer when it has one. The scope is :class:`~ix.domain.ports.Recorded`: each trial,
-and each sensor reading one, opens matrix's ``RunContext.attributed()`` in its own task, so
+and each sensor reading one, opens its matrix context's ``attributed()`` in its own task, so
 each interaction and reading names exactly its own rows of ``matrix.v1.session``, and is
 handed over naming those (``provide(..., sessions=...)``): its ledger entry says the same,
 whatever ran beside it.
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
     from contextlib import AbstractAsyncContextManager, AbstractContextManager
 
-    from matrix import Attribution, Inputs, RunContext
+    from matrix import Attribution, Context, Inputs
 
     from ix.application.running import Kit
     from ix.domain.ports import Flag, Scope, Span, Traced
@@ -62,7 +62,7 @@ PAYLOADS: dict[str, type[Stored]] = {
 class _TracedScope:
     """A matrix context as the run's scope, with ix's own spans from ``tracer``."""
 
-    def __init__(self, ctx: RunContext, tracer: Traced) -> None:
+    def __init__(self, ctx: Context, tracer: Traced) -> None:
         self._ctx = ctx
         self._tracer = tracer
 
@@ -87,7 +87,7 @@ class _TracedScope:
         return self._ctx.attributed()
 
 
-def _scope(ctx: RunContext, kit: Kit) -> Scope:
+def _scope(ctx: Context, kit: Kit) -> Scope:
     return ctx if kit.tracer is None else _TracedScope(ctx, kit.tracer)
 
 
@@ -108,7 +108,7 @@ class EnvironmentComponent:
     def __init__(self, kit: Kit) -> None:
         self._kit = kit
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> Mapping[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> Mapping[str, Any]:
         bindings = await running.bring_up(_setup(inputs), self._kit, _scope(ctx, self._kit))
         return {schema.BINDINGS: BindingsRow(services=bindings)}
 
@@ -123,7 +123,7 @@ class TrialsComponent:
     def __init__(self, kit: Kit) -> None:
         self._kit = kit
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> None:
+    async def run(self, inputs: Inputs, ctx: Context) -> None:
         bindings = BindingsRow.model_validate(inputs.one(schema.BINDINGS)).services
         await running.carry_out(
             _setup(inputs),
@@ -147,7 +147,7 @@ class SenseComponent:
     def __init__(self, kit: Kit) -> None:
         self._kit = kit
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> None:
+    async def run(self, inputs: Inputs, ctx: Context) -> None:
         interactions = [Interaction.model_validate(row) for row in inputs[schema.INTERACTION]]
         readings = await running.sense(
             _setup(inputs),

@@ -608,10 +608,6 @@ class _Hooks:
             return None
         return self._session.record_session(self._name, row)
 
-    def sessions(self) -> tuple[int, ...]:
-        """The session rows the component ran that no row it handed over has named."""
-        return self._session.since(self._name)
-
     def defer(self, release: Release) -> None:
         if not callable(release):
             raise TypeError(f"defer() takes a callable, got {type(release).__name__}")

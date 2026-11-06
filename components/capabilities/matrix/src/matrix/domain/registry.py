@@ -39,6 +39,7 @@ from pydantic import BaseModel, ValidationError
 from matrix.domain.agent import AgentCapabilities
 from matrix.domain.errors import ConfigError, NotFoundError, invalid
 from matrix.domain.ids import parse_type_url
+from matrix.domain.needs import NEEDS, described
 from matrix.domain.observer import Observer
 from matrix.domain.ports._out.agent_runtime import AgentRuntime
 from matrix.domain.ports._out.construct_store import ConstructStore
@@ -151,7 +152,7 @@ class Entry:
             "summary": self.summary,
             "stability": self.stability,
             "origin": self.origin,
-            "needs": sorted(self.needs),
+            "needs": described(self.needs),
             "stand_in": self.stand_in,
             "drives": list(self.drives),
             "config": None if self.config is None else self.config.model_json_schema(),
@@ -362,10 +363,12 @@ class Registry:
         available = dict(needs or {})
         missing = sorted(entry.needs - set(available))
         if missing:
+            hosts = ", ".join(need for need in missing if need not in NEEDS)
             raise ConfigError(
                 f"{where or type_url}: {type_url} needs {missing}, which composition did not "
                 "provide",
-                fix="compose it through matrix.compose, or pass the needs explicitly",
+                fix="compose it through matrix.compose, which supplies matrix's needs"
+                + (f"; the host hands over {hosts}, with compose(context=...)" if hosts else ""),
             )
         given = {n: available[n] for n in entry.needs}
         if entry.config is None:

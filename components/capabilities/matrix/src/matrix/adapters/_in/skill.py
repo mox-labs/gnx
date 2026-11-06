@@ -26,6 +26,7 @@ from matrix.domain.errors import (
 from matrix.domain.executor import Retry
 from matrix.domain.ids import KIND_SEGMENTS
 from matrix.domain.model_step import MODEL_CALL
+from matrix.domain.needs import NEEDS
 from matrix.domain.problems import MATRIX_PROBLEM_KINDS, PROBLEM_KINDS
 from matrix.domain.registry import MATRIX_POINTS
 
@@ -85,19 +86,6 @@ CONFIG_KEYS: dict[str, str] = {
     "limits": "concurrency, deadlines, grace, cleanup, `on_failure`, `retry`, per-component "
     "overrides",
     "models": "a hardline registry handed to every `type: hardline` model runtime without its own",
-}
-
-#: What an extension may declare it needs, handed to its ``build`` by name. The tests hold
-#: these to what composition supplies.
-NEEDS: dict[str, str] = {
-    "agents": "the composed agents, by name",
-    "model_runtimes": "the composed model runtimes, by name",
-    "model_runtime_entries": "the registry entry of each composed model runtime, by name (its "
-    "type URL and what it drives, for the sessions a component records)",
-    "schemas": "the registered payload schemas, by kind",
-    "models": "the config's `models` section",
-    "cwd": "the working directory a caller supplies",
-    "name": "the component's name in the run (components only)",
 }
 
 COMPONENT_EXAMPLE = """\
@@ -300,7 +288,12 @@ need not import matrix. This runs as written:
 
 def _extension() -> str:
     points = _keys(sorted(MATRIX_POINTS))
-    needs = "\n".join(f"  - `{name}`: {what}" for name, what in NEEDS.items())
+    needs = "\n".join(
+        f"  - `{need.name}: {need.type}`, {need.summary}"
+        + (" (components only)" if need.components_only else "")
+        + (" (beta)" if need.stability != "stable" else "")
+        for need in NEEDS.values()
+    )
     return f"""\
 ## Write and register a component
 

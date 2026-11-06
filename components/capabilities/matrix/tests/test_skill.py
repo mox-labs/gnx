@@ -25,6 +25,7 @@ from matrix import (
     EXIT_CODES,
     EXIT_MEANINGS,
     EXIT_NEXT,
+    NEEDS,
     ConfigError,
     MatrixConfig,
     Registry,
@@ -40,7 +41,6 @@ from matrix.adapters._in.skill import (
     CONFIG_KEYS,
     ENTRY_POINT,
     EXTENSION_EXAMPLE,
-    NEEDS,
     REFERENCES,
     TIERS,
 )

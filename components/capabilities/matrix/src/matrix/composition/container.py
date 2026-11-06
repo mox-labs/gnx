@@ -28,9 +28,9 @@ do it) is in :attr:`Container.warnings`.
 ``matrix.components``, or the caller's own) into components and wires them by kind, and
 :meth:`Container.run` runs them with the configured store and limits.
 
-**Needs.** An extension declares the shared things it needs (``agents``, ``model_runtimes``,
-``schemas``, ``models``, ``cwd``; a component may also ask for its ``name``) when it
-registers; composition hands over exactly those. Nothing is matched by field name.
+**Needs.** An extension declares the shared things it needs when it registers, from
+matrix's table (:data:`~matrix.domain.needs.NEEDS`) or the host's own (``context``), and
+composition hands over exactly those. Nothing is matched by field name.
 """
 
 from __future__ import annotations
@@ -70,6 +70,7 @@ from matrix.domain.errors import (
 )
 from matrix.domain.executor import Executor, Limits, Reuse
 from matrix.domain.model_step import MODEL_CALL, MODEL_STEP
+from matrix.domain.needs import NEEDS
 from matrix.domain.ports._out.construct_store import location_of
 from matrix.domain.problems import problem, sourced
 from matrix.domain.registry import Extension, Registry
@@ -214,8 +215,11 @@ class Container:
         )
 
     def needs(self) -> dict[str, Any]:
-        """The shared things extensions may declare they need."""
+        """The value of each of matrix's needs (:data:`~matrix.domain.needs.NEEDS`) but a
+        component's ``name``, which :meth:`wire` adds for each component, and each need the
+        host handed composition (``context``)."""
         return {
+            **self._context,
             "agents": dict(self._agents),
             "model_runtimes": dict(self._model_runtimes),
             "model_runtime_entries": {
@@ -226,7 +230,6 @@ class Container:
             "schemas": self._registry.payload_schemas(),
             "models": self._config.matrix.models,
             "cwd": self._context.get("cwd"),
-            **{k: v for k, v in self._context.items() if k != "cwd"},
         }
 
     def wire(
@@ -849,19 +852,30 @@ def compose(
 
     ``base_dir`` anchors relative ``definitions`` directories that ``load_config`` did not
     already resolve. ``definitions`` adds definitions the caller holds to those the
-    configured directories hold. ``context`` supplies shared needs (``{"cwd": ...}``) to
-    extensions that declare them. ``source`` is the key every problem's path starts with.
-    ``loader`` reads the definition directories (default: the file source).
+    configured directories hold. ``context`` is what the host hands the extensions that
+    declare they need it: ``cwd``, and needs of the host's own. ``source`` is the key every
+    problem's path starts with. ``loader`` reads the definition directories (default: the
+    file source).
 
     Raises ConfigError listing every problem; ``complete`` is False when a problem kept a
-    check from being made (an agent whose agent runtime could not be built).
+    check from being made (an agent whose agent runtime could not be built). A ``context``
+    key that names another of matrix's needs is a ConfigError: composition supplies those.
     """
     full = config if isinstance(config, Config) else Config[Any](matrix=config, client=None)
     matrix = full.matrix
     reg = registry if registry is not None else default_registry()
     root = Path(base_dir) if base_dir is not None else Path.cwd()
     problems = _Problems()
-    shared = {"cwd": None, "models": matrix.models, **dict(context or {})}
+    given = dict(context or {})
+    taken = sorted((set(given) & set(NEEDS)) - {"cwd"})
+    if taken:
+        raise ConfigError(
+            f"context names {', '.join(taken)}, which composition supplies",
+            fix="hand over only `cwd` and needs of your own; matrix builds the rest from config",
+            value=taken,
+            allowed=["cwd"],
+        )
+    shared = {**given, "cwd": given.get("cwd"), "models": matrix.models}
     observers = build_observers(matrix, reg, source=source, problems=problems)
     agent_runtimes = build_runtimes(
         matrix.agent_runtimes,
