@@ -551,7 +551,7 @@ class TestTheAgentsReference:
                 assert f"`{key}`" in text, (name, key)
 
     def test_its_numbers_and_words_are_the_codes(self, builtin_kinds: Kinds) -> None:
-        from ix.adapters._out.matrix_agents import VERIFIED, Loop
+        from ix.adapters._out.matrix_agents import Loop
         from ix.domain.summaries import NOISY
 
         text = " ".join(_reference("agents").split())
@@ -568,7 +568,12 @@ class TestTheAgentsReference:
         prompt = builtin_kinds.get("probe", "prompt")
         assert prompt is not None
         timeout = prompt.options["timeout"].default
-        assert f"`timeout` ({timeout} when left out)" in text and f"`{VERIFIED}`" in text
+        session = builtin_kinds.get("subject", "agent-session")
+        assert session is not None
+        until = session.options["loop"].fields["until"].default
+        assert (
+            f"`timeout` ({timeout} when left out)" in text and f"(`{until}` when left out)" in text
+        )
         for strategy in get_args(Loop.model_fields["strategy"].annotation):
             assert f"strategy: {strategy}" in text, strategy
         assert f"more than {NOISY:g} of the range" in text

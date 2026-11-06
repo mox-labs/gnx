@@ -2,7 +2,7 @@
 
 ## 0.8.0 — 2026-11-06
 
-`docs/design/2026-10-19-record.md` has the reasons for this release's changes, in §28, and
+`docs/design/2026-10-19-record.md` has the reasons for this release's changes, in §28 and §29, and
 `CONTRACT.md` what each surface it changed now promises. **Amend every registration once**
 (`ix register <path> --amend --reason "ix 0.8: kind defaults and the registered form"`): the
 plan digest of every experiment moves, with the kind defaults and the registered design's new
@@ -42,6 +42,27 @@ form below.
   are gone. An agent session's `model` and `max_turns`, a model call's `model`, a judge's and
   an evaluator's `model` declare `default_from`. An agent session's `tools` is unchanged:
   what it means left out awaits a ruling.
+- **A mapping option is declared key by key, and a default may follow another option.**
+  `Option` gains `fields` (a mapping's fixed keys, each declared as an option is) and
+  `entries` (what each value is, where the author names the keys), and `default_by` (a
+  default that follows the value of an option beside it: `{option, values}`). A placeholder
+  in a default is allowed only where an option enclosing it `binds` it; `default_from` may
+  name `subject.<option>` for a probe or a sensor. Defaults fill inside a written mapping,
+  the plan shows each at its dotted path (`environment.services.<name>.startup_timeout`), a
+  registration freezes them, an adapter is given them merged deeply with what is written,
+  and validation holds a written mapping to its declaration key by key. With them:
+  an agent session's `loop` declares `strategy` (required), `rounds` 3, `until`
+  `SOLUTION_VERIFIED`, `test_timeout` 30s and a `prompt` that follows the strategy (each
+  strategy's wording, until now the adapter's text, is the declaration's); a `process`
+  environment's `services` declares each service's `command` (required), `url`, `ready`,
+  `cwd` `.`, `env` and `startup_timeout` 30s; `http-load`'s `concurrency` follows
+  `load_model` (`closed`: 1, `open`: 100); `activation`'s `tool`, left out, is said to be its
+  subjects' runtime's. New options: an agent session's `setup_timeout` (300s), and the
+  prompt probe's `collect_limit` (1,000,000 bytes). **An open model's clients were 10 seconds
+  of arrivals and at least 100; they are 100 unless written**, so above 10 arrivals a second
+  a subject that answers slower than 100 / rate seconds has arrivals dropped, each an error:
+  write `concurrency` to hold more. A default that follows an option a cell fills must be
+  written (`option_missing`). The digests of experiments that leave any of these out move.
 - **The design holds every default it carries an entry out with** (`Design.defaults`, by
   entry: `environment`, `subjects.<name>`, `probes.<id>`, `sensors.<kind>`), and its
   provenance lists each, from `kind` with the kind's type URL, and each value left to the
@@ -52,8 +73,9 @@ form below.
   kinds default an option it leaves out moves once: amend each registration**
   (`ix register <path> --amend --reason "kind defaults frozen"`).
 - **An adapter is given every default with what is written.** A run hands each entry's
-  options as carried out (as written, each default filled in) to its adapter, and so does a
-  preflight; a review and a stand-in see the entry as written. An adapter that read an
+  options as carried out (as written, each default filled in) to its adapter, and so do a
+  preflight and a review; a stand-in, whose answer is written in the entry's place, sees the
+  entry as written. An adapter that read an
   option with a fallback of its own reads it as given. `python_checks`' `run_cases` and
   `run_grader` take their `timeout_s` from the caller, always.
 - **The plan digest is over a declared, versioned form, and the registration freezes the
@@ -114,6 +136,9 @@ form below.
 
 ### Fixed
 
+- **A collected file too large to keep is no reading, not a failing one.** A file over the
+  probe's limit was left out, and `function-test` then read it as not written, a failure of
+  the agent; it is listed as `files_too_large`, and a sensor reading it fails to read.
 - **A deviation under a key that holds a dot names its values.** Deviations were found by a
   path split again on its dots, so one under a probe id like `a.b` (or an entry's key) was
   reported with `registered` and `current` both empty; paths are compared as keys now.

@@ -696,7 +696,8 @@ class TestGenresAndKindsCommands:
         assert load["options"]["duration"] == {
             "type": "duration", "required": True, "allowed": [], "required_when": {},
             "choices": {}, "within": "", "binds": [], "text": False, "default": None,
-            "default_from": [], "description": "how long the measured load lasts",
+            "default_by": None, "default_from": [], "fields": {}, "entries": None,
+            "description": "how long the measured load lasts",
         }  # fmt: skip
         # Each default is the declaration's, in the document an agent reads.
         assert load["options"]["timeout"]["default"] == "60s"

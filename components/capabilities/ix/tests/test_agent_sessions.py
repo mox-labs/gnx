@@ -152,10 +152,17 @@ class Runtimes:
         return self._does(config)
 
 
+def _session(options: Mapping[str, Any]) -> dict[str, Any]:
+    """An ``agent-session`` subject's options as a run gives them to its adapter."""
+    return carried("subject", "agent-session", options)
+
+
 def _subject(runtime: str = "claude-sdk", **options: Any) -> SubjectConfig:
     """An ``agent-session`` subject. It names ``claude-sdk`` unless told otherwise; the
     scripted double plays it, and no model is called."""
-    return SubjectConfig.model_validate({"kind": "agent-session", "runtime": runtime, **options})
+    return SubjectConfig.model_validate(
+        {"kind": "agent-session", **_session({"runtime": runtime, **options})}
+    )
 
 
 async def _ask(
@@ -530,7 +537,7 @@ class TestReview:
     ) -> set[tuple[str, str]]:
         runtimes = Runtimes(Scripted(_reply()), takes=takes, does=does)
         adapter = AgentSessionSubject(SessionTable(), runtimes, MatrixLauncher())
-        found = adapter.review({"runtime": runtime, **options}, around)
+        found = adapter.review(_session({"runtime": runtime, **options}), around)
         return {(problem.path, problem.kind) for problem in found}
 
     def test_a_skill_cannot_fire_without_the_skill_tool(self, tmp_path: Path) -> None:
@@ -623,10 +630,10 @@ class TestReview:
         runtimes = Runtimes(Scripted(_reply()), takes=MOCK)
         adapter = AgentSessionSubject(SessionTable(), runtimes, MatrixLauncher())
         found = adapter.review(
-            {
+            _session({
                 "runtime": "mock", "skills": ["s"], "plugins": ["p"],
                 "runtime_options": {"permission_mode": "plan", "default": "ok"},
-            },
+            }),
             _around(tmp_path),
         )  # fmt: skip
         assert {(p.path, p.kind) for p in found} == {
@@ -642,7 +649,7 @@ class TestReview:
         )
         assert (
             unregistered.review(
-                {"runtime": "acme.v1.agent-runtime.gone", "runtime_options": {"x": 1}},
+                _session({"runtime": "acme.v1.agent-runtime.gone", "runtime_options": {"x": 1}}),
                 _around(tmp_path),
             )
             == []
@@ -654,7 +661,7 @@ class TestReview:
         adapter = AgentSessionSubject(
             SessionTable(), Runtimes(Scripted(_reply())), MatrixLauncher()
         )
-        assert adapter.review({"tools": []}, _around(tmp_path, ("activation", {}))) == []
+        assert adapter.review(_session({"tools": []}), _around(tmp_path, ("activation", {}))) == []
 
     def test_options_filled_per_cell_wait_for_the_cell(self, tmp_path: Path) -> None:
         assert self._review(_around(tmp_path, ("activation", {})), tools="{tools}") == set()

@@ -39,12 +39,12 @@ An adapter that is none of them has nothing to say there, and the run proceeds. 
 run hands an environment is a :class:`Scope`, and may also be :class:`Traced` and
 :class:`Recorded`.
 
-**What an adapter is given.** A :class:`Review` and a :class:`StandIn` are given an
-entry's options as written: they judge or rewrite the writing. Everything that carries an
-entry out (a :class:`Preflight`, :class:`ModelCalls` and every member of the family
-ports) is given its options
-as carried out: every option the entry leaves out that its kind declares a ``default`` for
-is there, with that default, so an adapter holds no default of its own. A sensor's options
+**What an adapter is given.** A :class:`StandIn` is given an entry's options as
+written, since what it returns is written in their place. Every other call (a
+:class:`Review`, a :class:`Preflight`, :class:`ModelCalls` and every member of the family
+ports) is given them as carried out: each option the entry leaves out that its kind
+declares a default for is there, inside a mapping the kind declares field by field too, so
+an adapter holds no default of its own. A sensor's options
 also have each ``path`` option resolved against the experiment's directory; a subject, an
 environment and a preflight are given that directory as ``base``.
 

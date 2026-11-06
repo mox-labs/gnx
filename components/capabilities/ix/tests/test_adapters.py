@@ -52,6 +52,13 @@ def _server(port: int, **options: Any) -> SubjectConfig:
     return SubjectConfig(kind="process", options=carried("subject", "process", written))
 
 
+def _services(services: Mapping[str, Any]) -> EnvironmentConfig:
+    """A ``process`` environment of ``services``, as a run gives it to its adapter."""
+    return EnvironmentConfig(
+        kind="process", options=carried("environment", "process", {"services": services})
+    )
+
+
 def _load(options: Mapping[str, Any]) -> dict[str, Any]:
     """An ``http-load`` probe's options as a run gives them to the probe."""
     return carried("probe", "http-load", options)
@@ -340,11 +347,8 @@ class TestEnvironments:
     async def test_process_starts_each_service_and_defers_its_stop(self) -> None:
         port = _free_port()
         server = _server(port).options
-        environment = EnvironmentConfig(
-            kind="process",
-            options={
-                "services": {"upstream": {"command": server["command"], "ready": server["ready"]}}
-            },
+        environment = _services(
+            {"upstream": {"command": server["command"], "ready": server["ready"]}}
         )
         scope = Scope()
         bindings = await ProcessEnvironment(MatrixLauncher()).up(environment, base=".", scope=scope)
@@ -365,11 +369,8 @@ class TestEnvironments:
     async def test_a_service_that_goes_down_after_it_came_up_is_lost(self) -> None:
         port = _free_port()
         server = _server(port).options
-        environment = EnvironmentConfig(
-            kind="process",
-            options={
-                "services": {"upstream": {"command": server["command"], "ready": server["ready"]}}
-            },
+        environment = _services(
+            {"upstream": {"command": server["command"], "ready": server["ready"]}}
         )
         scope = Scope()
         provider = ProcessEnvironment(MatrixLauncher())
@@ -393,16 +394,13 @@ class TestEnvironments:
 
     async def test_a_service_that_does_not_come_up_fails_and_is_still_released(self) -> None:
         port = _free_port()
-        environment = EnvironmentConfig(
-            kind="process",
-            options={
-                "services": {
-                    "upstream": {
-                        "command": [sys.executable, "-c", "raise SystemExit(3)"],
-                        "ready": f"http://127.0.0.1:{port}/healthz",
-                    }
+        environment = _services(
+            {
+                "upstream": {
+                    "command": [sys.executable, "-c", "raise SystemExit(3)"],
+                    "ready": f"http://127.0.0.1:{port}/healthz",
                 }
-            },
+            }
         )
         scope = Scope()
         with pytest.raises(HarnessError, match="exited with code 3"):

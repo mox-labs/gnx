@@ -29,7 +29,7 @@ from ix.adapters._out.matrix_documents import KindFiles
 from ix.composition import type_url_problem
 from ix.composition.entry_point import register_run_path
 from ix.domain import schema
-from ix.domain.kind import Kinds, kinds
+from ix.domain.kind import Kinds, kinds, merged
 from ix.domain.run import HarnessError, SubjectError, Target
 from ix.extension import POINTS
 
@@ -55,7 +55,7 @@ def carried(family: str, kind: str, options: Mapping[str, Any]) -> dict[str, Any
     that calls an adapter directly gives it no less than ix does."""
     declared = _builtin_kinds().get(family, kind)
     assert declared is not None, f"no built-in {family} kind {kind}"
-    return {**declared.defaults(options), **options}
+    return merged(declared.defaults(options), options)
 
 
 class FakeSubject:

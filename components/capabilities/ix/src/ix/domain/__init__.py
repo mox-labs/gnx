@@ -36,7 +36,7 @@ from ix.domain.experiment import (
     Threshold,
 )
 from ix.domain.genre import AnalysisRef, GenreDesign, Repeats, Role
-from ix.domain.kind import Confusion, Metric, Option
+from ix.domain.kind import Confusion, DefaultBy, Metric, Option
 from ix.domain.plan import (
     Duration,
     ModelCallCount,
@@ -63,6 +63,7 @@ __all__ = [
     "ConfusionTable",
     "Content",
     "Decision",
+    "DefaultBy",
     "Deviation",
     "Duration",
     "EnvironmentConfig",

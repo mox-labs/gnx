@@ -306,8 +306,12 @@ declaration holds it, not the adapter, so `ix plan` lists it under the entry
 it shows a deviation (`design.defaults.probes.<id>.timeout`) rather than moving a
 registered verdict unseen. An option whose value, left out, is its runtime's own (an agent
 session's `model` and `max_turns`, a judge's `model`) is listed from `runtime`, naming the
-runtime: ix cannot know that value. `ix kinds --json` and `ix --skill -r kinds` show each
-default.
+runtime: ix cannot know that value. A mapping option may be declared key by key (an agent
+session's `loop`: `rounds` 3, `until`, `test_timeout`, and a `prompt` for each strategy; each
+service of a `process` environment: `cwd`, `startup_timeout` 30s), its defaults filled inside
+what is written; and a default may follow another option (`http-load`'s `concurrency`: 1
+client for a `closed` model, 100 for an `open` one). `ix kinds --json` and
+`ix --skill -r kinds` show each default.
 
 A declaration is not an adapter. ix can **run** these:
 
@@ -317,7 +321,7 @@ A declaration is not an adapter. ix can **run** these:
 | subject | `http` | starts nothing: an endpoint that is already up, with optional `headers` and a bearer token read from `auth: env:NAME` |
 | subject | `agent-session` | a fresh session per trial on the matrix agent runtime its required `runtime` names (`claude-sdk` calls a model provider; `pydantic-ai` runs pydantic-ai's loop with every model call through hardline; `mock` calls no model; any agent runtime installed, by type URL), in a new temporary working directory seeded from `fixtures`, `skills` and a `setup` command, removed after the trial; `runtime_options` are the runtime's config, passed through as written; a `loop` asks again for a self-review or with the tests that failed |
 | subject | `model-call` | one call per trial on the matrix model runtime its required `runtime` names (`hardline` calls a model provider; `mock` calls no model; any model runtime installed), with its `model` resolved before anything starts; no tools, turns or working directory, so `activation`, `tool-usage`, `collect` and a `function-test` `file` are refused on it (`unobservable`) |
-| probe | `http-load` | runs k6 for `warmup` then `duration`, with `load_model: closed` (`concurrency` clients) or `open` (an arrival `rate`); only the measured part is read, and each request sent in it is waited for until it is answered or its `timeout` (60s when left out) runs out |
+| probe | `http-load` | runs k6 for `warmup` then `duration`, with `load_model: closed` (`concurrency` clients, 1 when left out) or `open` (an arrival `rate`, with `concurrency` clients started before the load, 100 when left out; an arrival when every one is waiting is dropped, and counted an error); only the measured part is read, and each request sent in it is waited for until it is answered or its `timeout` (60s when left out) runs out |
 | probe | `prompt` | puts the prompt to the session or the call and keeps the reply; for a session also every tool call, each round's transcript and the files named in `collect` |
 | probe | `command` | runs `command` once with the subject up, in `cwd` (the experiment's directory when left out) with `env` added, its `{url}` and every other placeholder filled as a probe's are, and keeps its exit code and the last 64 KiB of what it wrote to stdout and stderr; one that cannot start or runs past its `timeout` (60s when left out) is the harness's failure. The program and each file an argument names are digested as what was tested |
 | sensor | `timing` | `latency`, `ttfb`, `throughput`, and `error_rate` as a count (failed requests and dropped arrivals, of those sent and dropped), from what the load probe recorded |

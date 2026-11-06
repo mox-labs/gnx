@@ -37,13 +37,13 @@ EXAMPLE_DIGESTS = {
         "7b6ed29d74c6e6f87f72cf1f0340eb851b100e7e4439fdb6127d7913920b03e0"
     ),
     "examples/harness-integrity": (
-        "5b1cd13c41d2d67990deca2bebf231b630e48eb99b2f3583018e2f0586ef9176"
+        "6dd748c91fb1865ba4c81d0483560b0780d57cca07ce2e4e9534aedaefd98064"
     ),
     "examples/proxy-streaming": (
-        "48b122e3782beba4d3408cfcd0cb0048a9dc50132daee45b11db7203cb139e77"
+        "f4f3aa74f06de8cc4f28658b7e61e16d13e45f4987e8d27c7fdc72f1c1ec185f"
     ),
     "examples/trials-in-flight/experiment.yaml": (
-        "8dd955331a72e1cae5206f0e4c080f8187f5798e960cebdeb0c25d8c154951c9"
+        "f9cb319c3902815507c49831529a89e3c918874f225f08706638fae6b870f9e0"
     ),
     "examples/trials-in-flight/k6-control.yaml": (
         "4957344da6a2fc5c8cc9d2441a14a8c0f31889402f5d7576bac254ae486a823a"
@@ -52,10 +52,10 @@ EXAMPLE_DIGESTS = {
 
 #: The plan digest of the ``--skill`` example of each built-in genre.
 GENRE_EXAMPLE_DIGESTS = {
-    "evaluate": "16d5cead998da060e2b2c90b2b8fe4772299c8e35cd06be618e00049e144c468",
-    "compare": "0e689413d746b25be27493a982b215c089389756bc39e207501f6b216b0a21c6",
-    "characterize": "5bf43d833198de5a787c90879f53a32429b3204a8259c72dbd6301a71ce9c0e6",
-    "regress": "9edd0e860d290d6bb62570e9e351f58288b0f304dd420667d5103eeb22017544",
+    "evaluate": "e88d7a384c2c746e5c336a35062f1c662104e03eba293c2c252cc426b1e76602",
+    "compare": "2bbbb148545a0c1eef86e29a2d175f493cf514a4815c5e7184d9a138dadebfa7",
+    "characterize": "f72a898992fa4b0edc8adbebc1b4dd7ff45e8e6e12dd94d9b3ca99b2a1053c56",
+    "regress": "548632584889711fad4e39bf15d99b98de1023534ee7b29731505b2aa801c5dd",
     "check": "0df23bff15d3b5093d74a563d3acaaf402ade9fa12786cec7df6f5bff30069e6",
 }
 

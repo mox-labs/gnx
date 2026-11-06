@@ -945,8 +945,16 @@ def _option_values(option: Option) -> str:
     text = ", prompt text" if option.text else ""
     if option.default is not None:
         text += f"; {_written(option.default)} when left out"
+    elif option.default_by is not None:
+        text += f"; left out, as its {option.default_by.option} says"
     elif option.default_from:
         text += "; left out, its runtime's own"
+    if option.fields:
+        text += "; keys " + ", ".join(
+            f"{name}{'*' if field.required else ''}"
+            + (f"={_written(field.default)}" if field.default is not None else "")
+            for name, field in option.fields.items()
+        )
     if option.allowed:
         return f" ({'|'.join(option.allowed)}{text})"
     if option.choices:
@@ -962,11 +970,15 @@ def _written(value: object) -> str:
 
 
 def _default(kinds: Kinds, family: str, kind: str, option: str) -> str:
-    """The default the installed ``kind`` of ``family`` declares for ``option``, as an author
-    writes it; ``(none)`` when it is not installed or declares none, which the skill's tests
-    refuse for a built-in."""
+    """The default the installed ``kind`` of ``family`` declares for ``option`` (dotted for a
+    mapping's field: ``loop.rounds``), as an author writes it; ``(none)`` when it is not
+    installed or declares none, which the skill's tests refuse for a built-in."""
     declared = kinds.get(family, kind)
-    found = declared.options.get(option) if declared is not None else None
+    options = declared.options if declared is not None else {}
+    found = None
+    for name in option.split("."):
+        found = options.get(name)
+        options = found.fields if found is not None else {}
     return "(none)" if found is None or found.default is None else _written(found.default)
 
 
@@ -1207,6 +1219,9 @@ the margin. Choose the comparison for the claim to be made.
 
 def _agents(kinds: Kinds) -> str:
     dry, usage = EXIT_CODES["ok"], EXIT_CODES["usage"]
+    until = _default(kinds, "subject", "agent-session", "loop.until")
+    setup = _default(kinds, "subject", "agent-session", "setup_timeout")
+    rounds = _default(kinds, "subject", "agent-session", "loop.rounds")
     return f"""\
 ## Evaluating an agent
 
@@ -1225,7 +1240,8 @@ probes and a metric. What makes it one is the kinds.
   says a session finds its skills: claude-sdk's `.claude/skills`, read as its `project`
   settings), `fixtures` (files and folders copied
   into the working directory first), `setup` (a command run there after them:
-  `[python3, seed.py]`) and `runtime_options`: the runtime's own config, passed through as
+  `[python3, seed.py]`), `setup_timeout` (how long it may take: {setup} when left out) and
+  `runtime_options`: the runtime's own config, passed through as
   written. For `claude-sdk` that is `permission_mode`, `setting_sources` (`[]` keeps this
   machine's settings and plugins out), `fallback_model`, `max_budget_usd` and `agents`;
   `matrix describe matrix.v1.agent-runtime.claude-sdk` lists them. A key the runtime's
@@ -1242,7 +1258,8 @@ probes and a metric. What makes it one is the kinds.
   experiment and leave `probes:` out: the markdown body is the prompt, and every
   frontmatter key but `id`, `kind` and `options` is the truth sensors read
   (it never reaches the agent). Probe options, under `options:` in a file: `collect`
-  (files the agent writes, kept for grading), `feedback` (tests a test-feedback loop shows
+  (files the agent writes, kept for grading; `collect_limit`, the largest kept, in bytes:
+  a sensor reading a larger one gives no reading), `feedback` (tests a test-feedback loop shows
   the agent), `mock_response` (the reply a stand-in runtime such as `mock` gives),
   `timeout` ({_default(kinds, "probe", "prompt", "timeout")} when left out): a session or
   call that runs past it fails the trial as the subject's (`overran`).
@@ -1288,10 +1305,11 @@ probes and a metric. What makes it one is the kinds.
   same holds for any agent runtime that says so.
 - **Conditions to compare are subjects** under `compare`: one changed option each (a
   `system_prompt`, a `definition` file, a `model`, a `loop`). A `loop` adds rounds:
-  `{{strategy: self-review, rounds: 3}}` asks again with the previous answer until it
-  carries `SOLUTION_VERIFIED`; `{{strategy: test-feedback}}` shows the agent which of the
-  probe's `feedback` tests failed, until none do. Tokens, turns and cost add up over the
-  rounds.
+  `{{strategy: self-review}}` asks again with the previous answer until it carries its
+  `until` (`{until}` when left out), for `rounds` in all (`{rounds}` when left out);
+  `{{strategy: test-feedback}}` shows the agent which of the probe's `feedback` tests
+  failed, until none do. Each strategy's next-round `prompt` is its kind's declared
+  default unless written. Tokens, turns and cost add up over the rounds.
 
 ## Evaluating a skill
 

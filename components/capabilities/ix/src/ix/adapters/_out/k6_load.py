@@ -166,16 +166,16 @@ def scenarios(options: Mapping[str, Any]) -> tuple[dict[str, Any], float]:
     timed = times(options)
     duration, warmup = timed.duration, timed.warmup
     model = options.get("load_model")
-    clients = int(options.get("concurrency") or 0)
+    if model not in ("open", "closed"):
+        raise HarnessError("option", f"load_model {model!r} is not open or closed")
+    clients = int(options["concurrency"])
     if model == "open":
         rate = arrivals(options.get("rate"))
         if rate is None:
             raise HarnessError("option", f"rate {options.get('rate')!r} is not an arrival rate")
         count, per = rate
-        per_second = max(1, math.ceil(count / (60 if per == "m" else 1)))
         # Every client is started before the load: k6 drops an arrival while it starts a
         # client of its own, so a drop then would not mean the subject kept them all waiting.
-        clients = clients or max(100, per_second * 10)
         executor: dict[str, Any] = {
             "executor": "constant-arrival-rate",
             "rate": count,
@@ -183,10 +183,8 @@ def scenarios(options: Mapping[str, Any]) -> tuple[dict[str, Any], float]:
             "preAllocatedVUs": clients,
             "maxVUs": clients,
         }
-    elif model == "closed":
-        executor = {"executor": "constant-vus", "vus": clients or 1}
     else:
-        raise HarnessError("option", f"load_model {model!r} is not open or closed")
+        executor = {"executor": "constant-vus", "vus": clients}
     found: dict[str, Any] = {}
     timeout = timed.timeout
     if warmup > 0:

@@ -38,9 +38,10 @@ as ix's own adapters do, and never imports an `ix.adapters` module.
 | helpers | `seconds`, `duration_of`, `arrivals`, `placeholders`, `problem` |
 
 **Defaults.** An adapter that is none of the optional roles has nothing to say there, and the
-run proceeds. A review and a stand-in are given an entry's options as written; a preflight,
-`model_calls` and every member of the family ports are given them as carried out, with each
-default the kind declares for an option left out. A probe's and a sensor's options also have
+run proceeds. A stand-in is given an entry's options as written, since its answer is written
+in their place; a review, a preflight, `model_calls` and every member of the family ports
+are given them as carried out, with each default the kind declares for what is left out,
+inside a mapping the kind declares further too. A probe's and a sensor's options also have
 each `path` option, and each directory a `command` is `within`, resolved against the
 experiment's directory.
 
@@ -65,16 +66,24 @@ declaration holds it, never the adapter, so the plan can show it and a registrat
 freeze it.
 
 **Members.** `Option.default`: a value of the option's type (and of its `allowed` values),
-with no placeholder, on an option that is not required. `Option.default_from`: the options of
-the same kind that may name the runtime whose own value it is, the first one written
-deciding. The design holds what it fills as `defaults`, by entry key (`environment`,
+on an option that is not required; it holds no placeholder but those an option enclosing it
+`binds`. `Option.default_by` (`DefaultBy`): a default that follows the value of an option
+beside it, `{option, values}`. `Option.default_from`: the options beside it that may name the
+runtime whose own value it is, the first one written deciding, or `subject.<option>` of the
+subjects a probe or a sensor reads. At most one of the three. `Option.fields`: a mapping's
+fixed keys, each declared as an option is; `Option.entries`: what each value of a mapping
+whose keys the author names is. The rules beside an option hold at every level. The design holds what it fills as `defaults`, by entry key (`environment`,
 `subjects.<name>`, `probes.<id>`, `sensors.<kind>`); the plan's provenance lists each, from
 `kind` with the kind's type URL, and each value left to a runtime, from `runtime`, naming it.
 
-**Defaults.** An option with neither has no value when it is left out: a feature not used.
+**Defaults.** An option with none of the three has no value when it is left out: a feature
+not used. Defaults fill inside a written mapping; what is written wins, key by key.
 
-**Failure behaviour.** A kind file whose default does not fit its option, or names a
-`default_from` that is not another option of the kind, is refused whole (`kind_invalid`). A
+**Failure behaviour.** A kind file whose default does not fit its option, holds a
+placeholder nothing binds, or follows or names an option that is not beside it, is refused
+whole (`kind_invalid`). A written mapping is held to its declaration key by key
+(`option_unknown`, `option_missing`, `option_invalid` at the nested path). An option left out
+whose default follows one a cell fills must be written (`option_missing`). A
 default a later ix declares otherwise is a deviation of every registration that relied on it
 (`design.defaults.<entry>.<option>`), so the run is not gated until the registration is
 amended.

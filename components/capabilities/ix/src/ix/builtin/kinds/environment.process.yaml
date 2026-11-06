@@ -3,5 +3,17 @@ name: ix.v1.environment.process
 summary: Programs started before the trials and stopped after them.
 overlap: forbidden
 options:
-  services: {type: mapping, required: true, description: "name to {command, url, ready, cwd, env, startup_timeout}: each program, where it listens, and the URL that says it is up"}
+  services:
+    type: mapping
+    required: true
+    description: "each program by the name a subject or a probe binds it under ({<name>.url}): where it listens, and the URL that says it is up"
+    entries:
+      type: mapping
+      fields:
+        command: {type: command, required: true, description: "the program and its arguments"}
+        url: {type: string, description: where the program listens once it is up}
+        ready: {type: string, description: "a URL that answers when the program is ready; without one, it is up once it has started"}
+        cwd: {type: string, default: ".", description: "the directory to start it in, relative to the experiment"}
+        env: {type: mapping, description: environment variables to add}
+        startup_timeout: {type: duration, default: 30s, description: "how long it has to come up; one that is not up in time fails the run"}
 service_keys: [host, port, url]

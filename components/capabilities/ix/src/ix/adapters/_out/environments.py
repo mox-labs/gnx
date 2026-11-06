@@ -15,11 +15,6 @@ from ix.domain.kind import seconds
 from ix.domain.ports import StoodIn
 from ix.domain.run import HarnessError
 
-#: How long a service has to come up when its entry under ``services`` gives no
-#: ``startup_timeout``: a key inside the ``services`` mapping, which the kind's options do
-#: not declare one by one, so its default is this adapter's.
-SERVICE_STARTUP_TIMEOUT_S = 30.0
-
 if TYPE_CHECKING:
     from ix.domain.experiment import EnvironmentConfig
     from ix.domain.ports import Requirement, Scope
@@ -66,7 +61,7 @@ class ProcessEnvironment:
         for service in services.values() if isinstance(services, Mapping) else ():
             command = service.get("command") if isinstance(service, Mapping) else None
             if isinstance(command, list | tuple) and command:
-                program = startable(str(command[0]), base=base, cwd=str(service.get("cwd") or "."))
+                program = startable(str(command[0]), base=base, cwd=str(service["cwd"]))
                 if program is not None:
                     found.append(program)
         return found
@@ -76,7 +71,7 @@ class ProcessEnvironment:
         for name, service in environment.options["services"].items():
             command = [str(part) for part in service["command"]]
             ready = service.get("ready")
-            timeout_s = seconds(service.get("startup_timeout", SERVICE_STARTUP_TIMEOUT_S))
+            timeout_s = seconds(service["startup_timeout"])
             if timeout_s is None:
                 raise HarnessError(
                     "option",
@@ -92,7 +87,7 @@ class ProcessEnvironment:
             try:
                 process = await self._launcher.start(
                     command,
-                    cwd=str(Path(base, service.get("cwd") or ".")),
+                    cwd=str(Path(base, service["cwd"])),
                     env={**os.environ, **added},
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.DEVNULL,

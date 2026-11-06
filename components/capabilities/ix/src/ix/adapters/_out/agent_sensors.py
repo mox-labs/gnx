@@ -238,6 +238,11 @@ class FunctionTestSensor(_Reads):
         weights = _weights(cases, truth.get("tiers"))
         response = _response(interaction)
         file = options.get("file")
+        if file and str(file) in (response.get("files_too_large") or ()):
+            raise ValueError(
+                f"{file} is larger than the probe's collect_limit, so it was not kept: no "
+                "reading, rather than a failing one"
+            )
         if file:
             code = (response.get("files") or {}).get(str(file))
             source = f"the file {file}"
@@ -297,6 +302,7 @@ class OutcomeSensor(_Reads):
             "probe": interaction.probe,
             "truth": dict(truth),
             "files": dict(response.get("files") or {}),
+            "files_too_large": list(response.get("files_too_large") or ()),
             "tool_calls": list(response.get("tool_calls") or []),
         }
         try:

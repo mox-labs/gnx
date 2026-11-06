@@ -59,15 +59,34 @@ class TestTheDeclaration:
         [
             ({"type": "duration", "default": "soon"}, "is not a duration"),
             ({"type": "string", "allowed": ["a", "b"], "default": "c"}, "of a, b"),
-            ({"type": "string", "default": "{size}"}, "is not a string"),
             ({"type": "integer", "default": 1.5}, "is not a integer"),
             ({"type": "string", "required": True, "default": "a"}, "a required option"),
-            ({"default": "a", "default_from": ["runtime"]}, "from the kind or from a runtime"),
+            ({"default": "a", "default_from": ["runtime"]}, "one of default, default_by"),
+            (
+                {"type": "integer", "default_by": {"option": "x", "values": {"a": "b"}}},
+                "is not a integer",
+            ),
+            ({"type": "string", "fields": {"a": {}}}, "only a mapping declares fields"),
         ],
     )
     def test_a_default_is_one_its_option_takes(self, option: dict[str, Any], refused: str) -> None:
         with pytest.raises(ValidationError, match=refused):
             Option.model_validate(option)
+
+    def test_a_default_holds_only_a_placeholder_an_enclosing_option_binds(self) -> None:
+        """A placeholder in a default is one only the adapter fills: an option that encloses
+        it says it ``binds`` it (a loop's ``{response}``), or it is refused."""
+        options: dict[str, Any] = {"x": {"default": "{size}"}}
+        with pytest.raises(ValidationError, match="nothing binds there"):
+            Kind.model_validate({"name": "lab.v1.subject.x", "summary": "s", "options": options})
+        bound = {
+            "loop": {
+                "type": "mapping",
+                "binds": ["response"],
+                "fields": {"prompt": {"default": "again: {response}"}},
+            }
+        }
+        Kind.model_validate({"name": "lab.v1.subject.x", "summary": "s", "options": bound})
 
     @pytest.mark.parametrize("named", [["nope"], ["model"]])
     def test_a_default_from_a_runtime_names_another_option(self, named: list[str]) -> None:
@@ -103,9 +122,15 @@ class TestTheDeclaration:
         assert session.left_to_runtime({"runtime": "mock", "max_turns": 3}) == {"model": "mock"}
 
 
+#: What an adapter reads options from: an entry's, and a ``process`` environment's record
+#: of one service, which its kind declares field by field.
+OPTION_RECEIVERS = frozenset({"options", "service"})
+
+
 def _fallbacks(tree: ast.AST, defaulted: set[str]) -> list[str]:
     """Each place ``tree`` reads an option its kind defaults with a value of its own:
-    ``options.get("timeout", 30)`` or ``options.get("timeout") or 30``."""
+    ``options.get("timeout", 30)``, ``options.get("timeout") or 30``, and the same of a
+    service's record."""
     found: list[str] = []
 
     def reads(node: ast.AST) -> str | None:
@@ -114,7 +139,7 @@ def _fallbacks(tree: ast.AST, defaulted: set[str]) -> list[str]:
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "get"
             and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "options"
+            and node.func.value.id in OPTION_RECEIVERS
             and node.args
             and isinstance(node.args[0], ast.Constant)
             and node.args[0].value in defaulted
@@ -136,13 +161,20 @@ def _fallbacks(tree: ast.AST, defaulted: set[str]) -> list[str]:
 def test_no_built_in_adapter_holds_a_default_its_kind_declares(builtin_kinds: Kinds) -> None:
     """The first falsifier: a built-in adapter that reads an option its kind defaults with a
     fallback of its own would hold the default in two places, one the plan never shows."""
-    defaulted = {
-        name
-        for kind in builtin_kinds.kinds.values()
-        for name, option in kind.options.items()
-        if option.default is not None
-    }
-    assert {"timeout", "interval", "startup_timeout", "pass_at", "repeats"} <= defaulted
+    defaulted: set[str] = set()
+
+    def walk(options: Mapping[str, Option]) -> None:
+        for name, option in options.items():
+            if option.default is not None or option.default_by is not None:
+                defaulted.add(name)
+            walk(option.fields)
+            if option.entries is not None:
+                walk(option.entries.fields)
+
+    for kind in builtin_kinds.kinds.values():
+        walk(kind.options)
+    assert {"timeout", "interval", "startup_timeout", "pass_at", "repeats", "rounds"} <= defaulted
+    assert {"concurrency", "until", "setup_timeout", "collect_limit", "cwd"} <= defaulted
     found = {
         file.name: held
         for file in sorted(ADAPTERS.glob("*.py"))
@@ -171,6 +203,7 @@ class TestTheDesign:
             "warmup": "0s",
             "timeout": "60s",
             "method": "GET",
+            "concurrency": 100,  # load_model: open
         }
         assert design.defaults["subjects.buffered"] == {"cwd": ".", "startup_timeout": "30s"}
         assert "sensors.timing" not in design.defaults  # it takes no option
@@ -198,7 +231,7 @@ class TestTheDesign:
         value, origin, note = _sourced(design)["subjects.catalog.model"]
         assert (value, origin) == (None, "runtime") and "mock decides" in note
         assert "subjects.catalog.max_turns" not in _sourced(design)  # written: 1
-        assert "subjects.catalog" not in design.defaults  # nothing ix knows to fill
+        assert design.defaults["subjects.catalog"] == {"setup_timeout": "300s"}
 
     def test_the_example_plan_lists_every_default_its_kinds_declare(self) -> None:
         """The second falsifier: ``ix plan --json`` on examples/harness-integrity leaves

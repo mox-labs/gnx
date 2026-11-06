@@ -342,8 +342,9 @@ def _print_plan_cost(plan: ix.Plan) -> None:
 
 def _print_plan_design(plan: ix.Plan, path: str) -> None:
     design = Table(title="Design", title_justify="left")
+    # A setting's path folds rather than being cut: a nested default's is long.
     for column in ("setting", "value", "from"):
-        design.add_column(column)
+        design.add_column(column, overflow="fold")
     footnotes = []
     for value in plan.provenance:
         shown = "(unknown to ix)" if value.origin == "runtime" else _text(value.value)

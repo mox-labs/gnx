@@ -36,7 +36,7 @@ from ix.domain.experiment import (
     default_estimator,
 )
 from ix.domain.genre import CONTROL, AnalysisRef, Calibration, Order, VerdictForm
-from ix.domain.kind import Confusion, Metric, check_options
+from ix.domain.kind import Confusion, Filled, Metric, check_options, merged
 from ix.domain.problem import InvalidExperimentError, Problem, problem
 from ix.domain.schema import Record
 
@@ -139,9 +139,11 @@ class Design(Record):
     verdict_form: VerdictForm
     report: tuple[str, ...]
     #: The default of each option an entry leaves out, as its kind declares it, by the
-    #: entry's key (``probes.ask``: ``{timeout: 600s}``): what a run carries the entry out
-    #: with besides what is written, and what a registration freezes.
-    defaults: dict[str, dict[str, Level]] = {}
+    #: entry's key (``probes.ask``: ``{timeout: 600s}``), and inside a mapping it writes that
+    #: its kind declares further (``environment``: ``{services: {api: {startup_timeout:
+    #: 30s}}}``): what a run carries the entry out with besides what is written, and what a
+    #: registration freezes.
+    defaults: dict[str, Filled] = {}
     provenance: tuple[SourcedValue, ...] = ()
 
     def metric(self, name: str) -> Metric | None:
@@ -149,8 +151,9 @@ class Design(Record):
 
     def options(self, entry: str, written: Mapping[str, Any]) -> dict[str, Any]:
         """The options of the entry keyed ``entry`` as a run carries it out: ``written``,
-        with each default its kind declares for an option ``written`` leaves out."""
-        return {**self.defaults.get(entry, {}), **written}
+        with each default its kind declares for what ``written`` leaves out, mapping by
+        mapping."""
+        return merged(self.defaults.get(entry, {}), written)
 
 
 # --- roles -------------------------------------------------------------------------------
@@ -794,13 +797,26 @@ def _from(origin: Origin, *, path: str, value: Level | None, note: str = "") -> 
     return SourcedValue(path=path, value=value, origin=origin, note=note)
 
 
+def _leaves(filled: Filled, prefix: str) -> list[tuple[str, Level]]:
+    """Each default of ``filled`` with its dotted path under ``prefix``."""
+    found: list[tuple[str, Level]] = []
+    for name, value in filled.items():
+        if isinstance(value, dict):
+            found += _leaves(value, f"{prefix}.{name}")
+        else:
+            found.append((f"{prefix}.{name}", value))
+    return found
+
+
 def _kind_defaults(
     experiment: Experiment, kinds: Kinds, probes: ProbeSet | None, sensors: Sequence[SelectedSensor]
-) -> tuple[dict[str, dict[str, Level]], list[SourcedValue]]:
-    """What each entry's kind supplies for the options it leaves out: the defaults, by the
-    entry's key, and where each value came from, its kind's ``default`` or its runtime."""
-    defaults: dict[str, dict[str, Level]] = {}
+) -> tuple[dict[str, Filled], list[SourcedValue]]:
+    """What each entry's kind supplies for what it leaves out: the defaults, by the entry's
+    key, and where each value came from, its kind's ``default`` (at its dotted path, inside
+    a mapping too) or its runtime (a subject's, for a probe or a sensor)."""
+    defaults: dict[str, Filled] = {}
     sourced: list[SourcedValue] = []
+    subjects = [subject.options for subject in experiment.subjects.values()]
     for entry in entries(experiment, probes, sensors):
         kind = kinds.kinds.get(entry.kind)
         if kind is None:
@@ -809,8 +825,8 @@ def _kind_defaults(
         if filled:
             defaults[entry.key] = filled
         sourced += [
-            _from("kind", path=f"{entry.key}.{name}", value=value, note=kind.name)
-            for name, value in filled.items()
+            _from("kind", path=path, value=value, note=kind.name)
+            for path, value in _leaves(filled, entry.key)
         ]
         sourced += [
             _from(
@@ -819,7 +835,7 @@ def _kind_defaults(
                 value=None,
                 note=f"left out, so {runtime or 'its runtime'} decides; ix does not know the value",
             )
-            for name, runtime in kind.left_to_runtime(entry.options).items()
+            for name, runtime in kind.left_to_runtime(entry.options, subjects).items()
         ]
     return defaults, sourced
 

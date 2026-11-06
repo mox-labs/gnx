@@ -229,9 +229,10 @@ class Review(Protocol):
     with the experiment, and ``validate`` reports it."""
 
     def review(self, options: Mapping[str, Any], around: Surroundings) -> Sequence[Problem]:
-        """Every problem with the entry whose options are ``options``, each ``path`` dotted
-        from the experiment's root; none when its options are of the wrong shape, which the
-        kind's declaration reports."""
+        """Every problem with the entry whose options are ``options`` (as carried out, each
+        default its kind declares filled in), each ``path`` dotted from the experiment's
+        root; none when its options are of the wrong shape, which the kind's declaration
+        reports."""
         ...
 
 
