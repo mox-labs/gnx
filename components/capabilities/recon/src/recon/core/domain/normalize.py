@@ -13,7 +13,7 @@ A path that does not resolve gives ``None``, never an error: one record lacking 
 not fail a table. A list-map gives ``None`` when any item lacks the rest of the path. One
 ``*`` per path; a second is a config error, reported by :func:`spec_problems` before a run.
 
-Transforms are extensions registered under the entry-point group ``recon.transforms`` and
+Transforms are extensions registered at the ``recon.transform`` point of matrix's registry and
 looked up by name without the ``$``; the pure built-ins live here. A built-in given a value
 of a type it does not take gives ``None``, as a path that does not resolve does: one record
 whose field has an unexpected type must not fail a table.
@@ -118,6 +118,12 @@ def parse_expression(expr: str) -> tuple[str, str | None]:
     return path.strip(), transform[1:]
 
 
+#: What starts the name of a field recon writes itself (``_position``, ``_range``, ``_capture``):
+#: a normalize spec's column never does, so a field recon adds later collides with no
+#: mission's column (ruling R18).
+RESERVED_PREFIX = "_"
+
+
 def spec_problems(spec: Mapping[str, Any], transforms: Mapping[str, Transform]) -> dict[str, str]:
     """Every problem in a normalize spec, by output column. Empty when the spec is sound.
 
@@ -126,6 +132,12 @@ def spec_problems(spec: Mapping[str, Any], transforms: Mapping[str, Transform]) 
     """
     problems: dict[str, str] = {}
     for column, expr in spec.items():
+        if isinstance(column, str) and column.startswith(RESERVED_PREFIX):
+            problems[column] = (
+                f"a column whose name starts with {RESERVED_PREFIX!r} is recon's own "
+                "(_position, _range, _capture, and those to come): a spec may not make one"
+            )
+            continue
         if not isinstance(expr, str):
             problems[column] = f"expected a path string, got {type(expr).__name__}"
             continue

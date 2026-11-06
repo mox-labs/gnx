@@ -32,8 +32,8 @@ captures and its filters kept none, or the ``extract`` fits none of the bodies i
 capture whose body the ``extract`` does not fit is skipped when others give records: a log
 holds many tools' results.
 
-Registered as the built-in collector type ``capture`` (entry-point group
-``recon.collectors``).
+Registered as the built-in collector type ``capture`` (at ``recon.collector``,
+``recon._matrix``).
 """
 
 from __future__ import annotations

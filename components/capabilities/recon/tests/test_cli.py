@@ -569,7 +569,7 @@ class TestStatus:
 
     def test_reports_a_broken_plugin(self, project: Path) -> None:
         registry = load_plugins()
-        registry.broken.append(BrokenPlugin("recon.collectors", "sql", "x:y", "ImportError: z"))
+        registry.broken.append(BrokenPlugin("recon.collector", "sql", "x:y", "ImportError: z"))
         over = root(plugins=registry)
 
         doc = _doc(_invoke("status", "--json", over=over))

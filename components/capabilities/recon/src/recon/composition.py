@@ -1,15 +1,10 @@
 """The composition root: the one place adapters meet ports.
 
-It discovers the installed collector types and transforms, which are entry-point groups that
-recon's own built-ins register through exactly as a third-party package would (see
-``[project.entry-points]`` in pyproject.toml)::
-
-    recon.collectors   name → a ``CollectorType``    (config ``type: <name>``)
-    recon.transforms   name → a callable             (normalize ``path|$<name>``)
-
-A plugin that fails to import, or that registers the wrong kind of object, is reported as a
-``BrokenPlugin`` and left out; every other plugin still loads. When two packages register
-the same name, recon's own registration wins and the other is reported.
+It names recon's built-in collector types and transforms (:func:`builtins`), which recon
+registers on matrix's registry from its ``matrix.extensions`` entry point exactly as a third
+party registers its own (``recon._matrix``, the one module that names matrix); and it reads the
+installed ones back from there (:func:`load_plugins`). A plugin that fails to load is reported
+as a ``BrokenPlugin`` and left out; every other plugin still loads.
 
 :func:`root` binds the rest: missions as files under the project root, archives as
 directories of JSONL, DuckDB for queries, the system clock, httpx2 for HTTP, a shell for
@@ -30,9 +25,8 @@ import os
 import threading
 from dataclasses import dataclass
 from functools import partial
-from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from recon import __version__
 from recon.adapters._out.archive_files import ArchiveFiles
@@ -58,14 +52,13 @@ from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.core.application.collection import Collection
 from recon.core.application.collectors import (
-    COLLECTORS_GROUP,
     CollectorPorts,
     SurveyCollectors,
     build_collectors,
 )
 from recon.core.application.stream import StreamStop as StreamStop
-from recon.core.domain.collector import BrokenPlugin, CollectorType, Plugins
 from recon.core.domain.errors import UsageError
+from recon.core.domain.normalize import BUILTIN_TRANSFORMS
 from recon.core.domain.telemetry import Telemetry
 from recon.observe.application.changes import MEMORY_KEYS
 from recon.observe.application.observation import Observation
@@ -75,10 +68,11 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
     from datetime import datetime
 
+    from recon._matrix import Register
     from recon.core.application.collection import ChannelFactory
     from recon.core.domain.archives import Store
     from recon.core.domain.clock import Clock
-    from recon.core.domain.collector import Transform
+    from recon.core.domain.collector import CollectorType, Plugins, Transform
     from recon.core.domain.converters import DocumentConverter
     from recon.core.domain.deadline import Deadline
     from recon.core.domain.errors import Problem
@@ -94,96 +88,9 @@ if TYPE_CHECKING:
     from recon.observe.domain.joins import KeyJoin
     from recon.observe.domain.scheduling import Scheduler
 
-TRANSFORMS_GROUP = "recon.transforms"
-
-type Discover = Callable[[str], Iterable[EntryPoint]]
-
 #: Builds a survey's Requester, reporting through the survey's telemetry, keeping to its
 #: deadline and drawing from its rate limiter, which every collector of the survey shares.
 type RequesterFactory = Callable[[Telemetry, Deadline, RateLimiter], Requester]
-
-
-def _discover(group: str) -> list[EntryPoint]:
-    return list(entry_points(group=group))
-
-
-def _load(
-    group: str, accept: Callable[[Any], bool], expected: str, discover: Discover
-) -> tuple[dict[str, Any], list[BrokenPlugin]]:
-    found = _ours_first(discover(group))
-    loaded: dict[str, Any] = {}
-    broken: list[BrokenPlugin] = []
-    for ep in found:
-        if ep.name in loaded:
-            origin = next(e.value for e in found if e.name == ep.name)
-            error = f"name already registered by {origin}"
-            broken.append(BrokenPlugin(group, ep.name, ep.value, error))
-            continue
-        try:
-            obj = ep.load()
-        except Exception as exc:  # a plugin's import error must not break the others
-            broken.append(BrokenPlugin(group, ep.name, ep.value, f"{type(exc).__name__}: {exc}"))
-            continue
-        if not accept(obj):
-            error = f"expected {expected}, got {type(obj).__name__}"
-            broken.append(BrokenPlugin(group, ep.name, ep.value, error))
-            continue
-        loaded[ep.name] = obj
-    return loaded, broken
-
-
-def load_collector_types(
-    discover: Discover = _discover,
-) -> tuple[dict[str, CollectorType], list[BrokenPlugin]]:
-    """Installed collector types by config name, and the plugins that failed to load."""
-    return _load(
-        COLLECTORS_GROUP,
-        lambda obj: isinstance(obj, CollectorType),
-        "a recon.core.domain.collector.CollectorType",
-        discover,
-    )
-
-
-def load_transforms(
-    discover: Discover = _discover,
-) -> tuple[dict[str, Transform], list[BrokenPlugin]]:
-    """Installed normalize transforms by name (no ``$``), and the ones that failed to load."""
-    return _load(TRANSFORMS_GROUP, callable, "a callable", discover)
-
-
-def load_plugins(discover: Discover = _discover) -> Plugins:
-    """Every installed collector type and transform, the plugins that failed to load, and
-    the package that registered each collector type."""
-    types, broken_types = load_collector_types(discover)
-    transforms, broken_transforms = load_transforms(discover)
-    packages = {
-        name: package
-        for name, package in _packages(COLLECTORS_GROUP, discover).items()
-        if name in types
-    }
-    return Plugins(types, transforms, broken_types + broken_transforms, packages)
-
-
-def _packages(group: str, discover: Discover) -> dict[str, str]:
-    """The package (the distribution, as installed) of each name's entry point in ``group``
-    that :func:`_load` keeps: recon's own before any other's. A name whose entry point has no
-    package found is left out."""
-    packages: dict[str, str] = {}
-    seen: set[str] = set()
-    for ep in _ours_first(discover(group)):
-        if ep.name in seen:
-            continue  # shadowed: _load refused it
-        seen.add(ep.name)
-        package = getattr(ep.dist, "name", None)
-        if isinstance(package, str):
-            packages[ep.name] = package
-    return packages
-
-
-def _ours_first(found: Iterable[EntryPoint]) -> list[EntryPoint]:
-    """``found`` with recon's own registrations first, so a third party cannot shadow a
-    built-in, each part by name."""
-    return sorted(found, key=lambda ep: (getattr(ep.dist, "name", None) != "recon", ep.name))
 
 
 @dataclass(frozen=True)
@@ -195,6 +102,44 @@ class Recon:
 
     collection: Collection
     observation: Observation
+
+
+def builtins() -> tuple[dict[str, CollectorType], dict[str, Transform]]:
+    """recon's own collector types and transforms, by their short names: what recon registers
+    at its points (``recon._matrix.register``)."""
+    from recon.adapters._out import (
+        api_collector,
+        capture_collector,
+        cli_collector,
+        markitdown_converter,
+        mcp_collector,
+        sse_collector,
+        tail_collector,
+        web_collector,
+    )
+
+    collectors = {
+        "api": api_collector.collector_type,
+        "cli": cli_collector.collector_type,
+        "web": web_collector.collector_type,
+        "capture": capture_collector.collector_type,
+        "mcp": mcp_collector.collector_type,
+        "tail": tail_collector.collector_type,
+        "sse": sse_collector.collector_type,
+    }
+    to_markdown: Transform = markitdown_converter.markitdown_path
+    transforms: dict[str, Transform] = {**BUILTIN_TRANSFORMS, "markitdown": to_markdown}
+    return collectors, transforms
+
+
+def load_plugins(extensions: Iterable[Register] = ()) -> Plugins:
+    """Every collector type and transform registered at recon's points on matrix's registry,
+    recon's own and every installed extension's, and each of ``extensions`` registers
+    in-process; with what failed to load. Raises UsageError for an extension given that takes
+    a type URL registered already."""
+    from recon import _matrix
+
+    return _matrix.plugins(extensions)
 
 
 def root(
@@ -321,39 +266,16 @@ def root(
 def open_session(
     project: Path | None = None,
     *,
-    extensions: Plugins | None = None,
+    extensions: Iterable[Register] = (),
     landing: Store | None = None,
 ) -> Recon:
     """recon opened over ``project`` (default: the git root of the working directory, or the
     working directory outside a repository), with the installed collector types and transforms
-    and the ones ``extensions`` gives in-process (none may take an installed one's name), its
-    acts landing in ``landing`` (default: the project's archive directory). Each call opens a
-    session of its own."""
-    plugins = _with(load_plugins(), extensions)
+    and the ones each of ``extensions`` registers in-process, its acts landing in ``landing``
+    (default: the project's archive directory). Each call opens a session of its own."""
+    plugins = load_plugins(extensions)
     given = None if landing is None else (lambda home: landing)
     return root(project=project, plugins=plugins, archives=given)
-
-
-def _with(installed: Plugins, given: Plugins | None) -> Plugins:
-    """``installed`` with ``given``'s collector types and transforms, each named as given and
-    said to be ``in_process``; UsageError for a name taken already."""
-    if given is None:
-        return installed
-    taken = sorted(set(given.collector_types) & set(installed.collector_types)) + sorted(
-        f"${name}" for name in set(given.transforms) & set(installed.transforms)
-    )
-    if taken:
-        raise UsageError(
-            f"an extension given takes a name an installed one has: {', '.join(taken)}",
-            fix="give it a name of its own",
-            details={"value": taken},
-        )
-    return Plugins(
-        {**installed.collector_types, **given.collector_types},
-        {**installed.transforms, **given.transforms},
-        installed.broken + given.broken,
-        {**installed.collector_packages, **dict.fromkeys(given.collector_types, "in_process")},
-    )
 
 
 #: The session each project's module functions run over, made on first use.

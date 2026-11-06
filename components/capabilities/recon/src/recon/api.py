@@ -20,13 +20,13 @@ from typing import TYPE_CHECKING, Any
 from recon.core.domain.archives import READ_MAX_BYTES, READ_MAX_RECORDS, WATCH_INTERVAL_S
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Iterator
+    from collections.abc import Callable, Collection, Iterable, Iterator
     from datetime import datetime
     from pathlib import Path
 
+    from recon._matrix import Register
     from recon.composition import Recon
     from recon.core.domain.archives import Store
-    from recon.core.domain.collector import Plugins
     from recon.core.domain.documents import (
         Capture,
         ChangesSince,
@@ -61,14 +61,16 @@ def _root(project: Path | None) -> Recon:
 def open(  # noqa: A001 (the library's entry point)
     root: Path | None = None,
     *,
-    extensions: Plugins | None = None,
+    extensions: Iterable[Register] = (),
     landing: Store | None = None,
 ) -> Recon:
     """recon opened over the project ``root`` (default: the git root of the working directory,
     or the working directory outside a repository): a session whose ``collection`` is the
     collect core's operations and whose ``observation`` is the observe layer's.
-    ``extensions`` adds collector types and transforms in-process, beside the installed ones,
-    under names of their own (UsageError for a name taken); ``landing`` is where its acts land
+    ``extensions`` are in-process extensions, each ``register(registry)`` called with the
+    session's matrix registry to register at recon's points (``recon.collector``,
+    ``recon.transform``) beside what is installed, under type URLs of their own (UsageError
+    for one registered already); ``landing`` is where its acts land
     and are read back (default: the project's archive directory). Each call opens a session of
     its own."""
     from recon.composition import open_session

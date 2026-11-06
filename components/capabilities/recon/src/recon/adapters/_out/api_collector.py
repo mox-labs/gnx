@@ -28,7 +28,7 @@ through the page log's ``shifted``). A resumed token the source refuses (a statu
 neither a retry's nor a credential's: an expired cursor, a page gone) begins the crawl again
 from its first page, said through the page log's ``restarted``.
 
-Registered as the built-in collector type ``api`` (entry-point group ``recon.collectors``).
+The built-in collector type ``api``, registered at ``recon.collector`` (``recon._matrix``).
 """
 
 from __future__ import annotations

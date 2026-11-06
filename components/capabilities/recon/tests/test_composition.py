@@ -1,28 +1,21 @@
-"""Collector types and transforms load from entry points; a broken plugin breaks nothing else."""
+"""Collector types and transforms load from matrix's registry, at recon's points; a broken
+plugin breaks nothing else."""
 
 import json
 import subprocess
-import sys
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
-from importlib.metadata import EntryPoint
 from pathlib import Path
 from typing import Any, NoReturn
 
 import pytest
 
+from recon._matrix import COLLECTOR, TRANSFORM, Register, register, short, type_url
 from recon.adapters._out.cli_collector import PopenRunner
 from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
-from recon.composition import (
-    TRANSFORMS_GROUP,
-    Discover,
-    load_collector_types,
-    load_plugins,
-    load_transforms,
-)
+from recon.composition import load_plugins
 from recon.core.application.collectors import (
-    COLLECTORS_GROUP,
     CollectorPorts,
     ScopedEnv,
     SurveyCollectors,
@@ -33,7 +26,7 @@ from recon.core.domain.capture import CaptureLog
 from recon.core.domain.collector import Collector, CollectorContext, CollectorType, Plugins
 from recon.core.domain.deadline import Deadline
 from recon.core.domain.documents import TableOutcome
-from recon.core.domain.errors import CollectionError
+from recon.core.domain.errors import CollectionError, UsageError
 from recon.core.domain.http import HttpResponse
 from recon.core.domain.models import CollectorEntry, ReconConfig, SourceEntry
 from recon.core.domain.telemetry import Telemetry
@@ -65,8 +58,9 @@ def build_collectors(
     return build(registry, PORTS, env, mission_dir, config, telemetry, Deadline(SystemClock()))
 
 
-def test_builtins_register_through_the_entry_point_groups() -> None:
-    """The installed package declares its own types and transforms like any plugin would:
+def test_builtins_register_at_recon_s_points_through_matrix_s_entry_point() -> None:
+    """The installed package registers its own types and transforms as any extension would,
+    at recon's points on matrix's registry, from its ``matrix.extensions`` entry point:
     ``mcp`` among them, the type added after the others with no edit to the plan or survey."""
     registry = load_plugins()
     assert {"api", "cli", "web", "capture", "mcp", "tail", "sse"} <= set(registry.collector_types)
@@ -76,15 +70,23 @@ def test_builtins_register_through_the_entry_point_groups() -> None:
     assert registry.broken == []
 
 
-def test_each_collector_type_says_the_package_that_registered_it(plugin_module: None) -> None:
+def test_a_built_in_keeps_its_short_name_and_any_other_its_type_url() -> None:
+    """Ruling R3: ``type: api`` is ``recon.v1.collector.api``; a third party's type is named by
+    its full type URL. A type URL's segments are kebab-case, a config's names as written."""
+    assert type_url(COLLECTOR, "api") == "recon.v1.collector.api"
+    assert type_url(TRANSFORM, "inverted_index") == "recon.v1.transform.inverted-index"
+    assert short(TRANSFORM, "recon.v1.transform.inverted-index") == "inverted_index"
+    assert short(COLLECTOR, "acme.v1.collector.sql") == "acme.v1.collector.sql"
+    assert type_url(COLLECTOR, "acme.v1.collector.sql") == "acme.v1.collector.sql"
+
+
+def test_each_collector_type_says_the_package_that_registered_it() -> None:
     """Polish R6: a warning about a type can name whose it is. recon's own types are
-    registered by recon; one whose entry point has no package found is absent."""
-    registry = load_plugins()
+    registered by recon; one registered in-process is ``in_process``."""
+    registry = load_plugins([_registers(COLLECTOR, "acme.v1.collector.good", GOOD)])
     for name in ("api", "cli", "web", "capture", "mcp", "tail", "sse"):
         assert registry.collector_packages[name] == "recon", name
-
-    unpackaged = load_plugins(_discover([("good", "recon_test_plugins:good", COLLECTORS_GROUP)]))
-    assert "good" not in unpackaged.collector_packages
+    assert registry.collector_packages["acme.v1.collector.good"] == "in_process"
 
 
 def test_the_types_that_read_extract_say_so() -> None:
@@ -96,100 +98,87 @@ def test_the_types_that_read_extract_say_so() -> None:
     }
 
 
-@pytest.fixture
-def plugin_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """A throwaway module on sys.path holding a good type, a bad object, and a raiser."""
-    (tmp_path / "recon_test_plugins.py").write_text(
-        "from recon.core.domain.collector import CollectorType\n"
-        "good = CollectorType(create=lambda ctx: object(), effects=frozenset({'network'}))\n"
-        "not_a_type = 42\n"
-        "def shout(v):\n    return str(v).upper()\n"
-    )
-    (tmp_path / "recon_test_explodes.py").write_text("raise RuntimeError('boom on import')\n")
-    monkeypatch.syspath_prepend(str(tmp_path))
-    yield
-    for name in ("recon_test_plugins", "recon_test_explodes"):
-        sys.modules.pop(name, None)
+GOOD = CollectorType(create=lambda ctx: EmptyCollector(), effects=frozenset({"network"}))
 
 
-def _discover(entries: list[tuple[str, str, str]]) -> Discover:
-    def discover(group: str) -> list[EntryPoint]:
-        return [EntryPoint(name=n, value=v, group=g) for n, v, g in entries if g == group]
-
-    return discover
+def _shout(value: Any) -> str:
+    """Upper case."""
+    return str(value).upper()
 
 
-def test_a_plugin_that_raises_on_import_is_reported_and_others_load(plugin_module: None) -> None:
-    discover = _discover(
-        [
-            ("good", "recon_test_plugins:good", COLLECTORS_GROUP),
-            ("boom", "recon_test_explodes:anything", COLLECTORS_GROUP),
-            ("wrong", "recon_test_plugins:not_a_type", COLLECTORS_GROUP),
-            ("missing", "no_such_module_anywhere:x", COLLECTORS_GROUP),
-        ]
-    )
-    types, broken = load_collector_types(discover)
+def _registers(point: str, url: str, value: object) -> Register:
+    def register(registry: Any) -> None:
+        registry.register(point, url, lambda: value)
 
-    assert set(types) == {"good"}
-    assert isinstance(types["good"], CollectorType)
-    by_name = {b.name: b for b in broken}
-    assert set(by_name) == {"boom", "wrong", "missing"}
-    assert "RuntimeError: boom on import" in by_name["boom"].error
-    assert "expected a recon.core.domain.collector.CollectorType" in by_name["wrong"].error
-    assert "ModuleNotFoundError" in by_name["missing"].error
+    return register
 
 
-def test_a_plugin_type_declares_a_stream_through_the_entry_point_a_built_in_uses(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_an_extension_that_fails_to_load_is_quarantined_whole_and_others_load(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ACES, extensible: a third party's type that never ends declares ``unbounded`` and
-    ``paced_by`` on its ``CollectorType``, registered under ``recon.collectors`` as ``tail``
-    and ``sse`` are, and the plan makes a stream of it with the defaults those declare."""
-    (tmp_path / "recon_test_feed.py").write_text(
-        "from recon.core.domain.collector import CollectorType\n"
-        "feed = CollectorType(create=lambda ctx: object(), effects=frozenset({'network'}),\n"
-        "                     unbounded=True, paced_by='source')\n"
-    )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    try:
-        types, broken = load_collector_types(
-            _discover([("feed", "recon_test_feed:feed", COLLECTORS_GROUP)])
-        )
-    finally:
-        sys.modules.pop("recon_test_feed", None)
-    assert broken == []
-    installed = load_plugins()
-    plugins = Plugins({**installed.collector_types, **types}, installed.transforms, [])
+    """matrix's rule: an extension whose registration raises is quarantined, every entry it
+    registered with it, and the rest load; recon reports it, as a plugin that is broken."""
+    from matrix import Extension, Registry
 
-    plan = build_plan({"collectors": [{"name": "ticks", "type": "feed"}]}, plugins, {})
+    def explodes(registry: Any) -> None:
+        registry.register(COLLECTOR, "boom.v1.collector.half", lambda: GOOD)
+        raise RuntimeError("boom on import")
+
+    def installed() -> Registry:
+        registry = Registry()
+        registry.load([Extension(name="recon", origin="recon", register=register),
+                       Extension(name="boom", origin="boom", register=explodes)])  # fmt: skip
+        return registry
+
+    monkeypatch.setattr("recon._matrix.default_registry", installed)
+    plugins = load_plugins()
+    assert (
+        "api" in plugins.collector_types and "boom.v1.collector.half" not in plugins.collector_types
+    )
+    [broken] = plugins.broken
+    assert (broken.name, broken.value) == ("boom", "boom")
+    assert "RuntimeError: boom on import" in broken.error
+
+
+def test_an_entry_that_builds_the_wrong_thing_is_reported_and_others_load() -> None:
+    plugins = load_plugins([
+        _registers(COLLECTOR, "acme.v1.collector.wrong", 42),
+        _registers(TRANSFORM, "acme.v1.transform.nope", 42),
+        _registers(COLLECTOR, "acme.v1.collector.good", GOOD),
+    ])  # fmt: skip
+    assert "acme.v1.collector.good" in plugins.collector_types
+    by_name = {b.name: b.error for b in plugins.broken}
+    assert set(by_name) == {"acme.v1.collector.wrong", "acme.v1.transform.nope"}
+    assert "expected a recon CollectorType" in by_name["acme.v1.collector.wrong"]
+
+
+def test_a_plugin_type_declares_a_stream_through_the_point_a_built_in_uses() -> None:
+    """ACES, extensible: a third party's type that never ends declares ``unbounded`` and
+    ``paced_by`` on its ``CollectorType``, registered at ``recon.collector`` as ``tail`` and
+    ``sse`` are, and the plan makes a stream of it with the defaults those declare."""
+    feed = CollectorType(create=lambda ctx: EmptyCollector(), effects=frozenset({"network"}),
+                         unbounded=True, paced_by="source")  # fmt: skip
+    plugins = load_plugins([_registers(COLLECTOR, "acme.v1.collector.feed", feed)])
+
+    plan = build_plan({"collectors": [{"name": "ticks", "type": "acme.v1.collector.feed"}]},
+                      plugins, {})  # fmt: skip
 
     assert plan.valid, plan.problems
     [stream] = plan.streams
     assert (stream.window.seconds, stream.overflow) == (300.0, "drop_newest")
 
 
-def test_transforms_load_by_name_and_reject_non_callables(plugin_module: None) -> None:
-    discover = _discover(
-        [
-            ("shout", "recon_test_plugins:shout", TRANSFORMS_GROUP),
-            ("nope", "recon_test_plugins:not_a_type", TRANSFORMS_GROUP),
-        ]
-    )
-    transforms, broken = load_transforms(discover)
-    assert transforms["shout"]("a") == "A"
-    assert [b.name for b in broken] == ["nope"]
+def test_a_transform_registered_in_process_is_named_by_its_type_url() -> None:
+    transforms = load_plugins([_registers(TRANSFORM, "acme.v1.transform.shout", _shout)]).transforms
+    assert transforms["acme.v1.transform.shout"]("a") == "A"
 
 
-def test_duplicate_name_is_reported_not_silently_shadowed(plugin_module: None) -> None:
-    discover = _discover(
-        [
-            ("dup", "recon_test_plugins:good", COLLECTORS_GROUP),
-            ("dup", "recon_test_plugins:good", COLLECTORS_GROUP),
-        ]
-    )
-    types, broken = load_collector_types(discover)
-    assert set(types) == {"dup"}
-    assert len(broken) == 1 and "already registered" in broken[0].error
+def test_a_type_url_registered_twice_is_refused_naming_it() -> None:
+    """matrix's rule: a type URL has one registration; an in-process one that takes an
+    installed one's is refused, never silently shadowing it."""
+    with pytest.raises(UsageError) as refused:
+        load_plugins([_registers(COLLECTOR, "recon.v1.collector.api", GOOD)])
+    assert "recon.v1.collector.api" in str(refused.value)
 
 
 def _config(*collectors: dict[str, Any], catalog: Sequence[dict[str, Any]] = ()) -> ReconConfig:

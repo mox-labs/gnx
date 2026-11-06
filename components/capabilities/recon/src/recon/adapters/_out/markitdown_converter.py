@@ -119,7 +119,7 @@ def markitdown_path(path: Any, *, roots: Sequence[Path] = (), base: Path | None 
 
     Handles what the web collector's converter handles, with the same confined markitdown
     (the module docstring lists what is left out, audio among it). Registered under the
-    entry-point group ``recon.transforms`` as ``markitdown``.
+    ``recon.transform`` point as ``markitdown``.
 
     A relative path is relative to ``base``, the directory its record came from (a ``cli``
     collector binds the directory its command ran in), else to the working directory.

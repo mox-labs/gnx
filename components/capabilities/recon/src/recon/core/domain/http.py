@@ -87,7 +87,8 @@ class Requester(Protocol):
     errors, after retries), ``auth`` (401, 403) or ``run_failed`` (any other status, or a
     body larger than the source's ``max_bytes``).
 
-    A requester may have an optional member, read only when present, for a body that does
+    A requester may have an optional member (:class:`~recon.core.domain.optional.
+    SupportsFollow`, read only after ``isinstance`` says it has it), for a body that does
     not end: ``follow(source, url, *, params=None, headers=None)``, a context manager that
     sends one GET (drawing a token from the source's rate limit, timing out a connect or a
     read after the source's ``timeout``, and failing as :meth:`request` does on a status

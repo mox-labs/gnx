@@ -432,19 +432,42 @@ class TestUnderscoreKeys:
         assert "_notes" not in paths
 
 
+class TestReconsOwnColumns:
+    """Ruling R18: a field whose name starts with ``_`` is recon's own (``_position``,
+    ``_range``, ``_capture``, and those to come), so a normalize spec may not make a column of
+    one, and a field recon adds later collides with no mission's column."""
+
+    @pytest.mark.parametrize("column", ["_range", "_parts", "_"])
+    def test_a_column_starting_with_an_underscore_is_refused(
+        self, registry: Plugins, column: str
+    ) -> None:
+        raw = {"collectors": [{"name": "c", "type": "cli", "run": "true",
+                               "normalize": {"ok": "a", column: "b"}}]}  # fmt: skip
+        plan = _plan(raw, registry)
+        [problem] = [p for p in plan.problems if p.path == f"collectors.0.normalize.{column}"]
+        assert problem.kind == "invalid_value" and "recon's own" in problem.message
+        assert problem.fix == "name the column without the leading '_'"
+        assert "collectors.0.normalize.ok" not in _paths(plan)
+
+    def test_a_path_that_reads_one_is_still_a_mission_s_to_write(self, registry: Plugins) -> None:
+        raw = {"collectors": [{"name": "c", "type": "cli", "run": "true",
+                               "normalize": {"where": "_pattern"}}]}  # fmt: skip
+        assert _plan(raw, registry).valid
+
+
 class TestBrokenPlugins:
     def test_a_broken_type_is_named_as_broken_not_unknown(self, registry: Plugins) -> None:
-        broken = [BrokenPlugin("recon.collectors", "sql", "pkg.mod:t", "ImportError: no db")]
+        broken = [BrokenPlugin("recon.collector", "sql", "pkg.mod:t", "ImportError: no db")]
         plan = _plan({"collectors": [{"name": "q", "type": "sql"}]}, registry, broken=broken)
         message = _paths(plan)["collectors.0.type"]
         assert "installed but failed to load" in message and "no db" in message
         assert [(w.kind, w.got) for w in plan.warnings] == [
-            ("plugin_broken", "recon.collectors:sql")
+            ("plugin_broken", "recon.collector:sql")
         ]
         assert "pkg.mod:t" in plan.warnings[0].message
 
     def test_a_broken_plugin_does_not_affect_other_collectors(self, registry: Plugins) -> None:
-        broken = [BrokenPlugin("recon.collectors", "sql", "pkg.mod:t", "ImportError: no db")]
+        broken = [BrokenPlugin("recon.collector", "sql", "pkg.mod:t", "ImportError: no db")]
         plan = _plan(
             {"collectors": [{"name": "c", "type": "cli", "run": "true"}]}, registry, broken=broken
         )

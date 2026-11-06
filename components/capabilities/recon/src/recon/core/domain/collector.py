@@ -7,13 +7,20 @@ The dispatch loop consumes the iterator and writes to JSONL line-by-line; collec
 return a list should wrap it in `iter()`. Streaming collectors yield as they produce,
 enabling bounded memory for large outputs.
 
-Collector *types* are extensions. Each is a ``CollectorType`` object registered under the
-entry-point group ``recon.collectors``; the entry-point name is the config's ``type:``. The
-built-ins (``api``, ``cli``, ``web``, ``capture``, ``mcp``) register through the same group, so
-a third-party type is wired exactly as they are::
+Collector *types* are extensions. Each is a ``CollectorType``, registered at the
+``recon.collector`` point of matrix's registry under a type URL; a config names a built-in by
+its short name (``type: api``, for ``recon.v1.collector.api``) and any other by its type URL.
+The seven built-ins (``api``, ``cli``, ``web``, ``capture``, ``mcp``, ``tail``, ``sse``)
+register from recon's own ``matrix.extensions`` entry point, so a third-party type is wired
+exactly as they are, from its package's::
 
-    [project.entry-points."recon.collectors"]
-    sql = "my_package.recon_sql:collector_type"
+    [project.entry-points."matrix.extensions"]
+    acme = "acme.recon:register"
+
+    def register(registry):
+        registry.register("recon.collector", "acme.v1.collector.sql", lambda: collector_type)
+
+or in-process, by code using recon: ``recon.open(extensions=[register])``.
 """
 
 from __future__ import annotations
@@ -48,7 +55,8 @@ if TYPE_CHECKING:
 Effect = Literal["network", "subprocess", "filesystem"]
 
 #: A normalize transform: the resolved value in, the normalized value out. Registered
-#: under the entry-point group ``recon.transforms``; the entry-point name is used in a
+#: at the ``recon.transform`` point (a built-in by its short name, any other by its type URL),
+#: which is used in a
 #: normalize spec as ``path|$name``.
 Transform = Callable[[Any], Any]
 

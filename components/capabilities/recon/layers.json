@@ -368,6 +368,28 @@
       }
     },
     {
+      "name": "seam",
+      "files": [
+        "src/recon/_matrix.py"
+      ],
+      "allow": [
+        "matrix",
+        "__future__",
+        "typing",
+        "collections",
+        "recon.core.domain",
+        "recon.composition"
+      ],
+      "forbid": [
+        "yaml"
+      ],
+      "why": {
+        "matrix": "the one module of recon that names matrix: its registry, its errors (single_importer below)",
+        "recon.core.domain": "the descriptors a point's entries build, and the errors a refusal is said as",
+        "recon.composition": "recon's built-ins, which only the composition root names, registered at recon's points"
+      }
+    },
+    {
       "name": "root",
       "files": [
         "src/recon/composition.py"
@@ -395,14 +417,16 @@
         "recon.api",
         "recon.composition",
         "recon.core.domain",
-        "recon.skill_files"
+        "recon.skill_files",
+        "recon._matrix"
       ],
       "forbid": [
         "yaml"
       ],
       "why": {
         "recon.composition, recon.core.domain": "the library API names the root and the core's documents and errors, never an adapter or a service",
-        "*": "importlib for the version and the packaged skill files"
+        "*": "importlib for the version and the packaged skill files",
+        "recon._matrix": "the type of an extension given to recon.open (Register), named for the type checker alone"
       }
     },
     {
@@ -465,7 +489,11 @@
     {
       "name": "referencing",
       "only": "src/recon/adapters/_out/mcp_collector.py"
+    },
+    {
+      "name": "matrix",
+      "only": "src/recon/_matrix.py"
     }
   ],
-  "single_importer_why": "one file per technology, each behind one port; the MCP client is the mcp collector's alone, and it reaches httpx2 only through the SDK's own client. YAML is two files by design, the archive store writing the archive's meta and the mission store reading the mission's config, so it is confined to the file store by 'forbid' in every other layer rather than by a single_importer rule"
+  "single_importer_why": "one file per technology, each behind one port; the MCP client is the mcp collector's alone, and it reaches httpx2 only through the SDK's own client. YAML is two files by design, the archive store writing the archive's meta and the mission store reading the mission's config, so it is confined to the file store by 'forbid' in every other layer rather than by a single_importer rule; matrix is named by recon/_matrix.py alone, so a move of the harness contract to slick changes one module (owner ruling, REQ \u00a72; RUBRIC H6)"
 }

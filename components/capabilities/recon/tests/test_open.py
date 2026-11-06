@@ -16,7 +16,7 @@ from click.testing import CliRunner
 import recon
 from recon.adapters._in.cli import main
 from recon.composition import default
-from recon.core.domain.collector import CollectorType, Plugins
+from recon.core.domain.collector import CollectorType
 from recon.core.domain.errors import UsageError
 from recon.core.domain.models import ReconConfig
 
@@ -46,8 +46,16 @@ def _numbers(ctx: CollectorContext) -> Collector:
     return _Numbers()
 
 
-INLINE = Plugins({"numbers": CollectorType(create=_numbers, effects=frozenset())}, {}, [])
-CONFIG = {"collectors": [{"name": "n", "type": "numbers"}]}
+NUMBERS = CollectorType(create=_numbers, effects=frozenset())
+URL = "acme.v1.collector.numbers"
+
+
+def INLINE(registry: Any) -> None:  # noqa: N802 - an extension, named as one
+    """A program's own extension, registered in-process at recon's collector point."""
+    registry.register("recon.collector", URL, lambda: NUMBERS)
+
+
+CONFIG = {"collectors": [{"name": "n", "type": URL}]}
 
 
 def test_an_in_process_collector_and_a_config_value_run_and_write_no_config(
@@ -55,7 +63,7 @@ def test_an_in_process_collector_and_a_config_value_run_and_write_no_config(
 ) -> None:
     """The gate of M4: a harness gives recon a collector type of its own and a config as a
     value; the survey runs it, and no ``config.yaml`` is written anywhere."""
-    session = recon.open(tmp_path, extensions=INLINE)
+    session = recon.open(tmp_path, extensions=[INLINE])
     document = session.observation.survey("m", config=CONFIG)
     assert document.status == "complete" and [t.records for t in document.tables] == [3]
     assert not list(tmp_path.rglob("config.yaml")), "a value is never written as the mission's"
@@ -66,7 +74,7 @@ def test_an_in_process_collector_and_a_config_value_run_and_write_no_config(
 def test_a_config_value_is_kept_in_its_archive_beside_its_digest(
     tmp_path: Path,
 ) -> None:
-    session = recon.open(tmp_path, extensions=INLINE)
+    session = recon.open(tmp_path, extensions=[INLINE])
     first = session.observation.survey("m", config=ReconConfig.model_validate(CONFIG))
     meta = yaml.safe_load(
         next((tmp_path / ".recon" / "m" / "archive").glob(f"{first.archive}/meta.yaml")).read_text()
@@ -80,23 +88,25 @@ def test_a_config_value_s_credentials_never_reach_its_archive(tmp_path: Path) ->
     """Regression: an archive's meta never holds a URL's password (test_telemetry's guarantee),
     so a value config is kept as recon reports a URL, its user information redacted."""
     config = {**CONFIG, "catalog": [{"name": "x", "url": "https://me:PASSWORD-TOKEN@x.test/"}]}
-    session = recon.open(tmp_path, extensions=INLINE)
+    session = recon.open(tmp_path, extensions=[INLINE])
     document = session.observation.survey("m", config=config)
     meta = (tmp_path / ".recon" / "m" / "archive" / document.archive / "meta.yaml").read_text()
     assert "PASSWORD-TOKEN" not in meta and "REDACTED:REDACTED@x.test" in meta
 
 
-def test_an_extension_may_not_take_an_installed_name(tmp_path: Path) -> None:
-    taken = Plugins({"api": INLINE.collector_types["numbers"]}, {}, [])
+def test_an_extension_may_not_take_an_installed_type_url(tmp_path: Path) -> None:
+    def taking(registry: Any) -> None:
+        registry.register("recon.collector", "recon.v1.collector.api", lambda: NUMBERS)
+
     with pytest.raises(UsageError) as refused:
-        recon.open(tmp_path, extensions=taken)
-    assert refused.value.details == {"value": ["api"]}
+        recon.open(tmp_path, extensions=[taking])
+    assert "recon.v1.collector.api" in str(refused.value)
 
 
 def test_types_says_whose_each_type_is_and_its_config_schema(tmp_path: Path) -> None:
-    document = recon.open(tmp_path, extensions=INLINE).collection.types()
+    document = recon.open(tmp_path, extensions=[INLINE]).collection.types()
     found = {item.type: item for item in document.collectors}
-    assert found["numbers"].origin == "in_process" and found["numbers"].records_kind == "finite"
+    assert found[URL].origin == "in_process" and found[URL].records_kind == "finite"
     assert found["api"].origin == "recon" and "paginate" in found["api"].capabilities
     assert found["api"].config is not None and "endpoint" in found["api"].config["properties"]
     assert found["tail"].records_kind == "unbounded_recon_paced"

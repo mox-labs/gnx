@@ -170,7 +170,8 @@ class SourceEntry(BaseModel):
 class CollectorEntry(BaseModel):
     """A collection step — what to do.
 
-    `type` names an installed collector type (entry-point group `recon.collectors`). It is
+    `type` names a collector type registered at `recon.collector` (a built-in by its short name,
+    any other by its type URL). It is
     an open string here; whether it is installed is checked at plan time against what is
     actually registered.
 

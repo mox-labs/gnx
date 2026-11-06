@@ -11,7 +11,7 @@ URL or a DOCX download. Returns Iterator[dict] —
 yields one record, `{url, title, content, status_code, content_type}`, which a
 `normalize:` spec may reshape like any other.
 
-Registered as the built-in collector type ``web`` (entry-point group ``recon.collectors``).
+Registered as the built-in collector type ``web`` (at ``recon.collector``, ``recon._matrix``).
 """
 
 from __future__ import annotations

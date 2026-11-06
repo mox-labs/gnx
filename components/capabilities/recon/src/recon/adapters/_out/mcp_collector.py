@@ -1,6 +1,6 @@
 """McpCollector: calls a tool, or reads a resource, on an MCP server and yields records.
 
-Registered as the built-in collector type ``mcp`` (entry-point group ``recon.collectors``),
+Registered as the built-in collector type ``mcp`` (at ``recon.collector``, ``recon._matrix``),
 with the source kind ``mcp`` it adds. The client is FastMCP's (``fastmcp-slim[client]``, the
 one pydantic-ai's ``MCPToolset`` wraps), on the MCP SDK v2 and httpx2. This file is the only
 one that imports ``fastmcp``, ``mcp`` or ``jsonschema``, and it imports them when a survey or a

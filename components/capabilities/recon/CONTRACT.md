@@ -8,6 +8,7 @@ What each surface touched in 0.17.0 and 0.18.0 promises: the decision it hides, 
 
 - [The two layers](#the-two-layers)
 - [Opening recon, and what a mission may name](#opening-recon-and-what-a-mission-may-name)
+- [Extension points](#extension-points)
 - [Ranges: `range:`](#ranges-range)
 - [The plan](#the-plan)
 - [Queries over archives](#queries-over-archives)
@@ -29,7 +30,7 @@ What each surface touched in 0.17.0 and 0.18.0 promises: the decision it hides, 
 
 **Hides:** where recon's state is and what it was built with. A session is opened over values; nothing is discovered behind a caller's back but the installed plugins, once per session.
 
-**Members.** `recon.open(root=None, *, extensions=None, landing=None)` gives a session (`recon.Recon`). `extensions`: collector types and transforms given in-process, beside the installed ones, each under a name of its own. `landing`: where its acts land and are read back (a `Store`: `Landing` and `Archives`), which recon's query engine must read. A config is the mission's own, a file (`-`: standard input), or a value (a `ReconConfig` or a mapping). `recon.types()` (`recon.v1.types`): each collector type, its origin, effects, `records_kind`, capabilities and config JSON Schema; each source kind; each transform. `recon.schema()` (`recon.v1.mission-config`): the config's JSON Schema. The command line: `--root DIR` (or `RECON_ROOT`), `recon types [--json]`, `recon schema`.
+**Members.** `recon.open(root=None, *, extensions=None, landing=None)` gives a session (`recon.Recon`). `extensions`: in-process extensions, each a `register(registry)` called with the session's registry ([Extension points](#extension-points)). `landing`: where its acts land and are read back (a `Store`: `Landing` and `Archives`), which recon's query engine must read. A config is the mission's own, a file (`-`: standard input), or a value (a `ReconConfig` or a mapping). `recon.types()` (`recon.v1.types`): each collector type, its origin, effects, `records_kind`, capabilities and config JSON Schema; each source kind; each transform. `recon.schema()` (`recon.v1.mission-config`): the config's JSON Schema. The command line: `--root DIR` (or `RECON_ROOT`), `recon types [--json]`, `recon schema`.
 
 **Defaults.** The project is the git root of the working directory, else the working directory. No extensions. The landing is the project's archive directory. The module functions run over one session per project, opened on first use and kept for the process.
 
@@ -37,7 +38,17 @@ What each surface touched in 0.17.0 and 0.18.0 promises: the decision it hides, 
 
 **Guarantees.** A value config is never written as the mission's `config.yaml`; each archive it lands keeps it as data under `config` in its meta, every URL in it reported as recon reports one (user information and signature parameters redacted). The plan's `provenance` gives every effective value of the config's own keys, as written (`mission`) or filled in (`recon`), with a note where unset means something.
 
-**Stability:** beta until the registry lands (step M5): `extensions` changes shape there.
+**Stability:** beta. `extensions` are `register(registry)` callables on matrix's registry ([Extension points](#extension-points)).
+
+## Extension points
+
+**Hides:** how an extension reaches recon, and the harness contract recon is built on (matrix's registry today, slick's later): one module, `recon/_matrix.py`, names matrix.
+
+**Members.** Two points on matrix's `Registry`, owned by `recon`: `recon.collector` (an entry builds a `recon.core.domain.collector.CollectorType`; a config names it `type:`) and `recon.transform` (an entry builds a callable; a normalize spec names it `path|$name`). A built-in by its short name (`api`, `$html2text`), anyone else's by its type URL (`acme.v1.collector.sql`, `$acme.v1.transform.redact`). An installed package registers from its `matrix.extensions` entry point, a callable `register(registry)`; code using recon passes the same callables to `recon.open(extensions=[...])`. Optional members of a contract are protocols of their own (`recon.core.domain.optional`: `SupportsClose`, `SupportsRequirements`, `SupportsFollow`, `SupportsAround`, `SupportsTraceHeaders`), read with `isinstance`.
+
+**Failure.** An installed extension that fails to load is quarantined whole (matrix's rule), every entry it registered with it, and reported (`recon status`, `recon types --json`, a plan's `plugin_broken` warning). An in-process one matrix refuses is `usage` (exit 2). An entry that builds the wrong kind of thing is reported broken. A normalize column whose name starts with `_` is a plan problem: the prefix is recon's own (ruling R18).
+
+**Stability:** experimental. The collector contract changes once more (contract v2: items, `Paged`, the core normalizing every type); the point names and the naming rule are kept.
 
 ## Ranges: `range:`
 

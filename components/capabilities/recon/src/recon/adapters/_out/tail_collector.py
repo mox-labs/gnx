@@ -17,7 +17,7 @@ the file now there, it is read from its start, and the stretch whose lines may b
 reported as a gap (``CollectorContext.gaps``). A line longer than the source's ``max_bytes``
 fails the stream, rather than being held in memory.
 
-Registered as the built-in collector type ``tail`` (entry-point group ``recon.collectors``):
+The built-in collector type ``tail``, registered at ``recon.collector`` (``recon._matrix``):
 ``unbounded`` (its records do not end) and ``paced_by: recon`` (it reads the next line when
 recon is ready, so a full buffer holds it back and loses nothing).
 """

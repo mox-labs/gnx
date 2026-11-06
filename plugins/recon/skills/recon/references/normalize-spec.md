@@ -64,7 +64,7 @@ The pipe is always `|` (no spaces required). Transform names start with `$`.
 
 **An unknown transform is a plan problem.** `recon survey --dry-run` (and every survey, which plans first) reports it at `collectors.<i>.normalize.<column>` with the installed transforms, and exits 3 before anything runs. So is a path with two `*` (`a.*.b.*.c`) or a pipe without a `$name`.
 
-Transforms are extensions: each is registered under the entry-point group `recon.transforms`, and `recon status --json` lists what is installed (`plugins.transforms`). A package installed alongside recon can add its own.
+Transforms are extensions: each is registered at the `recon.transform` point of matrix's registry (a built-in by its short name, any other by its type URL, written `$acme.v1.transform.redact`), and `recon types --json` lists what is installed (`transforms`). A package installed alongside recon, or code using it (`recon.open(extensions=...)`), can add its own.
 
 ## Built-in transforms
 

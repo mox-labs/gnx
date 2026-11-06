@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from recon.core.domain.errors import ReconError
+from recon.core.domain.optional import SupportsAround, SupportsClose, SupportsTraceHeaders
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -106,7 +107,7 @@ class Event:
 
 class EventSink(Protocol):
     """Where events go. ``around``, ``trace_headers`` and ``close`` are optional members,
-    described above."""
+    described above, each a protocol of its own (``recon.core.domain.optional``)."""
 
     def on_event(self, event: Event) -> None: ...
 
@@ -253,11 +254,10 @@ class Telemetry:
         nothing more. A sink whose ``close`` raises is named in ``failed``."""
         sinks, self._sinks = self._sinks, []
         for sink in sinks:
-            close = getattr(sink, "close", None)
-            if close is None:
+            if not isinstance(sink, SupportsClose):
                 continue
             try:
-                close()
+                sink.close()
             except Exception as exc:  # a sink must not fail the work it observed
                 self.failed.append(f"{type(sink).__name__}: {type(exc).__name__}: {exc}")
 
@@ -266,11 +266,10 @@ class Telemetry:
         traces (W3C ``traceparent``); empty when none does."""
         headers: dict[str, str] = {}
         for sink in list(self._sinks):
-            given = getattr(sink, "trace_headers", None)
-            if given is None:
+            if not isinstance(sink, SupportsTraceHeaders):
                 continue
             try:
-                headers.update(given(span.id))
+                headers.update(sink.trace_headers(span.id))
             except Exception as exc:  # a sink must not fail the work it observes
                 self._drop(sink, exc)
         return headers
@@ -286,11 +285,10 @@ class Telemetry:
         """Enter each sink's ``around`` for the span ``event`` starts."""
         entered: list[tuple[EventSink, AbstractContextManager[Any]]] = []
         for sink in list(self._sinks):
-            around = getattr(sink, "around", None)
-            if around is None:
+            if not isinstance(sink, SupportsAround):
                 continue
             try:
-                manager = around(event)
+                manager = sink.around(event)
                 if manager is not None:
                     manager.__enter__()
                     entered.append((sink, manager))
@@ -321,10 +319,9 @@ class Telemetry:
             return
         self._sinks.remove(sink)
         self.failed.append(f"{type(sink).__name__}: {type(exc).__name__}: {exc}")
-        close = getattr(sink, "close", None)
-        if close is not None:
+        if isinstance(sink, SupportsClose):
             with suppress(Exception):  # already dropped and named: nothing more to say
-                close()
+                sink.close()
 
 
 def error_type(exc: BaseException) -> str:

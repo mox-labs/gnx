@@ -35,6 +35,7 @@ from recon.core.domain.collector import BrokenPlugin, CollectorContext
 from recon.core.domain.credentials import env_name
 from recon.core.domain.errors import CollectionError, ReconError
 from recon.core.domain.normalize import apply_normalize, bound
+from recon.core.domain.optional import SupportsClose, SupportsRequirements
 from recon.core.domain.paginate import NoPages
 from recon.core.domain.ratelimit import RateLimiter
 from recon.core.domain.stream import NoGaps
@@ -60,7 +61,8 @@ if TYPE_CHECKING:
     from recon.core.domain.stream import GapLog
     from recon.core.domain.telemetry import Telemetry
 
-COLLECTORS_GROUP = "recon.collectors"
+#: What a collector type's failure to build or close is reported under: its point.
+COLLECTOR_POINT = "recon.collector"
 
 
 @dataclass(frozen=True)
@@ -107,7 +109,7 @@ class SurveyCollectors:
                 end()
             except Exception as exc:  # one plugin's close must not keep the rest open
                 error = f"close() raised {type(exc).__name__}: {exc}"
-                failed.append(BrokenPlugin(COLLECTORS_GROUP, name, "close()", error))
+                failed.append(BrokenPlugin(COLLECTOR_POINT, name, "close()", error))
         return failed
 
 
@@ -207,9 +209,8 @@ class Normalizing:
             for record in records:
                 yield apply_normalize(record, entry.normalize, self._transforms)
         finally:
-            close = getattr(records, "close", None)
-            if close is not None:
-                close()
+            if isinstance(records, SupportsClose):
+                records.close()
 
 
 def build_collectors(
@@ -261,17 +262,14 @@ def build_collectors(
             error = f"{type(exc).__name__}: {exc}"
             if isinstance(exc, ReconError) and exc.fix:
                 error += f" (fix: {exc.fix})"
-            built.failed.append(BrokenPlugin(COLLECTORS_GROUP, name, "create()", error))
+            built.failed.append(BrokenPlugin(COLLECTOR_POINT, name, "create()", error))
             continue
-        close = getattr(collector, "close", None)
-        if callable(close):
-            built._ends.append((name, close))
-        requirements = getattr(collector, "requirements", None)
-        if ct.preflight and callable(requirements):
-            built.requirements[name] = requirements
+        if isinstance(collector, SupportsClose):
+            built._ends.append((name, collector.close))
+        if ct.preflight and isinstance(collector, SupportsRequirements):
+            built.requirements[name] = collector.requirements
         built.collectors[name] = collector if ct.normalizes else Normalizing(collector, transforms)
         built.raw[name] = collector
-    close = getattr(requester, "close", None)
-    if callable(close):
-        built._ends.append(("requester", close))
+    if isinstance(requester, SupportsClose):
+        built._ends.append(("requester", requester.close))
     return built

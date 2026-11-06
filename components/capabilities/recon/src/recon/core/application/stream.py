@@ -67,6 +67,7 @@ from recon.core.application.survey import PROGRESS_S, crawl_truncated
 from recon.core.domain.archives import META_FORMAT_VERSION
 from recon.core.domain.documents import TableError, TableOutcome, WindowOutcome
 from recon.core.domain.errors import ErrorKind, Problem, ReconError
+from recon.core.domain.optional import SupportsClose
 from recon.core.domain.paginate import Resume, content
 from recon.core.domain.stream import (
     POSITION_FIELD,
@@ -1343,9 +1344,8 @@ def _pump(
                 if not arrivals.put(json.dumps(record, default=str).encode()):
                     return
         finally:
-            close = getattr(records, "close", None)
-            if close is not None:
-                close()
+            if isinstance(records, SupportsClose):
+                records.close()
     except BaseException as exc:  # whatever ends the source's thread ends the stream
         arrivals.end(exc)
         return

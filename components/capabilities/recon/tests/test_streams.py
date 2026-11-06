@@ -961,8 +961,16 @@ class TestDeterminism:
             table = (archive / f"{window.table.name}.jsonl").read_bytes()
             assert _meta(tmp_path / "streamed", window)["stream"]["reproducible"] is True
             assert table.count(b"\n") >= 7, "the window holds records to replay"
-            assert _replayed(tmp_path / f"replay-{window.index}", archive) == table
-            assert _members(_frames(archive), spec, window.index)
+            # Changed requirement (ruling R18): a column starting with _ is recon's own, so a
+            # replay through a mission's normalize: makes every record's content and not its
+            # _position; each position is the one its arrival's capture frame holds.
+            kept = [json.loads(line) for line in table.splitlines()]
+            positions = [record.pop(POSITION_FIELD) for record in kept]
+            replayed = _replayed(tmp_path / f"replay-{window.index}", archive)
+            assert [json.loads(line) for line in replayed.splitlines()] == kept
+            frames = _frames(archive)
+            assert [frame["record"][POSITION_FIELD] for frame in frames] == positions
+            assert _members(frames, spec, window.index)
 
         # Check the checker: one arrival moved across the boundary leaves the window.
         frames = _frames(_kept(tmp_path / "streamed", sealed[0]))
@@ -1021,11 +1029,12 @@ def _members(frames: list[dict[str, Any]], spec: WindowSpec, index: int) -> bool
 
 def _replayed(project: Path, window: Path) -> bytes:
     """The window's table, collected again by recon's own ``capture`` collector from the
-    window's capture alone, shaped as the stream shaped it, on a clock at another epoch."""
+    window's capture alone, shaped as the stream shaped it (recon's own ``_position`` aside),
+    on a clock at another epoch."""
     mission = project / ".recon" / "replay"
     mission.mkdir(parents=True)
     (project / ".git").mkdir()
-    shaped = {"n": "record.seq", POSITION_FIELD: f"record.{POSITION_FIELD}"}
+    shaped = {"n": "record.seq"}
     collector = {"name": "s", "type": "capture", "path": str(window / "captures.jsonl"),
                  "normalize": shaped}  # fmt: skip
     config = yaml.safe_dump({"collectors": [collector]}, sort_keys=False)

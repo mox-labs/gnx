@@ -39,7 +39,7 @@ from recon.core.domain.models import (
     ReconConfig,
     SourceEntry,
 )
-from recon.core.domain.normalize import path_problem, spec_problems
+from recon.core.domain.normalize import RESERVED_PREFIX, path_problem, spec_problems
 from recon.core.domain.paginate import COUNTED, crawl_floor_s
 from recon.core.domain.ranges import BOUNDS, FORMATS, unknown_placeholders, uses_range
 from recon.core.domain.schedule import DAY_S, ScheduleSpec, every_fix, pinned_form, unpinned
@@ -1065,12 +1065,15 @@ def _entry_problems(
     transforms = tuple(sorted(f"${name}" for name in plugins.transforms))
     for column, message in spec_problems(entry.normalize or {}, plugins.transforms).items():
         unknown = message.startswith("unknown transform")
+        reserved = column.startswith(RESERVED_PREFIX)
         problems.append(
             Problem(
                 f"{at}.normalize.{column}",
                 message,
                 kind="name_unknown" if unknown else "invalid_value",
-                fix="use an installed transform (recon status --json lists them) and at most "
+                fix=f"name the column without the leading {RESERVED_PREFIX!r}"
+                if reserved
+                else "use an installed transform (recon types --json lists them) and at most "
                 "one * per path",
                 got=_scalar((entry.normalize or {}).get(column)),
                 allowed=transforms if unknown else (),
@@ -1270,7 +1273,7 @@ def _source_keys(schema: type[BaseModel] | None) -> tuple[str, ...]:
 
 
 def _unknown_type(at: str, name: str, plugins: Plugins) -> Problem:
-    broken = {b.name: b for b in plugins.broken if b.group == "recon.collectors"}
+    broken = {b.name: b for b in plugins.broken}
     installed = tuple(sorted(plugins.collector_types))
     if name in broken:
         message = f"collector type {name!r} is installed but failed to load: {broken[name].error}"

@@ -30,6 +30,8 @@ import queue
 import threading
 from typing import TYPE_CHECKING, Any
 
+from recon.core.domain.optional import SupportsAround, SupportsClose, SupportsTraceHeaders
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from contextlib import AbstractContextManager
@@ -146,12 +148,12 @@ class _QueuedSink:
         self._channel.send(self._name, self._deliver, event)
 
     def around(self, event: Event) -> AbstractContextManager[Any] | None:
-        around = getattr(self._sink, "around", None)
-        return None if around is None else around(event)
+        return self._sink.around(event) if isinstance(self._sink, SupportsAround) else None
 
     def trace_headers(self, span_id: str) -> dict[str, str]:
-        given = getattr(self._sink, "trace_headers", None)
-        return {} if given is None else dict(given(span_id))
+        if not isinstance(self._sink, SupportsTraceHeaders):
+            return {}
+        return dict(self._sink.trace_headers(span_id))
 
     def close(self) -> None:
         """Close the sink, unless a delivery to it has not ended within the channel's wait:
@@ -161,9 +163,8 @@ class _QueuedSink:
             return
         try:
             self._closed = True
-            close = getattr(self._sink, "close", None)
-            if close is not None:
-                close()
+            if isinstance(self._sink, SupportsClose):
+                self._sink.close()
         finally:
             self._lock.release()
         self._raise_its_error()
