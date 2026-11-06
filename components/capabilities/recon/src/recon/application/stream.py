@@ -4,7 +4,7 @@ written from that buffer one after another, each sealed as an archive (rulings B
 Three threads take part, and only the first writes anything:
 
 - **the writer**, the caller's thread, takes what arrived from the buffer in order and writes
-  each window's one table through the archive store (built once: :class:`Stream`);
+  each window's one table through the landing, under the stream's hold (:class:`Stream`);
 - **the pump** reads the collector's records, which may never end, and hands each to the
   buffer, so a source that sends while the writer is busy is read meanwhile;
 - **the ticker** sleeps on the clock port until the open window's time is up and tells the
@@ -42,7 +42,7 @@ that has positions. Every restart is recorded as a gap, ``resumed`` when it went
 **Crawls** (ruling P4). An entry that reads its source page by page (``paginate:``) crawls it
 across its windows. Its collector marks each page before it asks for it (the stream's page
 log, :class:`StreamPages`), and the mark goes through the buffer in order with the records, so
-the writer adds it to the window's page log (``<output>.pages.jsonl``) after the records before
+the writer adds it to the window's page log (its ``pages`` sidecar) after the records before
 it are written, and a window of ``pages`` pages ends at the mark of the page after them. A
 mark the stream will not keep (it has ended) is refused, and the page is not asked for. A run
 goes on from where the last left off by :func:`crawl_resume`: the last page the page logs name
@@ -59,7 +59,7 @@ import json
 import threading
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -83,10 +83,9 @@ from recon.domain.telemetry import COLLECT
 if TYPE_CHECKING:
     from collections.abc import Generator, Iterator, Mapping
     from contextlib import AbstractContextManager
-    from pathlib import Path
 
     from recon.application.changes import ChangeDetector
-    from recon.domain.archives import ArchiveStore
+    from recon.domain.archives import ArchiveRef, Archives, Hold, Landed, Landing
     from recon.domain.capture import CaptureLog
     from recon.domain.clock import Clock
     from recon.domain.models import CollectorEntry, SourceEntry
@@ -101,7 +100,7 @@ if TYPE_CHECKING:
         Stop,
         WindowSpec,
     )
-    from recon.domain.telemetry import EventCallback, Span, Telemetry
+    from recon.domain.telemetry import EventCallback, EventSink, Span, Telemetry
 
 #: By default, the seconds the end of a stream waits for its source's thread to stop, once
 #: its collector is closed.
@@ -111,11 +110,11 @@ STOP_S = 5.0
 #: window is a second at least, so it wakes no more than once a window to no purpose.
 TICK_S = 1.0
 
-#: Opens one window's telemetry over the clock given, its event log among the sinks: the
-#: telemetry and the callback the window's outcome events go to, both ended when the block
-#: ends.
+#: Opens one window's telemetry over the clock given, the window's event log (the sink given)
+#: among its sinks: the telemetry and the callback the window's outcome events go to, both
+#: ended when the block ends.
 WindowTelemetry = Callable[
-    ["Path", "Clock"], "AbstractContextManager[tuple[Telemetry, EventCallback]]"
+    ["EventSink", "Clock"], "AbstractContextManager[tuple[Telemetry, EventCallback]]"
 ]
 
 
@@ -653,7 +652,7 @@ class _Window:
 
     index: int
     id: str
-    archive: Path
+    archive: Landed
     opened: float
     previous: str | None
     records: int = 0
@@ -681,8 +680,9 @@ class _Start:
 
 
 class Stream:
-    """A stream's run, over the archive store and the clock. Built once and run once per
-    stream: the window writer every stream goes through, a survey's one window included.
+    """A stream's run, over the landing, the archives landed and the clock. Built once and
+    run once per stream: the window writer every stream goes through, a survey's one window
+    included.
 
     ``telemetry`` opens each window's telemetry and the callback its outcome event goes to
     (``{"kind": "window", ...}``, as each window is sealed); ``progress_s`` is the least time
@@ -693,7 +693,8 @@ class Stream:
 
     def __init__(
         self,
-        archives: ArchiveStore,
+        landing: Landing,
+        archives: Archives,
         clock: Clock,
         recon_version: str,
         *,
@@ -702,6 +703,7 @@ class Stream:
         stop_s: float = STOP_S,
         changes: ChangeDetector | None = None,
     ) -> None:
+        self._landing = landing
         self._archives = archives
         self._changes = changes
         self._clock = clock
@@ -715,7 +717,7 @@ class Stream:
 
     def run(
         self,
-        mission_dir: Path,
+        mission: str,
         plan: StreamPlan,
         collect: Callable[[Any], Iterator[dict[str, Any]]],
         normalize: Callable[[dict[str, Any]], dict[str, Any]],
@@ -741,18 +743,16 @@ class Stream:
         source that would not; ``gaps`` and ``pages`` are the gap log and the page log its
         collector was built with. Raises ReconError (``busy``) when another writer holds the
         stream."""
-        self._archives.hold_stream(mission_dir, plan.name)
-        try:
+        with self._landing.hold(mission, stream=plan.name) as hold:
             return self._run(
-                mission_dir, plan, collect, normalize, close, gaps, pages, windows, until,
+                hold, mission, plan, collect, normalize, close, gaps, pages, windows, until,
                 preserve_raw, config_sha256, dict(resolved or {}), on_window, stop,
             )  # fmt: skip
-        finally:
-            self._archives.release_stream(mission_dir, plan.name)
 
     def _run(
         self,
-        mission_dir: Path,
+        hold: Hold,
+        mission: str,
         plan: StreamPlan,
         collect: Callable[[Any], Iterator[dict[str, Any]]],
         normalize: Callable[[dict[str, Any]], dict[str, Any]],
@@ -767,7 +767,7 @@ class Stream:
         on_window: Callable[[WindowOutcome], None] | None,
         stop: Stop | None,
     ) -> StreamRun:
-        start = self._resume(mission_dir, plan)
+        start = self._resume(mission, plan)
         opened_wall, opened = self._clock.now(), self._clock.monotonic()
 
         def wall(stamp: float) -> datetime:
@@ -812,27 +812,25 @@ class Stream:
                 ends_bare = isinstance(event, _End) and event.error is None
                 if ends_bare and sealed and not arrivals.noted(index):
                     break  # the source ended as a window opened: it has nothing to keep
-                window = _Window(
-                    index=index,
-                    id=window_id(index, wall(window_opened)),
-                    archive=mission_dir,  # set once made
-                    opened=window_opened,
-                    previous=previous,
-                    last=carried,
-                    frames=preserve_raw,
-                )
-                window.archive = self._archives.create(mission_dir, window.id, stream=plan.name)
-                try:
+                named = window_id(index, wall(window_opened))
+                with hold.begin(named) as landed:
+                    window = _Window(
+                        index=index,
+                        id=named,
+                        archive=landed,
+                        opened=window_opened,
+                        previous=previous,
+                        last=carried,
+                        frames=preserve_raw,
+                    )
                     outcome = self._window(plan, window, arrivals, normalize, wall, meta)
-                finally:
-                    self._archives.release(window.archive)
                 sealed += 1
                 records += outcome.table.records
                 dropped += outcome.dropped
                 first = first or outcome.id
                 if on_window is not None:
                     on_window(outcome)
-                self._retain(mission_dir, plan, outcome, sizes)
+                self._retain(hold, mission, plan, outcome, sizes)
                 if not isinstance(window.end, WindowEnd) or window.end.reason == "until":
                     break
                 if window.end.index == last:
@@ -875,12 +873,11 @@ class Stream:
         wall: Callable[[float], datetime],
         meta: dict[str, Any],
     ) -> WindowOutcome:
-        """Write one window from ``arrivals`` until its end, seal it, and write its meta."""
-        captures = self._archives.capture_log(window.archive) if window.frames else None
+        """Write one window from ``arrivals`` until its end, seal it, and record its meta."""
+        captures = window.archive.captures() if window.frames else None
         output = plan.entry.name
         table = TableOutcome(
             name=output,
-            file=f"{output}.jsonl",
             collector=plan.name,
             type=plan.entry.type,
             source=plan.source.name if plan.source is not None else None,
@@ -895,15 +892,13 @@ class Stream:
             "recon.window": window.index,
         }
         time = _WindowTime(wall, window.opened)
-        with self._telemetry(window.archive, time) as (telemetry, emit):
+        with self._telemetry(window.archive.events(), time) as (telemetry, emit):
             with telemetry.span(COLLECT, attributes) as span:
                 records = self._records(
                     window, arrivals, normalize, captures, telemetry, span, output, time
                 )
                 try:
-                    self._archives.write_table(
-                        window.archive, output, records, columns=plan.columns, keep_on_error=True
-                    )
+                    window.archive.write(output, records, columns=plan.columns, keep_on_error=True)
                 except KeyboardInterrupt:
                     # Interrupted away from a wait (writing, shaping): what was written is
                     # sealed, and the stream ends here, what it held or still waits dropped.
@@ -915,8 +910,8 @@ class Stream:
                     window.end = window.end or _End(None, self._clock.monotonic(), exc)
                 ledger = arrivals.ledger(window.index)
                 # What the window holds is what its table holds, read from it: a record the
-                # writer took and the store never kept is no record of it, and a dropped one.
-                ends = self._archives.table_ends(window.archive, output)
+                # writer took and the landing never kept is no record of it, and a dropped one.
+                ends = window.archive.ends(output)
                 window.records = ends.records
                 if ends.first is not None:
                     window.first = ends.first.get(POSITION_FIELD)
@@ -932,7 +927,7 @@ class Stream:
                 kind: ErrorKind | None = None
                 if error is not None:
                     kind = error.kind if isinstance(error, ReconError) else "run_failed"
-                    span.fail(kind, "the window's source failed; its error is in its meta.yaml")
+                    span.fail(kind, "the window's source failed; recon status gives its error")
                 time.pin(_closed(window))
             outcome = self._seal(
                 plan, window, table, ledger, window_dropped, error, kind, wall, meta, captures
@@ -994,7 +989,7 @@ class Stream:
             if isinstance(event, _Page):
                 arrivals.pop()
                 line = {"page": event.index, "token": event.token}
-                self._archives.append_sidecar(window.archive, output, "pages", line)
+                window.archive.mark(output, "pages", line)
                 continue
             if not isinstance(event, _Arrival):
                 arrivals.pop()
@@ -1015,7 +1010,7 @@ class Stream:
                 return
             if POSITION_FIELD in raw:
                 record = {**record, POSITION_FIELD: raw[POSITION_FIELD]}
-            window.records += 1  # handed to the store; its seal counts what it kept
+            window.records += 1  # handed to the landing; its seal counts what it kept
             yield record
             if event.stamp - reported >= self._progress_s:
                 time.pin(event.stamp)
@@ -1037,7 +1032,7 @@ class Stream:
         meta: dict[str, Any],
         captures: CaptureLog | None,
     ) -> WindowOutcome:
-        """The window's ``meta.yaml``, written; marked complete unless its source failed."""
+        """The window's meta, recorded; marked complete unless its source failed."""
         closed = _closed(window)
         closed_by: ClosedBy = "error" if error is not None else _reason(window.end)
         opened_at, closed_at = wall(window.opened).isoformat(), wall(closed).isoformat()
@@ -1106,13 +1101,12 @@ class Stream:
         if spec is not None and self._changes is not None:
             # Against what the chain has told, never a delete (ruling C7); a window whose
             # source failed holds records too, and tells them (Dijkstra F1). Its summary is
-            # in meta.yaml before its first row can be read (F3).
+            # in the meta before its first row can be read (F3).
             try:
                 table = self._changes.window(
                     window.archive, plan.name, window.previous, table, spec,
                     plan.entry.normalize,
-                    pending=lambda told: self._archives.write_meta(
-                        window.archive, document(told, None)),
+                    pending=lambda told: window.archive.record(document(told, None)),
                 )  # fmt: skip
             except Exception as exc:  # the window's changes fail, never the window (F6)
                 warning = changes_failed(plan.at, table.name, exc)
@@ -1121,16 +1115,13 @@ class Stream:
             for output, unclosed in self._changes.unclosed():
                 warning = join_unclosed(plan.at, output, unclosed)
                 self.warnings = [w for w in self.warnings if w.kind != warning.kind] + [warning]
-        self._archives.write_meta(
-            window.archive, document(table, "stopped" if closed_by == "stopped" else "finished")
-        )
+        window.archive.record(document(table, "stopped" if closed_by == "stopped" else "finished"))
         if error is None:
-            self._archives.mark_complete(window.archive)
+            window.archive.complete()
         return WindowOutcome(
             stream=plan.name,
             index=window.index,
             id=window.id,
-            path=str(window.archive),
             opened_at=opened_at,
             closed_at=closed_at,
             closed_by=closed_by,
@@ -1139,23 +1130,23 @@ class Stream:
             table=table,
         )
 
-    def _resume(self, mission_dir: Path, plan: StreamPlan) -> _Start:
+    def _resume(self, mission: str, plan: StreamPlan) -> _Start:
         """Where this run begins: after the stream's last window, resuming its source after
         the last position kept (a crawl's from :func:`crawl_resume`); a fresh stream at
         window 0."""
-        windows = self._archives.archives(mission_dir, stream=plan.name)
+        windows = self._archives.archives(mission, stream=plan.name)
         if not windows:
             return _Start(0, None, None, None)
         last = windows[-1]
-        index = (window_index(last.name) or 0) + 1
-        stream = _stream_meta(self._archives.read_meta(last))
+        index = (window_index(last.id) or 0) + 1
+        stream = _stream_meta(self._archives.meta(last))
         if stream is not None:  # sealed: its meta carries the position to go on from
             after, since = _carried(stream), _time(stream.get("closed_at"))
         else:  # its writer died: the last whole record it wrote says
             record = self._archives.last_record(last, plan.entry.name)
             after = record.get(POSITION_FIELD) if record is not None else None
             if after is None and len(windows) > 1:
-                before = _stream_meta(self._archives.read_meta(windows[-2]))
+                before = _stream_meta(self._archives.meta(windows[-2]))
                 after = _carried(before) if before is not None else None
             since = None
         carried, again = after, None
@@ -1166,10 +1157,15 @@ class Stream:
         # Every restart is a stretch no process read, recorded in the chain: resumed from a
         # position when there is one (and a source that does not honour it shows where).
         gap = Gap(since, self._clock.now(), resumed=after is not None)
-        return _Start(index, last.name, after, gap, carried, again)
+        return _Start(index, last.id, after, gap, carried, again)
 
     def _retain(
-        self, mission_dir: Path, plan: StreamPlan, sealed: WindowOutcome, sizes: dict[str, int]
+        self,
+        hold: Hold,
+        mission: str,
+        plan: StreamPlan,
+        sealed: WindowOutcome,
+        sizes: dict[str, int],
     ) -> None:
         """Retire the sealed windows ``plan.retain`` does not keep, oldest first, once
         ``sealed`` is: each that ``windows`` leaves out, that closed more than ``seconds``
@@ -1179,20 +1175,20 @@ class Stream:
         rule = plan.retain
         if isinstance(rule, str):
             return
-        windows = self._archives.archives(mission_dir, stream=plan.name)
+        windows = self._archives.archives(mission, stream=plan.name)
         now = datetime.fromisoformat(sealed.closed_at)
         going = windows_going(self._archives, windows, rule, now, sizes)
         held = plan.held() if plan.held is not None and going else set()
         for window in windows[:-1]:
-            if window.name not in going or window.name in held:
+            if window.id not in going or window.id in held:
                 continue
-            meta = self._archives.read_meta(window)
+            meta = self._archives.meta(window)
             stream = _stream_meta(meta)
             if stream is None or self._archives.state(window) == "writing":
                 continue  # never sealed: kept, as what a dead writer left
             [source] = stream.get("sources") or [{}]
             tombstone = {
-                "id": window.name,
+                "id": window.id,
                 "index": stream.get("index"),
                 "opened_at": stream.get("opened_at"),
                 "closed_at": stream.get("closed_at"),
@@ -1202,8 +1198,8 @@ class Stream:
                 "retired_at": now.isoformat(),
                 "rule": rule.model_dump(exclude_none=True),
             }
-            self._archives.retire(window, tombstone)
-            sizes.pop(window.name, None)
+            hold.retire(window, tombstone)
+            sizes.pop(window.id, None)
 
     def _warn_dropped(self, plan: StreamPlan, causes: dict[str, int], emit: EventCallback) -> None:
         """One ``records_dropped`` warning for the run for each cause a window's drops had,
@@ -1220,8 +1216,8 @@ class Stream:
             warning = Problem(
                 path.format(at=plan.at),
                 f"stream {plan.name}: {total} record(s) dropped in {windows} window(s): "
-                f"{why.format(buffer=plan.buffer, overflow=plan.overflow)}; each window's "
-                "meta.yaml counts its own",
+                f"{why.format(buffer=plan.buffer, overflow=plan.overflow)}; each window "
+                "counts its own (recon status)",
                 kind="records_dropped",
                 fix=fix,
                 got=total,
@@ -1281,12 +1277,12 @@ _DROP_CAUSES: dict[str, tuple[str, str, str]] = {
         "{at}",
         "they waited when the stream stopped at once: a second stop, or its source or store failed",
         "stop a stream once: a single Ctrl-C or SIGTERM seals the window once what waits is "
-        "written; if a window failed, its meta.yaml has the error",
+        "written; if a window failed, recon status gives its error",
     ),
 }
 
 
-def crawl_resume(archives: ArchiveStore, windows: list[Path], output: str) -> Resume | None:
+def crawl_resume(archives: Archives, windows: list[ArchiveRef], output: str) -> Resume | None:
     """Where a stream's crawl goes on (ruling P4): the last page its windows' page logs name,
     newest window first, asked for again by its token, and the last record kept from that
     page, if one was. None when the crawl ended (its last window sealed ``eof``: the next run
@@ -1296,13 +1292,13 @@ def crawl_resume(archives: ArchiveStore, windows: list[Path], output: str) -> Re
     mark: dict[str, Any] | None = None
     record: dict[str, Any] | None = None
     for window in reversed(windows):
-        stream = _stream_meta(archives.read_meta(window))
+        stream = _stream_meta(archives.meta(window))
         if stream is not None and stream.get("closed_by") == "eof":
             break
         if record is None:
             record = archives.last_record(window, output)
         if mark is None:
-            for line in archives.read_sidecar(window, output, "pages") or ():
+            for line in archives.sidecar(window, output, "pages") or ():
                 mark = line
         if mark is not None and record is not None:
             break
@@ -1324,13 +1320,14 @@ def _restarted(ledger: _Ledger) -> int | None:
     return pages[-1] if pages else None
 
 
-def _starved(archives: ArchiveStore, window: _Window, ledger: _Ledger) -> bool:
+def _starved(archives: Archives, window: _Window, ledger: _Ledger) -> bool:
     """Whether a window's crawl was begun again at the same page as the window before it:
     each run reads the same pages again and gets no further."""
     restarted = _restarted(ledger)
     if restarted is None or window.previous is None:
         return False
-    before = _stream_meta(archives.read_meta(window.archive.parent / window.previous))
+    ref = window.archive.ref
+    before = _stream_meta(archives.meta(replace(ref, id=window.previous, index=None)))
     sources = before.get("sources") if before is not None else None
     if not isinstance(sources, list) or not sources or not isinstance(sources[0], dict):
         return False
@@ -1494,8 +1491,8 @@ def _time(value: Any) -> datetime | None:
 
 
 def windows_going(
-    archives: ArchiveStore,
-    windows: list[Path],
+    archives: Archives,
+    windows: list[ArchiveRef],
     rule: RetainSpec,
     now: datetime,
     sizes: dict[str, int],
@@ -1505,20 +1502,20 @@ def windows_going(
     windows' ``bytes`` leave no room for. Each window's size is read once into ``sizes``."""
     going: set[str] = set()
     if rule.archives is not None:
-        going.update(window.name for window in windows[: -rule.archives])
+        going.update(window.id for window in windows[: -rule.archives])
     if rule.seconds is not None:
         cutoff = now - timedelta(seconds=rule.seconds)
         for window, after in zip(windows, windows[1:], strict=False):
-            closed = window_opened(after.name)  # a window closes as the next opens
+            closed = window_opened(after.id)  # a window closes as the next opens
             if closed is not None and closed < cutoff:
-                going.add(window.name)
+                going.add(window.id)
     if rule.bytes is not None:
         held = 0
         for at, window in enumerate(reversed(windows)):
-            if window.name not in sizes:
-                sizes[window.name] = archives.size(window)
-            held += sizes[window.name]
+            if window.id not in sizes:
+                sizes[window.id] = archives.size(window)
+            held += sizes[window.id]
             if held > rule.bytes and at > 0:
-                going.update(w.name for w in windows[: len(windows) - at])
+                going.update(w.id for w in windows[: len(windows) - at])
                 break
     return going

@@ -24,7 +24,7 @@ from recon.domain.capture import REDACTED
 from recon.domain.errors import CollectionError
 from recon.domain.models import AuthConfig, SourceEntry
 from recon.domain.ratelimit import RateLimiter
-from tests.recon_fakes import FixedClock
+from tests.recon_fakes import FixedClock, kept
 from tests.test_paginated_survey import BASE, PagedApi
 
 
@@ -282,7 +282,7 @@ def test_a_credential_a_server_echoes_is_in_no_archive_byte(
     assert (table.status == "error") is fails
     if fails:
         assert REDACTED in (table.error.message or "")
-    archive = Path(document.path)
+    archive = kept(tmp_path, document)
     for path in archive.rglob("*"):
         if path.is_file():
             data = path.read_bytes()
@@ -310,7 +310,7 @@ def test_an_echoed_credential_in_a_record_is_kept_and_security_md_says_so(
     auth = {"token": "file:key.txt", "header": "Authorization"}
     document = _survey(tmp_path, IntoRecords("cursor", 1, 1), auth, {}, preserve_raw=True)
 
-    archive = Path(document.path)
+    archive = kept(tmp_path, document)
     assert b"s3cretTokenZZ" in (archive / "items.jsonl").read_bytes(), "the source's data"
     assert all(b"s3cretTokenZZ" not in p.read_bytes() for p in (archive / "raw").iterdir())
     security = (Path(__file__).parents[1] / "SECURITY.md").read_text()
@@ -324,7 +324,7 @@ def test_no_secret_is_written_to_the_archive(tmp_path: Path) -> None:
     api = PagedApi("cursor", 2, 1)
     auth = {"token": "file:key.txt", "param": "api_key"}
     document = _survey(tmp_path, api, auth, {}, preserve_raw=True)
-    archive = Path(document.path)
+    archive = kept(tmp_path, document)
     assert (archive / "captures.jsonl").is_file()
     for path in archive.rglob("*"):
         if path.is_file():

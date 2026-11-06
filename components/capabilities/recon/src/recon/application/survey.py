@@ -7,7 +7,7 @@ Determinism (the contract the tests in ``test_determinism.py`` hold):
     the converter (``DocumentConverter``) and the same files under the mission's declared
     directories, a survey writes the same records, in the same order, to the same tables.
     The time enters only through the ``Clock`` port. With the clock fixed too, the whole
-    archive is the same: its name, every table, and ``meta.yaml``. The one exception is the
+    archive is the same: its name, every table, and its meta. The one exception is the
     capture log a mission with ``preserve_raw`` keeps: each capture has a unique ``id``. A
     survey a scheduled tick runs also records when the tick was due, in the host's local time
     (``scheduled_at``, ``late_s``): the same clock in the same time zone, the same values.
@@ -17,7 +17,7 @@ Determinism (the contract the tests in ``test_determinism.py`` hold):
 
     A stream's window keeps the same contract, window by window (``stream.py``): given the
     same records arriving at the same stamps on the clock port, each window holds the same
-    records, in the same order, with the same ``meta.yaml`` and event log, whatever thread
+    records, in the same order, with the same meta and event log, whatever thread
     wrote it. Which window a record falls in is a pure function of its order of arrival, its
     stamp and the window spec, and a window kept with ``preserve_raw`` replays from its
     capture to the same table under any clock. What a full buffer drops depends on how fast
@@ -28,13 +28,13 @@ catalog order. A table that fails is recorded with its error and the rest still 
 mission's ``deadline:`` bounds them all, and a collector's each of its tables
 (:mod:`recon.domain.deadline`): a table cut short fails as ``transient``, and so does each
 table not started when the survey's deadline has passed; the archive is still finished. The
-archive is created incomplete and marked complete only after ``meta.yaml`` is written with
-every table succeeded, so a survey that fails a table, is stopped or is killed leaves an
-archive that reads incomplete. ``meta.yaml`` says how the survey ended (``ended``):
-``finished``, or ``stopped`` when it was stopped on request (a ``KeyboardInterrupt``, which
-the command line raises for Ctrl-C and SIGTERM), the tables that ended before it recorded. A
-survey that cannot write ``meta.yaml`` or mark the archive complete is not ``finished``, and
-says why in an ``archive_unfinished`` warning. Each table
+archive is begun incomplete and marked complete only after its meta is recorded with every
+table succeeded, so a survey that fails a table, is stopped or is killed leaves an archive
+that reads incomplete. The meta says how the survey ended (``ended``): ``finished``, or
+``stopped`` when it was stopped on request (a ``KeyboardInterrupt``, which the command line
+raises for Ctrl-C and SIGTERM), the tables that ended before it recorded. A survey that
+cannot record its meta or mark the archive complete is not ``finished``, and says why in an
+``archive_unfinished`` warning. Each table
 is a ``recon.collect`` span, which says how many of its records are written, while it is
 written, at most once a second by the clock (``recon.collect.progress``).
 
@@ -52,12 +52,18 @@ nothing.
 
 Once every table has run, each table sealed ``ok`` of an entry with ``changes:`` is compared
 with its baseline (:mod:`recon.application.changes`): its change table (``<output>.changes``)
-and its key index are written, and its outcome says what was found. A stop during that is
+and its told index are written, and its outcome says what was found. A stop during that is
 recorded as ``ended: stopped``, and what it wrote is then not to be read.
+
+A table of an entry with ``range:`` asks its source for the run's span step by step
+(:mod:`recon.domain.ranges`): each step is one call of its collector, the entry's settings
+filled with the step's bounds, and every record it gives carries the step as ``_range``
+(``{start, end}``); the steps land in the one table, all or nothing, and its outcome records
+the span (``range``), which commits with the archive's meta.
 
 A table read page by page (``paginate:``) says each page and why its crawl stopped short
 through the survey's page log (:class:`TablePages`, the collectors' ``CollectorContext.pages``).
-Once the table is sealed its page log is kept beside it (``<output>.pages.jsonl``); a crawl
+Once the table is sealed its page log is kept beside it (its ``pages`` sidecar); a crawl
 cut short seals the table ``ok`` and ``truncated``, with what cut it, and warns
 (``paginate_pages``, ``paginate_loop``, ``paginate_empty``). A table that fails keeps no page log.
 """
@@ -72,24 +78,25 @@ from recon.application.changes import changes_failed, failed, join_unclosed
 from recon.application.plan import fan_out
 from recon.domain.archives import META_FORMAT_VERSION
 from recon.domain.deadline import Deadline, DeadlineExceededError
-from recon.domain.documents import TableError, TableOutcome
+from recon.domain.documents import RangeOutcome, TableError, TableOutcome
 from recon.domain.errors import CollectionError, ErrorKind, NoRecordsError, Problem, ReconError
 from recon.domain.normalize import nested_records
+from recon.domain.ranges import RANGE_FIELD, fill, outcome
 from recon.domain.telemetry import COLLECT, EventCallback
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Generator, Mapping
     from datetime import datetime
-    from pathlib import Path
 
     from recon.application.changes import ChangeDetector
-    from recon.domain.archives import ArchiveStore
+    from recon.domain.archives import Landed
     from recon.domain.capture import CaptureLog
     from recon.domain.changes import DeletesWithheld
     from recon.domain.clock import Clock
     from recon.domain.collector import Collector
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
     from recon.domain.paginate import TruncatedBy
+    from recon.domain.ranges import RangeRun
     from recon.domain.telemetry import Span, Telemetry
 
 #: By default, the least seconds between two ``recon.collect.progress`` events of a table.
@@ -153,14 +160,14 @@ class Survey:
     kinds each type accepts (a type it does not name accepts every kind), so an unpinned
     collector runs against the sources the plan resolved for it; ``warnings`` collects
     what the run found worth saying about tables that succeeded, and about an archive it
-    could not finish. ``finished`` is false when ``meta.yaml`` could not be written or the
+    could not finish. ``finished`` is false when its meta could not be recorded or the
     archive could not be marked complete, so it reads incomplete whatever its tables did.
     ``progress_s`` is the least time between two progress events of a table. ``pages`` is the
-    page log its collectors were built with (``CollectorContext.pages``)."""
+    page log its collectors were built with (``CollectorContext.pages``). ``ranges`` is the
+    run of each ranged table, by output (:func:`recon.application.ranges.range_runs`)."""
 
     def __init__(
         self,
-        archives: ArchiveStore,
         clock: Clock,
         recon_version: str,
         telemetry: Telemetry,
@@ -172,9 +179,10 @@ class Survey:
         progress_s: float = PROGRESS_S,
         pages: TablePages | None = None,
         changes: ChangeDetector | None = None,
+        ranges: Mapping[str, RangeRun] | None = None,
     ) -> None:
-        self._archives = archives
         self._pages = pages if pages is not None else TablePages()
+        self._ranges = dict(ranges or {})
         self._changes = changes
         self._progress_s = progress_s
         self._clock = clock
@@ -191,24 +199,23 @@ class Survey:
         self,
         config: ReconConfig,
         collectors: Mapping[str, Collector],
-        archive: Path,
+        archive: Landed,
         *,
         started: datetime,
         config_sha256: str | None = None,
         resolved: Mapping[str, Any] | None = None,
         streams: Collection[int] = (),
         scheduled: Mapping[str, Any] | None = None,
-        index: int | None = None,
     ) -> list[TableOutcome]:
-        """Run every table into ``archive``, a new one :meth:`ArchiveStore.create` made at
-        ``started``, and write its ``meta.yaml``. Returns the tables, which also land in
-        ``meta.yaml`` under ``tables``. ``resolved`` says where what the survey resolved came
-        from (how its project root was found, which declared variables were set), and is
-        written as given. The entries at the positions in ``streams`` are streams, written
-        window by window into their own archives, so they are no table here. A survey a
-        scheduled tick runs is given ``scheduled`` (``scheduled_at``, ``late_s``), written into
-        ``meta.yaml`` as given; one run by hand has neither key."""
-        captures = self._archives.capture_log(archive) if config.preserve_raw else None
+        """Run every table into ``archive``, one begun at ``started``, and record its meta.
+        Returns the tables, which are also the meta's ``tables``. ``resolved`` says where what
+        the survey resolved came from (how its project root was found, which declared
+        variables were set), and is recorded as given. The entries at the positions in
+        ``streams`` are streams, written window by window into their own archives, so they are
+        no table here. A survey a scheduled tick runs is given ``scheduled`` (``scheduled_at``,
+        ``late_s``), recorded as given; one run by hand has neither key."""
+        captures = archive.captures() if config.preserve_raw else None
+        index = archive.ref.index
         tables: list[TableOutcome] = []
         what = f"the survey's deadline ({config.deadline:g}s)" if config.deadline else ""
         fix = "raise deadline: at the top of the mission, or survey fewer tables"
@@ -231,20 +238,20 @@ class Survey:
                         continue
                     tables += self._run_entry(index, entry, config, collectors, archive, captures)
             # Every table has run, so the survey reaches its end: what changed is told now,
-            # each table's summary in meta.yaml before its rows can be read.
+            # each table's summary in the meta before its rows can be read.
             self._compare(config, tables, archive, meta)
         except KeyboardInterrupt:
             # Stopped on request (Ctrl-C, SIGTERM): the tables that ended are recorded, and
             # that it was stopped, so it never reads as a survey that died. One that cannot
             # write it reads crashed, as one that died does: it left no record of its end.
             with contextlib.suppress(OSError):
-                self._archives.write_meta(archive, self._meta(meta, tables, "stopped"))
+                archive.record(self._meta(meta, tables, "stopped"))
             raise
         meta = self._meta(meta, tables, "finished")
         try:
-            self._archives.write_meta(archive, meta)
+            archive.record(meta)
             if all(table.status == "ok" for table in tables):
-                self._archives.mark_complete(archive)
+                archive.complete()
         except OSError as exc:
             self.finished = False
             warning = Problem(
@@ -261,15 +268,15 @@ class Survey:
         self,
         config: ReconConfig,
         tables: list[TableOutcome],
-        archive: Path,
+        archive: Landed,
         head: dict[str, Any],
     ) -> None:
         """Each table sealed ``ok`` of an entry with ``changes:``, compared with its baseline:
-        its key index and change table written, and its outcome (in ``tables``, in place)
+        its told index and change table written, and its outcome (in ``tables``, in place)
         saying what was found. A table that failed is compared with nothing and is no
-        baseline. ``meta.yaml`` is written as each table is compared, ``ended`` null until
-        the survey writes how it ended: a table's summary is there before its first row can
-        be read, so a survey stopped, or one that dies, here has told what a reader saw
+        baseline. The meta is recorded as each table is compared, ``ended`` null until the
+        survey records how it ended: a table's summary is there before its first row can be
+        read, so a survey stopped, or one that dies, here has told what a reader saw
         (Dijkstra F3)."""
         if self._changes is None:
             return
@@ -277,7 +284,7 @@ class Survey:
 
         def progress(position: int, table: TableOutcome) -> None:
             tables[position] = table
-            self._archives.write_meta(archive, self._meta(head, tables, None))
+            archive.record(self._meta(head, tables, None))
 
         for position, table in enumerate(tables):
             index, entry = at[table.collector]
@@ -322,7 +329,7 @@ class Survey:
         tables: list[TableOutcome],
         ended: Literal["finished", "stopped"] | None,
     ) -> dict[str, Any]:
-        """The archive's ``meta.yaml``: ``head``, when the survey ended, how (``ended``, the
+        """The archive's meta: ``head``, when the survey ended, how (``ended``, the
         :data:`~recon.domain.archives.Ended` its writer can know: ``crashed`` is a reader's;
         None while it compares its tables, which a reader reads as ``crashed`` should it
         never be written again), and its tables."""
@@ -339,7 +346,7 @@ class Survey:
         entry: CollectorEntry,
         config: ReconConfig,
         collectors: Mapping[str, Collector],
-        archive: Path,
+        archive: Landed,
         captures: CaptureLog | None,
     ) -> list[TableOutcome]:
         catalog = {s.name: s for s in config.catalog}
@@ -366,11 +373,14 @@ class Survey:
         collector: Collector,
         at: tuple[int, CollectorEntry],
         source: SourceEntry | None,
-        archive: Path,
+        archive: Landed,
         captures: CaptureLog | None,
     ) -> TableOutcome:
         index, entry = at
         output = table.name
+        ranged = self._ranges.get(output)
+        if ranged is not None:
+            table = table.model_copy(update={"range": RangeOutcome.model_validate(outcome(ranged))})
         try:
             self._deadline.check()
         except DeadlineExceededError as passed:
@@ -394,19 +404,22 @@ class Survey:
                     self._progress_s,
                     _within(
                         self._deadline,
-                        _keeping_first(_tagged(collector, target, source, captures), first),
+                        _keeping_first(
+                            _tagged(collector, target, source, captures)
+                            if ranged is None
+                            else _stepped(collector, target, source, captures, ranged),
+                            first,
+                        ),
                     ),
                 )
                 columns = list(entry.normalize or ())
                 try:
-                    count = self._archives.write_table(archive, output, records, columns=columns)
+                    count = archive.write(output, records, columns=columns)
                 except NoRecordsError as said:
                     if first:  # records came before it: an empty table would drop them
                         raise
                     nothing = said
-                    count = self._archives.write_table(
-                        archive, output, _no_records(), columns=columns
-                    )
+                    count = archive.write(output, _no_records(), columns=columns)
         except Exception as exc:
             kind: ErrorKind = exc.kind if isinstance(exc, ReconError) else "run_failed"
             fix = exc.fix if isinstance(exc, ReconError) else None
@@ -437,11 +450,11 @@ class Survey:
             self._warn(output, crawl_truncated(entry_at, entry, output, truncated_by, len(pages)))
         return table.model_copy(update=update)
 
-    def _keep_pages(self, archive: Path, output: str, pages: list[dict[str, Any]]) -> None:
+    def _keep_pages(self, archive: Landed, output: str, pages: list[dict[str, Any]]) -> None:
         """Keep a sealed table's page log beside it; an archive that cannot keep it cannot be
-        finished, as one that cannot keep its ``meta.yaml``."""
+        finished, as one that cannot record its meta."""
         try:
-            self._archives.write_sidecar(archive, output, "pages", pages)
+            archive.keep(output, "pages", pages)
         except OSError as exc:
             self._unfinished(f"{output}'s page log could not be written", exc)
 
@@ -480,9 +493,9 @@ class Survey:
         seconds: float,
         fix: str | None = None,
     ) -> TableOutcome:
-        # The message stays in meta.yaml: it can quote a command or a URL, and a span goes
-        # wherever telemetry is sent.
-        span.fail(kind, f"the table failed ({kind}); its error is in the archive's meta.yaml")
+        # The message stays in the archive's meta: it can quote a command or a URL, and a span
+        # goes wherever telemetry is sent.
+        span.fail(kind, f"the table failed ({kind}); recon status gives its error")
         self._emit(
             {
                 "kind": "error",
@@ -519,6 +532,26 @@ def _tagged(
         raise
     except Exception as exc:
         raise CollectorError(entry.name, source.name if source else None, exc) from exc
+
+
+def _stepped(
+    collector: Collector,
+    entry: CollectorEntry,
+    source: SourceEntry | None,
+    captures: CaptureLog | None,
+    ranged: RangeRun,
+) -> Generator[dict[str, Any], None, None]:
+    """A ranged table's records: each step's, its collector asked with the entry's settings
+    filled with the step's bounds, each record carrying its step. Closing this closes the step
+    being read, so its collector's cleanup runs."""
+    for step in ranged.steps:
+        asked = entry.model_copy(update=fill(entry.settings, step))
+        records = _tagged(collector, asked, source, captures)
+        try:
+            for record in records:
+                yield {**record, RANGE_FIELD: step.document()}
+        finally:
+            records.close()
 
 
 def _no_records() -> Generator[dict[str, Any], None, None]:
@@ -649,7 +682,6 @@ def _attributes(table: TableOutcome) -> dict[str, str | None]:
 def _table(entry: CollectorEntry, output: str, source: str | None) -> TableOutcome:
     return TableOutcome(
         name=output,
-        file=f"{output}.jsonl",
         collector=entry.name,
         type=entry.type,
         source=source,

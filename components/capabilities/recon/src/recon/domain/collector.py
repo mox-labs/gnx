@@ -68,7 +68,8 @@ class Collector(Protocol):
     A collector whose type declares a ``preflight`` may have a second optional member,
     ``requirements(entry, source) -> Sequence[Requirement]``: what the run needs of this host
     or of what it reaches (a server that starts, a tool it lists, arguments its schema
-    accepts), each checked now. A dry run builds the collector to ask it, then closes it.
+    accepts), each checked now. A checked dry run (``--check``) builds the collector to ask
+    it, then closes it; a dry run unchecked builds none.
 
     **A stream** (an entry with ``window:``, or of a type that declares ``unbounded``) calls
     ``collect`` once and reads its records for as long as the stream runs, on a thread of the
@@ -226,10 +227,10 @@ class CollectorType:
       reviewer. Pure: no I/O, no network. A run that starts commands describes them as
       ``commands`` (shell lines) or ``server`` (a server's command line): a scheduled
       mission's plan reads those two for a package fetched unpinned every tick.
-    - ``preflight`` says, in words, what a dry run does to check a run of the type (``starts
-      each stdio server a run names``). Non-empty, a dry run builds the type's collector, asks
-      its ``requirements(entry, source)`` for each run, says this in the plan, and closes it.
-      Empty, a dry run never builds the type.
+    - ``preflight`` says, in words, what a checked dry run does to check a run of the type
+      (``starts each stdio server a run names``). Non-empty, a dry run with ``--check`` builds
+      the type's collector, asks its ``requirements(entry, source)`` for each run, says this
+      in the plan, and closes it. Empty, no dry run builds the type; and none unchecked does.
     - ``unbounded`` says the type's records do not end (a file followed as it grows, a server
       that sends events): an entry of it is a stream, collected into windows, and one with no
       ``window:`` gets the default (``window: {seconds: 300}``), which the plan says it

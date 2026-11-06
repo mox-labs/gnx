@@ -131,7 +131,13 @@ def base_url() -> Iterator[str]:
     server.server_close()
 
 
+#: The test server's rate limit: these tests are of the requester, which the default of a
+#: source whose limits are unknown (1 request a second) would only slow.
+LOCAL_RATE = RateLimitConfig(rps=100.0, burst=10)
+
+
 def _get(base_url: str, path: str, **source_fields: Any) -> HttpResponse:
+    source_fields.setdefault("rate_limit", LOCAL_RATE)
     source = SourceEntry(name="local", url=base_url, timeout=10, **source_fields)
     clock = SystemClock()
     return HttpRequester(RateLimiter(clock), clock).get(source, f"{base_url}{path}")
@@ -325,8 +331,10 @@ def test_a_redirect_within_the_origin_keeps_the_credential(origin: str, location
 
 
 def _answered_by(answer: Callable[[httpx2.Request], httpx2.Response]) -> HttpRequester:
-    """A requester whose every request is answered by ``answer``, through a MockTransport."""
-    clock = SystemClock()
+    """A requester whose every request is answered by ``answer``, through a MockTransport, on
+    a clock that skips each wait: these tests are of what is sent and how it fails, and each
+    redirect of a loop draws a token from the source's rate limit."""
+    clock = HurriedClock()
     return HttpRequester(RateLimiter(clock), clock, transport=httpx2.MockTransport(answer))
 
 

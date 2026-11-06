@@ -930,3 +930,48 @@ class TestSourceKinds:
         config = build_plan(ok, plugins, {"DB_PW": "x"}).config
         assert config is not None
         assert declared_env(config, types) == {"sqlite": {"DB_PW"}}
+
+
+class TestRateLimitDefault:
+    """Ruling R12: recon does not know a source's limits unless the mission says them, so a
+    source is sent one request a second, none saved up, and the plan says so with the fix."""
+
+    def _rates(self, registry: Plugins, *catalog: dict[str, Any]) -> dict[str, Any]:
+        collectors = [
+            {"name": f"c{i}", "type": "cli", "source": s["name"], "run": "true"}
+            if s["type"] == "local"
+            else {"name": f"c{i}", "type": "web", "source": s["name"], "endpoint": "/"}
+            for i, s in enumerate(catalog)
+        ]
+        plan = _plan({"catalog": list(catalog), "collectors": collectors}, registry)
+        assert plan.valid, plan.problems
+        return {v.path: v for v in plan.provenance if v.path.endswith(".rate_limit")}
+
+    def test_a_source_that_says_nothing_is_sent_one_request_a_second(
+        self, registry: Plugins
+    ) -> None:
+        [said] = self._rates(registry, {"name": "s", "type": "web",
+                                        "url": "https://x.test"}).values()  # fmt: skip
+        assert (said.path, said.value, said.origin) == (
+            "catalog.0.rate_limit", {"rps": 1.0, "burst": 1}, "recon")  # fmt: skip
+        assert "set rate_limit:" in said.note
+
+    def test_what_a_mission_writes_is_its_own_and_a_key_left_out_is_said(
+        self, registry: Plugins
+    ) -> None:
+        rates = self._rates(
+            registry,
+            {"name": "a", "type": "web", "url": "https://a.test", "rate_limit": {"rps": 5}},
+            {"name": "b", "type": "web", "url": "https://b.test",
+             "rate_limit": {"rps": 2, "burst": 4}},
+        )  # fmt: skip
+        a, b = rates["catalog.0.rate_limit"], rates["catalog.1.rate_limit"]
+        assert (a.value, a.origin, a.note) == ({"rps": 5.0, "burst": 1}, "mission",
+                                               "burst: recon's default")  # fmt: skip
+        assert (b.value, b.origin, b.note) == ({"rps": 2.0, "burst": 4}, "mission", "")
+
+    def test_a_local_source_is_sent_nothing_so_has_no_rate(
+        self, registry: Plugins, tmp_path: Path
+    ) -> None:
+        assert self._rates(registry, {"name": "here", "type": "local",
+                                      "url": str(tmp_path)}) == {}  # fmt: skip

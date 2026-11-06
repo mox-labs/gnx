@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from recon.domain.archives import READ_MAX_BYTES, READ_MAX_RECORDS, WATCH_INTERVAL_S
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Collection, Iterator
     from datetime import datetime
     from pathlib import Path
 
@@ -76,22 +76,29 @@ def plan(
     windows: int | None = None,
     until: datetime | None = None,
     forever: bool = False,
+    interval: tuple[datetime, datetime] | None = None,
+    rebase: Collection[str] = (),
+    restart: Collection[str] = (),
+    check: bool = False,
     root: Path | None = None,
 ) -> PlanDocument:
     """What ``survey`` would do, without doing it. ``recon.v1.plan``.
 
-    Writes nothing, and fetches and runs nothing, but for the preflight of a collector type
-    that declares one, which the document's ``preflight`` names: an ``mcp`` run's server is
-    started (or connected to) and asked for its tools, and ``requirements`` says what was
-    found. ``config`` is a file to plan instead of the mission's own; ``replace`` allows it to
-    differ from the mission's config. Raises ConfigError listing every problem; its
+    Pure: writes nothing, and fetches, runs and connects to nothing. With ``check``, it also
+    runs the preflight of each collector type that declares one, which the document's
+    ``preflight`` names: an ``mcp`` run's server is started (or connected to) and asked for
+    its tools, ``requirements`` says what was found, and ``runnable`` whether it all holds
+    (None unchecked). ``config`` is a file to plan instead of the mission's own; ``replace``
+    allows it to differ from the mission's config. Raises ConfigError listing every problem; its
     ``complete`` is false when more may follow their fixes. ``provenance`` says where each
     stream setting came from. With ``stream``, what :func:`stream` would do with
     ``windows``, ``until`` and ``forever``: refused as it would be, and ``provenance`` says
-    how long the run is (``stream.windows``, one by default)."""
+    how long the run is (``stream.windows``, one by default). A run of an entry with
+    ``range:`` says the span it would ask for (``range``); ``interval``, ``rebase`` and
+    ``restart`` are :func:`survey`'s."""
     return _root(root).plan(
         name, config=config, replace=replace, stream=stream, windows=windows, until=until,
-        forever=forever,
+        forever=forever, interval=interval, rebase=rebase, restart=restart, check=check,
     )  # fmt: skip
 
 
@@ -101,14 +108,24 @@ def survey(
     config: Path | None = None,
     replace: bool = False,
     on_event: Callable[[dict[str, Any]], None] | None = None,
+    interval: tuple[datetime, datetime] | None = None,
+    rebase: Collection[str] = (),
+    restart: Collection[str] = (),
     root: Path | None = None,
 ) -> SurveyDocument:
     """Plan, then collect every table into a new archive. ``recon.v1.survey``.
 
     Failed tables do not raise: the document says ``status: incomplete``, and
     :func:`survey_failure` turns it into the error to act on. ``on_event`` receives each
-    table's outcome as it lands."""
-    return _root(root).survey(name, config=config, replace=replace, on_event=on_event)
+    table's outcome as it lands. An entry with ``range:`` asks for the source time after what
+    its table committed; ``interval`` (``(start, end)``, each with its zone) asks every ranged
+    entry for that span instead, a backfill that moves no checkpoint; ``rebase`` names outputs
+    that go on from their checkpoint under a changed request, ``restart`` outputs that begin
+    again from ``range.start`` (``recon --skill -r ranges``)."""
+    return _root(root).survey(
+        name, config=config, replace=replace, on_event=on_event,
+        interval=interval, rebase=rebase, restart=restart,
+    )  # fmt: skip
 
 
 def stream(
@@ -150,7 +167,7 @@ def status(mission: str | None = None, *, root: Path | None = None) -> StatusDoc
     """Every mission with its latest archive, and the installed plugins. ``recon.v1.status``.
 
     Given ``mission``, that mission alone, the one entry of ``missions``, with every archive
-    it has (id, path, times, state, tables) as its ``history``: the ids ``query`` takes as
+    it has (id, times, state, tables) as its ``history``: the ids ``query`` takes as
     ``archive``. Raises NotFoundError for a mission that does not exist."""
     return _root(root).status(mission)
 
@@ -163,18 +180,22 @@ def query(
     stream: str | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
+    baseline: str | None = None,
     root: Path | None = None,
 ) -> QueryRows:
     """Rows from the latest archive of ``name``, or the archive named (an id ``status(name)``
-    lists). ``recon.v1.query-rows``, naming the archive by its id, ``archive``, and its
-    directory, ``path``.
+    lists). ``recon.v1.query-rows``, naming the archive by its id, ``archive``. Each table is
+    also ``json.<table>`` (each record's JSON text, ``json``) and ``lines.<table>`` (each
+    record with its ``line``, what a row is cited by). With ``baseline``, an earlier
+    archive's id, its tables are ``baseline.<table>``: what is new since it is
+    ``... EXCEPT SELECT ... FROM baseline.<table>``.
 
     With ``stream``, rows from that stream's windows, each table the union of its windows':
     every window, the one ``archive`` names, or those meeting ``[since, until)`` (times with
     their zones), which ``window_range`` says. Windows collected under different configs are
     refused (QueryError), with the ranges to narrow to."""
     return _root(root).query(name, sql, archive=archive, stream=stream, since=since,
-                             until=until)  # fmt: skip
+                             until=until, baseline=baseline)  # fmt: skip
 
 
 def read_since(

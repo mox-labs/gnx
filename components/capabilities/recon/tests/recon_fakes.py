@@ -7,31 +7,36 @@ ports a test stands in for.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from recon.adapters._out.archive_files import ArchiveFiles
+from recon.adapters._out.archive_files import FLUSH_BYTES, FLUSH_S, ArchiveFiles
+from recon.adapters._out.mission_layout import STATE, archive_dir
 from recon.composition import load_plugins, root
+from recon.domain.archives import ArchiveRef
 from recon.domain.collector import CollectorType, Plugins
 from recon.domain.http import HttpResponse
 from recon.domain.models import CollectorEntry, ReconConfig
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
+    from pathlib import Path
 
     from recon.composition import RequesterFactory
+    from recon.domain.archives import Hold, Landed, Sidecar, TableEnds
     from recon.domain.capture import CaptureLog
     from recon.domain.clock import Clock
     from recon.domain.collector import Collector, CollectorContext
     from recon.domain.converters import ConversionResult, DocumentConverter
-    from recon.domain.documents import TableOutcome
+    from recon.domain.documents import SurveyDocument, TableOutcome, WindowOutcome
     from recon.domain.models import SourceEntry
     from recon.domain.shell import ShellRunner
+    from recon.domain.telemetry import EventSink
 
 
 class FixedClock:
@@ -114,30 +119,158 @@ class VirtualClock:
             self._cond.notify_all()
 
 
-class StalledArchives(ArchiveFiles):
-    """The archive store, but a table is not written until :attr:`go` is set: a store too
-    slow for its stream, so what arrives meanwhile waits in the buffer or is dropped."""
+class LandedThrough:
+    """A :class:`~recon.domain.archives.Landed` that does what ``inner`` does: a test's
+    subclass changes the one member it stands in for (a write that waits, a meta that cannot
+    be recorded), through the port alone."""
 
-    def __init__(self, clock: Clock) -> None:
-        super().__init__(clock)
-        self.go = threading.Event()
-        #: Set once a writer is inside a table's write, held there until :attr:`go`.
-        self.writing = threading.Event()
+    def __init__(self, inner: Landed) -> None:
+        self.inner = inner
 
-    def write_table(
+    @property
+    def ref(self) -> ArchiveRef:
+        return self.inner.ref
+
+    def write(
         self,
-        archive: Path,
         output: str,
         records: Generator[dict[str, Any], None, None],
         *,
         columns: Sequence[str] = (),
         keep_on_error: bool = False,
     ) -> int:
-        self.writing.set()
-        assert self.go.wait(10), "the test never let the store go"
-        return super().write_table(
-            archive, output, records, columns=columns, keep_on_error=keep_on_error
-        )
+        return self.inner.write(output, records, columns=columns, keep_on_error=keep_on_error)
+
+    def ends(self, output: str) -> TableEnds:
+        return self.inner.ends(output)
+
+    def keep(self, output: str, sidecar: Sidecar, lines: Iterable[dict[str, Any]]) -> None:
+        self.inner.keep(output, sidecar, lines)
+
+    def mark(self, output: str, sidecar: Sidecar, line: dict[str, Any]) -> None:
+        self.inner.mark(output, sidecar, line)
+
+    def captures(self) -> CaptureLog:
+        return self.inner.captures()
+
+    def events(self) -> EventSink:
+        return self.inner.events()
+
+    def record(self, meta: Mapping[str, Any]) -> None:
+        self.inner.record(meta)
+
+    def complete(self) -> None:
+        self.inner.complete()
+
+
+class WrappingArchives(ArchiveFiles):
+    """The archive adapter over ``root``, each archive it lands handed to ``wrap`` first: a
+    test's fault, given through the landing port."""
+
+    def __init__(self, root: Path, clock: Clock, wrap: Callable[[Landed], Landed]) -> None:
+        super().__init__(root, clock)
+        self._wrap = wrap
+
+    @contextlib.contextmanager
+    def hold(self, mission: str, *, stream: str | None = None) -> Iterator[Hold]:
+        with super().hold(mission, stream=stream) as held:
+            yield _HoldThrough(held, self._wrap)
+
+
+class _HoldThrough:
+    def __init__(self, inner: Hold, wrap: Callable[[Landed], Landed]) -> None:
+        self._inner = inner
+        self._wrap = wrap
+
+    @contextlib.contextmanager
+    def begin(self, archive_id: str) -> Iterator[Landed]:
+        with self._inner.begin(archive_id) as landed:
+            yield self._wrap(landed)
+
+    def retire(self, ref: ArchiveRef, tombstone: Mapping[str, Any]) -> None:
+        self._inner.retire(ref, tombstone)
+
+
+class StalledArchives(WrappingArchives):
+    """The archive adapter, but a table is not written until :attr:`go` is set: a landing too
+    slow for its stream, so what arrives meanwhile waits in the buffer or is dropped."""
+
+    def __init__(self, root: Path, clock: Clock) -> None:
+        super().__init__(root, clock, lambda landed: _Stalled(landed, self))
+        self.go = threading.Event()
+        #: Set once a writer is inside a table's write, held there until :attr:`go`.
+        self.writing = threading.Event()
+
+
+class _Stalled(LandedThrough):
+    def __init__(self, inner: Landed, stall: StalledArchives) -> None:
+        super().__init__(inner)
+        self._stall = stall
+
+    def write(
+        self,
+        output: str,
+        records: Generator[dict[str, Any], None, None],
+        *,
+        columns: Sequence[str] = (),
+        keep_on_error: bool = False,
+    ) -> int:
+        self._stall.writing.set()
+        assert self._stall.go.wait(10), "the test never let the landing go"
+        return super().write(output, records, columns=columns, keep_on_error=keep_on_error)
+
+
+def archive_path(project: Path, ref: ArchiveRef) -> Path:
+    """Where the file adapter keeps ``ref`` under ``project``: for a test of what it wrote."""
+    return archive_dir(project / STATE, ref)
+
+
+def kept(project: Path, survey: SurveyDocument) -> Path:
+    """Where the file adapter keeps the archive ``survey`` landed."""
+    return archive_path(project, ArchiveRef(survey.mission, survey.archive))
+
+
+def window_kept(project: Path, mission: str, window: WindowOutcome) -> Path:
+    """Where the file adapter keeps the window ``window`` of the mission's stream."""
+    return archive_path(project, ArchiveRef(mission, window.id, window.stream))
+
+
+#: The id :func:`landing` gives the archive it lands, unless told another.
+ARCHIVE_ID = "2026-01-02-030405-000001"
+
+
+def files_of(
+    project: Path,
+    clock: Clock | None = None,
+    /,
+    *,
+    flush_bytes: int = FLUSH_BYTES,
+    flush_s: float = FLUSH_S,
+) -> ArchiveFiles:
+    """The file adapter over ``project``'s missions, on ``clock`` (the system's by default),
+    with ``flush_bytes`` and ``flush_s`` as given."""
+    from recon.adapters._out.system_clock import SystemClock
+
+    return ArchiveFiles(
+        project / STATE, clock or SystemClock(), flush_bytes=flush_bytes, flush_s=flush_s
+    )
+
+
+@contextlib.contextmanager
+def landing(
+    project: Path,
+    *,
+    store: ArchiveFiles | None = None,
+    mission: str = "m",
+    archive_id: str = ARCHIVE_ID,
+    stream: str | None = None,
+) -> Iterator[tuple[Landed, Path]]:
+    """One archive of ``mission`` (or a window of its ``stream``) landed through the file
+    adapter under ``project`` (``store``, or one on the system clock), held for the block,
+    and where the adapter keeps it."""
+    files = store if store is not None else files_of(project)
+    with files.hold(mission, stream=stream) as held, held.begin(archive_id) as landed:
+        yield landed, archive_path(project, landed.ref)
 
 
 class ScriptedRequester:
@@ -182,7 +315,7 @@ class ScriptedShell:
         cwd: Path | None,
         timeout: float,
         *,
-        capture_path: Path | None = None,
+        tee: Callable[[bytes], object] | None = None,
     ) -> Generator[str, None, int]:
         yield from self._lines[cmd]
         return 0
@@ -257,7 +390,8 @@ def run_survey(
 ) -> tuple[Path, list[TableOutcome]]:
     """Survey ``config`` as the mission ``name`` of ``project`` through recon's own root,
     with a fake for each port given and the real adapter for the rest (no environment
-    unless ``env`` is given). Returns the archive and its tables."""
+    unless ``env`` is given). Returns where the file adapter kept the archive, and its
+    tables."""
     raw = (
         config.model_dump(mode="json", exclude_unset=True)
         if isinstance(config, ReconConfig)
@@ -276,4 +410,4 @@ def run_survey(
         converter=converter,
     )
     document = recon.survey(name, on_event=on_event)
-    return Path(document.path), document.tables
+    return archive_path(project, ArchiveRef(name, document.archive)), document.tables

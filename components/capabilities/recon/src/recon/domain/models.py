@@ -21,6 +21,7 @@ from recon.domain.changes import ChangesSpec  # noqa: TC001
 from recon.domain.clock import LONGEST_WAIT
 from recon.domain.credentials import NOT_A_REFERENCE, REFERENCE_FIX, reference
 from recon.domain.paginate import PaginateSpec  # noqa: TC001
+from recon.domain.ranges import RangeSpec  # noqa: TC001
 from recon.domain.ratelimit import wait_for_token
 
 # Pydantic reads the field types when the models are built, so they are imported to run.
@@ -76,16 +77,27 @@ class AuthConfig(BaseModel):
         return self
 
 
+#: By default, the requests a second a source is sent (ruling R12): recon does not know a
+#: source's limits unless the mission says them, so it asks politely, and a mission whose
+#: source allows more says so (``rate_limit: {rps, burst}``).
+DEFAULT_RPS = 1.0
+
+#: By default, the requests a source may be sent at once, saved up while idle: none beyond
+#: the one each second.
+DEFAULT_BURST = 1
+
+
 class RateLimitConfig(BaseModel):
     """Per-source rate limiting via token bucket: ``rps`` tokens a second, at most ``burst``
     held. Each is positive: a bucket that never refills, or holds no token, never lets a
     request go. ``rps`` is finite (no rate is written ``.inf``), and an empty bucket's wait
-    for a token, ``1 / rps``, is one the clock can sleep (:data:`LONGEST_WAIT`)."""
+    for a token, ``1 / rps``, is one the clock can sleep (:data:`LONGEST_WAIT`). The defaults
+    are :data:`DEFAULT_RPS` and :data:`DEFAULT_BURST`, for a source whose limits are unknown."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    rps: float = Field(default=10.0, gt=0, allow_inf_nan=False)
-    burst: int = Field(default=3, ge=1)
+    rps: float = Field(default=DEFAULT_RPS, gt=0, allow_inf_nan=False)
+    burst: int = Field(default=DEFAULT_BURST, ge=1)
 
     @field_validator("rps")
     @classmethod
@@ -172,7 +184,9 @@ class CollectorEntry(BaseModel):
     out, the plan fills in their defaults and says so. `paginate` reads the source page by
     page, for a type that declares ``paginates`` (:mod:`recon.domain.paginate`). `changes`
     compares each of its tables with the same table of an earlier archive and writes what
-    changed beside it (:mod:`recon.domain.changes`).
+    changed beside it (:mod:`recon.domain.changes`). `range` asks a snapshot entry's source
+    for its time step by step, run after run, each step's bounds filled into the type's
+    settings (:mod:`recon.domain.ranges`).
     Every other key is the type's own setting (`run:` for `cli`, `endpoint:` for `api`),
     kept in :attr:`settings` and validated by the type's own schema at plan time.
     """
@@ -191,6 +205,7 @@ class CollectorEntry(BaseModel):
     retain: Retain | None = None
     paginate: PaginateSpec | None = None
     changes: ChangesSpec | None = None
+    range: RangeSpec | None = None
 
     @property
     def settings(self) -> dict[str, Any]:

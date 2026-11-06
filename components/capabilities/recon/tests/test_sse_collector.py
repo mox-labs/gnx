@@ -25,6 +25,11 @@ if TYPE_CHECKING:
     from recon.domain.stream import Gap
 
 
+#: The test server's rate limit, unless a test gives its own: each reconnect draws a token,
+#: and these tests count the reconnect waits alone.
+LOCAL_RATE = {"rps": 100, "burst": 10}
+
+
 class Gaps:
     def __init__(self) -> None:
         self.said: list[Gap] = []
@@ -92,7 +97,7 @@ class Listening:
         if max_bytes is not None:
             given["max_bytes"] = max_bytes
         source = SourceEntry.model_validate(
-            {"name": "feed", "url": url, "auth": auth or {}, **given}
+            {"name": "feed", "url": url, "auth": auth or {}, "rate_limit": LOCAL_RATE, **given}
         )
         resume = {} if after is None else {"after": after}
         records = self.collector.collect(entry, source, **resume)

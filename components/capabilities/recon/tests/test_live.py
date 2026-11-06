@@ -10,23 +10,32 @@ import json
 import os
 import threading
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 import yaml
 
 import recon
-from recon.adapters._out.archive_files import ArchiveFiles
-from recon.adapters._out.system_clock import SystemClock
+from recon.adapters._out.archive_files import ArchiveFiles, StoredTable
 from recon.composition import root
-from recon.domain.archives import NewRecords, StoredTable
+from recon.domain.archives import ArchiveRef, NewRecords
 from recon.domain.models import ReconConfig
-from tests.recon_fakes import FixedClock, plugins_with, run_survey
+from tests.recon_fakes import (
+    FixedClock,
+    LandedThrough,
+    WrappingArchives,
+    files_of,
+    kept,
+    landing,
+    plugins_with,
+    run_survey,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterator, Mapping
+    from pathlib import Path
 
+    from recon.domain.archives import Landed
     from recon.domain.capture import CaptureLog
     from recon.domain.models import CollectorEntry, SourceEntry
 
@@ -210,15 +219,16 @@ def test_watch_finds_its_archive_once_not_at_every_read(tmp_path: Path) -> None:
     lines = "".join(f'{{"n": {n}}}\\n' for n in range(3))
     run_survey({"collectors": [{"name": "t", "type": "cli", "run": f"printf '{lines}'"}]},
                tmp_path)  # fmt: skip
-    listed: list[Path] = []
+    listed: list[str] = []
 
     class Counting(ArchiveFiles):
-        def archives(self, mission_dir: Path, *, stream: str | None = None) -> list[Path]:
-            listed.append(mission_dir)
-            return super().archives(mission_dir, stream=stream)
+        def archives(self, mission: str, *, stream: str | None = None) -> list[ArchiveRef]:
+            listed.append(mission)
+            return super().archives(mission, stream=stream)
 
     clock = FixedClock()
-    watching = root({}, project=tmp_path, clock=clock, archives=Counting(clock))
+    watching = root({}, project=tmp_path, clock=clock,
+                    archives=lambda home: Counting(home, clock))  # fmt: skip
     reads = list(watching.watch("m", max_records=1))
     assert len(reads) == 3 and len(listed) == 1
 
@@ -228,15 +238,15 @@ class TestWholeLinesOnly:
     whole line it gave."""
 
     def test_a_cut_short_last_line_waits_for_its_end(self, tmp_path: Path) -> None:
-        store = ArchiveFiles(SystemClock())
-        archive = store.create(tmp_path, "2026-01-02-030405-000001")
-        live = archive / "t.jsonl.tmp"
-        live.write_bytes(b'{"n": 0}\n{"n": ')
-        first = store.read_since(archive, None, max_records=100, max_bytes=1 << 20)
-        with live.open("ab") as f:
-            f.write(b'1}\n{"n": 2}\n')
-        second = store.read_since(archive, first.cursor, max_records=100, max_bytes=1 << 20)
-        store.release(archive)
+        store = files_of(tmp_path)
+        with landing(tmp_path, store=store) as (landed, archive):
+            live = archive / "t.jsonl.tmp"
+            live.write_bytes(b'{"n": 0}\n{"n": ')
+            first = store.read_since(landed.ref, None, max_records=100, max_bytes=1 << 20)
+            with live.open("ab") as f:
+                f.write(b'1}\n{"n": 2}\n')
+            second = store.read_since(landed.ref, first.cursor, max_records=100,
+                                      max_bytes=1 << 20)  # fmt: skip
 
         assert [r.record for r in first.records] == [{"n": 0}]
         assert [r.record for r in second.records] == [{"n": 1}, {"n": 2}]
@@ -247,15 +257,15 @@ class TestWholeLinesOnly:
         mid-write leaves it unsealed, its table not compared, and the next survey tells those
         rows again. So a reader sees none of its rows until it is sealed, then all of them;
         a table of records is still read as it is written."""
-        store = ArchiveFiles(SystemClock())
-        archive = store.create(tmp_path, "2026-01-02-030405-000001")
-        (archive / "inbox.jsonl.tmp").write_bytes(b'{"n": 0}\n')
-        live = archive / "inbox.changes.jsonl.tmp"
-        live.write_bytes(b'{"op": "insert", "key": {"id": "a"}, "record": {"id": "a"}}\n')
-        first = store.read_since(archive, None, max_records=100, max_bytes=1 << 20)
-        live.rename(archive / "inbox.changes.jsonl")
-        second = store.read_since(archive, first.cursor, max_records=100, max_bytes=1 << 20)
-        store.release(archive)
+        store = files_of(tmp_path)
+        with landing(tmp_path, store=store) as (landed, archive):
+            (archive / "inbox.jsonl.tmp").write_bytes(b'{"n": 0}\n')
+            live = archive / "inbox.changes.jsonl.tmp"
+            live.write_bytes(b'{"op": "insert", "key": {"id": "a"}, "record": {"id": "a"}}\n')
+            first = store.read_since(landed.ref, None, max_records=100, max_bytes=1 << 20)
+            live.rename(archive / "inbox.changes.jsonl")
+            second = store.read_since(landed.ref, first.cursor, max_records=100,
+                                      max_bytes=1 << 20)  # fmt: skip
 
         assert [(r.table, r.record) for r in first.records] == [("inbox", {"n": 0})]
         assert [(r.table, r.record["op"]) for r in second.records] == [("inbox.changes",
@@ -271,8 +281,10 @@ class TestWholeLinesOnly:
         It now waits, and is told the table retracted when it is."""
         import types
 
-        store = ArchiveFiles(SystemClock())
-        archive = store.create(tmp_path, "2026-01-02-030405-000001")
+        store = files_of(tmp_path)
+        made = landing(tmp_path, store=store)
+        landed, _ = made.__enter__()
+        archive = landed.ref
         reads: list[NewRecords] = []
         stand_in = types.ModuleType("os")
         stand_in.__dict__.update(os.__dict__)
@@ -292,10 +304,10 @@ class TestWholeLinesOnly:
         stand_in.__dict__.update(write=short, ftruncate=truncate)
         monkeypatch.setattr("recon.adapters._out.archive_files.os", stand_in)
         with pytest.raises(OSError, match="wrote"):
-            store.write_table(archive, "t", (r for r in [{"n": 0}, {"n": 1}]))
+            landed.write("t", (r for r in [{"n": 0}, {"n": 1}]))
         monkeypatch.undo()
         after = store.read_since(archive, reads[1].cursor, max_records=100, max_bytes=1 << 20)
-        store.release(archive)
+        made.__exit__(None, None, None)
 
         assert [r.record for r in reads[0].records] == [{"n": 0}]
         assert (reads[1].records, reads[1].retracted) == ([], [])
@@ -421,15 +433,13 @@ class TestNoReceiverSlowsTheWrite:
 
         written: list[float] = []
 
-        class Timed(ArchiveFiles):
-            def create(
-                self, mission_dir: Path, archive_id: str, *, stream: str | None = None
-            ) -> Path:
-                written.append(time.monotonic())
-                return super().create(mission_dir, archive_id, stream=stream)
+        class Timed(LandedThrough):
+            def __init__(self, inner: Landed) -> None:
+                super().__init__(inner)
+                written.append(time.monotonic())  # begun
 
-            def write_meta(self, archive: Path, meta: dict[str, Any]) -> None:
-                super().write_meta(archive, meta)
+            def record(self, meta: Mapping[str, Any]) -> None:
+                super().record(meta)
                 written.append(time.monotonic())
 
         class Slow:
@@ -453,10 +463,10 @@ class TestNoReceiverSlowsTheWrite:
             project=project,
             clock=clock,
             plugins=plugins_with(x=Slow()),
-            archives=Timed(clock),
+            archives=lambda home: WrappingArchives(home, clock, Timed),
             channel=lambda: ThreadChannel(queue=2, drain_s=0.2),
         ).survey("m", on_event=on_event)
-        archive = Path(surveyed.path)
+        archive = kept(project, surveyed)
         files = {p.name: p.read_bytes() for p in sorted(archive.iterdir()) if p.is_file()}
         return surveyed, files, written[1] - written[0]
 

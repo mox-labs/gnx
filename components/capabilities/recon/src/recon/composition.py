@@ -40,6 +40,7 @@ from recon.adapters._out.duckdb_query import DuckdbJoin, DuckdbQuery
 from recon.adapters._out.event_channel import ThreadChannel
 from recon.adapters._out.markitdown_converter import MarkitdownConverter
 from recon.adapters._out.mission_files import MissionFiles, find_project
+from recon.adapters._out.mission_layout import JOINS, mission_dir
 from recon.adapters._out.otel_telemetry import OtelEvents, export_from_env
 from recon.adapters._out.schedule_files import ScheduleFiles
 from recon.adapters._out.schedulers import (
@@ -54,7 +55,12 @@ from recon.adapters._out.subscription_files import SubscriptionFiles
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.application.changes import MEMORY_KEYS
-from recon.application.collectors import COLLECTORS_GROUP, CollectorPorts, build_collectors
+from recon.application.collectors import (
+    COLLECTORS_GROUP,
+    CollectorPorts,
+    SurveyCollectors,
+    build_collectors,
+)
 from recon.application.stream import StreamStop as StreamStop
 from recon.application.use_cases import Recon as Recon
 from recon.domain.collector import BrokenPlugin, CollectorType, Plugins
@@ -66,7 +72,6 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from recon.application.use_cases import ChannelFactory
-    from recon.domain.archives import ArchiveStore
     from recon.domain.changes import KeyJoin
     from recon.domain.clock import Clock
     from recon.domain.collector import Transform
@@ -74,9 +79,12 @@ if TYPE_CHECKING:
     from recon.domain.deadline import Deadline
     from recon.domain.errors import Problem
     from recon.domain.http import Requester
+    from recon.domain.models import ReconConfig
+    from recon.domain.paginate import PageLog
     from recon.domain.ratelimit import RateLimiter
     from recon.domain.schedule import Platform, Scheduler
     from recon.domain.shell import ShellRunner
+    from recon.domain.stream import GapLog
     from recon.domain.subscriptions import Deliverer
     from recon.domain.telemetry import Channel, EventSink
 
@@ -178,7 +186,7 @@ def root(
     project: Path | None = None,
     clock: Clock | None = None,
     plugins: Plugins | None = None,
-    archives: ArchiveStore | None = None,
+    archives: Callable[[Path], ArchiveFiles] | None = None,
     requester: RequesterFactory | None = None,
     shell: ShellRunner | None = None,
     converter: DocumentConverter | None = None,
@@ -186,7 +194,7 @@ def root(
     schedulers: Callable[[Platform | None], Scheduler] | None = None,
     schedule_host: ScheduleHost | None = None,
     local: Callable[[datetime], datetime] | None = None,
-    key_join: KeyJoin | None = None,
+    key_join: Callable[[str], KeyJoin] | None = None,
     memory_keys: int = MEMORY_KEYS,
     deliverer: Deliverer | None = None,
 ) -> Recon:
@@ -195,7 +203,9 @@ def root(
     Installs nothing of OpenTelemetry's: see :func:`configure_telemetry`.
 
     Each port the rest names is bound to its real adapter unless one is given: the clock,
-    the installed plugins, the archive store, the survey's Requester (built per survey by
+    the installed plugins, the archives (``archives`` builds them over the project's
+    ``.recon`` directory; they are the landing, what is read back, and the files DuckDB
+    queries), the survey's Requester (built per survey by
     ``requester`` from the survey's telemetry), the shell, the document converter, and each
     survey's event channel (``channel``, default a :class:`ThreadChannel` with its defaults),
     the operating system's scheduler of each platform (``schedulers``: the user's own
@@ -203,8 +213,9 @@ def root(
     (``schedule_host``: this installation's ``recon`` command, and the ``PATH`` of ``env``
     kept to absolute directories no other user can write), ``local``, the clock's time as
     the host's local time, which every scheduler keeps its calendar in, and the join of a
-    change detection's large comparisons (``key_join``, default DuckDB's), each of more than
-    ``memory_keys`` keys (200,000 by default; fewer is joined in memory). What each of a
+    mission's change detection's large comparisons (``key_join``, by the mission's name;
+    default DuckDB's, spilling under the mission), each of more than ``memory_keys`` keys
+    (200,000 by default; fewer is joined in memory). What each of a
     mission's subscriptions acked is kept beside the mission, in its files, and each delivery
     is given to its ``command:`` (``deliverer``, default a :class:`CommandDeliverer` handed
     the few variables of ``env`` a desktop notifier needs, and no other, its ``PATH`` the one a
@@ -213,7 +224,10 @@ def root(
     clock = clock or SystemClock()
     process_env = os.environ if env is None else env
     plugins = plugins if plugins is not None else load_plugins()
-    archives = archives if archives is not None else ArchiveFiles(clock)
+    found, found_by = (project.resolve(), "argument") if project else find_project(Path.cwd())
+    missions = MissionFiles(found, clock)
+    home = missions.root
+    store = archives(home) if archives is not None else ArchiveFiles(home, clock)
     ports = CollectorPorts(
         requester=requester or partial(_http_requester, clock),
         converter=converter or MarkitdownConverter(),
@@ -223,40 +237,52 @@ def root(
     )
 
     def telemetry(
-        archive: Path | None, channel: Channel | None, reads: Clock | None = None, /
+        events: EventSink | None, channel: Channel | None, reads: Clock | None = None, /
     ) -> Telemetry:
         otel = OtelEvents(__version__)
         sinks: list[EventSink] = [otel if channel is None else channel.sink(otel)]
-        if archive is not None:
-            sinks.insert(0, archives.event_log(archive))
+        if events is not None:
+            sinks.insert(0, events)
         return Telemetry(sinks, reads or clock)
 
-    found, found_by = (project.resolve(), "argument") if project else find_project(Path.cwd())
-    missions = MissionFiles(found, clock)
+    def collectors(
+        mission: str,
+        config: ReconConfig,
+        telemetry: Telemetry,
+        deadline: Deadline,
+        /,
+        *,
+        gaps: GapLog | None = None,
+        pages: PageLog | None = None,
+    ) -> SurveyCollectors:
+        return build_collectors(
+            plugins, ports, process_env, mission_dir(home, mission), config, telemetry,
+            deadline, project=missions.project, gaps=gaps, pages=pages,
+        )  # fmt: skip
+
     host = schedule_host or ScheduleHost(
         this_recon(), safe_path(process_env.get("PATH", ""), project=found)
     )
     return Recon(
         missions=missions,
-        archives=archives,
-        query=DuckdbQuery(archives),
+        landing=store,
+        archives=store,
+        query=DuckdbQuery(store),
         clock=clock,
         plugins=plugins,
-        build_collectors=partial(
-            build_collectors, plugins, ports, process_env, project=missions.project
-        ),
+        build_collectors=collectors,
         telemetry=telemetry,
         env=process_env,
         version=__version__,
         root_found_by=found_by,
         channel=channel or ThreadChannel,
         schedulers=schedulers or partial(_scheduler, process_env),
-        schedule_store=ScheduleFiles(),
+        schedule_store=ScheduleFiles(home),
         schedule_host=host,
         local=local or _local,
-        key_join=key_join if key_join is not None else DuckdbJoin(),
+        key_join=key_join if key_join is not None else partial(_mission_join, home),
         memory_keys=memory_keys,
-        subscriptions=SubscriptionFiles(),
+        subscriptions=SubscriptionFiles(home),
         deliverer=deliverer or CommandDeliverer(process_env, path=host.path),
     )
 
@@ -270,6 +296,11 @@ def _scheduler(env: Mapping[str, str], platform: Platform | None) -> Scheduler:
         platform or host_platform(env), home=home, config_home=config_home, uid=os.getuid(),
         run=run_command, commands=scheduler_commands(),
     )  # fmt: skip
+
+
+def _mission_join(home: Path, mission: str) -> KeyJoin:
+    """DuckDB's join of a large told index, spilling under the mission's own directory."""
+    return DuckdbJoin(scratch=mission_dir(home, mission) / JOINS)
 
 
 def _local(at: datetime) -> datetime:

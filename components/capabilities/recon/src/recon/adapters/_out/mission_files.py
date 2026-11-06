@@ -28,10 +28,11 @@ from typing import TYPE_CHECKING
 import yaml
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog
+from recon.adapters._out.mission_layout import STATE, mission_dir
 from recon.adapters._out.private_files import make_dirs, open_file, write_file
 from recon.domain.capture import CAPTURE_LOG_NAME
-from recon.domain.errors import ConfigError, NotFoundError, Problem, ReconError, UsageError
-from recon.domain.missions import MISSION_NAME, ConfigFile, Template
+from recon.domain.errors import ConfigError, NotFoundError, Problem, ReconError
+from recon.domain.missions import ConfigFile, Exposed, Template
 
 if TYPE_CHECKING:
     from recon.domain.clock import Clock
@@ -55,9 +56,11 @@ STDIN = "-"
 
 
 class MissionFiles:
+    """The missions of ``project``, each in its directory under ``project/.recon``."""
+
     def __init__(self, project: Path, clock: Clock) -> None:
         self._project = project
-        self._root = project / ".recon"
+        self._root = project / STATE
         self._clock = clock
 
     @property
@@ -66,28 +69,29 @@ class MissionFiles:
 
     @property
     def root(self) -> Path:
+        """The ``.recon`` directory every mission's files are under: for the composition
+        root, which builds the other file adapters over it."""
         return self._root
 
-    def mission_dir(self, name: str) -> Path:
-        if not MISSION_NAME.match(name):
-            raise UsageError(
-                f"{name!r} is not a mission name",
-                fix="name a mission with letters, digits, '.', '_' and '-', starting with a "
-                "letter or digit",
-                details={"value": name},
-            )
-        return self._root / name
+    def _config_path(self, name: str) -> Path:
+        return mission_dir(self._root, name) / "config.yaml"
 
-    def config_path(self, name: str) -> Path:
-        return self.mission_dir(name) / "config.yaml"
+    def where(self, name: str) -> str:
+        return str(self._config_path(name))
 
     def config_text(self, name: str) -> bytes | None:
         try:
-            return self.config_path(name).read_bytes()
+            return self._config_path(name).read_bytes()
         except FileNotFoundError:
             return None
 
+    def config(self, name: str) -> ConfigFile:
+        return self._parsed(self._config_path(name))
+
     def read_config(self, path: Path) -> ConfigFile:
+        return self._parsed(path)
+
+    def _parsed(self, path: Path) -> ConfigFile:
         try:
             text = sys.stdin.buffer.read() if str(path) == STDIN else path.read_bytes()
         except FileNotFoundError as exc:
@@ -104,13 +108,12 @@ class MissionFiles:
                 fix=f"correct the YAML in {path}",
                 complete=False,
             ) from exc
-        return ConfigFile(path=path, text=text, data=data)
+        return ConfigFile(origin=str(path), text=text, data=data)
 
-    def write_config(self, name: str, text: bytes) -> Path:
-        path = self.config_path(name)
+    def write_config(self, name: str, text: bytes) -> None:
+        path = self._config_path(name)
         make_dirs(path.parent)
         write_file(path, text)
-        return path
 
     def missions(self) -> list[str]:
         if not self._root.is_dir():
@@ -120,29 +123,22 @@ class MissionFiles:
         )
 
     def capture_log(self, name: str) -> FilesystemCaptureLog:
-        return FilesystemCaptureLog(self.mission_dir(name) / "captures", self._clock)
+        return FilesystemCaptureLog(mission_dir(self._root, name) / "captures", self._clock)
 
     def capture_count(self, name: str) -> int:
         try:
-            with open(self.mission_dir(name) / "captures" / CAPTURE_LOG_NAME, "rb") as f:
+            with open(mission_dir(self._root, name) / "captures" / CAPTURE_LOG_NAME, "rb") as f:
                 return sum(1 for line in f if line.strip())
         except OSError:
             return 0
 
-    def exposed(self, name: str) -> Path | None:
-        top = self.mission_dir(name)
-        if _reachable(top):
-            return top
-        for directory, subdirectories, files in os.walk(top):
-            subdirectories.sort()
-            here = Path(directory)
-            for entry in subdirectories + sorted(files):
-                if _reachable(here / entry):
-                    return here / entry
-        return None
+    def exposed(self, name: str) -> Exposed | None:
+        top = mission_dir(self._root, name)
+        found = _first_reachable(top)
+        return None if found is None else Exposed(str(found), f"chmod -R go-rwx '{top}'")
 
     def change_key(self, name: str) -> bytes:
-        path = self.mission_dir(name) / CHANGE_KEY
+        path = mission_dir(self._root, name) / CHANGE_KEY
         try:
             return _whole_key(path, path.read_bytes())
         except FileNotFoundError:
@@ -193,6 +189,19 @@ def _whole_key(path: Path, held: bytes) -> bytes:
         "is told twice)",
         details={"path": str(path), "got": len(held), "allowed": [CHANGE_KEY_BYTES]},
     )
+
+
+def _first_reachable(top: Path) -> Path | None:
+    """The first path at or under ``top``, in sorted order, another user can reach."""
+    if _reachable(top):
+        return top
+    for directory, subdirectories, files in os.walk(top):
+        subdirectories.sort()
+        here = Path(directory)
+        for entry in subdirectories + sorted(files):
+            if _reachable(here / entry):
+                return here / entry
+    return None
 
 
 def _reachable(path: Path) -> bool:

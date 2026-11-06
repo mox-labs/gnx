@@ -179,14 +179,14 @@ def test_append_only_across_log_instances(tmp_path: Path) -> None:
 
 def test_a_stream_is_hashed_and_moved_on_finalize(tmp_path: Path) -> None:
     log = FilesystemCaptureLog(tmp_path, SystemClock())
-    path = log.stream_path("cmd")
-    path.write_text("line 1\nline 2\n")
+    log.tee("cmd", b"line 1\n")
+    log.tee("cmd", b"line 2\n")
     line = log.finalize_stream(
         "cmd", source=None, kind="cli", request={}, status=0, content_type="text/plain"
     )
 
     assert line is not None
-    assert not path.exists(), "the temp stream file is moved under its hash"
+    assert not list((tmp_path / "raw").glob(".stream-*")), "the body teed is moved under its hash"
     assert (tmp_path / line.body).read_text() == "line 1\nline 2\n"
     assert (
         log.finalize_stream(

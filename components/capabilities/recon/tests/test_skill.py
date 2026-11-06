@@ -220,7 +220,7 @@ def test_the_changes_page_is_the_skill_reference() -> None:
     assert "`changes`" in SKILL
     for taught in ("`key`", "`volatile`", "`deletes`", "`false`", "`insert`", "`update`",
                    "`delete`", "`rebaselined`", "ambiguous", "keyless", "untrusted",
-                   "deletes_withheld", "`page` crawl", "changes.key", "0600", ".keys.jsonl",
+                   "deletes_withheld", "`page` crawl", "changes.key", "0600", "told index",
                    "_changes", "baseline", "provenance", "never tells a delete",
                    "retain:"):  # fmt: skip
         assert taught in REFERENCES["changes"], taught
@@ -277,9 +277,32 @@ def test_the_pagination_page_is_the_skill_reference() -> None:
     for taught in ("`link`", "`header`", "`cursor`", "`offset`", "`page`", "`pages`", "`100`",
                    "`next`", "`param`", "truncated_by", "paginate_pages", "paginate_loop",
                    "paginate_empty",
-                   "_position", ".pages.jsonl", "least seconds", "deadline_short", "provenance",
+                   "_position", "page log", "least seconds", "deadline_short", "provenance",
                    "rate_limit", "origin", "preserve_raw", "crashed"):  # fmt: skip
         assert taught in REFERENCES["pagination"], taught
+
+
+def test_the_ranges_page_is_the_skill_reference() -> None:
+    """Ranges are taught in full by ``recon --skill -r ranges``, and the skill points there in
+    a paragraph; one text with its docs page. An agent reading it learns each kind, each key and
+    its default, each placeholder and format, what commits a checkpoint, the overrides, and
+    every refusal and warning with its fix."""
+    page = PACKAGE / "docs" / "reference" / "ranges.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    assert page.read_text(encoding="utf-8") == REFERENCES["ranges"]
+    assert "recon --skill -r ranges" in SKILL and "range:" in SKILL
+    for taught in ("continuing", "fixed", "rolling", "`start`", "`end`", "`last`", "`step`",
+                   "`3600`", "`settle`", "`60`", "`max_steps`", "`24`", "`align`",
+                   "{range.start}", "{range.end}", "{range.last}", "`iso`", "`epoch`",
+                   "`epoch_ms`", "`date`", "{{range.start}}", "half-open", "horizon",
+                   "_range", "truncated", "tombstone", "--range START..END", "--rebase OUTPUT",
+                   "--restart OUTPUT", "provenance", "origin"):  # fmt: skip
+        assert taught in REFERENCES["ranges"], taught
+    for kind in ("range_unused", "range_ambiguous", "range_deletes", "range_steps",
+                 "checkpoint_request_changed", "range_behind", "range_current",
+                 "range_complete", "range_overlaps"):  # fmt: skip
+        assert kind in REFERENCES["ranges"] and kind in REFERENCES["errors"], kind
 
 
 def test_the_skill_teaches_a_crawl_that_resumes() -> None:
@@ -533,7 +556,7 @@ def surveyed(tmp_path: Path, monkeypatch: Any) -> Path:
 
 
 def _walk(document: Any, path: str) -> Any:
-    """``missions[0].latest.path`` in ``document``."""
+    """``missions[0].history`` in ``document``."""
     for key, index in re.findall(r"(\w+)(?:\[(\d+)\])?", path):
         document = document[key]
         if index:
@@ -560,18 +583,56 @@ def test_the_archive_listing_is_where_the_skill_says(surveyed: Path) -> None:
 
 def test_the_row_citation_recipe_cites_the_line(surveyed: Path) -> None:
     """Regression: the recipe read a glob across archives, which failed when their columns
-    differed. It reads one archive's file, by the path the skill says where to find."""
-    [where] = re.findall(
-        r"Take the archive's `path` from `recon status <name> --json` \(`([^`]+)`", SKILL
+    differed; then it read one archive's file by its path, which the layout's privacy (owner
+    ruling R8) refuses. It reads ``lines.<table>`` of one archive, named by its id, and the
+    line it gives is the record's place among the records recon reads back from it."""
+    [sql] = re.findall(r'recon query <name> "(SELECT line, [^"]+)" --archive <archive id>', SKILL)
+    archive = _walk(json.loads(_invoke("status", "m", "--json").stdout), "missions[0].history")[0]
+
+    queried = _invoke("query", "m", sql, "--archive", archive["id"], "--json")
+    [row] = json.loads(queried.stdout)["rows"]
+
+    watched = _invoke("watch", "m", "--once", "--archive", archive["id"], "--json")
+    [read] = [json.loads(line) for line in watched.stdout.splitlines()]
+    records = [r["record"] for r in read["table_records"] if r["table"] == "papers"]
+    assert records[row["line"] - 1]["title"] == row["title"] == "q"
+
+
+def test_what_is_new_since_an_earlier_archive_runs(surveyed: Path) -> None:
+    """R8: the skill's query form for "since archive X" names the archive, never its files."""
+    [sql] = re.findall(r'recon query <name> "([^"]+baseline\.papers)" --baseline', SKILL)
+    first, latest = _walk(json.loads(_invoke("status", "m", "--json").stdout),
+                          "missions[0].history")  # fmt: skip
+    result = _invoke("query", "m", sql, "--baseline", first["id"], "--json")
+    assert result.exit_code == 0, result.stderr
+    document = json.loads(result.stdout)
+    assert document["rows"] == [] and document["baseline"] == first["id"], (
+        "the latest archive holds what the first did: nothing is new"
     )
-    [sql] = re.findall(r"then `(SELECT ordinality AS line, [^`]+)`", SKILL)
-    archive = _walk(json.loads(_invoke("status", "m", "--json").stdout), where)
-    sql = sql.replace("<path>", archive).replace("<table>", "papers") + " WHERE title = 'q'"
+    assert document["archive"] == latest["id"]
 
-    [row] = json.loads(_invoke("query", "m", sql, "--json").stdout)["rows"]
 
-    line = Path(archive, "papers.jsonl").read_text().splitlines()[row["line"] - 1]
-    assert json.loads(line)["title"] == row["title"] == "q"
+def test_the_skill_teaches_no_archive_file_path() -> None:
+    """R8: the archive layout is the archive adapter's alone; the skill and its references
+    say where no archive, table, meta or event log is kept, so no reader learns it. One
+    location stays published: where a survey's capture log is, in the capture format other
+    tools write, since a ``capture`` collector's ``path:`` names it to re-normalize an archive
+    without fetching again (the collector contract, not the archive's ports, decides that)."""
+    published = {("capture-format", "/archive/")}
+    for name, text in {"SKILL.md": SKILL, **REFERENCES}.items():
+        for leak in (
+            "/archive/",
+            "archive id>/",
+            "meta.yaml",
+            "read_json_auto(",
+            "read_ndjson_objects(",
+            "telemetry.jsonl",
+            ".pages.jsonl",
+            ".keys.jsonl",
+        ):
+            if (name, leak) not in published:
+                assert leak not in text, (name, leak)
+    assert "/archive/" in REFERENCES["capture-format"], "the exemption is still needed"
 
 
 def test_the_count_over_a_list_runs(surveyed: Path) -> None:
@@ -594,17 +655,16 @@ def _taught_sql() -> list[str]:
 def test_no_query_the_skill_teaches_is_refused_as_a_write(tmp_path: Path) -> None:
     """recon query runs SELECT statements only; nothing the skill teaches may be refused for
     that. A taught query may name a table this archive lacks, which is a different error."""
-    from recon.adapters._out.archive_files import ArchiveFiles
     from recon.adapters._out.duckdb_query import DuckdbQuery
-    from recon.adapters._out.system_clock import SystemClock
+    from tests.recon_fakes import files_of, landing
 
-    store = ArchiveFiles(SystemClock())
-    archive = store.create(tmp_path / "m", "2026-01-01-000000-000000")
-    store.write_table(archive, "papers", (r for r in [{"title": "q", "authors": ["a"]}]))
+    store = files_of(tmp_path)
+    with landing(tmp_path, store=store) as (archive, _):
+        archive.write("papers", (r for r in [{"title": "q", "authors": ["a"]}]))
     taught = _taught_sql()
     assert len(taught) > 10, taught
     for sql in taught:
         try:
-            DuckdbQuery(store).execute(archive, sql)
+            DuckdbQuery(store).run([archive.ref], sql, baseline=archive.ref)
         except recon.QueryError as error:
             assert "statements" not in error.details, sql

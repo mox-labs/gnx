@@ -42,7 +42,9 @@ class TestSourceEntry:
         src = SourceEntry(name="test", url="https://example.com")
         assert src.type == "api"
         assert src.auth == AuthConfig()
-        assert src.rate_limit.rps == 10.0
+        # Changed requirement (ruling R12): a source whose limits recon does not know is sent
+        # one request a second, none saved up.
+        assert (src.rate_limit.rps, src.rate_limit.burst) == (1.0, 1)
 
     def test_full(self) -> None:
         src = SourceEntry(

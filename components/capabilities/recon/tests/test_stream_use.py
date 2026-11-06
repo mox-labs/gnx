@@ -9,7 +9,6 @@ import dataclasses
 import json
 import threading
 from datetime import timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -19,10 +18,11 @@ from click.testing import CliRunner
 import recon
 from recon.adapters._in.cli import main
 from recon.composition import root
-from tests.recon_fakes import VirtualClock, plugins_with
+from tests.recon_fakes import VirtualClock, plugins_with, window_kept
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from pathlib import Path
 
     from recon.composition import Recon
     from recon.domain.capture import CaptureLog
@@ -124,7 +124,8 @@ class TestReconStream:
         assert (first.windows, first.records) == (2, 10)
         assert feed.started == [None, 9], "the second run went on after the last kept"
         assert second.last_window is not None and second.last_window.index == 2
-        meta = yaml.safe_load((Path(second.last_window.path) / "meta.yaml").read_text())
+        window = window_kept(tmp_path, "m", second.last_window)
+        meta = yaml.safe_load((window / "meta.yaml").read_text())
         assert first.last_window is not None and meta["stream"]["previous"] == first.last_window.id
         # Every restart is in the chain (review item 3): the stretch no process read, here
         # resumed from a position, so a source that does not honour it shows where.
@@ -132,9 +133,38 @@ class TestReconStream:
         assert (gap["from"], gap["resumed"]) == (first.last_window.closed_at, True)
         rows = [
             json.loads(line)["seq"]
-            for line in (Path(second.last_window.path) / "events.jsonl").read_text().splitlines()
+            for line in (window_kept(tmp_path, "m", second.last_window) / "events.jsonl")
+            .read_text()
+            .splitlines()
         ]
         assert rows == [10, 11, 12, 13, 14], "exactly once across the two runs"
+
+    def test_status_says_what_each_window_recorded_with_no_path(self, tmp_path: Path) -> None:
+        """R8: a window's record (its chain, positions, drops and gaps) is read through recon,
+        as every window of the stream when the status asked is of the mission alone, so no
+        reader opens what a window keeps."""
+        clock = VirtualClock()
+        feed = Feed(clock, 1.0, 30)
+        _mission(tmp_path, {"window": {"records": 5}, "retain": "all"})
+        recon_ = _root(tmp_path, clock, feed)
+        recon_.stream("m", "events", windows=2)
+        recon_.stream("m", "events", windows=1)
+
+        [stream] = recon_.status("m").missions[0].streams
+        assert stream.history is not None and [w.id for w in stream.history][-1] == (
+            stream.latest.id if stream.latest else None
+        )
+        records = [w.window for w in stream.history]
+        assert all(record is not None for record in records)
+        first, second, third = (record for record in records if record is not None)
+        assert (first.index, first.previous, third.previous) == (0, None, stream.history[1].id)
+        assert [r.sources[0].records for r in (first, second, third)] == [5, 5, 5]
+        assert (third.sources[0].first_position, third.sources[0].last_position) == (10, 14)
+        [gap] = third.sources[0].gaps
+        assert gap.resumed is True and gap.from_ == second.closed_at
+        document = stream.history[-1].document()
+        assert "path" not in document and document["window"]["sources"][0]["gaps"][0]["from"]
+        assert recon_.status().missions[0].streams[0].history is None, "only of one mission"
 
     @pytest.mark.parametrize(
         ("kwargs", "match"),

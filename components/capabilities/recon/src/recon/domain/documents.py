@@ -1,19 +1,20 @@
 """The versioned documents recon publishes: one record per ``recon.v1.<shape>``.
 
 Each operation returns one of these, and ``--json`` prints its :meth:`Document.document`.
-They are the one definition of each shape: ``meta.yaml`` holds :class:`TableOutcome`s and
+They are the one definition of each shape: an archive's meta holds :class:`TableOutcome`s and
 the error envelope is :class:`ErrorDocument`. A field whose value is the description a
 plugin wrote, or a row SQL returned, is plain JSON data; everything else is typed here.
 
 A field name has one shape in every document. ``archive`` is an archive's id (a window's is
-its id too), what ``--archive`` takes; ``path`` is the directory of what the record is
-about, and ``<what>_path`` another's. ``records`` and ``windows`` are counts, as they are in
-``meta.yaml``; a list of them is named for what it holds (``table_records``,
+its id too), what ``--archive`` takes; no document says where an archive is kept, which is
+the archive adapter's to know. ``project`` is the project directory the missions belong to.
+``records`` and ``windows`` are counts, as they are in an archive's meta; a list of them is
+named for what it holds (``table_records``,
 ``stream_windows``), and a range of windows is ``window_range``. ``first`` and ``last`` are
 the ends of a span, ids where they name windows (a whole window outcome is ``last_window``,
 a schedule's last tick ``last_tick``).
 ``source`` is a catalog source's name (a setting's provenance is its ``origin``), ``streams``
-the stream statuses (a plan's directories are ``stream_paths``), ``captures`` a count (whether
+the stream statuses, ``captures`` a count (whether
 a plan keeps captures is its ``preserve_raw``), ``skipped`` the sources a plan passed over (a
 read's retired windows (or archives) are its ``retired_range``, and why a tick ran no survey its
 ``skipped_by``, as a window's close is its ``closed_by``). ``status`` is an outcome: a survey's
@@ -39,7 +40,7 @@ from recon.domain.stream import ClosedBy  # noqa: TC001
 
 #: Whether a survey's archive holds every table it was asked for: :data:`ArchiveState`
 #: once the survey has ended, so never ``writing``. ``incomplete``: a table failed, the
-#: survey was stopped, or ``meta.yaml`` could not be written.
+#: survey was stopped, or its meta could not be recorded.
 SurveyStatus = Literal["complete", "incomplete"]
 
 #: What ``init`` did to the mission's config: wrote the first one, found this one already
@@ -59,7 +60,7 @@ class Document(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
     def document(self) -> dict[str, Any]:
-        """The record as plain JSON data, keyed as ``--json`` and ``meta.yaml`` show it."""
+        """The record as plain JSON data, keyed as ``--json`` and an archive's meta show it."""
         data: dict[str, Any] = self.model_dump(mode="json", by_alias=True)
         return data
 
@@ -70,6 +71,7 @@ class Document(BaseModel):
 class MissionDocument(Document):
     schema_: Literal["recon.v1.mission"] = Field(default="recon.v1.mission", alias="schema")
     mission: str
+    #: Where a person reads and edits the mission's config.
     config: str
     #: ``template:<name>``, or the path of the file the config was copied from (``-``:
     #: standard input).
@@ -80,13 +82,12 @@ class MissionDocument(Document):
 class PlanWrites(Document):
     #: Where ``-c`` would copy the config; None when the mission's own config is planned.
     config: str | None
-    #: The directory the survey's archive would be (its id the moment it starts).
-    archive_path: str
     #: Whether the survey keeps every fetched body in a capture log: the mission's own
     #: ``preserve_raw``.
     preserve_raw: bool
-    #: The directory of each stream the mission has, where its windows are written.
-    stream_paths: list[str] = []
+    #: The streams the mission has, by name, each landing windows of its own beside the one
+    #: new archive the survey lands.
+    stream_names: list[str] = []
 
 
 #: Where an effective setting came from: the mission's config, its collector type's
@@ -135,13 +136,14 @@ class PlanDocument(Document):
     #: accepting the source's kind: ``{"collector", "source", "kind"}``.
     skipped: list[dict[str, str]] = []
     #: What the runs need of this host, as the collector types that declare a preflight
-    #: checked it during this dry run, each with whether it holds.
+    #: checked it, each with whether it holds: a plan asked to check (``--check``) alone.
     requirements: list[Required] = []
-    #: Whether every requirement holds. False is not an error: the plan is still valid, and a
-    #: survey fails each table whose requirement does not hold, as ``config``.
-    runnable: bool = True
-    #: What this dry run did to check the requirements, by collector type (``mcp: started
-    #: each stdio server a run names ...``); empty when it ran, fetched and wrote nothing.
+    #: Whether every requirement holds; None when the plan did not check. False is not an
+    #: error: the plan is still valid, and a survey fails each table whose requirement does
+    #: not hold, as ``config``.
+    runnable: bool | None = None
+    #: What the check did, by collector type (``mcp: started each stdio server a run names
+    #: ...``); empty when it ran, fetched and wrote nothing, as a plan does unless checked.
     preflight: list[str] = []
     #: Each setting of a stream the survey would use, and of a schedule (``schedule.every``,
     #: ``schedule.missed``, and the ``deadline`` a scheduled mission has), with where it came
@@ -154,7 +156,7 @@ class PlanDocument(Document):
 
 
 class TableError(Document):
-    #: An error kind; read back from an older ``meta.yaml`` it may be one this recon lacks.
+    #: An error kind; read back from an older archive's meta it may be one this recon lacks.
     kind: str
     message: str
     fix: str | None = None
@@ -199,6 +201,25 @@ class ChangeSummary(Document):
     untold: list[str] = []
 
 
+class RangeOutcome(Document):
+    """The source time a ranged table covers, ``[start, end)``: its range's ``kind``, where
+    its run began (``from``: ``checkpoint``, ``start``, ``default``, ``override``, ``rebase``
+    or ``restart``), the digest of the request it was asked with, and how many steps it asked
+    for. It commits with its table: a continuing or fixed range not begun by an override is
+    the table's checkpoint once its archive's meta is recorded (:mod:`recon.domain.ranges`)."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+
+    start: str
+    end: str
+    kind: Literal["continuing", "fixed", "rolling"]
+    from_: Literal["checkpoint", "start", "default", "override", "rebase", "restart"] = Field(
+        alias="from"
+    )
+    request: str
+    steps: int = 0
+
+
 class TableOutcome(Document):
     """One table of a survey: what produced it and how it ended. ``truncated``: its crawl
     stopped short of its source's end (``paginate:``), so it is sealed ``ok`` and is not a
@@ -207,7 +228,6 @@ class TableOutcome(Document):
     linked on)."""
 
     name: str
-    file: str
     collector: str
     type: str
     source: str | None
@@ -220,19 +240,19 @@ class TableOutcome(Document):
     truncated_by: TruncatedBy | None = None
     #: What its change detection found, for an entry with ``changes:``; None otherwise.
     changes: ChangeSummary | None = None
+    #: The source time it covers, for an entry with ``range:``; None otherwise.
+    range: RangeOutcome | None = None
 
 
 class WindowOutcome(Document):
-    """One window of a stream, sealed: which, where, the span it covers, how it was closed,
-    what it dropped, and its one table (whose ``status`` is the window's: ``error`` when its
-    source failed, its records kept)."""
+    """One window of a stream, sealed: which, the span it covers, how it was closed, what it
+    dropped, and its one table (whose ``status`` is the window's: ``error`` when its source
+    failed, its records kept)."""
 
     stream: str
     index: int
-    #: The window's archive id, as ``recon status`` lists it (what ``--archive`` takes),
-    #: and its directory.
+    #: The window's archive id, as ``recon status`` lists it (what ``--archive`` takes).
     id: str
-    path: str
     #: ISO 8601, from the clock port: the window covers ``[opened_at, closed_at)``.
     opened_at: str
     closed_at: str
@@ -242,21 +262,19 @@ class WindowOutcome(Document):
     dropped: int
     #: The most records that waited in the buffer while the window was filled: at most the
     #: stream's ``buffer.records``. It depends on how fast the window was written, so it is
-    #: here and not in the window's ``meta.yaml``, which the same arrivals keep the same.
+    #: here and not in the window's meta, which the same arrivals keep the same.
     high_water: int
     table: TableOutcome
 
 
 class SurveyDocument(Document):
-    """A survey: its archive of snapshot tables, by id (``archive``) and directory
-    (``path``), and, for each entry that is a stream, the one window it ran of it
-    (``stream_windows``), in config order. ``status`` is ``incomplete`` when a table or a
-    window failed."""
+    """A survey: its archive of snapshot tables, by id (``archive``), and, for each entry that
+    is a stream, the one window it ran of it (``stream_windows``), in config order.
+    ``status`` is ``incomplete`` when a table or a window failed."""
 
     schema_: Literal["recon.v1.survey"] = Field(default="recon.v1.survey", alias="schema")
     mission: str
     archive: str
-    path: str
     status: SurveyStatus
     tables: list[TableOutcome]
     warnings: list[dict[str, Any]]
@@ -278,8 +296,6 @@ class StreamDocument(Document):
     schema_: Literal["recon.v1.stream"] = Field(default="recon.v1.stream", alias="schema")
     mission: str
     stream: str
-    #: The stream's directory, holding its windows.
-    path: str
     #: When the run was to return at the latest, as it said when it started: seconds from its
     #: start (null when only a stop or its source's end bounded it), and that in words. Under
     #: ``--json`` this document is all that is printed, so the notice is here too; to know it
@@ -301,28 +317,88 @@ class StreamDocument(Document):
 
 
 class TableStatus(Document):
+    """One table of an archive, as its meta holds it: what ``recon status`` says of it, so no
+    reader opens what the archive keeps. ``truncated``: its crawl stopped short of its
+    source's end; ``changes``: what its change detection found, for an entry with
+    ``changes:``; ``range``: the source time it covers, for an entry with ``range:``."""
+
     name: str | None
     type_url: str | None
     status: str | None
     records: int | None
     error: TableError | None = None
+    truncated: bool = False
+    changes: ChangeSummary | None = None
+    range: RangeOutcome | None = None
+
+
+class GapRecord(Document):
+    """A stretch a stream's source was not read: ``from`` (null when not known, as after a
+    crash) to ``to``; ``resumed``, the source was asked to go on from the last position
+    kept."""
+
+    model_config = ConfigDict(frozen=True, populate_by_name=True, extra="ignore")
+
+    from_: str | None = Field(default=None, alias="from")
+    to: str | None = None
+    resumed: bool = False
+
+
+class WindowSource(Document):
+    """What one window read of its source: the positions of its first and last record (the
+    last carried through a window with no record; the meta's ``first`` and ``last``), its
+    records and drops, the gaps in it, the orders of arrival of its first and last record
+    (``arrivals``), and, for a crawl begun again in it, the page it was begun again at
+    (``restarted``)."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+
+    source: str | None = None
+    output: str | None = None
+    first_position: Any = Field(default=None, validation_alias="first")
+    last_position: Any = Field(default=None, validation_alias="last")
+    records: int = 0
+    dropped: int = 0
+    gaps: list[GapRecord] = []
+    arrivals: dict[str, Any] | None = None
+    restarted: int | None = None
+
+
+class WindowRecord(Document):
+    """A stream's window, as its meta records it: its stream and index, the window before it
+    (``previous``; null for the first), its span and how it was closed, the window spec in
+    effect, what it read of its source, and whether it replays from its capture."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    name: str | None = None
+    index: int | None = None
+    previous: str | None = None
+    opened_at: str | None = None
+    closed_at: str | None = None
+    closed_by: str | None = None
+    window: dict[str, Any] = {}
+    sources: list[WindowSource] = []
+    reproducible: bool = False
 
 
 class ArchiveStatus(Document):
     id: str
-    path: str
     state: ArchiveState
     #: Whether its survey ran to its end; None while ``writing``.
     ended: Ended | None
-    #: ISO 8601, from ``meta.yaml``; None when it is missing or does not say (format 1 has
-    #: only the finish). ``finished_at`` None: the survey did not finish.
+    #: ISO 8601, from its meta; None when it has none or it does not say (format 1 has only
+    #: the finish). ``finished_at`` None: the survey did not finish.
     started_at: str | None
     finished_at: str | None
-    #: None when ``meta.yaml`` is missing or unreadable: the survey did not finish.
+    #: None when its meta is missing or unreadable: the survey did not finish.
     format_version: int | None
     recon_version: str | None
     config_sha256: str | None
     tables: list[TableStatus]
+    #: A stream's window: what its meta records of it; None for a survey's archive, and for a
+    #: window whose writer died before it recorded one.
+    window: WindowRecord | None = None
 
 
 class StreamStatus(Document):
@@ -330,14 +406,16 @@ class StreamStatus(Document):
     else its last window's state; its windows, the first and the latest."""
 
     name: str
-    path: str
     state: ArchiveState | None
     windows: int
     #: The first window's id, which ``watch --stream --archive`` takes to read from the start.
     first: str | None
     latest: ArchiveStatus | None
-    #: The windows ``retain:`` removed, each leaving a tombstone beside the windows.
+    #: The windows ``retain:`` removed, each leaving a tombstone.
     retired: int = 0
+    #: Every window the stream keeps, oldest first, each with its record (``window``), when
+    #: the status asked was of this mission alone; None otherwise.
+    history: list[ArchiveStatus] | None = None
 
 
 class SubscriptionFailing(Document):
@@ -496,7 +574,8 @@ class InstalledPlugins(Document):
 
 class StatusDocument(Document):
     schema_: Literal["recon.v1.status"] = Field(default="recon.v1.status", alias="schema")
-    root: str
+    #: The project the missions belong to.
+    project: str
     missions: list[MissionStatus]
     plugins: InstalledPlugins
     #: Problem records that do not stop the command: ``archive_abandoned``, each half-made
@@ -517,9 +596,10 @@ class WindowRange(Document):
 class QueryRows(Document):
     schema_: Literal["recon.v1.query-rows"] = Field(default="recon.v1.query-rows", alias="schema")
     mission: str
-    #: The archive the rows came from: its id (``query --archive``), and its directory.
+    #: The archive the rows came from: its id (``query --archive``).
     archive: str
-    path: str
+    #: The earlier archive the query read as ``baseline.<table>`` (``query --baseline``).
+    baseline: str | None = None
     state: ArchiveState
     ended: Ended | None
     columns: list[str]
@@ -527,7 +607,7 @@ class QueryRows(Document):
     count: int
     warnings: list[dict[str, Any]]
     #: A query of a stream: its name, and the range of windows read (``archive`` is then its
-    #: last window read, ``path`` the stream's directory, and ``state`` the stream's).
+    #: last window read, and ``state`` the stream's).
     stream: str | None = None
     window_range: WindowRange | None = None
 
@@ -543,9 +623,8 @@ class RecordsSince(Document):
     )
     mission: str
     #: The archive read: its id (``--archive``), which a later read with ``cursor`` names
-    #: again, and its directory.
+    #: again.
     archive: str
-    path: str
     state: ArchiveState
     ended: Ended | None
     #: The records read, ``{"table", "record"}`` each, table by table in output-name order,
@@ -564,7 +643,7 @@ class RecordsSince(Document):
     #: A bound (``max_records`` records, ``max_bytes`` bytes) cut this read before all that was
     #: written by then was read: read again at once.
     more: bool
-    #: A read of a stream: its name. ``archive`` and ``path`` are then the window read,
+    #: A read of a stream: its name. ``archive`` is then the window read,
     #: ``state`` that window's, and ``cursor`` carries the window, so the next read goes on
     #: into the next window once this one is read to its end.
     stream: str | None = None
@@ -721,7 +800,7 @@ _SURVEY_FAILURE_FIX = {
     "auth": "check the credentials the failing sources' auth.token or headers_helper give, "
     "then: recon survey {n}",
     "transient": "retry later: recon survey {n}",
-    "run_failed": "read each failed table's error (meta.yaml, or --json), fix its cause, "
+    "run_failed": "read each failed table's error (recon status, or --json), fix its cause, "
     "then: recon survey {n} --dry-run",
 }
 
@@ -729,8 +808,8 @@ _SURVEY_FAILURE_FIX = {
 def survey_failure(document: SurveyDocument) -> ReconError | None:
     """The error a survey's failed tables add up to, or None when every table succeeded and
     the archive was finished. An archive that could not be finished is ``store`` (owner ruling
-    2026-10-22), whatever its tables did: a failed table's error is recorded in the
-    ``meta.yaml`` that could not be written, so the store is the failure to act on first, and
+    2026-10-22), whatever its tables did: a failed table's error is recorded in the meta
+    that could not be recorded, so the store is the failure to act on first, and
     its ``archive_unfinished`` warning says why. Otherwise the kind is ``auth``,
     ``transient`` or ``run_failed``. The details name the archive and the failed tables. A
     stream's window that failed counts as a failed table."""
@@ -744,11 +823,11 @@ def survey_failure(document: SurveyDocument) -> ReconError | None:
             else "every table succeeded, but "
         )
         return ReconError(
-            f"{tables}the archive could not be finished, so it reads incomplete: {document.path}",
+            f"{tables}archive {document.archive} could not be finished, so it reads incomplete",
             kind="store",
-            fix="read the survey's archive_unfinished warning, free space in the archive's "
-            f"directory or make it writable, then: recon survey {document.mission}",
-            details={"archive": document.archive, "path": document.path, "failed": failed},
+            fix="read the survey's archive_unfinished warning, free space where the mission is "
+            f"kept or make it writable, then: recon survey {document.mission}",
+            details={"archive": document.archive, "failed": failed},
         )
     if kind is None:
         return None
@@ -756,7 +835,7 @@ def survey_failure(document: SurveyDocument) -> ReconError | None:
         f"{len(failed)} of {len(every)} table(s) failed; the archive is incomplete",
         kind=kind,
         fix=_SURVEY_FAILURE_FIX[kind].format(n=document.mission),
-        details={"archive": document.archive, "path": document.path, "failed": failed},
+        details={"archive": document.archive, "failed": failed},
     )
 
 
@@ -776,7 +855,7 @@ def stream_failure(document: StreamDocument) -> ReconError | None:
         fix=error.fix
         or f"read the window's error, fix its cause, then: recon stream {document.mission} "
         f"--stream {document.stream}",
-        details={"archive": last.id, "path": last.path, "window": last.id},
+        details={"archive": last.id, "window": last.id},
     )
 
 
@@ -879,7 +958,8 @@ class SchedulesDocument(Document):
     each mission with a schedule, on one scheduler."""
 
     schema_: Literal["recon.v1.schedules"] = Field(default="recon.v1.schedules", alias="schema")
-    root: str
+    #: The project the missions belong to.
+    project: str
     platform: Platform
     schedules: list[ScheduleStatus]
     warnings: list[dict[str, Any]] = []

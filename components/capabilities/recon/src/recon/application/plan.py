@@ -27,15 +27,21 @@ from typing import TYPE_CHECKING, Any, get_args
 
 from pydantic import BaseModel, ValidationError
 
-from recon.domain.archives import EVENT_LOG_NAME, SIDECARS, table_name
-from recon.domain.capture import CAPTURE_LOG_NAME
+from recon.domain.archives import RESERVED_OUTPUTS, SIDECARS, table_name
 from recon.domain.changes import CHANGES_SUFFIX, changes_output
 from recon.domain.credentials import env_name
 from recon.domain.documents import SourcedValue
 from recon.domain.errors import Problem
-from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
+from recon.domain.models import (
+    DEFAULT_BURST,
+    DEFAULT_RPS,
+    CollectorEntry,
+    ReconConfig,
+    SourceEntry,
+)
 from recon.domain.normalize import path_problem, spec_problems
 from recon.domain.paginate import COUNTED, crawl_floor_s
+from recon.domain.ranges import BOUNDS, FORMATS, unknown_placeholders, uses_range
 from recon.domain.schedule import DAY_S, ScheduleSpec, every_fix, pinned_form, unpinned
 from recon.domain.stream import (
     DEFAULT_WINDOW_S,
@@ -51,6 +57,7 @@ if TYPE_CHECKING:
 
     from recon.domain.collector import BrokenPlugin, CollectorType, Plugins
     from recon.domain.documents import Origin
+    from recon.domain.ranges import RangeSpec
     from recon.domain.stream import Overflow, Retain
 
 _TOP_LEVEL_KEYS = tuple(sorted(ReconConfig.model_fields))
@@ -59,16 +66,11 @@ _TOP_LEVEL_KEYS = tuple(sorted(ReconConfig.model_fields))
 #: a YAML anchor that collectors alias. recon ignores it. Every other unknown key is an error.
 IGNORED_KEY_PREFIX = "_"
 
-#: Output names that would overwrite a file recon itself writes into an archive.
-RESERVED_OUTPUT_NAMES = frozenset(
-    name.removesuffix(".jsonl") for name in (CAPTURE_LOG_NAME, EVENT_LOG_NAME)
-)
+#: What an output name may not hold: it names one table of the archive, and nothing else.
+_NOT_IN_A_NAME = ("/", "\\", "..")
 
-#: What an output name may not hold: it is the stem of one file in the archive.
-_NOT_IN_A_FILE_NAME = ("/", "\\", "..")
-
-#: The suffixes recon gives the files it writes beside a table, each with what it holds: an
-#: output named so would be one of them.
+#: The suffixes recon gives what it keeps beside a table, each with what it holds: an output
+#: named so would be one of them.
 _BESIDE = {"pages": "page log", "keys": "key index", CHANGES_SUFFIX: "change table"}
 assert set(SIDECARS) < set(_BESIDE)
 
@@ -96,7 +98,6 @@ class PlannedRun:
         stream = {} if self.stream is None else {"stream": self.stream}
         return {
             "output": self.output,
-            "file": f"{self.output}.jsonl",
             "collector": self.collector,
             "type": self.type,
             "source": self.source,
@@ -291,6 +292,9 @@ def build_plan(
             values, shifting = _changes(i, entry)
             provenance += values
             problems += shifting
+        values, ranging = _ranged(i, entry, is_stream)
+        provenance += values
+        problems += ranging
         for source, output in targets:
             problems.extend(_output_problems(i, output, produced_by))
             for key in _table_keys(output):
@@ -317,6 +321,7 @@ def build_plan(
     problems += found
     provenance += values
 
+    provenance += _rate_limits(sources, used_sources)
     if is_directory is not None:
         problems += _directory_problems(sources, used_sources, is_directory, base)
     warnings += _credential_warnings(sources, used_sources - refused, env, plugins)
@@ -1286,12 +1291,12 @@ def _output_problems(
 ) -> list[Problem]:
     at = f"collectors.{i}.name"
     problems = []
-    if any(part in output for part in _NOT_IN_A_FILE_NAME):
+    if any(part in output for part in _NOT_IN_A_NAME):
         problems.append(
             Problem(
                 at,
-                f"output {output!r} is not one file name: it names the table's file in the "
-                f"archive, so it holds no {', no '.join(_NOT_IN_A_FILE_NAME)}",
+                f"output {output!r} is not one name: it names one table of the archive, so "
+                f"it holds no {', no '.join(_NOT_IN_A_NAME)}",
                 fix="rename the collector (or, for an output <collector>-<source>, the source)",
                 got=output,
             )
@@ -1301,16 +1306,17 @@ def _output_problems(
             Problem(
                 at,
                 f"output {output!r} must start with a letter, a digit or _: it names the "
-                "table's file in the archive, which would otherwise be hidden or empty-named",
+                "table in the archive, and a name that does not is refused",
                 fix="rename the collector",
                 got=output,
             )
         )
-    if output.casefold() in RESERVED_OUTPUT_NAMES:
+    if output.casefold() in RESERVED_OUTPUTS:
         problems.append(
             Problem(
                 at,
-                f"output {output!r} is reserved for a file recon writes into every archive",
+                f"output {output!r} is reserved for a log recon keeps in every archive (its "
+                "events, its captures)",
                 kind="name_taken",
                 fix="rename the collector",
                 got=output,
@@ -1320,8 +1326,8 @@ def _output_problems(
         problems.append(
             Problem(
                 at,
-                f"output {output!r} is named as recon names a file of its own beside a table "
-                f"(<table>.{suffix}.jsonl: its {_BESIDE[suffix]})",
+                f"output {output!r} is named as recon names what it keeps beside a table "
+                f"(<table>.{suffix}: its {_BESIDE[suffix]})",
                 kind="name_taken",
                 fix="rename the collector",
                 got=output,
@@ -1332,7 +1338,7 @@ def _output_problems(
         problems.append(
             Problem(
                 at,
-                f"output {output}.jsonl is also produced by collectors.{taken[0]}",
+                f"output {output} is also produced by collectors.{taken[0]}",
                 kind="name_taken",
                 fix="rename one of the two collectors so each output is unique",
                 got=output,
@@ -1408,6 +1414,153 @@ def _changes_problems(i: int, entry: CollectorEntry, is_stream: bool) -> list[Pr
             )
         )
     return problems
+
+
+def _rate_limits(sources: list[tuple[int, SourceEntry]], used: set[str]) -> list[SourcedValue]:
+    """The ``rate_limit`` in effect for each source a run uses, but a ``local`` one, which is
+    sent nothing: as written, or recon's default for a source whose limits it does not know
+    (ruling R12), each key left out a default."""
+    values = []
+    for i, source in sources:
+        if source.name not in used or source.type == "local":
+            continue
+        rate = source.rate_limit
+        written = rate.model_fields_set if "rate_limit" in source.model_fields_set else set()
+        defaulted = [key for key in ("rps", "burst") if key not in written]
+        note = (
+            "" if not defaulted else
+            f"recon's default for a source whose limits it does not know ({DEFAULT_RPS:g} "
+            f"request a second, {DEFAULT_BURST} at once): set rate_limit: to what the source "
+            "allows" if len(defaulted) == 2 else
+            f"{defaulted[0]}: recon's default"
+        )  # fmt: skip
+        values.append(SourcedValue(
+            path=f"catalog.{i}.rate_limit",
+            value={"rps": rate.rps, "burst": rate.burst},
+            origin="mission" if written else "recon",
+            note=note,
+        ))  # fmt: skip
+    return values
+
+
+def _ranged(
+    i: int, entry: CollectorEntry, is_stream: bool
+) -> tuple[list[SourcedValue], list[Problem]]:
+    """``range:``'s effective keys, each with where it came from, and what it may not say:
+    a stream's (windows are its time), one whose settings never name a ``{range.*}`` (each
+    step would ask the same question), ``end`` beside ``last``, a fixed range with no
+    ``start``, a step that is no multiple of ``align``, deletes of a table that holds new data
+    only, and a placeholder nothing fills; and a ``{range.*}`` in an entry with no ``range:``."""
+    at = f"collectors.{i}.range"
+    spec = entry.range
+    if spec is None:
+        if not uses_range(entry.settings):
+            return [], []
+        return [], [Problem(
+            f"collectors.{i}",
+            f"collector {entry.name!r} names a {{range.*}} placeholder and has no range:, so "
+            "nothing fills it",
+            kind="unresolved",
+            fix="give it range: (recon --skill -r ranges), or remove the placeholder",
+        )]  # fmt: skip
+    problems: list[Problem] = []
+    if is_stream:
+        problems.append(Problem(
+            at,
+            f"collector {entry.name!r} is a stream, whose windows are its time: range: is a "
+            "snapshot entry's",
+            fix="remove range:, or window: (and use a type whose records end)",
+        ))  # fmt: skip
+    if not uses_range(entry.settings):
+        problems.append(Problem(
+            at,
+            f"collector {entry.name!r} has range: and names no {{range.start}}, "
+            "{range.end} or {range.last} in its settings, so every step would ask the same",
+            kind="range_unused",
+            fix="name the step's bounds where the source takes them (an endpoint's query, a "
+            "tool's arguments, a command), or remove range:",
+        ))  # fmt: skip
+    if spec.end is not None and spec.last is not None:
+        problems.append(Problem(
+            at,
+            "range: takes end (a fixed range) or last (a rolling one), not both",
+            kind="range_ambiguous",
+            fix="keep start and end for a fixed span, or last for the latest span",
+        ))  # fmt: skip
+    if spec.end is not None and spec.start is None:
+        problems.append(Problem(
+            f"{at}.start",
+            "a fixed range (range.end) needs range.start",
+            kind="missing_key",
+            fix="give range.start, the first instant to collect",
+        ))  # fmt: skip
+    if spec.start is not None and spec.end is not None and spec.end <= spec.start:
+        problems.append(Problem(
+            f"{at}.end",
+            "range.end is not after range.start",
+            fix="give a range.end later than range.start",
+        ))  # fmt: skip
+    if spec.align is not None and spec.step_s % spec.align:
+        problems.append(Problem(
+            f"{at}.step",
+            f"range.step ({spec.step_s:g}s) is not a multiple of range.align ({spec.align:g}s), "
+            "so the steps would not stay aligned",
+            fix="make range.step a multiple of range.align",
+            got=spec.step_s,
+        ))  # fmt: skip
+    if spec.kind != "rolling" and entry.changes is not None and entry.changes.deletes:
+        problems.append(Problem(
+            f"collectors.{i}.changes.deletes",
+            "each table of a continuing or fixed range holds the new source time alone, so a "
+            "key it lacks did not go",
+            kind="range_deletes",
+            fix="remove changes.deletes (or use range.last, which reads the whole span each run)",
+        ))  # fmt: skip
+    for written in dict.fromkeys(unknown_placeholders(entry.settings)):
+        problems.append(Problem(
+            f"collectors.{i}",
+            f"{written} is no placeholder recon fills, so the source would be asked it as text",
+            fix=f"write {{range.<bound>}} or {{range.<bound>:<format>}}, the bound one of "
+            f"{', '.join(BOUNDS)} and the format one of {', '.join(FORMATS)}",
+            got=written,
+        ))  # fmt: skip
+    return _range_values(at, spec), problems
+
+
+def _range_values(at: str, spec: RangeSpec) -> list[SourcedValue]:
+    """Each key of ``range:`` in effect, by where it came from."""
+    written = spec.model_fields_set
+
+    def said(key: str, value: Any, note: str = "") -> SourcedValue:
+        origin: Origin = "mission" if key in written else "recon"
+        return SourcedValue(path=f"{at}.{key}", value=value, origin=origin, note=note)
+
+    kind_note = {"continuing": "neither end nor last: each run goes on from the last one's end",
+                 "fixed": "start and end: runs go on until end is collected",
+                 "rolling": "last: each run reads the latest span again"}[spec.kind]  # fmt: skip
+    values = [SourcedValue(path=f"{at}.kind", value=spec.kind, origin="mission", note=kind_note)]
+    if spec.kind != "rolling":
+        start = spec.start.isoformat() if spec.start is not None else None
+        values.append(said("start", start, "" if start else
+                           "none: the first run asks for one step back from the horizon, and "
+                           "each after it goes on from the checkpoint"))  # fmt: skip
+    if spec.end is not None:
+        values.append(said("end", spec.end.isoformat()))
+    if spec.last is not None:
+        values.append(said("last", spec.last))
+    step_note = ("" if "step" in written else
+                 "the whole span, one request" if spec.kind == "rolling" else
+                 "one request asks for at most this long")  # fmt: skip
+    values += [
+        said("step", spec.step_s, step_note),
+        said("settle", spec.settle, "" if "settle" in written else
+             "a range ends this far behind now, for what its source has not settled"),
+        said("max_steps", spec.max_steps, "" if "max_steps" in written else
+             "a run asks for at most this many steps; a backlog drains over the next runs"),
+        said("align", spec.align, "" if "align" in written else "none: steps start where the "
+             "last ended"),
+    ]  # fmt: skip
+    return values
 
 
 def _changes(i: int, entry: CollectorEntry) -> tuple[list[SourcedValue], list[Problem]]:

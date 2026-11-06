@@ -88,7 +88,8 @@ class FilesystemCaptureLog:
             size=len(body),
         )
 
-    def stream_path(self, collector: str) -> Path:
+    def _stream_file(self, collector: str) -> Path:
+        """Where the body streaming for ``collector`` waits until it is logged."""
         path = self._streams.get(collector)
         if path is None:
             path = self._raw_dir() / f".stream-{uuid.uuid4().hex}.tmp"
@@ -98,7 +99,7 @@ class FilesystemCaptureLog:
     def tee(self, collector: str, data: bytes) -> None:
         tee = self._tees.get(collector)
         if tee is None:
-            descriptor = open_file(self.stream_path(collector), os.O_WRONLY | os.O_APPEND)
+            descriptor = open_file(self._stream_file(collector), os.O_WRONLY | os.O_APPEND)
             tee = self._tees[collector] = os.fdopen(descriptor, "ab")
         tee.write(data)
 

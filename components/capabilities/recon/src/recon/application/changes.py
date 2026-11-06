@@ -10,7 +10,7 @@ code in a subject) cannot be recovered by hashing guesses. It is an input to the
 contract: the same tables, spec and key give the same change tables, byte for byte. A hash
 is kept only in the told index, never in a change row, a warning or telemetry.
 
-**The told index** of a table, ``<output>.keys.jsonl``, written with its change table, is the
+**The told index** of a table, its ``keys`` sidecar, written with its change table, is the
 fold of every change row told for its output and source up to it (:mod:`recon.domain.changes`):
 a header (``spec``: the digest of the key and volatile fields and of the key's identity; the
 table's record and keyless counts; the index's key count; ``mac``, a digest of all of it
@@ -44,9 +44,8 @@ from recon.domain.errors import Problem, ReconError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
-    from pathlib import Path
 
-    from recon.domain.archives import ArchiveStore
+    from recon.domain.archives import ArchiveRef, Archives, Landed
     from recon.domain.changes import ChangeOp, ChangesSpec, DeletesWithheld, Joined, KeyJoin
     from recon.domain.documents import TableOutcome
 
@@ -149,11 +148,7 @@ class MemoryJoin:
     of the table's keys."""
 
     def join(
-        self,
-        told: Iterable[tuple[str, str]],
-        new: Iterable[tuple[int, str, str]],
-        *,
-        scratch: Path | None = None,
+        self, told: Iterable[tuple[str, str]], new: Iterable[tuple[int, str, str]]
     ) -> _MemoryJoined:
         return _MemoryJoined(dict(told), new)
 
@@ -206,27 +201,6 @@ class _MemoryJoined:
 
     def close(self) -> None:
         self._told, self._new = {}, {}
-
-
-#: Where under its mission a large join keeps its files (``KeyJoin.join``'s ``scratch``).
-JOINS = ".joins"
-
-
-@dataclass(frozen=True)
-class _Scratched:
-    """A large join given its mission's ``scratch`` on every join."""
-
-    large: KeyJoin
-    scratch: Path
-
-    def join(
-        self,
-        told: Iterable[tuple[str, str]],
-        new: Iterable[tuple[int, str, str]],
-        *,
-        scratch: Path | None = None,
-    ) -> Joined:
-        return self.large.join(told, new, scratch=self.scratch)
 
 
 # --- a comparison -------------------------------------------------------------------------
@@ -367,11 +341,11 @@ def told_lines(
 
 @dataclass(frozen=True)
 class _Compared:
-    """An earlier table that was compared: where, how many records it held, whether its
+    """An earlier table that was compared: which archive, how many records it held, whether its
     deletes were told, whether it started the told index again, the one compared before it,
     and the windows that told nothing whose records it told before its own."""
 
-    archive: Path
+    archive: ArchiveRef
     records: int
     deletes_told: bool
     rebaselined: bool
@@ -394,23 +368,22 @@ class _Told:
 
 
 class ChangeDetector:
-    """Writes the change table and the told index of each table of a mission whose entry has
-    ``changes:``, through the archive store, under the mission's ``secret``. ``large`` joins
-    a table or told index of more than ``memory_keys`` keys (None: every join is in memory).
-    It writes into the archive (or window) being written alone: an earlier one is only
-    read."""
+    """Writes the change table and the told index of each table of ``mission`` whose entry
+    has ``changes:``, under the mission's ``secret``: into the archive (or window) being
+    written alone, while earlier ones are only read, through ``archives``. ``large`` joins a
+    table or told index of more than ``memory_keys`` keys (None: every join is in memory)."""
 
     def __init__(
         self,
-        archives: ArchiveStore,
-        mission_dir: Path,
+        archives: Archives,
+        mission: str,
         secret: bytes,
         *,
         large: KeyJoin | None = None,
         memory_keys: int = MEMORY_KEYS,
     ) -> None:
         self._archives = archives
-        self._mission_dir = mission_dir
+        self._mission = mission
         self._secret = secret
         self._large = large
         self._memory_keys = memory_keys
@@ -418,7 +391,7 @@ class ChangeDetector:
 
     def snapshot(
         self,
-        archive: Path,
+        archive: Landed,
         table: TableOutcome,
         spec: ChangesSpec,
         normalize: dict[str, str] | None,
@@ -429,17 +402,17 @@ class ChangeDetector:
         previous table compared: the latest earlier one of the same name and source. Run once
         every table of the survey has run, so the survey reaches its end. ``pending`` is
         given the table with its summary (its rows not yet counted) once its told index is
-        written and before its change table is, so the summary is in ``meta.yaml`` before any
-        row can be read (Dijkstra F3)."""
-        listed = self._archives.archives(self._mission_dir)  # in the order they were made
-        names = [a.name for a in listed]
-        archives = listed[: names.index(archive.name)] if archive.name in names else listed
+        written and before its change table is, so the summary is in the meta before any row
+        can be read (Dijkstra F3)."""
+        listed = self._archives.archives(self._mission)  # in the order they were made
+        names = [a.id for a in listed]
+        archives = listed[: names.index(archive.ref.id)] if archive.ref.id in names else listed
         return self._compare(archive, table, spec, normalize_digest(normalize), archives,
                              None, whole=not table.truncated, pending=pending)  # fmt: skip
 
     def window(
         self,
-        archive: Path,
+        archive: Landed,
         stream: str,
         previous: str | None,
         table: TableOutcome,
@@ -450,18 +423,18 @@ class ChangeDetector:
     ) -> TableOutcome:
         """A stream's window, sealed ``ok``, compared with the told index of its chain up to
         the window ``previous``. Never a delete. ``pending`` as :meth:`snapshot`'s."""
-        windows = self._archives.archives(self._mission_dir, stream=stream)
+        windows = self._archives.archives(self._mission, stream=stream)
         windowed = spec.model_copy(update={"deletes": False})
         return self._compare(archive, table, windowed, normalize_digest(normalize), windows,
                              previous or "", whole=True, pending=pending)  # fmt: skip
 
     def _compare(
         self,
-        archive: Path,
+        archive: Landed,
         table: TableOutcome,
         spec: ChangesSpec,
         shape: str,
-        earlier: Sequence[Path],
+        earlier: Sequence[ArchiveRef],
         chain: str | None,
         *,
         whole: bool,
@@ -472,8 +445,8 @@ class ChangeDetector:
         else the latest. Written in the order that keeps every row a reader can see folded:
         the told index, then the summary (``pending``), then the change table."""
         hasher = Hasher(spec, self._secret)
-        by_name = {a.name: a for a in earlier}
-        untold: list[Path] = []
+        by_name = {a.id: a for a in earlier}
+        untold: list[ArchiveRef] = []
         if chain is None:
             previous = self._previous_snapshot(earlier, table)
             before = previous is None and self._sealed_before(earlier, table)
@@ -501,7 +474,7 @@ class ChangeDetector:
                 dead.append(held)
                 told.close()
                 told = _Told(held.told(), held.told_count())
-            new = self._reader(archive, table.name)
+            new = self._reader(archive.ref, table.name)
             comparison = Comparison(new, told.pairs, hasher, self._join(table.records, told.keys),
                                     whole=whole)  # fmt: skip
         except BaseException:
@@ -516,7 +489,7 @@ class ChangeDetector:
             return ChangeSummary(
                 table=changes_output(table.name),
                 type_url=CHANGES_TYPE_URL,
-                previous=previous.archive.name if previous is not None else None,
+                previous=previous.archive.id if previous is not None else None,
                 spec=hasher.digest,
                 normalize=shape,
                 rows=written,
@@ -528,13 +501,11 @@ class ChangeDetector:
                 ambiguous=sum(c.counts.ambiguous for c in every),
                 deletes_withheld=None if rebaselined else comparison.counts.withheld,
                 deletes_told=comparison.deletes,
-                untold=[window.name for window in untold],
+                untold=[window.id for window in untold],
             )
 
         try:
-            self._archives.write_sidecar(
-                archive, table.name, "keys", comparison.lines(table.records)
-            )
+            archive.keep(table.name, "keys", comparison.lines(table.records))
             if pending is not None:
                 pending(table.model_copy(update={"changes": summary(0)}))
             rows: Iterable[dict[str, Any]] = (
@@ -542,8 +513,8 @@ class ChangeDetector:
                 if rebaselined
                 else (row for c in every for row in c.rows())
             )
-            written = self._archives.write_table(
-                archive, changes_output(table.name), _generator(rows), columns=CHANGE_COLUMNS
+            written = archive.write(
+                changes_output(table.name), _generator(rows), columns=CHANGE_COLUMNS
             )
         except BaseException:
             for c in every:
@@ -568,7 +539,7 @@ class ChangeDetector:
 
     def _join(self, *sizes: int) -> KeyJoin:
         if self._large is not None and max(sizes) > self._memory_keys:
-            return _Scratched(self._large, self._mission_dir / JOINS)
+            return self._large
         return MemoryJoin()
 
     # --- the chain ---
@@ -578,7 +549,7 @@ class ChangeDetector:
         last: _Compared,
         table: TableOutcome,
         hasher: Hasher,
-        by_name: dict[str, Path],
+        by_name: dict[str, ArchiveRef],
     ) -> _Told:
         """What was told up to ``last``: its kept told index when that holds, else computed
         again by comparing each table of the chain since the latest whose index holds (or
@@ -587,7 +558,7 @@ class ChangeDetector:
         told = _Told(None)
         current: _Compared | None = last
         while current is not None and current not in again:
-            read = partial(self._archives.read_sidecar, current.archive, table.name, "keys")
+            read = partial(self._archives.sidecar, current.archive, table.name, "keys")
             kept = told_lines(read, hasher, current.records)
             if kept is not None:
                 told = _Told(kept[1], kept[0])
@@ -626,22 +597,22 @@ class ChangeDetector:
         return told
 
     def _chain(
-        self, windows: Sequence[Path], chain: str, table: TableOutcome
-    ) -> tuple[_Compared | None, list[Path]]:
+        self, windows: Sequence[ArchiveRef], chain: str, table: TableOutcome
+    ) -> tuple[_Compared | None, list[ArchiveRef]]:
         """A window's previous compared window, walking back from ``chain`` (the window before
         it), and the windows passed on the way that told nothing, oldest first, whose records
         this window tells: one whose writer died before it compared them (Dijkstra F1), and
         one sealed with its changes failed (G1). A window sealed and never compared (before
         ``changes:`` was set) ends the walk with nothing told."""
-        names = [window.name for window in windows]
+        names = [window.id for window in windows]
         if chain not in names:
             return None, []
-        untold: list[Path] = []
+        untold: list[ArchiveRef] = []
         for window in reversed(windows[: names.index(chain) + 1]):
             compared = self._compared(window, table)
             if compared is not None:
                 return compared, untold[::-1]
-            meta = self._archives.read_meta(window)
+            meta = self._archives.meta(window)
             sealed = meta.get("format_version") is not None and meta.get("ended", "") is not None
             entry = self._entry(window, table)
             changes = entry.get("changes") if entry is not None else None
@@ -651,7 +622,9 @@ class ChangeDetector:
             untold.append(window)
         return None, untold[::-1]
 
-    def _previous_snapshot(self, earlier: Sequence[Path], table: TableOutcome) -> _Compared | None:
+    def _previous_snapshot(
+        self, earlier: Sequence[ArchiveRef], table: TableOutcome
+    ) -> _Compared | None:
         """The latest earlier table of the same name and source that was compared, however
         its survey then ended: every table is compared once all have run, so one compared
         was whole when it was, and what it told a reader could read (Dijkstra F3)."""
@@ -661,7 +634,7 @@ class ChangeDetector:
                 return compared
         return None
 
-    def _sealed_before(self, earlier: Sequence[Path], table: TableOutcome) -> bool:
+    def _sealed_before(self, earlier: Sequence[ArchiveRef], table: TableOutcome) -> bool:
         """Whether an earlier survey that ran to its end sealed the table ``ok`` without
         comparing it (``changes:`` was set since): its records' shape is not known. One whose
         changes failed was under ``changes:``, and is not such a table."""
@@ -675,10 +648,10 @@ class ChangeDetector:
                 return True
         return False
 
-    def _entry(self, archive: Path, table: TableOutcome) -> dict[str, Any] | None:
-        """The table's entry in ``archive``'s ``meta.yaml``: sealed ``ok``, or, for a window,
-        sealed however its source ended (its records are told whatever, F1)."""
-        meta = self._archives.read_meta(archive)
+    def _entry(self, archive: ArchiveRef, table: TableOutcome) -> dict[str, Any] | None:
+        """The table's entry in ``archive``'s meta: sealed ``ok``, or, for a window, sealed
+        however its source ended (its records are told whatever, F1)."""
+        meta = self._archives.meta(archive)
         window = isinstance(meta.get("stream"), dict)
         for entry in meta.get("tables") or []:
             if (
@@ -689,12 +662,12 @@ class ChangeDetector:
                 return dict(entry)
         return None
 
-    def _compared(self, archive: Path, table: TableOutcome) -> _Compared | None:
+    def _compared(self, archive: ArchiveRef, table: TableOutcome) -> _Compared | None:
         entry = self._entry(archive, table)
         changes = entry.get("changes") if entry is not None else None
         if entry is None or not isinstance(changes, dict) or changes.get("error"):
             return None  # never compared, or its changes failed: it told nothing
-        if self._archives.read_table(archive, changes_output(table.name)) is None:
+        if self._archives.records(archive, changes_output(table.name)) is None:
             return None  # its summary was written, and it died before its rows were
         untold = changes.get("untold") or []
         return _Compared(archive, int(entry.get("records") or 0),
@@ -702,14 +675,14 @@ class ChangeDetector:
                          changes.get("previous"), changes.get("normalize"),
                          tuple(str(name) for name in untold))  # fmt: skip
 
-    def _ended(self, archive: Path) -> Any:
-        return self._archives.read_meta(archive).get("ended")
+    def _ended(self, archive: ArchiveRef) -> Any:
+        return self._archives.meta(archive).get("ended")
 
     def _reader(
-        self, archive: Path, output: str, *, unsealed: bool = False
+        self, archive: ArchiveRef, output: str, *, unsealed: bool = False
     ) -> Callable[[], Iterable[dict[str, Any]]]:
         def read() -> Iterable[dict[str, Any]]:
-            records = self._archives.read_table(archive, output, unsealed=unsealed)
+            records = self._archives.records(archive, output, unsealed=unsealed)
             return records if records is not None else ()
 
         return read
@@ -739,9 +712,8 @@ def join_unclosed(at: str, output: str, exc: Exception) -> Problem:
         f"{output}'s changes were told, and its join could not be closed: "
         f"{type(exc).__name__}: {exc}",
         kind="join_unclosed",
-        fix="nothing to do for the table; what the join left under the mission's .joins is "
-        "removed by the next large comparison (or remove it by hand); if this repeats, free "
-        "space there or report it",
+        fix="nothing to do for the table; what the join left is removed by the next large "
+        "comparison of the mission; if this repeats, free space for the mission or report it",
     )
 
 

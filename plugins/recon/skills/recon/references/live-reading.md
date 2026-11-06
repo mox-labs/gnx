@@ -26,20 +26,20 @@ A state, where a table's `ok` or `error` is an outcome. Beside it, `ended` says 
 
 | `ended` | Means | Written by |
 |---|---|---|
-| `finished` | it ran to its end and wrote `meta.yaml`, so an `incomplete` archive's tables failed (or it could not be marked complete) | the writer, in `meta.yaml` |
-| `stopped` | it was stopped on request (Ctrl-C, SIGTERM, a stream's stop) and wrote `meta.yaml` saying so, with the tables that ended before the stop | the writer, in `meta.yaml` |
-| `crashed` | it left no `meta.yaml`, or only the one it writes as it compares its tables (`ended: null`, with the tables compared so far): it was killed (SIGKILL, its host went down), or could not write one (a full disk; that survey said so as it ended, with an `archive_unfinished` warning and exit 9). The two read alike because the record that would tell them apart is the one missing | no one: read from that absence |
+| `finished` | it ran to its end and recorded its meta, so an `incomplete` archive's tables failed (or it could not be marked complete) | the writer, in the archive's meta |
+| `stopped` | it was stopped on request (Ctrl-C, SIGTERM, a stream's stop) and recorded its meta saying so, with the tables that ended before the stop | the writer, in the archive's meta |
+| `crashed` | it recorded no meta, or only the one it records as it compares its tables (`ended: null`, with the tables compared so far): it was killed (SIGKILL, its host went down), or could not record one (a full disk; that survey said so as it ended, with an `archive_unfinished` warning and exit 9). The two read alike because the record that would tell them apart is the one missing | no one: read from that absence |
 
 A survey stopped on request exits `interrupted` (130), the exit kind every gnx tool shares; its archive reads `ended: stopped`. A stream's stop is how its run ends, so `recon stream` exits 0 (`recon --skill -r streaming`).
 
-The survey holds an `flock` on `writer.lock` in the archive while it writes, and removes the file when it is done, so a survey that died reads `incomplete` at once, never `writing`. An archive is made whole, its lock and marker in place, under a hidden name (`.<archive id>.<pid>.making`) and renamed into place, so none is ever listed half made. A survey killed while making one leaves that hidden directory: `recon status` names each whose survey is gone in an `archive_abandoned` warning, with the command that removes it, and removes nothing itself. Whether a survey is alive is read from that lock, which a reader on the survey's own host sees reliably; on a shared filesystem read from another host, it may not be.
+The survey holds a lock on the archive while it writes it, which goes with the survey's process, so a survey that died reads `incomplete` at once, never `writing`. An archive is made whole, its lock in place, before any reader can list it, so none is ever listed half made. A survey killed while making one leaves what it made: `recon status` names each whose survey is gone in an `archive_abandoned` warning, with the command that removes it, and removes nothing itself. Whether a survey is alive is read from that lock, which a reader on the survey's own host sees reliably; on a shared filesystem read from another host, it may not be.
 
 ## A table while it is written
 
-- A table's records reach its file as whole lines, at most 64 KiB or 250 ms after the collector gives them. A reader never sees part of a record.
+- A table's records are readable as whole records, at most 64 KiB or 250 ms after the collector gives them. A reader never sees part of a record.
 - A change table (`<output>.changes`) is read only once it is sealed, never as it is written: one whose writer died mid-write told nothing, and the next survey tells its rows, so a reader that saw them early would see them twice.
 - A table is **sealed** when its writer renames it into place as it ends: it gains and loses no line after that. A table a survey that died was writing is never sealed: it stays unsealed, and `query` never reads it.
-- A table that **fails** is **retracted**: its file is removed, and the records read from it while it was written are void. The table's error is in `meta.yaml`. A stream's window is never retracted: one whose source failed is sealed with the records it got (`recon --skill -r streaming`), and `recon watch --stream` follows a stream's windows one after another.
+- A table that **fails** is **retracted**: nothing of it is kept, and the records read from it while it was written are void. The table's error is in the archive's meta (`recon status <mission> --json`). A stream's window is never retracted: one whose source failed is sealed with the records it got (`recon --skill -r streaming`), and `recon watch --stream` follows a stream's windows one after another.
 - `recon query` reads sealed tables only. On an archive being written it sees the tables finished so far, and the table being written is not a view yet.
 
 ## `recon watch`
@@ -72,7 +72,7 @@ Refused, with exit 2 (`usage`) and a fix:
 
 | Field | Holds |
 |---|---|
-| `mission`, `archive`, `path` | the archive read: its id (what `--archive` takes), and its directory |
+| `mission`, `archive` | the archive read: its id (what `--archive` takes) |
 | `state` | `writing`, `complete` or `incomplete`, read before the records |
 | `ended` | `finished`, `stopped`, `crashed`, or null while `writing` |
 | `table_records` | `{"table", "record"}` each: the whole records written since the cursor, table by table in output-name order, each table's in the order written |
@@ -87,7 +87,7 @@ Along a chain of cursors each table is told exhausted, or retracted, once. `seal
 
 ## Field names
 
-A field name has one shape in every recon document. `archive` is an archive's id (a stream window's is its id), what `--archive` takes; `path` is the directory of what the document is about (`archive_path`, in a plan, the directory a survey would write). `records`, `windows` and `captures` are counts, as in `meta.yaml`; a list of records read is `table_records`, a survey's windows of its streams are `stream_windows`, and a run of windows a query read is `window_range`, `{first, last, count}`. `first` and `last` are the two ends of a span: window ids in a range of windows (a whole window outcome is `last_window`), and in a window's `meta.yaml` a source's positions (`sources[]`) or orders of arrival (`arrivals`). `source` is a catalog source's name; where a plan's setting came from is its `origin`. `streams` lists a mission's streams; a plan's stream directories are `writes.stream_paths`, and whether it keeps captures is `writes.preserve_raw`. `skipped` lists the catalog sources a plan passed over; the windows a read of a stream jumped, or the archives a read of change rows passed, are its `retired_range`. `status` is an outcome: a survey's `complete` or `incomplete`, a table's `ok` or `error`. The one exception is the capture line, `recon.v1.capture` (`recon --skill -r capture-format`): other tools write it, and it keeps the names its schema gives, its `status` a response's HTTP status or a command's exit code.
+A field name has one shape in every recon document. `archive` is an archive's id (a stream window's is its id), what `--archive` takes; no document says where an archive is kept. `records`, `windows` and `captures` are counts, as in an archive's meta; a list of records read is `table_records`, a survey's windows of its streams are `stream_windows`, and a run of windows a query read is `window_range`, `{first, last, count}`. `first` and `last` are the two ends of a span: window ids in a range of windows (a whole window outcome is `last_window`), and in a window's meta a source's positions (`sources[]`) or orders of arrival (`arrivals`). `source` is a catalog source's name; where a plan's setting came from is its `origin`. `streams` lists a mission's streams; a plan's streams are `writes.stream_names`, and whether it keeps captures is `writes.preserve_raw`. `skipped` lists the catalog sources a plan passed over; the windows a read of a stream jumped, or the archives a read of change rows passed, are its `retired_range`. `status` is an outcome: a survey's `complete` or `incomplete`, a table's `ok` or `error`. The one exception is the capture line, `recon.v1.capture` (`recon --skill -r capture-format`): other tools write it, and it keeps the names its schema gives, its `status` a response's HTTP status or a command's exit code.
 
 ## In a program
 

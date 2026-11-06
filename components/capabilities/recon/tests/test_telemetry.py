@@ -142,7 +142,7 @@ def test_every_survey_keeps_its_events_in_its_archive(project: Path) -> None:
         )
     )
     survey = json.loads(_invoke("survey", "m", "--json").stdout)
-    archive = Path(survey["path"])
+    archive = project / ".recon" / "m" / "archive" / survey["archive"]
     events = [json.loads(line) for line in (archive / "telemetry.jsonl").read_text().splitlines()]
 
     assert [e["name"] for e in events] == [
@@ -704,13 +704,15 @@ def test_a_failure_exports_no_command_and_no_credential_in_a_url(
     assert {t["name"] for t in tables} >= {"gone", "big"} and len(tables) > 2
     assert {t["status"] for t in tables} == {"error"}
     traces = b"".join(body for path, body in _Collector.received if path == "/v1/traces")
-    events = (Path(survey["path"]) / "telemetry.jsonl").read_text()
+    events = (
+        (project / ".recon" / "m" / "archive" / survey["archive"]) / "telemetry.jsonl"
+    ).read_text()
     assert b"recon.collect" in traces
     for exported in (traces, events.encode()):
         assert b"COMMAND-TOKEN" not in exported and b"echo" not in exported
         assert b"PASSWORD-TOKEN" not in exported and b"user:" not in exported
-    assert b"meta.yaml" in traces, "a failed table's span says where its error is"
-    meta = (Path(survey["path"]) / "meta.yaml").read_text()
+    assert b"recon status" in traces, "a failed table's span says where its error is"
+    meta = ((project / ".recon" / "m" / "archive" / survey["archive"]) / "meta.yaml").read_text()
     assert "PASSWORD-TOKEN" not in meta and "REDACTED:REDACTED@127.0.0.1" in meta
     assert "COMMAND-TOKEN" in meta, "the archive keeps the error, for whoever reads it"
 
@@ -839,19 +841,20 @@ def test_a_query_span_ends_with_the_count_of_its_rows(tmp_path: Path) -> None:
         tmp_path,
     )
     sink, clock = Recorded(), FixedClock()
-    archives = ArchiveFiles(clock)
+    archives = ArchiveFiles(tmp_path / ".recon", clock)
 
     def no_survey(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("a query builds no collector")
 
     querying = Recon(
         missions=MissionFiles(tmp_path, clock),
+        landing=archives,
         archives=archives,
         query=DuckdbQuery(archives),
         clock=clock,
         plugins=load_plugins(),
         build_collectors=no_survey,
-        telemetry=lambda archive, channel, reads=None: Telemetry([sink], clock),
+        telemetry=lambda events, channel, reads=None: Telemetry([sink], clock),
         env={},
         version="0",
     )

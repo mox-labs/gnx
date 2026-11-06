@@ -63,7 +63,7 @@ collectors:
     run: "rg --count-matches 'unsafe' --type rust ."   # text: <file>:<count> per line
 ```
 
-**Produces:** `scars-tokio.jsonl`, `scars-tower.jsonl`, `signatures-tokio.jsonl`, etc.
+**Produces:** tables `scars-tokio`, `scars-tower`, `signatures-tokio`, etc.
 
 **Query example:**
 ```sql
@@ -288,11 +288,9 @@ Each run adds one archive. To report what changed, compare the latest archive wi
 
 The config never changes — only the archives accumulate.
 
-**What is new since an earlier archive** (its id from `recon status arxiv-weekly`; run from the project root):
-```sql
-SELECT title, published FROM arxiv_new
-EXCEPT
-SELECT title, published FROM read_json_auto('.recon/arxiv-weekly/archive/<archive id>/arxiv-new.jsonl')
+**What is new since an earlier archive** (its id from `recon status arxiv-weekly`), named as the baseline:
+```
+recon query arxiv-weekly "SELECT title, published FROM arxiv_new EXCEPT SELECT title, published FROM baseline.arxiv_new" --baseline <archive id> --json
 ```
 
 ---
@@ -384,7 +382,7 @@ collectors:
     # no source: → fans out across both blogs
 ```
 
-**Produces:** `index-overreacted.jsonl`, `index-simonwillison.jsonl`, each with the markdown-converted homepage. Claude extracts post titles and dates from the `content` field by reading the JSONL.
+**Produces:** tables `index-overreacted`, `index-simonwillison`, each with the markdown-converted homepage. Claude extracts post titles and dates from the `content` field by querying them.
 
 For actual RSS/Atom feeds, treat them as `response_format: xml` API collectors and use `extract: "rss.channel.item"` or `extract: "feed.entry"`.
 

@@ -259,6 +259,38 @@ def init(
 # --- survey ------------------------------------------------------------------------------
 
 
+_check_option = click.option(
+    "--check",
+    is_flag=True,
+    help="With --dry-run: also check what the runs need of this host, by each collector type's "
+    "preflight (mcp starts each stdio server, or connects to each remote one, to list its "
+    "tools)",
+)
+
+
+def _checked_with_dry_run(check: bool, dry_run: bool, fix: str) -> None:
+    """``--check`` checks a plan, so it is refused without ``--dry-run``: a survey checks
+    each run as it runs it."""
+    if check and not dry_run:
+        raise recon.UsageError("--check checks a dry run's plan, and this is no dry run", fix=fix)
+
+
+def _interval(
+    ctx: click.Context, param: click.Parameter, value: str | None
+) -> tuple[datetime, datetime] | None:
+    """``--range START..END``: two ISO 8601 times, in UTC unless each names its offset."""
+    if value is None:
+        return None
+    start, dots, end = value.partition("..")
+    if not dots or not start or not end:
+        raise click.BadParameter(
+            f"{value!r} is not START..END (2026-10-01T00:00Z..2026-10-02T00:00Z)", ctx, param
+        )
+    first, last = _instant(ctx, param, start), _instant(ctx, param, end)
+    assert first is not None and last is not None
+    return first, last
+
+
 @main.command(epilog=EXIT_CODES)
 @click.argument("name")
 @_config_option
@@ -267,11 +299,42 @@ def init(
     "-n",
     "--dry-run",
     is_flag=True,
-    help="Validate and print the plan. Nothing is written; nothing is fetched or run, except "
-    "what a collector type's preflight says (mcp starts each stdio server to list its tools)",
+    help="Validate and print the plan. Nothing is written, fetched, run or connected to",
+)
+@_check_option
+@click.option(
+    "--range",
+    "interval",
+    callback=_interval,
+    default=None,
+    metavar="START..END",
+    help="Ask every entry with range: for this source time instead, a backfill that moves no "
+    "checkpoint (ISO 8601 each, UTC unless it says)",
+)
+@click.option(
+    "--rebase",
+    multiple=True,
+    metavar="OUTPUT",
+    help="Go on from OUTPUT's checkpoint under its changed request (checkpoint_request_changed)",
+)
+@click.option(
+    "--restart",
+    multiple=True,
+    metavar="OUTPUT",
+    help="Begin OUTPUT's range again from its range.start",
 )
 @_json_option
-def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json: bool) -> None:
+def survey(
+    name: str,
+    config: Path | None,
+    replace: bool,
+    dry_run: bool,
+    check: bool,
+    interval: tuple[datetime, datetime] | None,
+    rebase: tuple[str, ...],
+    restart: tuple[str, ...],
+    as_json: bool,
+) -> None:
     """Plan and run a collection mission.
 
     Every survey validates first: an invalid config exits 3 listing every problem, before
@@ -280,16 +343,22 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
     streams runs one window of each stream, in turn, after its snapshot tables, each up to
     its window: (300 s by default): --dry-run says when the survey returns at the latest,
     as survey.returns. One survey of a mission runs at a time: a second, started while one
-    runs, exits 11 (busy) before it writes anything, naming the first one's pid.
+    runs, exits 11 (busy) before it writes anything, naming the first one's pid. An entry
+    with range: asks for the source time after what its table committed, step by step
+    (recon --skill -r ranges).
 
     \b
     recon survey my-scan --dry-run
+    recon survey my-scan --dry-run --check
     recon survey my-scan --json
     recon survey my-scan -c other.yaml --replace
+    recon survey metrics --range 2026-10-01T00:00Z..2026-10-02T00:00Z
     """
+    _checked_with_dry_run(check, dry_run, f"recon survey {name} --dry-run --check")
     setup = _telemetry_warnings()
+    ranged = {"interval": interval, "rebase": rebase, "restart": restart}
     if dry_run:
-        plan = _operations().plan(name, config=config, replace=replace)
+        plan = _operations().plan(name, config=config, replace=replace, check=check, **ranged)
         plan = plan.model_copy(update={"warnings": setup + plan.warnings})
         if as_json:
             _emit(plan.document())
@@ -299,13 +368,14 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
     if not as_json:
         _print_warnings(setup)
     document = _operations().survey(
-        name, config=config, replace=replace, on_event=None if as_json else _print_event
-    )
+        name, config=config, replace=replace, on_event=None if as_json else _print_event,
+        **ranged,
+    )  # fmt: skip
     document = document.model_copy(update={"warnings": setup + document.warnings})
     if as_json:
         _emit(document.document())
     else:
-        click.echo(document.path)
+        click.echo(document.archive)
     failure = recon.survey_failure(document)
     if failure is not None:
         _fail(failure, as_json=as_json)
@@ -362,6 +432,7 @@ def _instant(ctx: click.Context, param: click.Parameter, value: str | None) -> d
 @click.option(
     "-n", "--dry-run", is_flag=True, help="Validate and print the plan, every default with it"
 )
+@_check_option
 @_json_option
 def stream(
     name: str,
@@ -372,6 +443,7 @@ def stream(
     config: Path | None,
     replace: bool,
     dry_run: bool,
+    check: bool,
     as_json: bool,
 ) -> None:
     """Collect a stream: a source that does not end, into windows, each sealed as an archive.
@@ -392,11 +464,14 @@ def stream(
     recon stream my-feed --stream events --until 2026-10-24T18:00:00Z --json
     recon stream my-feed --stream events --forever
     """
+    _checked_with_dry_run(
+        check, dry_run, f"recon stream {name} --stream {collector} --dry-run --check"
+    )
     setup = _telemetry_warnings()
     if dry_run:
         plan = _operations().plan(
             name, config=config, replace=replace, stream=collector, windows=windows,
-            until=until, forever=forever,
+            until=until, forever=forever, check=check,
         )  # fmt: skip
         plan = plan.model_copy(update={"warnings": setup + plan.warnings})
         if as_json:
@@ -420,7 +495,8 @@ def stream(
         err.print(f"[dim]{document.windows} window(s), {document.records} record(s), "
                   f"{document.dropped} dropped; stream {escape(document.stream)}: "
                   f"{document.state}[/]")  # fmt: skip
-        click.echo(document.path)
+        if document.last_window is not None:
+            click.echo(document.last_window.id)
     failure = recon.stream_failure(document)
     if failure is not None:
         _fail(failure, as_json=as_json)
@@ -482,7 +558,7 @@ def _print_plan(name: str, plan: recon.PlanDocument) -> None:
         if not required.holds:
             said += "".join(f"; {part}" for part in (required.why, required.fix) if part)
         out.print(f"{holds}  {escape(said)}")
-    if not plan.runnable:
+    if plan.runnable is False:
         out.print("[red]Runnable: no[/]: a survey fails each table whose requirement is NO")
     for value in plan.provenance:
         said = f"{value.path} = {json.dumps(value.value)} ({value.origin}"
@@ -569,7 +645,7 @@ def status(mission: str | None, as_json: bool) -> None:
     """List missions, their archives, and the installed collector types and transforms.
 
     Given a mission, list every archive it has, oldest first (under --json, as
-    missions[0].history): the id `query --archive` takes, its path, when it started and
+    missions[0].history): the id `query --archive` takes, when it started and
     finished, its state, and its tables. A plugin that failed to load is listed, and warned
     about, rather than hidden.
 
@@ -589,7 +665,8 @@ def status(mission: str | None, as_json: bool) -> None:
             f"failed to load: {escape(broken.error)}[/]"
         )
     if not document.missions:
-        err.print(f"[dim]No missions under {document.root}. Start one: recon init <name>[/]")
+        err.print(f"[dim]No missions in {escape(document.project)}. Start one: recon init "
+                  "<name>[/]")  # fmt: skip
     else:
         _print_table(_missions_table(document))
     for table in _archive_tables(document):
@@ -688,6 +765,12 @@ def _archive_tables(document: recon.StatusDocument) -> list[Table]:
     metavar="TIME",
     help="With --stream: only the windows that open before TIME",
 )
+@click.option(
+    "--baseline",
+    default=None,
+    metavar="ARCHIVE",
+    help="An earlier archive's id: its tables are read too, as baseline.<table>",
+)
 @_json_option
 def query(
     name: str,
@@ -696,35 +779,39 @@ def query(
     stream: str | None,
     since: datetime | None,
     until: datetime | None,
+    baseline: str | None,
     as_json: bool,
 ) -> None:
     """Query a mission's latest archive, or the one --archive names, with SQL (DuckDB).
 
-    Each table is a view named after its file, every character but a letter, digit or _
-    becoming _ (oa-works is oa_works); SQL ignores its case. The output names the archive
-    the rows came from. An older archive's table, or a table's raw lines, is read by its
-    file: read_json_auto('<archive dir>/<table>.jsonl') for an earlier archive,
-    read_ndjson_objects(...) for each line as JSON text, and WITH ORDINALITY after either
-    for each row's line number in the file. Read one archive's file: a glob across archives
-    numbers all its files' lines as one, and their columns can differ. With --stream, the
-    stream's windows are read as one, chosen by --since and --until from their ids alone;
-    windows collected under different configs are refused, with the ranges to narrow to.
+    Each table is a view named after its collector's output, every character but a letter,
+    digit or _ becoming _ (oa-works is oa_works); SQL ignores its case. The output names the
+    archive the rows came from. json.<table> holds each record as its JSON text (json),
+    lines.<table> each record with its line, counted from 1 as it was landed: cite a row as
+    its archive, table and line. --baseline reads an earlier archive's tables as
+    baseline.<table>, so what is new since it is ... EXCEPT SELECT ... FROM
+    baseline.<table>. With --stream, the stream's windows are read as one, chosen by --since
+    and --until from their ids alone; windows collected under different configs are refused,
+    with the ranges to narrow to.
 
     \b
     recon query my-scan "SELECT title, year FROM s2_search LIMIT 10"
     recon status my-scan
     recon query my-scan "SELECT count(*) FROM s2_search" --archive 2026-04-01-143022-000000
+    recon query my-scan "SELECT title FROM s2_search EXCEPT
+      SELECT title FROM baseline.s2_search" --baseline 2026-04-01-143022-000000
     recon query my-feed "SELECT count(*) FROM events" --stream events --since 2026-10-24T00:00Z
     """
     setup = _telemetry_warnings()
     document = _operations().query(
-        name, sql, archive=archive, stream=stream, since=since, until=until
+        name, sql, archive=archive, stream=stream, since=since, until=until, baseline=baseline
     )
     document = document.model_copy(update={"warnings": setup + document.warnings})
     if as_json:
         _emit(document.document())
         return
-    err.print(f"[dim]archive {document.archive} ({escape(document.path)})[/]")
+    against = "" if document.baseline is None else f", against {document.baseline}"
+    err.print(f"[dim]archive {document.archive}{against}[/]")
     _print_warnings(document.warnings)
     if document.state == "incomplete":
         err.print(
@@ -1030,7 +1117,7 @@ def _print_schedule(document: recon.ScheduleDocument) -> None:
 def _print_schedules(document: recon.SchedulesDocument) -> None:
     _print_warnings(document.warnings)
     if not document.schedules:
-        err.print(f"[dim]No schedules on {document.platform} for {escape(document.root)}[/]")
+        err.print(f"[dim]No schedules on {document.platform} for {escape(document.project)}[/]")
         return
     table = Table(show_header=True, header_style="dim")
     for column in ("Mission", "Every", "Installed", "Config changed", "Next"):
@@ -1143,7 +1230,7 @@ def tick(name: str, project: Path, config_sha256: str, as_json: bool) -> None:
     if as_json:
         _emit(document.document())
     elif document.survey is not None:
-        click.echo(document.survey.path)
+        click.echo(document.survey.archive)
     else:
         err.print(f"[dim]tick skipped ({document.skipped_by}): {escape(name)}[/]")
     if document.survey is not None:

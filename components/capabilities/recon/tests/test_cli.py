@@ -26,14 +26,13 @@ from click.testing import CliRunner, Result
 
 import recon
 from recon.adapters._in.cli import main
-from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.system_clock import SystemClock
 from recon.composition import load_plugins, root
 from recon.domain import documents as documents_module
 from recon.domain.collector import BrokenPlugin, CollectorContext, CollectorType
 from recon.domain.errors import CollectionError, ErrorKind
 from recon.domain.type_url import is_type_url
-from tests.recon_fakes import building
+from tests.recon_fakes import LandedThrough, WrappingArchives, building
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -114,8 +113,9 @@ def test_version_prints_the_installed_version() -> None:
 
 class TestOneFieldNameOneShape:
     """Polish R9 (Karman 4-5): a field name has one shape in every recon document.
-    ``archive`` is always an archive's id, what ``--archive`` takes, and a directory is
-    ``path``; ``records`` and ``windows`` are always counts, as they are in ``meta.yaml``."""
+    ``archive`` is always an archive's id, what ``--archive`` takes, and no document says
+    where an archive is kept; ``records`` and ``windows`` are always counts, as they are in
+    an archive's meta."""
 
     @staticmethod
     def _shapes(*, leaving_out: frozenset[str] = frozenset()) -> dict[str, set[str]]:
@@ -165,14 +165,13 @@ class TestOneFieldNameOneShape:
         survey = _doc(_invoke("survey", "m", "--json"))
         _invoke("survey", "m", "--json")  # so the first is not the latest
 
-        assert Path(survey["path"]).name == survey["archive"]
-        assert Path(survey["path"]).is_dir()
         query = _doc(_invoke("query", "m", "SELECT * FROM hello", "--archive", survey["archive"],
                              "--json"))  # fmt: skip
         watch = _invoke("watch", "m", "--once", "--archive", survey["archive"], "--json")
         [read] = [json.loads(line) for line in watch.stdout.splitlines()]
-        for document in (query, read):
-            assert (document["archive"], document["path"]) == (survey["archive"], survey["path"])
+        for document in (survey, query, read):
+            assert document["archive"] == survey["archive"]
+            assert "path" not in document, "no document says where an archive is kept"
 
 
 class TestSurvey:
@@ -188,13 +187,38 @@ class TestSurvey:
             ("hello", "ok", 2)
         ]
         assert doc["tables"][0]["type_url"] == "recon.v1.records"
-        assert Path(doc["path"]).parent == project / ".recon" / "m" / "archive"
+        assert "path" not in doc and "file" not in doc["tables"][0], "no location is said"
+        [listed] = _doc(_invoke("status", "m", "--json"))["missions"][0]["history"]
+        assert listed["id"] == doc["archive"]
 
-    def test_human_mode_prints_the_archive_path_on_stdout(self, project: Path) -> None:
+    def test_check_checks_a_dry_run_and_is_refused_without_one(self, project: Path) -> None:
+        """Ruling R11: a plan is pure; ``--check`` asks it to run the preflights too, and means
+        nothing to a survey, which checks each run as it runs it."""
+        _mission(project, "m", {"catalog": [{"name": "s", "type": "mcp",
+                                             "command": str(project / "no-such-server")}],
+                                "collectors": [{"name": "a", "type": "mcp", "source": "s",
+                                                "tool": "t"}]})  # fmt: skip
+
+        pure = _doc(_invoke("survey", "m", "--dry-run", "--json"))
+        checked = _doc(_invoke("survey", "m", "--dry-run", "--check", "--json"))
+        refused = _invoke("survey", "m", "--check", "--json")
+
+        assert (pure["requirements"], pure["preflight"], pure["runnable"]) == ([], [], None)
+        human = _invoke("survey", "m", "--dry-run").stdout
+        assert "Runnable" not in human, "unchecked is not unrunnable"
+        assert checked["preflight"] and checked["runnable"] is False
+        [required] = checked["requirements"]
+        assert required["holds"] is False
+        assert refused.exit_code == 2 and _error(refused)["kind"] == "usage"
+        assert "--dry-run --check" in _error(refused)["fix"]
+        assert not (project / ".recon" / "m" / "archive").exists(), "nothing was surveyed"
+
+    def test_human_mode_prints_the_archive_id_on_stdout(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         result = _invoke("survey", "m")
         assert result.exit_code == 0
-        assert Path(result.stdout.strip()).is_dir()
+        [listed] = _doc(_invoke("status", "m", "--json"))["missions"][0]["history"]
+        assert result.stdout.strip() == listed["id"], "what --archive takes"
 
     def test_mission_lives_under_the_git_root_not_the_cwd(
         self, project: Path, monkeypatch: pytest.MonkeyPatch
@@ -241,7 +265,8 @@ class TestSurvey:
         assert error["kind"] == "run_failed"
         assert error["details"]["failed"] == ["bad"]
         assert error["fix"]
-        archive = Path(error["details"]["path"])
+        assert error["details"]["archive"] == doc["archive"] and "path" not in error["details"]
+        archive = project / ".recon" / "m" / "archive" / doc["archive"]
         assert (archive / ".incomplete").exists()
         assert (archive / "good.jsonl").exists()
 
@@ -282,21 +307,21 @@ class TestSurvey:
         assert tables["ok"]["status"] == "ok", "every table's status is still reported"
         assert [tables[f"t{i}"]["error"]["kind"] for i in range(len(kinds))] == kinds
 
-    @pytest.mark.parametrize("step", ["write_meta", "mark_complete"])
+    @pytest.mark.parametrize("step", ["record", "complete"])
     def test_an_archive_that_could_not_be_finished_is_incomplete_and_fails(
         self, project: Path, step: str
     ) -> None:
-        """Regression: a survey whose ``meta.yaml`` or completion step failed (a full disk)
-        said ``status: ok`` and exited 0, and under --json the one word of it, an event,
-        went nowhere; the archive stayed incomplete and only a later query said so.
+        """Regression: a survey whose meta or completion step failed (a full disk) said
+        ``status: ok`` and exited 0, and under --json the one word of it, an event, went
+        nowhere; the archive stayed incomplete and only a later query said so.
         Changed requirement (owner ruling 2026-10-22): it exits with the shared contract's
         ``store`` kind, 9, not ``run_failed``."""
 
-        def fails(self: ArchiveFiles, archive: Path, *args: Any) -> NoReturn:
+        def fails(self: LandedThrough, *args: Any) -> NoReturn:
             raise OSError(28, "No space left on device")
 
-        unfinished = type("Unfinished", (ArchiveFiles,), {step: fails})
-        over = root(archives=unfinished(SystemClock()))
+        unfinished = type("Unfinished", (LandedThrough,), {step: fails})
+        over = root(archives=lambda home: WrappingArchives(home, SystemClock(), unfinished))
         _mission(project, "m", OK_CONFIG)
         result = _invoke("survey", "m", "--json", over=over)
 
@@ -310,11 +335,11 @@ class TestSurvey:
         error = _error(result)
         assert error["kind"] == "store"
         assert "could not be finished" in error["message"]
-        assert error["details"] == {"archive": doc["archive"], "path": doc["path"], "failed": []}
-        assert (Path(doc["path"]) / ".incomplete").exists()
+        assert error["details"] == {"archive": doc["archive"], "failed": []}
+        assert (project / ".recon" / "m" / "archive" / doc["archive"] / ".incomplete").exists()
         latest = _doc(_invoke("status", "--json"))["missions"][0]["latest"]
-        assert latest["ended"] == ("crashed" if step == "write_meta" else "finished"), (
-            "a survey that could not write meta.yaml left no record that it was stopped, so "
+        assert latest["ended"] == ("crashed" if step == "record" else "finished"), (
+            "a survey that could not record its meta left no record that it was stopped, so "
             "it never reads stopped"
         )
 
@@ -327,13 +352,14 @@ class TestSurvey:
         self, project: Path
     ) -> None:
         """Owner ruling 2026-10-22: an archive the survey could not finish exits ``store`` (9).
-        A table's failure is recorded in the ``meta.yaml`` that could not be written, so the
-        store's failure is the one to act on first; the failed tables are still named."""
+        A table's failure is recorded in the meta that could not be recorded, so the store's
+        failure is the one to act on first; the failed tables are still named."""
 
-        def fails(self: ArchiveFiles, archive: Path, *args: Any) -> NoReturn:
+        def fails(self: LandedThrough, *args: Any) -> NoReturn:
             raise OSError(28, "No space left on device")
 
-        over = root(archives=type("NoMeta", (ArchiveFiles,), {"write_meta": fails})(SystemClock()))
+        no_meta = type("NoMeta", (LandedThrough,), {"record": fails})
+        over = root(archives=lambda home: WrappingArchives(home, SystemClock(), no_meta))
         config = {
             "collectors": [
                 {"name": "good", "type": "cli", "run": "echo '{\"a\": 1}'"},
@@ -637,7 +663,9 @@ class TestQuery:
         assert "hunter2" not in result.stdout + result.stderr
         error = _error(result)
         assert error["kind"] == "query"
-        assert str(project / ".recon" / "m" / "archive") in error["fix"]
+        assert "--baseline" in error["fix"] and ".recon" not in error["fix"], (
+            "the fix names the path-free form, never a location"
+        )
 
     def test_bad_sql_exits_10_naming_the_tables(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
@@ -671,15 +699,20 @@ class TestQueryProvenance:
         [archive] = (project / ".recon" / "m" / "archive").iterdir()
 
         doc = _doc(_invoke("query", "m", "SELECT a FROM hello", "--json"))
-        assert doc["archive"] == archive.name and doc["path"] == str(archive)
+        assert doc["archive"] == archive.name and "path" not in doc
         human = _invoke("query", "m", "SELECT a FROM hello")
         assert f"archive {archive.name}" in human.stderr
 
-    def test_help_says_where_archive_ids_come_from_and_how_to_read_older_or_raw_files(self) -> None:
+    def test_help_says_where_archive_ids_come_from_and_how_to_read_older_or_raw_records(
+        self,
+    ) -> None:
+        """Changed requirement (owner ruling R8): an earlier archive, a table's raw records and
+        a row's line are each read by name, never by a file's path."""
         text = " ".join(unstyle(_invoke("query", "--help").stdout).split())
         assert "recon status <mission>" in text and "--archive" in text
-        assert "read_json_auto" in text and "read_ndjson_objects" in text
-        assert "WITH ORDINALITY" in text
+        assert "--baseline" in text and "baseline.<table>" in text
+        assert "json.<table>" in text and "lines.<table>" in text
+        assert "read_json_auto" not in text and ".jsonl" not in text
 
 
 class TestAnUnreadableTable:
@@ -728,7 +761,7 @@ class TestAnUnreadableTable:
         assert result.exit_code == 0, result.stderr
         [warning] = _doc(result)["warnings"]
         assert warning["kind"] == "table_unreadable" and warning["got"] == "oa_works"
-        assert "$inverted_index" in warning["fix"] and "read_ndjson_objects" in warning["fix"]
+        assert "$inverted_index" in warning["fix"] and "json.oa_works" in warning["fix"]
         human = _invoke("survey", "m")
         assert "oa_works cannot be queried" in human.stderr and "$inverted_index" in human.stderr
 
@@ -738,8 +771,11 @@ class TestAnUnreadableTable:
         assert result.exit_code == 10
         error = _error(result)
         assert error["kind"] == "query"
-        assert "$inverted_index" in error["fix"] and "read_ndjson_objects" in error["fix"]
+        assert "$inverted_index" in error["fix"] and "json.oa_works" in error["fix"]
         assert error["details"]["table"] == "oa_works"
+        raw = _doc(_invoke("query", mission, "SELECT json->>'id' AS id FROM json.oa_works",
+                           "--json"))  # fmt: skip
+        assert raw["rows"] == [{"id": "W1"}], "the fix's form reads the records"
 
 
 class TestWhatCountsAsAnArchive:
@@ -1007,12 +1043,9 @@ class TestTemplatesAndInit:
         have are the placeholders it asks the user to fill — and those must be caught by
         the plan, not discovered as a 404 against `/repos/{owner}/...`.
 
-        The configs are what is checked, so no preflight runs: ``mcp-server``'s would start
-        npx, which downloads its server."""
-        plugins = load_plugins()
-        for name, ct in list(plugins.collector_types.items()):
-            plugins.collector_types[name] = replace(ct, preflight="")
-        over = root(plugins=plugins)
+        The configs are what is checked, and a plan unchecked runs no preflight (ruling R11):
+        ``mcp-server``'s would start npx, which downloads its server."""
+        over = root()
         placeholder_templates = set()
         for item in _doc(_invoke("templates", "--json"))["templates"]:
             name = item["name"]

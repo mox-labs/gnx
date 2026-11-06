@@ -17,6 +17,13 @@ for a test to mount in process (``FIXTURE.streamable_http_app()``). Its tools an
 ``python tests/mcp_server.py --replay FILE`` serves one tool, named and described as a
 recording (``{"tool", "input_schema", "output_schema", "result"}``) says, answering every call
 with the recorded result: a template's collector runs against what a real server returned.
+
+``python tests/mcp_server.py --metrics`` serves a metrics API's one tool, shaped as Datadog's
+timeseries query is: ``query_metrics(query, from, to)``, the bounds epoch seconds, ``from``
+inclusive and ``to`` exclusive, answering a point for each minute in between (``series``, as
+structured content and as JSON in its text). Bounds that are not whole numbers, or a ``to``
+not after ``from``, are a tool error: a ranged entry's ``{range.*:epoch}`` reaches it as it
+would reach the real one.
 """
 
 from __future__ import annotations
@@ -130,6 +137,48 @@ def replay(recording: dict[str, Any]) -> Server[Any]:
     return Server("recon-replay", on_list_tools=list_tools, on_call_tool=call_tool)
 
 
+#: ``query_metrics``' arguments, as a metrics API declares them: ``from`` is a keyword in
+#: Python, so the tool is declared by its schema rather than a function's signature.
+METRICS_INPUT = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string"},
+        "from": {"type": "integer", "description": "epoch seconds, inclusive"},
+        "to": {"type": "integer", "description": "epoch seconds, exclusive"},
+    },
+    "required": ["query", "from", "to"],
+}
+METRICS_OUTPUT = {
+    "type": "object",
+    "properties": {"series": {"type": "array", "items": {"type": "object"}}},
+    "required": ["series"],
+}
+
+
+def metrics() -> Server[Any]:
+    """A server with the one tool ``query_metrics``: a point each minute of ``[from, to)``."""
+    tool = types.Tool(name="query_metrics", input_schema=METRICS_INPUT,
+                      output_schema=METRICS_OUTPUT)  # fmt: skip
+
+    async def list_tools(ctx: Any, params: Any) -> types.ListToolsResult:
+        return types.ListToolsResult(tools=[tool])
+
+    async def call_tool(ctx: Any, params: Any) -> types.CallToolResult:
+        arguments = params.arguments or {}
+        start, end = arguments.get("from"), arguments.get("to")
+        if type(start) is not int or type(end) is not int or end <= start:
+            text = f"from and to are epoch seconds, to after from; got {start!r} and {end!r}"
+            return types.CallToolResult(content=[types.TextContent(type="text", text=text)],
+                                        is_error=True)  # fmt: skip
+        first = -(-start // 60) * 60  # the first whole minute at or after from
+        body = {"series": [{"metric": arguments.get("query"), "t": t, "value": t % 97}
+                           for t in range(first, end, 60)]}  # fmt: skip
+        return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(body))],
+                                    structured_content=body)  # fmt: skip
+
+    return Server("recon-metrics", on_list_tools=list_tools, on_call_tool=call_tool)
+
+
 async def _serve(server: Server[Any]) -> None:
     async with stdio_server() as (read, write):
         await server.run(read, write, server.create_initialization_options())
@@ -138,5 +187,7 @@ async def _serve(server: Server[Any]) -> None:
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--replay"]:
         anyio.run(_serve, replay(json.loads(Path(sys.argv[2]).read_text())))
+    elif sys.argv[1:2] == ["--metrics"]:
+        anyio.run(_serve, metrics())
     else:
         FIXTURE.run("stdio")

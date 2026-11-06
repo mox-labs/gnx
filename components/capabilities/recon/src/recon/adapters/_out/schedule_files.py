@@ -18,6 +18,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from recon.adapters._out.file_locks import append_bounded
+from recon.adapters._out.mission_layout import mission_dir
 from recon.adapters._out.private_files import make_dirs, write_file
 
 if TYPE_CHECKING:
@@ -34,35 +35,41 @@ LOG_MAX_BYTES = 1024 * 1024
 
 
 class ScheduleFiles:
-    def __init__(self, *, max_bytes: int = LOG_MAX_BYTES) -> None:
+    """What recon keeps of the schedule of every mission under ``root`` (the project's
+    ``.recon`` directory)."""
+
+    def __init__(self, root: Path, *, max_bytes: int = LOG_MAX_BYTES) -> None:
         """``max_bytes`` bounds the log, and the one before it: twice it in all."""
+        self._root = root
         self._max_bytes = max_bytes
 
-    def record(self, mission_dir: Path, installed: dict[str, Any] | None) -> None:
-        path = mission_dir / SCHEDULE_RECORD
+    def record(self, mission: str, installed: dict[str, Any] | None) -> None:
+        home = mission_dir(self._root, mission)
+        path = home / SCHEDULE_RECORD
         if installed is None:
             path.unlink(missing_ok=True)
             return
-        make_dirs(mission_dir)
+        make_dirs(home)
         tmp = path.with_name(f".{SCHEDULE_RECORD}.{os.getpid()}.tmp")
         write_file(tmp, (json.dumps(installed, indent=2, sort_keys=True) + "\n").encode())
         os.replace(tmp, path)
 
-    def recorded(self, mission_dir: Path) -> dict[str, Any] | None:
+    def recorded(self, mission: str) -> dict[str, Any] | None:
         with contextlib.suppress(FileNotFoundError, ValueError):
-            found = json.loads((mission_dir / SCHEDULE_RECORD).read_text(encoding="utf-8"))
+            path = mission_dir(self._root, mission) / SCHEDULE_RECORD
+            found = json.loads(path.read_text(encoding="utf-8"))
             return found if isinstance(found, dict) else None
         return None
 
-    def append(self, mission_dir: Path, tick: dict[str, Any]) -> None:
+    def append(self, mission: str, tick: dict[str, Any]) -> None:
         line = (json.dumps(tick, sort_keys=True) + "\n").encode()
-        append_bounded(mission_dir / SCHEDULE_LOG, line, self._max_bytes)
+        append_bounded(mission_dir(self._root, mission) / SCHEDULE_LOG, line, self._max_bytes)
 
-    def lines(self, mission_dir: Path) -> list[dict[str, Any]]:
+    def lines(self, mission: str) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
         for name in (f"{SCHEDULE_LOG}.1", SCHEDULE_LOG):
             with contextlib.suppress(FileNotFoundError):
-                for line in (mission_dir / name).read_bytes().splitlines():
+                for line in (mission_dir(self._root, mission) / name).read_bytes().splitlines():
                     with contextlib.suppress(ValueError):
                         tick = json.loads(line)
                         if isinstance(tick, dict):

@@ -105,7 +105,7 @@ class Schedules:
         mission has no ``schedule:``."""
         if self._missions.config_text(name) is None:
             raise NotFoundError(
-                f"no mission {name!r} under {self._missions.root}",
+                f"no mission {name!r} in project {self._missions.project}",
                 fix=f"recon init {name} -c <file>, with a schedule: in it",
                 details={"value": name},
             )
@@ -150,7 +150,7 @@ class Schedules:
             scheduler.install(label, files)
             outcome = "replaced" if there else "installed"
         self._store.record(
-            self._missions.mission_dir(name),
+            name,
             {
                 "label": label,
                 "platform": scheduler.platform,
@@ -177,11 +177,10 @@ class Schedules:
         )
 
     def remove(self, name: str, platform: Platform | None = None) -> ScheduleDocument:
-        mission = self._missions.mission_dir(name)
         scheduler = self._schedulers(platform)
         label = self._label(name)
         removed = scheduler.remove(label)
-        self._store.record(mission, None)
+        self._store.record(name, None)
         return ScheduleDocument(
             mission=name,
             platform=scheduler.platform,
@@ -204,7 +203,7 @@ class Schedules:
             for label in scheduler.installed(prefix)
         ]
         return SchedulesDocument(
-            root=str(self._missions.root), platform=scheduler.platform, schedules=schedules
+            project=str(self._missions.project), platform=scheduler.platform, schedules=schedules
         )
 
     def status(
@@ -215,7 +214,7 @@ class Schedules:
         if mission is not None:
             if self._missions.config_text(mission) is None:
                 raise NotFoundError(
-                    f"no mission {mission!r} under {self._missions.root}",
+                    f"no mission {mission!r} in project {self._missions.project}",
                     fix="recon schedule list",
                     details={"value": mission},
                 )
@@ -226,11 +225,11 @@ class Schedules:
         schedules = [self._status(scheduler, name, prefix + name) for name in names]
         warnings = [_config_changed(s.mission).document() for s in schedules if s.config_changed]
         for listed in schedules:
-            busy = _in_a_row(self._store.lines(self._missions.mission_dir(listed.mission)), "busy")
+            busy = _in_a_row(self._store.lines(listed.mission), "busy")
             if busy >= OVERRUN_SKIPS:
                 warnings.append(_overrun(listed.mission, busy).document())
         return SchedulesDocument(
-            root=str(self._missions.root),
+            project=str(self._missions.project),
             platform=scheduler.platform,
             schedules=schedules,
             warnings=warnings,
@@ -245,7 +244,7 @@ class Schedules:
         return plan.config is not None and plan.config.schedule is not None
 
     def _status(self, scheduler: Scheduler, name: str, label: str) -> ScheduleStatus:
-        record = self._store.recorded(self._missions.mission_dir(name))
+        record = self._store.recorded(name)
         files = scheduler.files(label)
         installed = bool(
             files
@@ -258,7 +257,7 @@ class Schedules:
         if record is not None and text is not None:
             changed = hashlib.sha256(text).hexdigest() != record.get("config_sha256")
         schedule = self._schedule_of(name)
-        lines = self._store.lines(self._missions.mission_dir(name))
+        lines = self._store.lines(name)
         last = _outcome(lines[-1]) if lines else None
         next_at, late_s = None, None
         if schedule is not None:
@@ -300,22 +299,21 @@ class Schedules:
         :data:`MISSED_GRACE_S` late; else ``survey`` run, given when the tick was due and how
         late it started, for its archive. A survey refused ``busy`` is logged as a skip, and
         the second skip in a row says the schedule overruns."""
-        mission = self._missions.mission_dir(name)
         text = self._missions.config_text(name)
         if text is None:
             raise NotFoundError(
-                f"no mission {name!r} under {self._missions.root}",
+                f"no mission {name!r} in project {self._missions.project}",
                 fix=f"recon schedule remove {name}: its mission is gone",
                 details={"value": name},
             )
         started = self._local(self._clock.now())
-        record = self._store.recorded(mission) or {}
+        record = self._store.recorded(name) or {}
         every, offset = record.get("every"), record.get("offset_s")
         slot = None
         if isinstance(every, int) and isinstance(offset, int):
             slot = self._slot(every, offset, started)
         if hashlib.sha256(text).hexdigest() != config_sha256:
-            self._log(mission, slot, started, "stale", None, "config_changed")
+            self._log(name, slot, started, "stale", None, "config_changed")
             raise stale(name, config_sha256)
         _, plan = self._prepare(name)
         schedule = plan.config.schedule if plan.config is not None else None
@@ -323,7 +321,7 @@ class Schedules:
             slot = self._slot(schedule.every, offset_s(name, schedule.every), started)
         late_s = _seconds(started, slot) if slot is not None else None
         if schedule is not None and schedule.missed == "skip" and (late_s or 0) > MISSED_GRACE_S:
-            self._log(mission, slot, started, "ok", None, "missed")
+            self._log(name, slot, started, "ok", None, "missed")
             return TickDocument(
                 mission=name, scheduled_at=_iso(slot), late_s=late_s, skipped_by="missed",
                 survey=None,
@@ -334,20 +332,18 @@ class Schedules:
             document, delivered, said = survey({"scheduled_at": _iso(slot), "late_s": late_s})
         except ReconError as error:
             skipped: Skipped | None = _SKIPPED_BY.get(error.kind)
-            self._log(mission, slot, started, error.kind, None, skipped)
+            self._log(name, slot, started, error.kind, None, skipped)
             if skipped == "busy":
-                raise _skipped(
-                    name, error, _in_a_row(self._store.lines(mission), "busy")
-                ) from error
+                raise _skipped(name, error, _in_a_row(self._store.lines(name), "busy")) from error
             raise
         except KeyboardInterrupt:
-            self._log(mission, slot, started, "interrupted", None, None)
+            self._log(name, slot, started, "interrupted", None, None)
             raise
         failure = survey_failure(document)
         kind = failure.kind if failure is not None else "ok"
         warned = [*document.warnings, *(delivered.warnings if delivered else []), *said]
         kinds = sorted({str(w.get("kind")) for w in warned})
-        self._log(mission, slot, started, kind, document.archive, None, kinds)
+        self._log(name, slot, started, kind, document.archive, None, kinds)
         return TickDocument(
             mission=name, scheduled_at=_iso(slot), late_s=late_s, skipped_by=None, survey=document,
             deliveries=delivered, warnings=list(said),
@@ -355,7 +351,7 @@ class Schedules:
 
     def _log(
         self,
-        mission: Path,
+        mission: str,
         slot: datetime | None,
         started: datetime,
         kind: str,

@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from recon.application.plan import Plan
-    from recon.domain.archives import ArchiveState, ArchiveStore
+    from recon.domain.archives import ArchiveRef, Archives, ArchiveState
     from recon.domain.changes import ChangeOp
     from recon.domain.clock import Clock
     from recon.domain.documents import SubscriptionOutcome
@@ -84,7 +84,7 @@ class Position:
     row: int = 0
     at: str | None = None
     done: bool = False
-    #: The archive's index (:meth:`~recon.domain.archives.ArchiveStore.indexes`); None for one
+    #: The archive's index (:attr:`~recon.domain.archives.ArchiveRef.index`); None for one
     #: made before indexes.
     index: int | None = None
 
@@ -106,15 +106,14 @@ class ChangeRead:
 
 
 class ChangeReader:
-    """Reads the change rows of ``output`` in the mission at ``mission_dir`` (named
-    ``mission``): across its archives, or across the windows of ``stream`` when the output is
-    a stream's. Its cursors are signed with the mission's key (``secret``): one edited, however
-    plausible (a real archive, a row past its table's end), is refused, never read on from."""
+    """Reads the change rows of ``output`` in ``mission``: across its archives, or across the
+    windows of ``stream`` when the output is a stream's. Its cursors are signed with the
+    mission's key (``secret``): one edited, however plausible (a real archive, a row past its
+    table's end), is refused, never read on from."""
 
     def __init__(
         self,
-        archives: ArchiveStore,
-        mission_dir: Path,
+        archives: Archives,
         mission: str,
         output: str,
         stream: str | None,
@@ -122,7 +121,6 @@ class ChangeReader:
     ) -> None:
         self._secret = secret
         self._archives = archives
-        self._mission_dir = mission_dir
         self._mission = mission
         self._output = output
         self._stream = stream
@@ -138,17 +136,17 @@ class ChangeReader:
                 f"{max_bytes}",
                 fix="read with each of 1 or more, or leave them at their defaults (1000, 1 MiB)",
             )
-        archives = self._archives.archives(self._mission_dir, stream=self._stream)
-        names = [archive.name for archive in archives]
-        indexes = self._archives.indexes(self._mission_dir, stream=self._stream)
-        ranks = [archive_rank(name, indexes.get(name)) for name in names]
+        archives = self._archives.archives(self._mission, stream=self._stream)
+        names = [archive.id for archive in archives]
+        indexes = _indexes(archives)
+        ranks = [archive.rank for archive in archives]
         stones: list[tuple[tuple[int, int, str], str]] | None = None
 
         def retired_between(after: tuple[int, int, str] | None,
                             before: tuple[int, int, str] | None) -> list[str]:  # fmt: skip
             nonlocal stones
             if stones is None:
-                found = self._archives.retired(self._mission_dir, self._stream)
+                found = self._archives.retired(self._mission, stream=self._stream)
                 stones = sorted(_stone(stone, indexes) for stone in found)
             return [
                 name for rank, name in stones
@@ -193,15 +191,15 @@ class ChangeReader:
                 read = self._archives.read_since(archive, at.at, max_records=records,
                                                  max_bytes=size, tables=[self._table])  # fmt: skip
                 for offset, found in enumerate(read.records):
-                    rows.append(self._row(archive.name, at.row + offset, found.record))
+                    rows.append(self._row(archive.id, at.row + offset, found.record))
                     records -= 1
                     size -= len(json.dumps(found.record, default=str)) + 1
                 # Done once read to its end; or, no more read and its archive no longer
                 # written, never to be sealed: a writer that died told nothing (the next
                 # survey or window tells its rows).
                 done = self._table in read.exhausted or (not read.more and state != "writing")
-                at = Position(archive.name, at.row + len(read.records), read.cursor, done,
-                              indexes.get(archive.name))  # fmt: skip
+                at = Position(archive.id, at.row + len(read.records), read.cursor, done,
+                              archive.index)  # fmt: skip
                 if read.more:
                     more = True
                     break
@@ -216,7 +214,7 @@ class ChangeReader:
                 break
             if gone:
                 retired = _range(gone)
-            index, at = index + 1, Position(following.name, index=indexes.get(following.name))
+            index, at = index + 1, Position(following.id, index=following.index)
             if records < 1 or size < 1:
                 more = True
                 break
@@ -230,28 +228,27 @@ class ChangeReader:
         done, and each after it whose change table is not empty. With ``within``, those
         written to their end no more than ``within`` seconds before ``now`` alone: one that does
         not say when is past it, so it never holds retention for ever (Erlang, re-check)."""
-        archives = self._archives.archives(self._mission_dir, stream=self._stream)
-        names = [archive.name for archive in archives]
+        archives = self._archives.archives(self._mission, stream=self._stream)
+        names = [archive.id for archive in archives]
         start = 0
         if position is not None and position.archive is not None:
             if position.archive in names:
                 start = names.index(position.archive) + (1 if position.done else 0)
             else:  # retired: what is after it
-                indexes = self._archives.indexes(self._mission_dir, stream=self._stream)
                 mine = archive_rank(position.archive, position.index)
-                ranks = [archive_rank(name, indexes.get(name)) for name in names]
+                ranks = [archive.rank for archive in archives]
                 start = next((i for i, rank in enumerate(ranks) if rank > mine), len(names))
         unread = set()
         for archive in archives[start:]:
-            rows = self._archives.read_table(archive, self._table)
+            rows = self._archives.records(archive, self._table)
             if rows is None or next(iter(rows), None) is None:
                 continue
             if within is None or now is None:
-                unread.add(archive.name)
+                unread.add(archive.id)
                 continue
-            made = _made_at(self._archives.read_meta(archive))
+            made = _made_at(self._archives.meta(archive))
             if made is not None and (now - made).total_seconds() <= within:
-                unread.add(archive.name)
+                unread.add(archive.id)
         return unread
 
     def row_id(self, archive: str, row: int, op: str, key: Any) -> str:
@@ -263,10 +260,10 @@ class ChangeReader:
         the first."""
         if position.archive is None:
             return True
-        archives = self._archives.archives(self._mission_dir, stream=self._stream)
-        if position.archive in {archive.name for archive in archives}:
+        archives = self._archives.archives(self._mission, stream=self._stream)
+        if position.archive in {archive.id for archive in archives}:
             return True
-        stones = self._archives.retired(self._mission_dir, self._stream)
+        stones = self._archives.retired(self._mission, stream=self._stream)
         return position.archive in {str(stone.get("id")) for stone in stones}
 
     def _row(self, archive: str, row: int, change: dict[str, Any]) -> ChangeRow:
@@ -331,8 +328,8 @@ class ChangeReader:
 
 
 def _made_at(meta: dict[str, Any]) -> datetime | None:
-    """When an archive (a window) was written to its end, as its ``meta.yaml`` says; None when
-    it does not say."""
+    """When an archive (a window) was written to its end, as its meta says; None when it does
+    not say."""
     stream = meta.get("stream")
     stamp = stream.get("closed_at") if isinstance(stream, dict) else meta.get("timestamp")
     if isinstance(stamp, str):
@@ -357,6 +354,11 @@ def row_id(
     digest = hashlib.blake2b(digest_size=16, key=secret, person=_ID_PERSON)
     digest.update(named.encode("utf-8", "surrogatepass"))
     return digest.hexdigest()
+
+
+def _indexes(archives: list[ArchiveRef]) -> dict[str, int]:
+    """Each archive's index, by id, for those that have one."""
+    return {archive.id: archive.index for archive in archives if archive.index is not None}
 
 
 def _range(ids: list[str]) -> WindowRange | None:
@@ -420,7 +422,6 @@ class Subscriptions:
         *,
         store: SubscriptionStore,
         clock: Clock,
-        mission_dir: Callable[[str], Path],
         prepare: Callable[[str], Plan],
         reader: Callable[[str, str, Plan], ChangeReader],
         deliverer: Deliverer,
@@ -428,7 +429,6 @@ class Subscriptions:
     ) -> None:
         self._store = store
         self._clock = clock
-        self._mission_dir = mission_dir
         self._prepare = prepare
         self._reader = reader
         self._deliverer = deliverer
@@ -451,16 +451,15 @@ class Subscriptions:
         plan = self._prepare(name)
         spec = _declared(plan, name, subscription)
         reader = self._reader(name, spec.output, plan)
-        mission = self._mission_dir(name)
-        self._store.hold(mission, subscription)
+        self._store.hold(name, subscription)
         try:
             if cursor is not None:
                 position: Position | None = reader.decode(cursor)
             else:
-                position = _acked(reader, self._store.state(mission, subscription), name, spec)
+                position = _acked(reader, self._store.state(name, subscription), name, spec)
             read = reader.read(position, max_records=max_records, max_bytes=max_bytes)
         finally:
-            self._store.release(mission, subscription)
+            self._store.release(name, subscription)
         rows = [row for row in read.rows if matches(spec.match, _change(row))]
         return ChangesSince(
             mission=name,
@@ -490,10 +489,9 @@ class Subscriptions:
                 fix=f"ack the cursor the last `recon subscribe {name} {subscription}` returned",
                 details={"subscription": subscription, "archive": position.archive},
             )
-        mission = self._mission_dir(name)
-        self._store.hold(mission, subscription)
+        self._store.hold(name, subscription)
         try:
-            state = self._store.state(mission, subscription)
+            state = self._store.state(name, subscription)
             acked = _acked(reader, state, name, spec)
             if acked is not None and position.order() < acked.order():
                 raise UsageError(
@@ -512,9 +510,9 @@ class Subscriptions:
             kept = SubscriptionState(
                 output=spec.output, cursor=cursor, acked_at=self._clock.now().isoformat()
             )
-            self._store.keep(mission, subscription, kept)
+            self._store.keep(name, subscription, kept)
         finally:
-            self._store.release(mission, subscription)
+            self._store.release(name, subscription)
         return _document(name, subscription, "acked", kept, self._dead(name, spec))
 
     def remove(self, name: str, subscription: str) -> SubscriptionDocument:
@@ -522,13 +520,12 @@ class Subscriptions:
         (``removed``), or say nothing was (``absent``). Its declaration in the config stays,
         so it reads from the first archive again. Raises ReconError ``busy`` while a consumer
         holds it."""
-        mission = self._mission_dir(name)
-        self._store.hold(mission, subscription)
+        self._store.hold(name, subscription)
         try:
-            state = self._store.state(mission, subscription)
-            removed = self._store.remove(mission, subscription)
+            state = self._store.state(name, subscription)
+            removed = self._store.remove(name, subscription)
         finally:
-            self._store.release(mission, subscription)
+            self._store.release(name, subscription)
         output = state.output if state is not None else None
         return SubscriptionDocument(
             mission=name, subscription=subscription, outcome="removed" if removed else "absent",
@@ -537,11 +534,10 @@ class Subscriptions:
 
     def statuses(self, name: str, plan: Plan | None) -> list[SubscriptionStatus]:
         """Each subscription ``plan`` declares, and each one something is kept of."""
-        mission = self._mission_dir(name)
         declared = {s.name: s for s in plan.config.subscriptions} if plan and plan.config else {}
         listed = []
-        for each in sorted(set(declared) | set(self._store.names(mission))):
-            state = self._store.state(mission, each)
+        for each in sorted(set(declared) | set(self._store.names(name))):
+            state = self._store.state(name, each)
             spec = declared.get(each)
             listed.append(
                 SubscriptionStatus(
@@ -551,7 +547,7 @@ class Subscriptions:
                     cursor=state.cursor if state else None,
                     acked_at=state.acked_at if state else None,
                     failing=_failing(state),
-                    dead_letters=self._store.dead_letters(mission, each),
+                    dead_letters=self._store.dead_letters(name, each),
                 )
             )
         return listed
@@ -562,14 +558,13 @@ class Subscriptions:
         holding change rows it has not acked, which retention keeps. What it keeps that is not
         of this output, or does not read, holds everything: nothing it acked can be trusted."""
         assert plan.config is not None
-        mission = self._mission_dir(name)
         held: dict[int, tuple[str, set[str]]] = {}
         for index, spec in enumerate(plan.config.subscriptions):
             if spec.output not in plan.changes or plan.changes[spec.output] != stream:
                 continue
             reader = self._reader(name, spec.output, plan)
             try:
-                position = _acked(reader, self._store.state(mission, spec.name), name, spec)
+                position = _acked(reader, self._store.state(name, spec.name), name, spec)
             except UsageError:
                 position = None
             unread = reader.unread(position, within=spec.max_lag, now=self._clock.now())
@@ -577,7 +572,7 @@ class Subscriptions:
         return held
 
     def _dead(self, name: str, spec: SubscriptionSpec) -> int:
-        return self._store.dead_letters(self._mission_dir(name), spec.name)
+        return self._store.dead_letters(name, spec.name)
 
     def deliver(
         self, name: str, subscription: str | None = None, *, plan: Plan | None = None
@@ -620,9 +615,8 @@ class Subscriptions:
         self, name: str, index: int, spec: SubscriptionSpec, plan: Plan
     ) -> tuple[DeliveryRun, list[Problem]]:
         at = f"subscriptions.{index}.deliver"
-        mission = self._mission_dir(name)
         try:
-            self._store.hold(mission, spec.name)
+            self._store.hold(name, spec.name)
         except ReconError as busy:
             if busy.kind != "busy":
                 raise
@@ -639,11 +633,11 @@ class Subscriptions:
             )  # fmt: skip
             warning = Problem(at, f"subscription {spec.name} was not delivered: {exc}",
                               kind="delivery_failed", fix=fix, got=spec.name)  # fmt: skip
-            state = self._store.state(mission, spec.name)
+            state = self._store.state(name, spec.name)
             return DeliveryRun(subscription=spec.name, output=spec.output, more=True,
                                cursor=state.cursor if state else None), [warning]  # fmt: skip
         finally:
-            self._store.release(mission, spec.name)
+            self._store.release(name, spec.name)
 
 
 def _declared(plan: Plan, name: str, subscription: str) -> SubscriptionSpec:
@@ -761,7 +755,6 @@ class _Delivery:
         self._at = at
         self._spec = spec
         self._deliver = spec.deliver
-        self._mission = owner._mission_dir(name)
         self._reader = owner._reader(name, spec.output, plan)
         self._clock = owner._clock
         self._started = owner._clock.monotonic()
@@ -774,7 +767,7 @@ class _Delivery:
         return self._deliver.deadline - (self._clock.monotonic() - self._started)
 
     def run(self) -> tuple[DeliveryRun, list[Problem]]:
-        state = self._store.state(self._mission, self._spec.name)
+        state = self._store.state(self._name, self._spec.name)
         position = _acked(self._reader, state, self._name, self._spec)
         acked = position
         self._acked = state.cursor if state is not None else None
@@ -946,7 +939,7 @@ class _Delivery:
         if cursor != self._acked:
             self._acked, self._acked_at = cursor, self._clock.now().isoformat()
         self._store.keep(
-            self._mission,
+            self._name,
             self._spec.name,
             SubscriptionState(
                 output=self._spec.output, cursor=cursor, acked_at=self._acked_at, failing=failing
@@ -955,7 +948,7 @@ class _Delivery:
 
     def _dead_letter(self, row: ChangeRow, attempts: int, error: str) -> None:
         self._store.dead_letter(
-            self._mission,
+            self._name,
             self._spec.name,
             {
                 "id": row.id,

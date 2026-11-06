@@ -35,7 +35,7 @@ from recon.application.schedules import offset_s
 from recon.composition import root
 from recon.domain.errors import ReconError
 from recon.domain.schedule import ScheduleHost
-from tests.recon_fakes import FixedClock, plugins_with
+from tests.recon_fakes import FixedClock, kept, plugins_with
 from tests.test_mission_lock import Slow
 from tests.test_schedule_install import FakeRunner, Host
 
@@ -116,7 +116,7 @@ class TestATick:
                              "skipped_by", "late_s", "warning_kinds"}  # fmt: skip
         assert (line["exit"], line["kind"], line["skipped_by"]) == (0, "ok", None)
         assert line["archive"] == document.survey.archive and line["late_s"] == 2.0
-        meta = yaml.safe_load((Path(document.survey.path) / "meta.yaml").read_text())
+        meta = yaml.safe_load((kept(tmp_path, document.survey) / "meta.yaml").read_text())
         assert (meta["scheduled_at"], meta["late_s"]) == (SLOT.isoformat(), 2.0)
         assert oct((mission / SCHEDULE_LOG).stat().st_mode & 0o777) == oct(0o600)
 
@@ -124,7 +124,7 @@ class TestATick:
         _mission(tmp_path)
         document = _root(tmp_path, host, FixedClock(SLOT)).survey("m")
 
-        meta = yaml.safe_load((Path(document.path) / "meta.yaml").read_text())
+        meta = yaml.safe_load((kept(tmp_path, document) / "meta.yaml").read_text())
         assert "scheduled_at" not in meta and "late_s" not in meta
 
     def test_a_failed_survey_is_logged_with_its_kind_and_exit(
@@ -176,10 +176,11 @@ class TestOverlap:
         assert len(list((mission / "archive").iterdir())) == 1
 
     def test_two_skips_in_a_row_are_an_overrun_with_a_fix(self, tmp_path: Path, host: Host) -> None:
-        mission = _mission(tmp_path)
+        _mission(tmp_path)
         clock = FixedClock(SLOT)
         digest = _installed(tmp_path, host, clock)
-        ArchiveFiles(SystemClock()).hold_mission(mission)  # another survey, the whole test
+        another = ArchiveFiles(tmp_path / ".recon", SystemClock()).hold("m")
+        another.__enter__()  # another survey, the whole test
 
         with pytest.raises(ReconError) as first:
             _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest)
@@ -238,16 +239,16 @@ class TestTheConfigIsTheOneInstalled:
         config = mission / "config.yaml"
         pwned = tmp_path / "pwned"
         evil = config.read_text().replace("slow", f"cli\n  run: touch '{pwned}'")
-        read_config = MissionFiles.read_config
-        reads: list[Path] = []
+        read_config = MissionFiles.config
+        reads: list[str] = []
 
-        def swapped_first(self: MissionFiles, path: Path) -> Any:
+        def swapped_first(self: MissionFiles, name: str) -> Any:
             if not reads:  # the swap lands as the config is read to be run
                 config.write_text(evil)
-            reads.append(path)
-            return read_config(self, path)
+            reads.append(name)
+            return read_config(self, name)
 
-        monkeypatch.setattr(MissionFiles, "read_config", swapped_first)
+        monkeypatch.setattr(MissionFiles, "config", swapped_first)
         with pytest.raises(ReconError) as raised:
             _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest)
 
@@ -441,15 +442,15 @@ class TestTheLogIsBounded:
     }  # fmt: skip
 
     def test_ten_thousand_ticks_keep_the_log_under_2_mib(self, tmp_path: Path) -> None:
-        store = ScheduleFiles()
+        store = ScheduleFiles(tmp_path)
         for n in range(10_000):
-            store.append(tmp_path, {**self.LINE, "late_s": float(n)})
+            store.append("m", {**self.LINE, "late_s": float(n)})
 
-        files = [tmp_path / SCHEDULE_LOG, tmp_path / f"{SCHEDULE_LOG}.1"]
+        files = [tmp_path / "m" / SCHEDULE_LOG, tmp_path / "m" / f"{SCHEDULE_LOG}.1"]
         assert all(f.is_file() for f in files)
         assert sum(f.stat().st_size for f in files) < 2 * 1024 * 1024
         assert all(f.stat().st_size <= 1024 * 1024 for f in files)
-        lines = store.lines(tmp_path)
+        lines = store.lines("m")
         assert lines[-1]["late_s"] == 9999.0, "the newest kept, in order"
         assert [line["late_s"] for line in lines] == sorted(line["late_s"] for line in lines)
 
@@ -459,26 +460,26 @@ class TestTheLogIsBounded:
         """Round-4 review M1: a line past the cap rotated an empty log to make room, and again,
         for ever. A log is rotated only when it holds something; a line too long for any log
         is written alone into a fresh one."""
-        store = ScheduleFiles(max_bytes=64)
-        store.append(tmp_path, {"n": 1})
+        store = ScheduleFiles(tmp_path, max_bytes=64)
+        store.append("m", {"n": 1})
         done = threading.Event()
 
         def append() -> None:
-            store.append(tmp_path, {**self.LINE, "n": 2})
+            store.append("m", {**self.LINE, "n": 2})
             done.set()
 
         threading.Thread(target=append, daemon=True).start()
         assert done.wait(5), "the append returned"
-        assert [line.get("n") for line in store.lines(tmp_path)] == [1, 2]
-        assert (tmp_path / SCHEDULE_LOG).stat().st_size > 64, "the long line, alone"
+        assert [line.get("n") for line in store.lines("m")] == [1, 2]
+        assert (tmp_path / "m" / SCHEDULE_LOG).stat().st_size > 64, "the long line, alone"
 
     def test_the_check_fails_a_log_with_no_cap(self, tmp_path: Path) -> None:
         """Check the checker: the same ticks, uncapped, pass 2 MiB."""
-        store = ScheduleFiles(max_bytes=1 << 40)
+        store = ScheduleFiles(tmp_path, max_bytes=1 << 40)
         for n in range(10_000):
-            store.append(tmp_path, {**self.LINE, "late_s": float(n)})
+            store.append("m", {**self.LINE, "late_s": float(n)})
 
-        assert (tmp_path / SCHEDULE_LOG).stat().st_size > 2 * 1024 * 1024
+        assert (tmp_path / "m" / SCHEDULE_LOG).stat().st_size > 2 * 1024 * 1024
 
 
 class TestStatus:

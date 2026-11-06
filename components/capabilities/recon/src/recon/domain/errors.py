@@ -125,6 +125,14 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "name_taken",
     # a {placeholder} nothing fills
     "unresolved",
+    # a range: that would ask the same question each step, or for both an end and a span,
+    # or deletes of a table that holds new data only; a span past max_steps; a checkpoint
+    # committed under another request
+    "range_unused",
+    "range_ambiguous",
+    "range_deletes",
+    "range_steps",
+    "checkpoint_request_changed",
     # warnings
     "env_unset",
     "plugin_broken",
@@ -199,6 +207,12 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "changes_retired",
     # a subscription whose unacked change rows hold back archives retain: would remove
     "subscription_behind",
+    # a range's backlog past one run, nothing new past settle, a fixed range collected to its
+    # end, a --range over source time already committed
+    "range_behind",
+    "range_current",
+    "range_complete",
+    "range_overlaps",
 )
 
 
