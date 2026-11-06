@@ -31,7 +31,8 @@ from ix.domain.kind import kinds
 from ix.domain.problem import problem as a_problem
 from ix.domain.schema import DeclarationFile
 
-BUILT_IN = ("characterize", "compare", "evaluate", "regress")
+# Changed requirement (ruling Q-CHECK): check, a predicate observed on every trial.
+BUILT_IN = ("characterize", "check", "compare", "evaluate", "regress")
 FORMS = {
     "superiority": "{variant} is better than {control} on {metric}",
     "non-inferiority": "{variant} is no worse than {control} by more than {margin} on {metric}",
@@ -231,8 +232,8 @@ class TestBuiltInGenres:
         the other genres allow it and leave it to their kinds."""
         overlap = {g.label: g.design.overlap for g in builtin_genres.genres.values()}
         assert overlap == {
-            "characterize": "allowed", "compare": "allowed", "evaluate": "allowed",
-            "regress": "forbidden",
+            "characterize": "allowed", "check": "allowed", "compare": "allowed",
+            "evaluate": "allowed", "regress": "forbidden",
         }  # fmt: skip
         assert Genre.model_validate(_genre()).design.overlap == "allowed"
 
@@ -253,6 +254,7 @@ class TestBuiltInGenres:
         asked = {g.label: g.author_must_set for g in builtin_genres.genres.values()}
         assert asked == {
             "characterize": ("primary",),
+            "check": ("primary",),
             "compare": ("primary", "comparison", "margin (for non-inferiority, equivalence)"),
             "evaluate": ("primary", "threshold"),
             "regress": ("primary", "margin"),

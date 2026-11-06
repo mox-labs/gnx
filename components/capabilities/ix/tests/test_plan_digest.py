@@ -56,6 +56,7 @@ GENRE_EXAMPLE_DIGESTS = {
     "compare": "0e689413d746b25be27493a982b215c089389756bc39e207501f6b216b0a21c6",
     "characterize": "5bf43d833198de5a787c90879f53a32429b3204a8259c72dbd6301a71ce9c0e6",
     "regress": "9edd0e860d290d6bb62570e9e351f58288b0f304dd420667d5103eeb22017544",
+    "check": "0df23bff15d3b5093d74a563d3acaaf402ade9fa12786cec7df6f5bff30069e6",
 }
 
 #: The registered form of examples/delay-server/slower.yaml, whole: every key the form

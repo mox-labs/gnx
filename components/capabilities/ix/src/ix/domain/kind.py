@@ -522,12 +522,18 @@ def binding_names(kind: Kind | None, options: Mapping[str, Any]) -> tuple[str, .
 
 
 def placed(kind: Kind, options: Mapping[str, Any], base: str) -> dict[str, Any]:
-    """``options`` with each option ``kind`` declares a ``path`` resolved against the
-    directory ``base``: a relative path is joined to it, an absolute one stands."""
+    """``options`` with each option ``kind`` declares a ``path``, and each directory a
+    ``command`` is ``within`` (its ``cwd``), resolved against the directory ``base``: a
+    relative one is joined to it, an absolute one stands."""
     joined = dict(options)
+    within = {option.within for option in kind.options.values() if option.within}
     for name, option in kind.options.items():
         value = joined.get(name)
-        if option.type == "path" and isinstance(value, str) and not value.startswith("/"):
+        if (
+            (option.type == "path" or name in within)
+            and isinstance(value, str)
+            and not value.startswith("/")
+        ):
             joined[name] = f"{base.rstrip('/')}/{value}"
     return joined
 

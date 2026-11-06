@@ -19,6 +19,7 @@ from ix.adapters._out.agent_sensors import (
     ToolUsageSensor,
     UsageSensor,
 )
+from ix.adapters._out.commands import CommandProbe, ExitStatusSensor
 from ix.adapters._out.compose import ComposeEnvironment
 from ix.adapters._out.environments import NoEnvironment, ProcessEnvironment
 from ix.adapters._out.evaluators import EvaluatorSensor
@@ -67,6 +68,8 @@ def register(registry: Registry) -> None:
         ("probe", "http-load", K6Load, "HTTP load for a fixed time, driven by k6", {LAUNCHER}),
         ("probe", "prompt", PromptProbe, "One prompt put to an agent session or a model call",
          {SESSIONS}),
+        ("probe", "command", CommandProbe, "A command run once against the subject, as a check",
+         {LAUNCHER}),
         ("sensor", "timing", TimingSensor, "Latency and throughput from a load probe", set()),
         ("sensor", "memory", MemorySensor, "Peak resident memory, sampled", set()),
         ("sensor", "activation", ActivationSensor, "Whether the expected skill fired", set()),
@@ -77,6 +80,8 @@ def register(registry: Registry) -> None:
         ("sensor", "text-match", TextMatchSensor, "The reply's text against plain rules",
          set()),
         ("sensor", "usage", UsageSensor, "What a session consumed and how it ended", set()),
+        ("sensor", "exit-status", ExitStatusSensor, "Whether a command exited with its code",
+         set()),
         ("sensor", "judge", JudgeSensor, "A model scores against a rubric; never decides",
          {RUNTIMES}),
         ("sensor", "evaluator", EvaluatorSensor, "A pydantic-evals evaluator reads the trial",

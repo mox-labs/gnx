@@ -70,7 +70,8 @@
     {
       "name": "adapters_out",
       "files": ["src/ix/adapters/__init__.py", "src/ix/adapters/_out/__init__.py",
-                "src/ix/adapters/_out/agent_sensors.py", "src/ix/adapters/_out/compose.py",
+                "src/ix/adapters/_out/agent_sensors.py", "src/ix/adapters/_out/commands.py",
+                "src/ix/adapters/_out/compose.py",
                 "src/ix/adapters/_out/environments.py", "src/ix/adapters/_out/evaluators.py",
                 "src/ix/adapters/_out/k6_load.py",
                 "src/ix/adapters/_out/processes.py", "src/ix/adapters/_out/provenance.py",

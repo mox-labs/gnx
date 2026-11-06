@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from ix.domain import schema
-from ix.domain.analysis import ANALYSES, MIN_BLOCKS, analysis_unsupported
+from ix.domain.analysis import ANALYSES, MIN_BLOCKS, analysis_unsupported, observes
 from ix.domain.design import (
     assign_roles,
     kind_uses,
@@ -487,9 +487,60 @@ def _decidable(
     return problems
 
 
+def _observation(experiment: Experiment, genre: Genre, instruments: Instruments) -> list[Problem]:
+    """What an analysis that observes (a check) cannot read: a primary that is not a boolean,
+    and a threshold, a margin or a guardrail, which it never reads, so that none is mistaken
+    for part of the verdict."""
+    label = schema.short(genre.name)
+    problems = [
+        problem(
+            path,
+            kind="decision_inapplicable",
+            message=f"genre {label} decides whether the primary held on every trial, "
+            f"observed; it reads no {noun}",
+            fix=f"remove {path.split('.')[0]!r}; to hold a rate to a threshold, use a genre "
+            "that estimates one",
+        )
+        for path, noun, given in [
+            ("threshold", "threshold", experiment.threshold is not None),
+            ("margin", "margin", experiment.margin is not None),
+            *(
+                (f"guardrails.{index}", "guardrail", True)
+                for index in range(len(experiment.guardrails))
+            ),
+        ]
+        if given
+    ]
+    metric = instruments.metrics.get(experiment.primary.metric) if experiment.primary else None
+    if metric is not None and metric.shape != "boolean":
+        problems.append(
+            problem(
+                "primary.metric",
+                kind="metric_shape",
+                message=f"genre {label} decides on a boolean, whether the primary held; "
+                f"{metric.name} is a {metric.shape}",
+                fix="name a boolean metric as the primary (a sensor's pass or fail), and keep "
+                f"{metric.name} under 'metrics:' to report it",
+                allowed=("boolean",),
+                got=metric.shape,
+            )
+        )
+    return problems
+
+
 def _decision(
     experiment: Experiment, genre: Genre | None, instruments: Instruments, probes: ProbeSet | None
 ) -> list[Problem]:
+    if genre is not None and observes(genre.analysis):
+        observing = _observation(experiment, genre, instruments)
+        if experiment.primary is not None:
+            deciding = _Deciding(
+                decides=genre.decides, estimator=genre.design.estimator, blocks=None
+            )
+            observing += _reads(
+                experiment.primary, "primary", instruments, deciding, directional=False
+            )
+        return observing
     problems: list[Problem] = []
     compares = genre is not None and (experiment.comparison or genre.default_comparison) is not None
     repeats = experiment.repeats or (genre.design.repeats.default if genre else 1)

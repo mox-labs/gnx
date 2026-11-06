@@ -1325,7 +1325,7 @@ class TestWhatCannotRun:
         assert runnable == {
             "process", "http", "http-load", "timing", "memory", "none", "agent-session",
             "model-call", "prompt", "activation", "tool-usage", "function-test", "outcome",
-            "text-match", "usage", "judge", "compose", "evaluator",
+            "text-match", "usage", "judge", "compose", "evaluator", "command", "exit-status",
         }  # fmt: skip
         assert set(kinds.kinds) - set(kinds.runnable) == {"ix.v1.probe.inspect-task"}
         assert set(kinds.runnable) < set(kinds.kinds)

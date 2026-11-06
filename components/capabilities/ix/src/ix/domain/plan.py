@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import Field, computed_field
 
 from ix.domain import intervals, run, schema
-from ix.domain.analysis import CONFIDENCE, Spread
+from ix.domain.analysis import CONFIDENCE, Spread, observes
 from ix.domain.design import (
     ENVIRONMENT,
     RoleAssignment,
@@ -494,6 +494,12 @@ def sensitivity(design: Design, blocks: int, spread: Spread | None) -> Sensitivi
     """How small an effect a run of ``blocks`` blocks per cell can detect, from ``spread``."""
     if design.verdict_form == "none":
         return Sensitivity(blocks=blocks, text="not applicable: the genre gives estimates only")
+    if observes(design.analysis):
+        return Sensitivity(
+            blocks=blocks,
+            text="not applicable: a check observes whether the predicate held on every trial; "
+            "it estimates nothing, and detects no effect",
+        )
     best = best_case(design, blocks)
     if spread is None or blocks < 2:
         unknown = (

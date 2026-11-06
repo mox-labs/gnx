@@ -1,0 +1,10 @@
+schema: ix.v1.kind
+name: ix.v1.probe.command
+summary: A command run once against the subject, as a check of it; its exit status and what it wrote are what is measured.
+overlap: forbidden
+options:
+  command: {type: command, required: true, within: cwd, description: "the program and its arguments, run with the subject up: [curl, -fsS, '{url}/health']. A {name} a factor fills, or an option or facet of the subject ({url}), is filled in; the program, and each file an argument names, relative to cwd, are digested as what was tested"}
+  cwd: {type: string, default: ".", description: "the directory to run it in, relative to the experiment"}
+  env: {type: mapping, description: environment variables to add}
+  timeout: {type: duration, default: 60s, description: "how long it may run before it is stopped; one that runs past it showed nothing, and the trial is the harness's failure (timeout)"}
+offers: [output]

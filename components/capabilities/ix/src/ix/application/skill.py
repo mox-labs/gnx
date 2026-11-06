@@ -202,6 +202,17 @@ probes:
 primary: {metric: ttfb, statistic: p99}
 margin: 5%
 """,
+    "check": """\
+name: proxy-health
+question: Does the proxy answer its health check once it is up?
+genre: check
+subjects:
+  proxy: {kind: process, command: [./proxy], url: "http://127.0.0.1:8080"}
+probes:
+  - kind: command
+    command: [curl, -fsS, "{url}/healthz"]
+primary: {metric: exited_ok}
+""",
 }
 
 #: From the question a person asks to the genre that answers it, in the person's words.
@@ -219,6 +230,10 @@ QUESTION_TO_GENRE: tuple[tuple[str, str], ...] = (
     ),
     ('"Are A and B the same?"', "`compare`, `comparison: equivalence`, with a `margin`"),
     ('"How does X change with Y?"', "`characterize`, Y a factor; estimates, no verdict"),
+    (
+        '"Does X do it, here, now?" (a command exits 0, a reply holds a fact)',
+        "`check`, a boolean primary, one trial: an observation, never a rate",
+    ),
 )
 
 #: The skill folder the ``agents`` reference evaluates, and its SKILL.md.

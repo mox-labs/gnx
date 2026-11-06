@@ -46,7 +46,7 @@ Write = Any  # the write_experiment fixture
 #: The kinds ix ships, by family.
 EXPECTED = {
     "subject": {"process", "http", "agent-session", "model-call"},
-    "probe": {"prompt", "http-load", "inspect-task"},
+    "probe": {"prompt", "http-load", "inspect-task", "command"},
     "sensor": {
         "timing",
         "memory",
@@ -57,6 +57,7 @@ EXPECTED = {
         "tool-usage",
         "outcome",
         "text-match",
+        "exit-status",
         "evaluator",
     },  # fmt: skip
     "environment": {"none", "process", "compose"},
@@ -144,8 +145,11 @@ class TestBuiltInKinds:
             "agent-session": {"respondent", "workdir"},
             "model-call": {"respondent"},
         }
+        # A command needs nothing of the subject: it checks whatever is up, by the options
+        # and facets a trial fills into it.
         assert needs == {
             "prompt": {"respondent"}, "http-load": {"url"}, "inspect-task": {"respondent"},
+            "command": set(),
         }  # fmt: skip
 
     def test_a_sensor_declares_its_metrics_and_whether_a_model_judges_them(
@@ -210,11 +214,11 @@ class TestBuiltInKinds:
             "probe": {"prompt"},
             "environment": {"none"},
             "sensor": {"judge", "evaluator", "text-match", "tool-usage", "outcome",
-                       "activation", "usage", "function-test"},
+                       "activation", "usage", "function-test", "exit-status"},
         }  # fmt: skip
         forbidden = {
             "subject": {"process", "http"},
-            "probe": {"http-load", "inspect-task"},
+            "probe": {"http-load", "inspect-task", "command"},
             "environment": {"process", "compose"},
             "sensor": {"timing", "memory"},
         }

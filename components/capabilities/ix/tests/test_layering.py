@@ -401,9 +401,11 @@ def test_the_domain_names_no_genre_and_no_kind() -> None:
     kinds = {file.stem.split(".", 1)[1] for file in (builtin / "kinds").glob("*.yaml")}
     assert genres >= {"evaluate", "compare", "characterize", "regress"}
     assert kinds >= {"http-load", "function-test", "inspect-task", "compose", "judge"}
-    # Words that are also plain English or a family name stay out of the scan.
+    # Words that are also plain English or a family name stay out of the scan; so does
+    # "command", an option type the domain holds before any kind, and "check", the word for
+    # what an A/A pass, a preflight and a genre do.
     names = (genres | kinds) - {"none", "process", "prompt", "usage", "memory", "timing",
-                                "outcome"}  # fmt: skip
+                                "outcome", "command", "check"}  # fmt: skip
     for file in _files("domain"):
         tree = ast.parse(file.read_text(encoding="utf-8"))
         docstrings = {

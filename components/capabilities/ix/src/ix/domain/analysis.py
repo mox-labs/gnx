@@ -72,6 +72,15 @@ the cell inconclusive instead, whatever the variant did.
 **A model-judged metric never decides.** ``validate`` refuses one as a primary or a
 guardrail; if a design holds one anyway, its decision is inconclusive.
 
+**A check observes; it does not estimate.** The analysis ``ix.v1.analysis.check``
+(:data:`CHECK`) decides on a boolean primary alone, with no interval: for each subject in
+each cell it ``holds`` when the primary read true on every trial, ``fails`` when it read
+false on any or the subject failed one, and is ``inconclusive`` only when no trial read
+false and one could not be read (a harness failure, a sensor that gave nothing), or none was
+carried out. It needs no fewer trials than one. Its method, which a report prints, says
+what one observation cannot show: how often the predicate holds. The Wilson interval of the
+observed share is said beside each finding, for a subject whose result can vary.
+
 Limits:
 
 * Fewer than :data:`MIN_BLOCKS` usable blocks (trials, for one subject) decide nothing; a
@@ -143,10 +152,39 @@ METHOD: tuple[str, ...] = (
 
 _ALPHA = round(1 - CONFIDENCE, 12)
 
+#: The analysis that observes whether a predicate held on every trial (see the module
+#: docstring): a check, not an estimate.
+CHECK = "ix.v1.analysis.check"
+
 #: The analyses ix has, by the id a genre names. None of them takes a parameter.
 ANALYSES: frozenset[str] = frozenset(
-    {"ix.v1.analysis.evaluate", "ix.v1.analysis.compare", "ix.v1.analysis.characterize"}
+    {"ix.v1.analysis.evaluate", "ix.v1.analysis.compare", "ix.v1.analysis.characterize", CHECK}
 )
+
+
+def observes(analysis: AnalysisRef) -> bool:
+    """Whether ``analysis`` observes rather than estimates: it decides on a boolean primary
+    alone, held on every trial, with no interval, so it needs no minimum of trials and reads
+    no threshold, margin or guardrail."""
+    return analysis.id == CHECK
+
+
+def check_method(trials: int) -> tuple[str, ...]:
+    """The method of a check, in the words a report prints, for ``trials`` trials of each
+    subject in each cell: what its verdict says, and what it cannot."""
+    count = f"{trials} trial{'' if trials == 1 else 's'}"
+    return (
+        f"Check, {count} in each cell. holds means the primary was true on every trial run; "
+        "fails means it was false on at least one, or the subject failed one; inconclusive "
+        "means a trial could not be read (a harness or sensor failure), so nothing was shown.",
+        "This is an observation, not an estimate: it does not say how often the predicate holds.",
+        "It is a reliable gate only for a subject that gives the same result every time it is "
+        "run on the same input. For a subject whose output can vary (an agent session, a "
+        "model call, a service under load), a pass shows the result is possible and a fail "
+        "shows failure is possible; neither is a rate.",
+        "To rely on such a subject, decide on its pass rate held to a threshold, over as many "
+        "trials as `ix plan` says can show it.",
+    )
 
 
 class Interval(Record):
@@ -194,7 +232,8 @@ class CalibrationCheck(Record):
     reason: str = ""
 
 
-Form = Literal["superiority", "non-inferiority", "equivalence", "threshold"]
+#: The test a decision makes; ``predicate`` is a check's: true on every trial, observed.
+Form = Literal["superiority", "non-inferiority", "equivalence", "threshold", "predicate"]
 
 
 class Decision(Record):
@@ -979,6 +1018,119 @@ def _forced(data: _Data, who: _SubjectInCell) -> tuple[Outcome, str] | None:
     return None
 
 
+@dataclass(frozen=True)
+class _Observed:
+    """One subject's trials in one cell, as a check reads them: how many read true, how
+    many read false, how many the subject failed, and why each other one could not be
+    read."""
+
+    held: int
+    false: int
+    failed: int
+    unread: tuple[str, ...]
+
+    @property
+    def read(self) -> int:
+        """The trials that showed something: true, false, or a subject that failed."""
+        return self.held + self.false + self.failed
+
+    @property
+    def planned(self) -> int:
+        return self.read + len(self.unread)
+
+
+def _observed(data: _Data, who: _SubjectInCell, metric: str) -> _Observed:
+    """What ``who``'s planned trials showed of the boolean ``metric``."""
+    held = false = failed = 0
+    unread: list[str] = []
+    for trial in data.trials.values():
+        if not data._belongs(trial, who):
+            continue
+        interaction = data.interactions.get(trial.seq)
+        reading = data.readings.get((trial.seq, metric))
+        if interaction is None:
+            unread.append("a trial was not carried out")
+        elif interaction.failure is not None and interaction.failure.owner == "subject":
+            failed += 1
+        elif interaction.failure is not None:
+            unread.append(f"the harness failed a trial ({interaction.failure.reason})")
+        elif reading is None or reading.failure is not None or reading.value is None:
+            why = reading.failure.reason if reading and reading.failure else "no reading"
+            unread.append(f"{metric} could not be read ({why})")
+        elif reading.value:
+            held += 1
+        else:
+            false += 1
+    return _Observed(held=held, false=false, failed=failed, unread=tuple(unread))
+
+
+def _verdict(seen: _Observed) -> tuple[Outcome, str]:
+    """A check's outcome for one subject in one cell, and why."""
+    if seen.false or seen.failed:
+        said = [f"false on {seen.false} of {seen.read} read"] if seen.false else []
+        said += [f"the subject failed {seen.failed} of {seen.read}"] if seen.failed else []
+        return "fails", "; ".join(said)
+    if seen.unread or not seen.read:
+        return "inconclusive", "; ".join(dict.fromkeys(seen.unread)) or "no trial was planned"
+    return "holds", f"true on every one of {seen.held} read"
+
+
+def _observations(data: _Data, base: Analysis, primary: _Measure) -> Analysis:
+    """The analysis of a check: see the module docstring."""
+    findings: list[Finding] = []
+    notes: list[str] = []
+    planned = 0
+    for who in _decided(data):
+        seen = _observed(data, who, primary.metric.name)
+        planned = max(planned, seen.planned)
+        outcome, reason = _verdict(seen)
+        decision = Decision(
+            part="primary",
+            metric=primary.metric.name,
+            statistic=primary.statistic,
+            estimator=primary.estimator,
+            form="predicate",
+            claim="true on every trial",
+            better=primary.metric.direction,
+            method="observation",
+            n=seen.read,
+            outcome=outcome,
+        )
+        findings.append(
+            Finding(
+                subject=who.subject,
+                cell=data.cells[who.cell],
+                outcome=outcome,
+                reason=reason,
+                decisions=(decision,),
+            )
+        )
+        if seen.read:
+            low, high = intervals.wilson(seen.held, seen.read)(_ALPHA)
+            where = f" in {who.cell}" if data.cells[who.cell] else ""
+            notes.append(
+                f"{who.subject}{where}: true on {seen.held} of {seen.read}. Were its result to "
+                "vary from run to run, that would leave the share of runs it holds in anywhere "
+                f"in [{low:.2f}, {high:.2f}] ({CONFIDENCE:.0%} Wilson)."
+            )
+    if not findings:
+        return base.model_copy(
+            update={
+                "method": check_method(0),
+                "outcome": "inconclusive",
+                "reason": "no trial was carried out, so nothing was observed",
+            }
+        )
+    return base.model_copy(
+        update={
+            "method": check_method(planned),
+            "outcome": _combine_outcomes([finding.outcome for finding in findings]),
+            "findings": tuple(findings),
+            "notes": tuple(notes),
+        }
+    )
+
+
 def analyze(
     design: Design,
     trials: Sequence[Trial],
@@ -1009,6 +1161,8 @@ def analyze(
         )
 
     primary = _measure("primary", design.primary, metric)
+    if observes(design.analysis):
+        return _observations(data, base, primary)
     asked = _Asked()
     drafts = [
         (who, _decisions(data, who, primary, asked), _forced(data, who)) for who in _decided(data)

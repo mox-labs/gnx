@@ -1,0 +1,9 @@
+schema: ix.v1.kind
+name: ix.v1.sensor.exit-status
+summary: Whether the command a probe ran exited with the code that means success.
+overlap: allowed
+options:
+  code: {type: integer, default: 0, description: "the exit code that means success"}
+needs: [output]
+metrics:
+  - {name: exited_ok, direction: higher, shape: boolean, description: "the command exited with code"}

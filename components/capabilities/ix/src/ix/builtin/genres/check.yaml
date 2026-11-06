@@ -1,0 +1,32 @@
+# check: did a predicate hold on every trial, observed?
+schema: ix.v1.genre
+name: ix.v1.genre.check
+question: Does the predicate hold on every trial of this subject?
+hypothesis_form: "{metric} is true on every trial of {subject}"
+roles:
+  - {name: subject, min: 1, max: 1}
+factors: allowed
+must_set: [primary]
+design:
+  repeats: {default: 1, min: 1}
+  order: sequential
+  calibration: none
+  estimator: mean
+  note: "an observation, not an estimate: it holds when the boolean primary read true on every trial, fails when it read false on any or the subject failed one, and is inconclusive only when a trial could not be read; no interval, so one trial is enough to read and never enough to estimate a rate (ix design record, 2026-10-19, §28)"
+analysis: {id: ix.v1.analysis.check}
+verdict_form: three-way
+report: [question, design, failures, warrant, raw]
+guidance: |
+  Use check when a predicate must hold, observed on this subject at this commit: a command
+  that exits 0 against a service, a reply that contains a fact. Name a boolean primary, a
+  sensor's pass or fail (a command's exit status, a reply's text, the tests on its code);
+  there is no threshold, margin or guardrail to state.
+  One trial is the default. holds means the primary read true on every trial; fails means
+  false on one, or the subject failed one; inconclusive means only that a trial could not be
+  read (a tool missing, a timeout, the runtime unavailable), so nothing was shown.
+  It is an observation, not an estimate. It gates reliably only a subject that gives the
+  same result every time it is run on the same input. For one whose output varies (an agent
+  session, a model call, a service under load) a pass shows the result is possible and a
+  fail shows failure is possible; the report's warrant gives the interval the share it saw
+  leaves (1 of 1 leaves about [0.21, 1]). To rely on such a subject, use evaluate with a
+  pass-rate threshold, and `ix plan` says how many trials can show it.

@@ -567,7 +567,8 @@ class Root:
         what registration freezes and a run is held to."""
         if examined.experiment is None:
             return examined
-        named = named_files(examined.experiment, vocabulary.kinds)
+        probes = examined.probes.probes if examined.probes is not None else ()
+        named = named_files(examined.experiment, vocabulary.kinds, probes)
         return replace(examined, contents=contents(named, str(Path(base).resolve())))
 
     def _provenance(self, directory: str) -> Provenance:

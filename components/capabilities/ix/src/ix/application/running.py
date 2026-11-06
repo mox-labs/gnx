@@ -591,13 +591,10 @@ async def _carried(
     if failure is None:
         known = {**services, **filled.options, **target.facets, **trial.cell}
         try:
-            observations = await _apply(
-                adapters.probe,
-                fill_options(probe.options, known, probe_kind),
-                target,
-                trial.seed,
-                stopping,
-            )
+            filled_probe = fill_options(probe.options, known, probe_kind)
+            if probe_kind is not None:
+                filled_probe = placed(probe_kind, filled_probe, setup.base)
+            observations = await _apply(adapters.probe, filled_probe, target, trial.seed, stopping)
         except Exception as error:
             failure = _failure(error)
     # Watchers exit before the subject is released: the stack unwinds in reverse.

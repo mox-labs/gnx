@@ -267,11 +267,12 @@ class Probe(Protocol):
     ) -> Mapping[str, Mapping[str, Any]]:
         """Apply the stimulus and return what it left behind, by the facet the probe kind
         offers. ``options`` are the probe's as carried out (each default its kind declares
-        for one left out among them), with every placeholder filled in for this
-        trial. ``seed`` is the trial's own, drawn from the registered seed: a probe kind that
-        makes a random choice (a sampled payload, a jittered arrival) draws it from ``seed``,
-        so a rerun of the plan applies the same stimulus. One that chooses nothing ignores
-        it."""
+        for one left out among them), with every placeholder filled in for this trial, and
+        each option its kind declares a ``path``, and each directory a ``command`` is
+        ``within``, resolved against the experiment's directory. ``seed`` is the trial's own,
+        drawn from the registered seed: a probe kind that makes a random choice (a sampled
+        payload, a jittered arrival) draws it from ``seed``, so a rerun of the plan applies
+        the same stimulus. One that chooses nothing ignores it."""
         ...
 
 

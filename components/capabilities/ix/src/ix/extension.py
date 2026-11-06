@@ -65,7 +65,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 from ix.domain.design import SelectedSensor
 from ix.domain.experiment import EnvironmentConfig, ProbeConfig, SubjectConfig
-from ix.domain.kind import arrivals, placeholders, seconds
+from ix.domain.kind import arrivals, duration_of, placeholders, seconds
 from ix.domain.ports import (
     Attribution,
     Environment,
@@ -276,6 +276,7 @@ __all__ = [
     "Traced",
     "TrialError",
     "arrivals",
+    "duration_of",
     "placeholders",
     "problem",
     "seconds",

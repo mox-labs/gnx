@@ -264,6 +264,23 @@ def _unit_mismatch(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     return _found(e, v)
 
 
+def _a_check(e: dict[str, Any], **changes: Any) -> dict[str, Any]:
+    """The evaluate experiment as a check: no threshold, which a check never reads."""
+    data = {**e, "genre": "check", **changes}
+    del data["threshold"]
+    return data
+
+
+def _metric_shape(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
+    e["sensors"] = [{"kind": "usage"}]
+    del e["probes"][0]["truth"]
+    return _found(_a_check(e, primary={"metric": "turns"}), v)
+
+
+def _decision_inapplicable(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
+    return _found({**_a_check(e), "threshold": {"op": ">=", "value": 0.9}}, v)
+
+
 def _probes_empty(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     return _found({**c, "probes": []}, v) - {("primary.metric", "metric_unprovided")}
 
@@ -475,6 +492,8 @@ CASES: dict[str, tuple[Any, str, str]] = {
     "estimator_illegal": (_estimator_illegal, "primary.estimator", "estimator_illegal"),
     "judged_gate": (_judged_gate, "primary.metric", "judged_gate"),
     "unit_mismatch": (_unit_mismatch, "guardrails.0.threshold.value", "unit_mismatch"),
+    "metric_shape": (_metric_shape, "primary.metric", "metric_shape"),
+    "decision_inapplicable": (_decision_inapplicable, "threshold", "decision_inapplicable"),
     "trials_in_flight_refused": (
         _trials_in_flight_refused,
         "trials_in_flight",
@@ -609,8 +628,8 @@ def test_the_document_carries_the_genres_short_name_and_its_url(
     unknown = ix.validate(write_experiment({**compare_data, "genre": "benchmark"}))
     (found,) = unknown.problems
     assert found.got == "benchmark"
-    assert found.allowed == ("characterize", "compare", "evaluate", "regress")
-    assert found.fix == "genre: one of characterize, compare, evaluate, regress"
+    assert found.allowed == ("characterize", "check", "compare", "evaluate", "regress")
+    assert found.fix == "genre: one of characterize, check, compare, evaluate, regress"
 
 
 # --- placeholders ----------------------------------------------------------------------

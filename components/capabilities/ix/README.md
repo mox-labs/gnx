@@ -223,6 +223,33 @@ report must contain. It holds no code and names no kind.
 | `compare` | Is the variant better than the control, or no worse? | one control, one or more variants | `primary`, `comparison`, and `margin` for non-inferiority and equivalence | holds / fails / inconclusive |
 | `regress` | May this change ship against the baseline? | one control, one variant | `primary`, `margin` | holds / fails / inconclusive |
 | `characterize` | How does this subject behave across the range? | one | `primary`, `factors` | none: estimates only |
+| `check` | Does the predicate hold on every trial of this subject? | one | `primary`, a boolean | holds / fails / inconclusive |
+
+`check` observes; it does not estimate. Its analysis decides on a boolean primary alone,
+with no interval, so one trial (its default and its minimum) is enough to read: it holds
+when the primary read true on every trial, fails when it read false on one or the subject
+failed one, and is inconclusive only when a trial could not be read (a harness failure, a
+reading that could not be taken), never because the subject failed. It reads no threshold,
+margin or guardrail, and refuses one (`decision_inapplicable`), as it does a primary that is
+not a boolean (`metric_shape`). Its warrant says what one observation cannot show: how often
+the predicate holds. It gates reliably only a subject that gives the same result every time
+it is run on the same input; for one whose output varies (an agent session, a model call, a
+service under load) the report gives the Wilson interval the share it saw leaves (1 of 1
+leaves about [0.21, 1]). To rely on such a subject, use `evaluate` with a pass-rate
+threshold. A command checked against a service is the `command` probe with the
+`exit-status` sensor:
+
+```yaml
+name: proxy-health
+question: Does the proxy answer its health check once it is up?
+genre: check
+subjects:
+  proxy: {kind: process, command: [./proxy], url: "http://127.0.0.1:8080"}
+probes:
+  - kind: command
+    command: [curl, -fsS, "{url}/healthz"]
+primary: {metric: exited_ok}
+```
 
 `compare` offers three comparisons: `superiority` asks for a difference (the variant is
 better), `non-inferiority` for no loss beyond the margin, `equivalence` for no difference
@@ -240,8 +267,9 @@ A genre's `design` (repeats, order, calibration, estimator, overlap) carries a n
 standing. Its `overlap` (`allowed` when unsaid) says whether its trials may overlap at all:
 `regress` says `forbidden`, so a gate's trials run one at a time whatever its kinds allow;
 a genre that extends another may forbid it, never allow it again.
-The built-in genres need at least 5 repeats to decide (3 for `characterize`) and default to
-10 (5); their methods are checked by simulation at those counts (see
+The built-in genres that estimate need at least 5 repeats to decide (3 for
+`characterize`) and default to 10 (5); `check` needs 1. Their methods are checked by
+simulation at those counts (see
 [the method](#the-verdict-and-the-method-behind-it)). A genre that decides cannot use `min`
 or `max` as its estimator.
 
@@ -258,7 +286,7 @@ Every kind also says whether two trials may use it at once (`overlap: allowed`, 
 with whatever runs beside the trial (`contended: true`: a time, a throughput, a memory
 peak). Of the built-ins, `agent-session`, `model-call`, `prompt`, `none` and every sensor
 that reads what a trial stored allow overlap; `process` and `http` subjects, `http-load`,
-`inspect-task` (an Inspect task may bring up sandboxes its samples share), `timing`,
+`command`, `inspect-task` (an Inspect task may bring up sandboxes its samples share), `timing`,
 `memory` and the `process` and `compose` environments forbid it.
 Every metric of `timing` and `memory` is contended, and `usage`'s `duration` and the
 evaluator's `eval_duration_passed`. `ix kinds` shows both: each kind's `overlap`, and each
@@ -267,8 +295,8 @@ metric's `judged` and `contended`.
 | family | kinds |
 |---|---|
 | subject | `process`, `http`, `agent-session`, `model-call` |
-| probe | `http-load`, `prompt`, `inspect-task` |
-| sensor | `timing`, `memory`, `activation`, `tool-usage`, `function-test`, `outcome`, `text-match`, `usage`, `judge`, `evaluator` |
+| probe | `http-load`, `prompt`, `command`, `inspect-task` |
+| sensor | `timing`, `memory`, `activation`, `tool-usage`, `function-test`, `outcome`, `text-match`, `exit-status`, `usage`, `judge`, `evaluator` |
 | environment | `none`, `process`, `compose` |
 
 An option a kind declares a `default` for has that value when an entry leaves it out (a
@@ -291,6 +319,7 @@ A declaration is not an adapter. ix can **run** these:
 | subject | `model-call` | one call per trial on the matrix model runtime its required `runtime` names (`hardline` calls a model provider; `mock` calls no model; any model runtime installed), with its `model` resolved before anything starts; no tools, turns or working directory, so `activation`, `tool-usage`, `collect` and a `function-test` `file` are refused on it (`unobservable`) |
 | probe | `http-load` | runs k6 for `warmup` then `duration`, with `load_model: closed` (`concurrency` clients) or `open` (an arrival `rate`); only the measured part is read, and each request sent in it is waited for until it is answered or its `timeout` (60s when left out) runs out |
 | probe | `prompt` | puts the prompt to the session or the call and keeps the reply; for a session also every tool call, each round's transcript and the files named in `collect` |
+| probe | `command` | runs `command` once with the subject up, in `cwd` (the experiment's directory when left out) with `env` added, its `{url}` and every other placeholder filled as a probe's are, and keeps its exit code and the last 64 KiB of what it wrote to stdout and stderr; one that cannot start or runs past its `timeout` (60s when left out) is the harness's failure. The program and each file an argument names are digested as what was tested |
 | sensor | `timing` | `latency`, `ttfb`, `throughput`, and `error_rate` as a count (failed requests and dropped arrivals, of those sent and dropped), from what the load probe recorded |
 | sensor | `memory` | `memory_peak`: the highest resident memory of the subject's process group, sampled with `ps` every `interval` while the probe runs |
 | sensor | `activation` | `activated_correctly`: the expected skill fired (a call of the tool the session's runtime says fires a skill, claude-sdk's `Skill`, or of the sensor's `tool`, naming it whole: `review` is fired by `review` or `plugin:review`, never by `code-review-lite`), or nothing fired for a decoy |
@@ -298,6 +327,7 @@ A declaration is not an adapter. ix can **run** these:
 | sensor | `function-test` | `tests_passed`, `tests_pass_share`, `tests_score`: the truth's test cases run against the code in the reply, or a file the agent wrote, in a child process |
 | sensor | `outcome` | `outcome_score`, `outcome_passed`: the experiment's own grader functions, run in a child process; without one, the share of the truth's `expected_facts` the reply holds |
 | sensor | `text-match` | `text_matched`: the reply starts or ends with, equals, contains, excludes or matches (a regular expression) what the probe's truth or the sensor's options say; no code of your own |
+| sensor | `exit-status` | `exited_ok`: the command a probe ran exited with `code` (0 when left out) |
 | sensor | `usage` | tokens, `cost`, `turns`, `tool_calls`, `duration`, `rounds`, and `hit_limit`, as the runtime reported them; what it did not report (a model call's cost or turns) is left out |
 | sensor | `judge` | a model scores the reply against a rubric, by one call on the model runtime `model_runtime` names or a one-turn session on the agent runtime `agent_runtime` names; its metrics are reported and never decide |
 | sensor | `evaluator` | one of pydantic-evals' evaluators, named by `evaluator` with its `arguments`, reads the trial: the reply, the probe's truth `expected_output` and `metadata`, how long the probe took, and the spans that ended in the trial (matrix's `execute_tool` spans, for `ToolCorrectness`, `TrajectoryMatch`, `MaxToolCalls`). Its assertions are `eval_passed` and its score `eval_score`, but `MaxDuration`'s is `eval_duration_passed`, a time and so contended; an evaluator that calls a model (`LLMJudge`, `GEval`) gives `judged_eval_passed` and `judged_eval_score`, on the model its `model_runtime` gives, never pydantic-evals' default. ix keeps the loop: `Dataset.evaluate` is not used |

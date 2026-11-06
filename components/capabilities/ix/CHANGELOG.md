@@ -69,6 +69,29 @@
 
 ### Added
 
+- **`check`, a genre for a predicate observed on every trial**, with an analysis of its own
+  (`ix.v1.analysis.check`). One subject, a boolean primary, `repeats` 1 by default and at
+  least 1, factors allowed. Three-way, with no interval: `holds` when the primary read true
+  on every trial, `fails` when it read false on one or the subject failed one,
+  `inconclusive` only when a trial could not be read (a harness failure, a reading that
+  could not be taken), never because the subject failed. Its warrant says it is an
+  observation, not an estimate, that it gates reliably only a subject that gives the same
+  result on the same input, and, for one whose result varies, the 95% Wilson interval the
+  share it saw leaves (1 of 1 leaves about [0.21, 1]). The plan's sensitivity says a check
+  detects no effect. `--skill -r genres` has its example, and the question it answers.
+- **Two problem kinds**: `decision_inapplicable` (a threshold, a margin or a guardrail that
+  `check` never reads) and `metric_shape` (a primary `check` cannot decide on: not a
+  boolean).
+- **The `command` probe**: a command run once against the subject, as a check of it, in
+  `cwd` (`.` when left out) with `env` added, its placeholders filled as a probe's are
+  (`{url}`). It leaves `output` (`exit_code`, `stdout`, `stderr`, each the last 64 KiB, and
+  `truncated`); a command that cannot start or runs past its `timeout` (60s) is the
+  harness's failure. It needs nothing of the subject. The program, and each file an argument
+  names, relative to `cwd`, are digested as what was tested, as a subject's are: a probe's
+  `command` is now among the files a registration freezes.
+- **The `exit-status` sensor**: `exited_ok`, the command exited with `code` (0).
+- **A probe's `path` options and a command's directory are resolved against the
+  experiment's** before the probe is applied, as a sensor's `path` options were.
 - **The plan counts the model calls a run starts, as work, never as a price** (`Plan.work`,
   `Model calls` in `ix plan`). Each adapter that starts model calls says how many one trial
   of its entry starts, through a new optional role, `ModelCalls` (`model_calls(options)`,
