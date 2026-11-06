@@ -237,11 +237,18 @@ The `Registry` holds **extension points** (`agent-runtime`, `model-runtime`, `co
 what a caller, human or agent, needs to decide whether to use it:
 
 - `config`: the pydantic model its settings validate against;
-- `needs`: shared things composition hands it (`agents`, `model_runtimes`, `schemas`,
-  `models`, `cwd`, and for a component its own `name`), declared rather than guessed from
-  field names;
+- `needs`: shared things composition hands it, named from matrix's typed table (`NEEDS`:
+  `agents`, `model_runtimes`, `schemas`, `cwd`, and for a component its own `name`, among
+  others) or the host's own, declared rather than guessed from field names;
 - `stand_in`: whether it stands in for the real thing, as the mock runtimes do;
+- for an agent runtime, `capabilities`: what its sessions do under a config, asked of the
+  entry without building it;
 - `summary`, `stability` and `origin` (the package that registered it).
+
+A point with a port holds what is registered there to the port's required members. What only
+some implementations do is a protocol of its own (`SupportsWarnings`, `SupportsLocation`,
+...), checked with `isinstance`; and `matrix.testing` has a conformance suite per port for an
+implementation to run.
 
 Every extension, matrix's built-ins included, is found the same way: an entry point in the
 `matrix.extensions` group. An extension that fails to import or register is quarantined: none
