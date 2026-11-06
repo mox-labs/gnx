@@ -191,16 +191,18 @@ class Survey:
         *,
         started: datetime,
         config_sha256: str | None = None,
+        config_value: Mapping[str, Any] | None = None,
         resolved: Mapping[str, Any] | None = None,
         streams: Collection[int] = (),
         scheduled: Mapping[str, Any] | None = None,
     ) -> list[TableOutcome]:
-        """Run every table into ``archive``, one begun at ``started``, and record its meta.
-        Returns the tables, which are also the meta's ``tables``. ``resolved`` says where what
-        the survey resolved came from (how its project root was found, which declared
-        variables were set), and is recorded as given. The entries at the positions in
-        ``streams`` are streams, written window by window into their own archives, so they are
-        no table here. A survey a scheduled tick runs is given ``scheduled`` (``scheduled_at``,
+        """Run every table into ``archive``, one begun at ``started``, and record its meta. Returns
+        the tables, which are also the meta's ``tables``. ``config_value`` is the config the survey
+        ran when it was given as a value, recorded as given, its credentials redacted. ``resolved``
+        says where what the survey resolved came from (how its project root was found, which
+        declared variables were set), and is recorded as given. The entries at the positions in
+        ``streams`` are streams, written window by window into their own archives, so they are no
+        table here. A survey a scheduled tick runs is given ``scheduled`` (``scheduled_at``,
         ``late_s``), recorded as given; one run by hand has neither key."""
         captures = archive.captures() if config.preserve_raw else None
         index = archive.ref.index
@@ -211,6 +213,9 @@ class Survey:
             "format_version": META_FORMAT_VERSION,
             "recon_version": self._recon_version,
             "config_sha256": config_sha256,
+            # A config given as a value has no file to read again: what it was, its URLs'
+            # credentials redacted as everywhere recon reports one.
+            **({} if config_value is None else {"config": dict(config_value)}),
             # The mission's archives in the order they were made, whatever the clock said.
             **({} if index is None else {"index": index}),
             "started_at": started.isoformat(),

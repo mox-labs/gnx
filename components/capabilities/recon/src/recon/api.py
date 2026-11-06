@@ -1,13 +1,16 @@
-"""The library API: thin functions over the composition root.
+"""The library API: ``open()``, and thin functions over a default session.
 
-Each returns a versioned document (``recon.v1.<shape>``) whose ``document()`` is what the
-command line prints under ``--json``, or raises a
-:class:`~recon.ReconError` whose ``kind`` says what to do next. Missions live under
-``<root>/.recon/``: ``root`` is the project, by default the git root of the working
-directory (or the working directory outside a repository), and a ``local`` source's
-relative ``url`` is relative to it too, so a caller need not change directory. A config
-path of ``-`` reads standard input. The root is built on each call, so importing ``recon``
-wires nothing and a call sees the plugins and the environment of that moment.
+``open(root, extensions=, landing=)`` gives a session, :class:`~recon.Recon`, whose
+``collection`` and ``observation`` are the two layers' operations. Each function below is one
+of them, run over the default session of its ``root``: opened on the first call for that
+project and kept, so importing ``recon`` wires nothing, and a call sees the environment of
+that moment. Each returns a versioned document (``recon.v1.<shape>``) whose ``document()`` is
+what the command line prints under ``--json``, or raises a :class:`~recon.ReconError` whose
+``kind`` says what to do next. Missions live under ``<root>/.recon/``: ``root`` is the project,
+by default the git root of the working directory (or the working directory outside a
+repository), and a ``local`` source's relative ``url`` is relative to it too, so a caller need
+not change directory. A config is the mission's own, a file (``-``: standard input), or a value
+(a ``ReconConfig`` or a mapping), which is never written as the mission's.
 """
 
 from __future__ import annotations
@@ -22,6 +25,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from recon.composition import Recon
+    from recon.core.domain.archives import Store
+    from recon.core.domain.collector import Plugins
     from recon.core.domain.documents import (
         Capture,
         ChangesSince,
@@ -32,29 +37,54 @@ if TYPE_CHECKING:
         RecordsSince,
         ScheduleDocument,
         SchedulesDocument,
+        SchemaDocument,
         StatusDocument,
         StreamDocument,
         SubscriptionDocument,
         SurveyDocument,
         TemplatesDocument,
         TickDocument,
+        TypesDocument,
     )
     from recon.core.domain.errors import Problem
+    from recon.core.domain.missions import ConfigGiven
     from recon.core.domain.schedule import Platform
     from recon.core.domain.stream import Stop
 
 
 def _root(project: Path | None) -> Recon:
-    from recon.composition import root
+    from recon.composition import default
 
-    return root(project=project)
+    return default(project)
 
 
-def open(root: Path | None = None) -> Recon:  # noqa: A001 (the library's entry point)
+def open(  # noqa: A001 (the library's entry point)
+    root: Path | None = None,
+    *,
+    extensions: Plugins | None = None,
+    landing: Store | None = None,
+) -> Recon:
     """recon opened over the project ``root`` (default: the git root of the working directory,
     or the working directory outside a repository): a session whose ``collection`` is the
-    collect core's operations and whose ``observation`` is the observe layer's."""
-    return _root(root)
+    collect core's operations and whose ``observation`` is the observe layer's.
+    ``extensions`` adds collector types and transforms in-process, beside the installed ones,
+    under names of their own (UsageError for a name taken); ``landing`` is where its acts land
+    and are read back (default: the project's archive directory). Each call opens a session of
+    its own."""
+    from recon.composition import open_session
+
+    return open_session(root, extensions=extensions, landing=landing)
+
+
+def types(*, root: Path | None = None) -> TypesDocument:
+    """Every collector type a mission may name, with its config's JSON Schema, how its records
+    end and what it can do; every source kind; every transform. ``recon.v1.types``."""
+    return _root(root).collection.types()
+
+
+def schema() -> SchemaDocument:
+    """The JSON Schema of a mission's config. ``recon.v1.mission-config``."""
+    return _root(None).collection.schema()
 
 
 def init(
@@ -77,7 +107,7 @@ def init(
 def plan(
     name: str,
     *,
-    config: Path | None = None,
+    config: ConfigGiven = None,
     replace: bool = False,
     stream: str | None = None,
     windows: int | None = None,
@@ -112,7 +142,7 @@ def plan(
 def survey(
     name: str,
     *,
-    config: Path | None = None,
+    config: ConfigGiven = None,
     replace: bool = False,
     on_event: Callable[[dict[str, Any]], None] | None = None,
     interval: tuple[datetime, datetime] | None = None,
@@ -142,7 +172,7 @@ def stream(
     windows: int | None = None,
     until: datetime | None = None,
     forever: bool = False,
-    config: Path | None = None,
+    config: ConfigGiven = None,
     replace: bool = False,
     on_event: Callable[[dict[str, Any]], None] | None = None,
     stop: Stop | None = None,

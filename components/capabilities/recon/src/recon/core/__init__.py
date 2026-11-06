@@ -99,6 +99,7 @@ from recon.core.domain.errors import (
 from recon.core.domain.missions import (
     MISSION_NAME,
     ConfigFile,
+    ConfigGiven,
     MissionStore,
 )
 from recon.core.domain.models import (
@@ -159,6 +160,7 @@ __all__ = [
     "ChangesSpec",
     "Clock",
     "Collection",
+    "ConfigGiven",
     "CollectorEntry",
     "CollectorType",
     "Committed",

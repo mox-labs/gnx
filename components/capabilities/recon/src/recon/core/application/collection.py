@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-from collections.abc import Callable
+import json
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import date
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from recon.core.application.captures import record_hook_payload
@@ -34,9 +37,13 @@ from recon.core.domain.documents import (
     MissionDocument,
     QueryRows,
     Required,
+    SchemaDocument,
     SourcedValue,
+    SourceKindInfo,
     TemplateInfo,
     TemplatesDocument,
+    TypeInfo,
+    TypesDocument,
     WindowRange,
     failure_kind,
 )
@@ -50,16 +57,18 @@ from recon.core.domain.errors import (
     ReconError,
     UsageError,
 )
+from recon.core.domain.http import reported_url
+from recon.core.domain.missions import ConfigFile, ConfigGiven
+from recon.core.domain.models import ReconConfig
 from recon.core.domain.normalize import apply_normalize
 from recon.core.domain.ranges import fill
 from recon.core.domain.stream import window_opened
 from recon.core.domain.telemetry import QUERY, SURVEY
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Iterator, Mapping
+    from collections.abc import Generator, Iterator
     from contextlib import AbstractContextManager
     from datetime import datetime
-    from pathlib import Path
 
     from recon.core.application.collectors import SurveyCollectors
     from recon.core.application.plan import PlannedRun, PlannedStream
@@ -75,9 +84,9 @@ if TYPE_CHECKING:
     )
     from recon.core.domain.clock import Clock
     from recon.core.domain.collector import Collector, CollectorType, Plugins
-    from recon.core.domain.documents import Capture, TableOutcome, WindowOutcome
-    from recon.core.domain.missions import ConfigFile, MissionStore
-    from recon.core.domain.models import CollectorEntry, ReconConfig, SourceEntry
+    from recon.core.domain.documents import Capture, RecordsKind, TableOutcome, WindowOutcome
+    from recon.core.domain.missions import MissionStore
+    from recon.core.domain.models import CollectorEntry, SourceEntry
     from recon.core.domain.paginate import PageLog
     from recon.core.domain.ranges import RangeRun
     from recon.core.domain.stream import GapLog, Stop
@@ -125,6 +134,9 @@ Sealed = Callable[["Hold", "WindowOutcome"], None]
 
 DEFAULT_TEMPLATE = "code-forensics"
 
+#: Where a config given as a value was read from, as its ``ConfigFile`` says.
+VALUE = "value"
+
 #: Past this many windows, a query of a stream warns (``windows_many``) how to narrow it:
 #: each window is a file DuckDB opens.
 MANY_WINDOWS = 300
@@ -148,6 +160,16 @@ class Prepared:
     def sha256(self) -> str:
         """The digest of the config's bytes: what each archive it lands records."""
         return hashlib.sha256(self.source.text).hexdigest()
+
+    @property
+    def recorded(self) -> dict[str, Any] | None:
+        """What each archive it lands keeps of a config given as a value, which has no file to
+        read again: its data, every URL in it as recon reports one (user information and
+        signature parameters redacted, ``reported_url``). None for a config file: the archive's
+        digest names its bytes."""
+        if self.source.origin != VALUE or not isinstance(self.source.data, dict):
+            return None
+        return {key: _reported(value) for key, value in self.source.data.items()}
 
 
 @dataclass(frozen=True)
@@ -284,9 +306,14 @@ class Collection:
 
     # --- planning ------------------------------------------------------------------------
 
-    def read(self, name: str, config: Path | None = None) -> ConfigFile:
+    def read(self, name: str, config: ConfigGiven = None) -> ConfigFile:
         """The config of the mission ``name``, or the file ``config`` (``-``: standard input),
-        read once: the bytes an act plans and runs. Raises NotFoundError when there is none."""
+        or ``config`` itself, a value (a ``ReconConfig`` or a mapping), read once: the bytes an
+        act plans and runs, and records in each archive it lands. A value's bytes are its
+        canonical JSON, so the same value is the same config. Raises NotFoundError when there
+        is none."""
+        if isinstance(config, ReconConfig | Mapping):
+            return _value(config)
         try:
             return (
                 self._missions.config(name) if config is None
@@ -303,15 +330,16 @@ class Collection:
     def prepare(
         self,
         name: str,
-        config: Path | None = None,
+        config: ConfigGiven = None,
         replace: bool = False,
         *,
         source: ConfigFile | None = None,
     ) -> Prepared:
         """The mission's config read once (or ``source``, read already by :meth:`read`), its
-        plan, and where ``-c`` copies it (None: the mission's own is planned). Raises
-        ConfigError listing every problem, and ConflictError for a ``config`` that differs from
-        the mission's own, unless ``replace``."""
+        plan, and where ``-c`` copies it (None: the mission's own is planned, or a value,
+        which is never kept as the mission's). Raises ConfigError listing every problem, and
+        ConflictError for a config file that differs from the mission's own, unless
+        ``replace``."""
         where = self._missions.where(name)
         source = source if source is not None else self.read(name, config)
         plan = build_plan(
@@ -328,8 +356,10 @@ class Collection:
                 fix=f"fix each problem, then: recon survey {name} --dry-run",
                 complete=plan.complete,
             )
+        if not isinstance(config, Path):  # the mission's own, or a value: nothing to keep
+            return Prepared(source, plan, None)
         current = self._missions.config_text(name)
-        if config is None or current == source.text:
+        if current == source.text:
             return Prepared(source, plan, None)
         if current is not None and not replace:
             raise ConflictError(
@@ -423,6 +453,43 @@ class Collection:
             "tools)",
         )]  # fmt: skip
 
+    def types(self) -> TypesDocument:
+        """Every collector type a mission may name, installed or given, with its config's JSON
+        Schema; every source kind and the type that adds it; every transform; and what failed
+        to load. ``recon.v1.types``."""
+        plugins = self._plugins
+        collectors = []
+        sources = []
+        for name, ct in sorted(plugins.collector_types.items()):
+            records: RecordsKind = (
+                "finite" if not ct.unbounded
+                else "unbounded_source_paced" if ct.paced_by == "source"
+                else "unbounded_recon_paced"
+            )  # fmt: skip
+            capabilities = [flag for flag, has in (("extract", ct.extracts),
+                            ("paginate", ct.paginates), ("preflight", bool(ct.preflight)))
+                            if has]  # fmt: skip
+            collectors.append(TypeInfo(
+                type=name,
+                origin=plugins.collector_packages.get(name, "unknown"),
+                summary=ct.summary,
+                effects=sorted(ct.effects) if ct.effects is not None else "unknown",
+                records_kind=records,
+                capabilities=capabilities,
+                config=ct.settings.model_json_schema() if ct.settings is not None else None,
+                accepts=sorted(ct.accepts_kinds) if ct.accepts_kinds is not None else None,
+            ))  # fmt: skip
+            schema = ct.source_settings.model_json_schema() if ct.source_settings else None
+            sources += [SourceKindInfo(kind=kind, added_by=name, config=schema)
+                        for kind in sorted(ct.source_kinds)]  # fmt: skip
+        installed = self.installed()
+        return TypesDocument(collectors=collectors, sources=sources,
+                             transforms=installed.transforms, broken=installed.broken)  # fmt: skip
+
+    def schema(self) -> SchemaDocument:
+        """The JSON Schema of a mission's config. ``recon.v1.mission-config``."""
+        return SchemaDocument(json_schema=ReconConfig.model_json_schema())
+
     def installed(self) -> InstalledPlugins:
         """The installed collector types and transforms, and what failed to load."""
         plugins = self._plugins
@@ -506,7 +573,8 @@ class Collection:
                     )  # fmt: skip
                     tables = survey.run(
                         full, built.collectors, landed, started=started,
-                        config_sha256=prepared.sha256, resolved=self.resolved(full),
+                        config_sha256=prepared.sha256, config_value=prepared.recorded,
+                        resolved=self.resolved(full),
                         streams=streams, scheduled=scheduled,
                     )  # fmt: skip
                 finally:
@@ -604,6 +672,7 @@ class Collection:
                 until=until,
                 preserve_raw=config.preserve_raw,
                 config_sha256=prepared.sha256,
+                config_value=prepared.recorded,
                 resolved=self.resolved(subset),
                 stop=stop,
                 sealed=sealed,
@@ -834,6 +903,33 @@ class Collection:
             stream=stream,
             window_range=WindowRange(first=selected[0].id, last=last.id, count=len(selected)),
         )
+
+
+def _value(config: ReconConfig | Mapping[str, Any]) -> ConfigFile:
+    """A config given as a value, as if read: its data, and its bytes, its canonical JSON (keys
+    sorted, no spaces), a date or time as ISO 8601."""
+    data: Any = (
+        config.model_dump(mode="json", exclude_unset=True)
+        if isinstance(config, ReconConfig) else dict(config)
+    )  # fmt: skip
+    text = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                      default=_iso)  # fmt: skip
+    return ConfigFile(origin=VALUE, text=text.encode(), data=json.loads(text))
+
+
+def _reported(value: Any) -> Any:
+    """``value`` with each string that is a URL as recon reports one."""
+    if isinstance(value, dict):
+        return {key: _reported(inner) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [_reported(inner) for inner in value]
+    return reported_url(value) if isinstance(value, str) and "://" in value else value
+
+
+def _iso(value: Any) -> str:
+    if isinstance(value, date):
+        return value.isoformat()
+    raise TypeError(f"a config value holds {type(value).__name__}, which no config file can")
 
 
 def ended_of(state: ArchiveState, meta: Mapping[str, Any]) -> Ended | None:

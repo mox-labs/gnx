@@ -420,20 +420,21 @@ class TestLibrarySurface:
         ``ack``, ``unsubscribe`` and the ``SubscriptionDocument`` the last two return; (ruling
         R4) ``deliver`` and its ``DeliverDocument``. Changed (step M3): ``open``, which gives
         the session (``Recon``) whose ``collection`` and ``observation`` are the two layers'
-        operations."""
+        operations. Changed (step M4): ``types`` and ``schema``, and the ``TypesDocument`` and
+        ``SchemaDocument`` they return: what a mission may name, as data."""
         operations = {"init", "plan", "survey", "status", "query", "templates", "capture",
                       "survey_failure", "error_document", "skill", "skill_references",
                       "configure_telemetry", "read_since", "watch", "stream",
                       "stream_failure", "schedule_install", "schedule_list",
                       "schedule_remove", "schedule_status", "schedule_tick",
                       "changes_since", "subscribe", "ack", "unsubscribe",
-                      "deliver", "open"}  # fmt: skip
+                      "deliver", "open", "types", "schema"}  # fmt: skip
         documents = {"MissionDocument", "PlanDocument", "SurveyDocument", "TableOutcome",
                      "StatusDocument", "QueryRows", "TemplatesDocument", "Capture",
                      "ErrorDocument", "RecordsSince", "StreamDocument",
                      "WindowOutcome", "ScheduleDocument", "SchedulesDocument",
                      "TickDocument", "ChangesSince", "SubscriptionDocument",
-                     "DeliverDocument"}  # fmt: skip
+                     "DeliverDocument", "TypesDocument", "SchemaDocument"}  # fmt: skip
         errors = {"ReconError", "UsageError", "ConfigError", "ConflictError", "NotFoundError",
                   "QueryError", "CollectionError", "Problem"}  # fmt: skip
         tables = {"ERROR_KINDS", "EXIT_CODES", "EXIT_MEANINGS", "EXIT_NEXT", "PROBLEM_KINDS",
@@ -599,4 +600,5 @@ def test_the_public_names_are_the_ones_callers_use() -> None:
         "subscribe", "ack", "unsubscribe", "SubscriptionDocument",
         "deliver", "DeliverDocument",
         "open", "Recon",
+        "types", "TypesDocument", "schema", "SchemaDocument",
     }  # fmt: skip

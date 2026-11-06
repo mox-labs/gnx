@@ -83,12 +83,19 @@ def _telemetry_warnings() -> list[dict[str, Any]]:
 
 
 def _session(project: Path | None = None) -> recon.Recon:
-    """The recon the commands run over: ``recon.open(project)``, or what the caller of
-    ``main`` passed as its ``obj``, a session over other ports (a test's, built by
-    ``recon.composition.root`` with fakes)."""
+    """The recon the commands run over: ``recon.open`` over ``project``, or else the project
+    ``--root`` (or ``RECON_ROOT``) names, or else the one around the working directory; or what
+    the caller of ``main`` passed as its ``obj``, a session over other ports (a test's, built
+    by ``recon.composition.root`` with fakes)."""
     context = click.get_current_context(silent=True)
-    given = context.find_root().obj if context is not None else None
-    return recon.open(project) if given is None else given
+    if context is None:
+        return recon.open(project)
+    top = context.find_root()
+    if top.obj is not None:
+        session: recon.Recon = top.obj
+        return session
+    given = top.meta.get("recon.root")
+    return recon.open(project or (given.resolve() if given is not None else None))
 
 
 def _interrupt(signum: int, frame: FrameType | None) -> NoReturn:
@@ -183,8 +190,16 @@ class _Group(click.RichGroup):
     metavar="NAME",
     help="With --skill: print one reference instead (" + ", ".join(recon.skill_references()) + ")",
 )
+@click.option(
+    "--root",
+    type=click.Path(file_okay=False, path_type=Path),
+    envvar="RECON_ROOT",
+    default=None,
+    help="The project whose missions to use (default: $RECON_ROOT, else the git root of the "
+    "working directory, or the working directory outside a repository)",
+)
 @click.pass_context
-def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
+def main(ctx: click.Context, skill: bool, reference: str | None, root: Path | None) -> None:
     """recon: one YAML file names the sources and what to ask them; recon plans it, collects
     the answers into JSONL tables, and answers SQL over them.
 
@@ -200,7 +215,9 @@ def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
     recon schedule install my-scan        run it by the OS scheduler, as schedule: says
     recon subscribe my-scan new-mail      what changed, as a subscription: says; then ack
     recon status                          missions, archives, installed plugins
+    recon types --json                    each collector type, its config's schema
     """
+    ctx.meta["recon.root"] = root
     if reference is not None and not skill:
         raise recon.UsageError("-r/--reference is used with --skill", fix="recon --skill -r <name>")
     if skill:
@@ -1257,6 +1274,45 @@ def templates(as_json: bool) -> None:
         return
     for item in document.templates:
         out.print(f"  [bold]{item.name}[/]  {escape(item.description)}")
+
+
+@main.command(epilog=EXIT_CODES)
+@_json_option
+def types(as_json: bool) -> None:
+    """Every collector type a mission may name as type:, installed or given: whose it is, what
+    it can touch, how its records end, what it can do, and (with --json) its config's JSON
+    Schema; then each source kind, and each transform a normalize spec may name.
+
+    \b
+    recon types
+    recon types --json
+    """
+    document = _session().collection.types()
+    if as_json:
+        _emit(document.document())
+        return
+    for item in document.collectors:
+        effects = ", ".join(item.effects) if isinstance(item.effects, list) else item.effects
+        what = ", ".join(item.capabilities) or "-"
+        out.print(f"  [bold]{item.type}[/]  {escape(item.summary)}  [dim]({item.origin}; "
+                  f"effects: {effects or 'none'}; {item.records_kind}; {what})[/]")  # fmt: skip
+    if document.sources:
+        out.print(
+            "source kinds: " + ", ".join(f"{s.kind} ({s.added_by})" for s in document.sources)
+        )
+    out.print("transforms: " + ", ".join(document.transforms))
+
+
+@main.command(epilog=EXIT_CODES)
+def schema() -> None:
+    """The JSON Schema of a mission's config, as a recon.v1.mission-config document on stdout:
+    the keys recon reads in every mission. A collector entry's and a source's own keys are
+    their type's (recon types --json gives each one's schema).
+
+    \b
+    recon schema
+    """
+    _emit(_session().collection.schema().document())
 
 
 @main.command(epilog=EXIT_CODES)

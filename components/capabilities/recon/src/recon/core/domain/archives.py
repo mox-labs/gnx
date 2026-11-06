@@ -373,6 +373,11 @@ class Archives(Protocol):
         ...
 
 
+class Store(Landing, Archives, Protocol):
+    """Where a session's acts land and are read back from: one adapter keeping both sides of
+    the one storage decision (``recon.open(landing=...)``)."""
+
+
 @dataclass(frozen=True)
 class Rows:
     """``warnings``: a ``table_unreadable`` problem for each table SQL could not read, which

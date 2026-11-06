@@ -7,6 +7,7 @@ What each surface touched in 0.17.0 and 0.18.0 promises: the decision it hides, 
 ## Contents
 
 - [The two layers](#the-two-layers)
+- [Opening recon, and what a mission may name](#opening-recon-and-what-a-mission-may-name)
 - [Ranges: `range:`](#ranges-range)
 - [The plan](#the-plan)
 - [Queries over archives](#queries-over-archives)
@@ -23,6 +24,20 @@ What each surface touched in 0.17.0 and 0.18.0 promises: the decision it hides, 
 **Guarantees.** The core never imports the observe layer; the observe layer imports nothing of the core but `recon.core`'s names (`tests/test_layering.py`, with a planted violation of each). An act the core runs alone lands and commits whole; what changed is derived after its seal (ruling R9). A table sealed under the mission's config with no change summary is **pending**: a change reader waits on it, and the next survey or stream run of that config derives it in its own archive before anything newer.
 
 **Stability:** beta. `recon.core.__all__` is the surface a later split of the layers into two packages keeps; until then a name may move between the layers in a minor release, said in the CHANGELOG.
+
+## Opening recon, and what a mission may name
+
+**Hides:** where recon's state is and what it was built with. A session is opened over values; nothing is discovered behind a caller's back but the installed plugins, once per session.
+
+**Members.** `recon.open(root=None, *, extensions=None, landing=None)` gives a session (`recon.Recon`). `extensions`: collector types and transforms given in-process, beside the installed ones, each under a name of its own. `landing`: where its acts land and are read back (a `Store`: `Landing` and `Archives`), which recon's query engine must read. A config is the mission's own, a file (`-`: standard input), or a value (a `ReconConfig` or a mapping). `recon.types()` (`recon.v1.types`): each collector type, its origin, effects, `records_kind`, capabilities and config JSON Schema; each source kind; each transform. `recon.schema()` (`recon.v1.mission-config`): the config's JSON Schema. The command line: `--root DIR` (or `RECON_ROOT`), `recon types [--json]`, `recon schema`.
+
+**Defaults.** The project is the git root of the working directory, else the working directory. No extensions. The landing is the project's archive directory. The module functions run over one session per project, opened on first use and kept for the process.
+
+**Failure.** `usage` (exit 2): an extension that takes an installed name, a landing recon cannot query. A value config that is invalid fails as a file does (`config`, exit 3, every problem).
+
+**Guarantees.** A value config is never written as the mission's `config.yaml`; each archive it lands keeps it as data under `config` in its meta, every URL in it reported as recon reports one (user information and signature parameters redacted). The plan's `provenance` gives every effective value of the config's own keys, as written (`mission`) or filled in (`recon`), with a note where unset means something.
+
+**Stability:** beta until the registry lands (step M5): `extensions` changes shape there.
 
 ## Ranges: `range:`
 

@@ -50,7 +50,7 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from recon.adapters._out.private_files import make_dirs
 from recon.core.domain.archives import Rows, table_name
@@ -81,10 +81,12 @@ class TableFile(Protocol):
     def sealed(self) -> bool: ...
 
 
+@runtime_checkable
 class TableFiles(Protocol):
     """What this adapter needs of the archive adapter it is built with: each archive's tables,
     each with its file (raising QueryError for a layout it does not read). File locations pass
-    between the two adapters alone."""
+    between the two adapters alone; the composition root asks a landing it is given whether it
+    is one (``isinstance``)."""
 
     def tables(self, ref: ArchiveRef) -> Sequence[TableFile]: ...
 

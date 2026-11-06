@@ -15,14 +15,21 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
     from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.models import ReconConfig
 
 
 #: A mission's name: letters, digits, ``.``, ``_`` and ``-``, starting with a letter or a digit,
 #: so it is one safe name in every store, and one word in every file a schedule projects.
 MISSION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+#: A config as an operation takes it: a file (``-``: standard input), a value (a
+#: ``ReconConfig``, or the mapping a YAML file would hold), or None, the mission's own.
+type ConfigGiven = Path | ReconConfig | Mapping[str, Any] | None
 
 
 @dataclass(frozen=True)

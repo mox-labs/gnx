@@ -719,6 +719,7 @@ class Stream:
         until: datetime | None = None,
         preserve_raw: bool = False,
         config_sha256: str | None = None,
+        config_value: Mapping[str, Any] | None = None,
         resolved: Mapping[str, Any] | None = None,
         stop: Stop | None = None,
         sealed: Callable[[Hold, WindowOutcome], None] | None = None,
@@ -738,7 +739,7 @@ class Stream:
         with self._landing.hold(mission, stream=plan.name) as hold:
             return self._run(
                 hold, mission, plan, collect, normalize, close, gaps, pages, windows, until,
-                preserve_raw, config_sha256, dict(resolved or {}), stop, sealed,
+                preserve_raw, config_sha256, config_value, dict(resolved or {}), stop, sealed,
             )  # fmt: skip
 
     def _run(
@@ -755,6 +756,7 @@ class Stream:
         until: datetime | None,
         preserve_raw: bool,
         config_sha256: str | None,
+        config_value: Mapping[str, Any] | None,
         resolved: dict[str, Any],
         stop: Stop | None,
         sealed: Callable[[Hold, WindowOutcome], None] | None,
@@ -791,7 +793,8 @@ class Stream:
             threading.Thread(
                 target=_tick, args=(self._clock, arrivals), name="recon-stream-ticker", daemon=True
             ).start()
-        meta = {"config_sha256": config_sha256, "preserve_raw": preserve_raw, "resolved": resolved}
+        meta = {"config_sha256": config_sha256, "config": config_value,
+                "preserve_raw": preserve_raw, "resolved": resolved}  # fmt: skip
         count, records, dropped = 0, 0, 0
         first: str | None = None
         outcome: WindowOutcome | None = None
@@ -1066,6 +1069,7 @@ class Stream:
                 "format_version": META_FORMAT_VERSION,
                 "recon_version": self._recon_version,
                 "config_sha256": meta["config_sha256"],
+                **({} if meta["config"] is None else {"config": dict(meta["config"])}),
                 "started_at": opened_at,
                 "timestamp": closed_at,
                 "preserve_raw": meta["preserve_raw"],

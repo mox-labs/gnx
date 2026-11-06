@@ -40,13 +40,13 @@ from recon.observe.application.subscriptions import Subscriptions
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterator
     from datetime import datetime
-    from pathlib import Path
 
     from recon.core import (
         Archives,
         ChangesSince,
         Clock,
         ConfigFile,
+        ConfigGiven,
         DeliverDocument,
         EventCallback,
         Hold,
@@ -156,7 +156,7 @@ class Observation:
         self,
         name: str,
         *,
-        config: Path | None = None,
+        config: ConfigGiven = None,
         replace: bool = False,
         stream: str | None = None,
         windows: int | None = None,
@@ -260,7 +260,7 @@ class Observation:
         self,
         name: str,
         *,
-        config: Path | None = None,
+        config: ConfigGiven = None,
         replace: bool = False,
         on_event: EventCallback | None = None,
         interval: tuple[datetime, datetime] | None = None,
@@ -403,7 +403,7 @@ class Observation:
         windows: int | None = None,
         until: datetime | None = None,
         forever: bool = False,
-        config: Path | None = None,
+        config: ConfigGiven = None,
         replace: bool = False,
         on_event: EventCallback | None = None,
         stop: Stop | None = None,

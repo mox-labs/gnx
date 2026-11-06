@@ -109,9 +109,14 @@ class TestTheDefaultsAreFilledAndSaid:
         plan = _plan({"type": "once"}, plugins)
 
         assert plan.valid
-        assert [(v.path, v.value, v.origin) for v in plan.provenance] == [
-            ("collectors.0.retain", "all", "recon")
-        ], "a snapshot keeps its archives as a stream its windows (round-4 review S1)"
+        assert _values(plan)["collectors.0.retain"] == ("all", "recon"), (
+            "a snapshot keeps its archives as a stream its windows (round-4 review S1)"
+        )
+        # Changed requirement (step M4): the plan reports every effective value, so a
+        # snapshot's provenance holds its other keys too, but none of a stream's.
+        stream_keys = ("window", "buffer", "overflow")
+        assert not [v.path for v in plan.provenance
+                    if v.path.split(".")[2:3] and v.path.split(".")[2] in stream_keys]  # fmt: skip
         assert "stream" not in plan.runs[0].document()
 
     def test_window_on_a_type_that_ends_makes_it_a_stream(self, plugins: Plugins) -> None:

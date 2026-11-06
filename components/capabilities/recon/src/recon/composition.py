@@ -27,6 +27,7 @@ command line is such an application.
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
 from functools import partial
 from importlib.metadata import EntryPoint, entry_points
@@ -37,7 +38,7 @@ from recon import __version__
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.cli_collector import PopenRunner
 from recon.adapters._out.command_deliverer import CommandDeliverer
-from recon.adapters._out.duckdb_query import DuckdbJoin, DuckdbQuery
+from recon.adapters._out.duckdb_query import DuckdbJoin, DuckdbQuery, TableFiles
 from recon.adapters._out.event_channel import ThreadChannel
 from recon.adapters._out.markitdown_converter import MarkitdownConverter
 from recon.adapters._out.mission_files import MissionFiles, find_project
@@ -64,6 +65,7 @@ from recon.core.application.collectors import (
 )
 from recon.core.application.stream import StreamStop as StreamStop
 from recon.core.domain.collector import BrokenPlugin, CollectorType, Plugins
+from recon.core.domain.errors import UsageError
 from recon.core.domain.telemetry import Telemetry
 from recon.observe.application.changes import MEMORY_KEYS
 from recon.observe.application.observation import Observation
@@ -74,6 +76,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from recon.core.application.collection import ChannelFactory
+    from recon.core.domain.archives import Store
     from recon.core.domain.clock import Clock
     from recon.core.domain.collector import Transform
     from recon.core.domain.converters import DocumentConverter
@@ -200,7 +203,7 @@ def root(
     project: Path | None = None,
     clock: Clock | None = None,
     plugins: Plugins | None = None,
-    archives: Callable[[Path], ArchiveFiles] | None = None,
+    archives: Callable[[Path], Store] | None = None,
     requester: RequesterFactory | None = None,
     shell: ShellRunner | None = None,
     converter: DocumentConverter | None = None,
@@ -242,6 +245,13 @@ def root(
     missions = MissionFiles(found, clock)
     home = missions.root
     store = archives(home) if archives is not None else ArchiveFiles(home, clock)
+    if not isinstance(store, TableFiles):
+        raise UsageError(
+            f"the landing given ({type(store).__name__}) keeps its tables where recon's query "
+            "engine cannot read them",
+            fix="land into recon's archive directory (no landing), or one built over another "
+            "directory: recon.open(landing=...) with recon's own archive store",
+        )
     ports = CollectorPorts(
         requester=requester or partial(_http_requester, clock),
         converter=converter or MarkitdownConverter(),
@@ -306,6 +316,60 @@ def root(
         deliverer=deliverer or CommandDeliverer(process_env, path=host.path),
     )
     return Recon(collection, observation)
+
+
+def open_session(
+    project: Path | None = None,
+    *,
+    extensions: Plugins | None = None,
+    landing: Store | None = None,
+) -> Recon:
+    """recon opened over ``project`` (default: the git root of the working directory, or the
+    working directory outside a repository), with the installed collector types and transforms
+    and the ones ``extensions`` gives in-process (none may take an installed one's name), its
+    acts landing in ``landing`` (default: the project's archive directory). Each call opens a
+    session of its own."""
+    plugins = _with(load_plugins(), extensions)
+    given = None if landing is None else (lambda home: landing)
+    return root(project=project, plugins=plugins, archives=given)
+
+
+def _with(installed: Plugins, given: Plugins | None) -> Plugins:
+    """``installed`` with ``given``'s collector types and transforms, each named as given and
+    said to be ``in_process``; UsageError for a name taken already."""
+    if given is None:
+        return installed
+    taken = sorted(set(given.collector_types) & set(installed.collector_types)) + sorted(
+        f"${name}" for name in set(given.transforms) & set(installed.transforms)
+    )
+    if taken:
+        raise UsageError(
+            f"an extension given takes a name an installed one has: {', '.join(taken)}",
+            fix="give it a name of its own",
+            details={"value": taken},
+        )
+    return Plugins(
+        {**installed.collector_types, **given.collector_types},
+        {**installed.transforms, **given.transforms},
+        installed.broken + given.broken,
+        {**installed.collector_packages, **dict.fromkeys(given.collector_types, "in_process")},
+    )
+
+
+#: The session each project's module functions run over, made on first use.
+_DEFAULTS: dict[tuple[Path, bool], Recon] = {}
+_DEFAULTS_HELD = threading.Lock()
+
+
+def default(project: Path | None = None) -> Recon:
+    """The session the module functions run over for ``project`` (None: the project the working
+    directory is in, found again each call), opened once and kept: the plugins and adapters of
+    its first use, the environment as it is at each call."""
+    key = (project.resolve(), True) if project is not None else (find_project(Path.cwd())[0], False)
+    with _DEFAULTS_HELD:
+        if key not in _DEFAULTS:
+            _DEFAULTS[key] = root(project=project)
+        return _DEFAULTS[key]
 
 
 def _scheduler(env: Mapping[str, str], platform: Platform | None) -> Scheduler:

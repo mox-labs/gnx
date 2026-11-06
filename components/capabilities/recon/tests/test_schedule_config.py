@@ -43,7 +43,11 @@ class TestTheDefaults:
         assert plan.valid and plan.config is not None
         assert plan.config.schedule is None
         assert plan.config.deadline is None, "an unscheduled mission keeps no deadline by default"
-        assert not any(path.startswith(("schedule", "deadline")) for path in _values(plan))
+        assert not any(path.startswith("schedule") for path in _values(plan))
+        # Changed requirement (step M4, ruling G2): a default is never hidden, so the plan
+        # reports the deadline an unscheduled mission keeps: none, said as no bound.
+        value, origin, note = _values(plan)["deadline"]
+        assert (value, origin) == (None, "recon") and note.startswith("none: no bound")
 
     def test_every_alone_misses_once_and_bounds_each_tick_at_0_8_of_every(
         self, plugins: Plugins

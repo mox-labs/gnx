@@ -715,6 +715,64 @@ class TemplatesDocument(Document):
     templates: list[TemplateInfo]
 
 
+# --- discovery ------------------------------------------------------------------------------
+
+#: How a collector type's records end: ``finite`` (each run's do), or never, its stream paced by
+#: recon (it reads the next when ready: a file, a command) or by its source (which sends whether
+#: recon is ready or not: server-sent events).
+RecordsKind = Literal["finite", "unbounded_recon_paced", "unbounded_source_paced"]
+
+
+class TypeInfo(Document):
+    """One collector type a mission may name as ``type:``: whose it is (``origin``: ``recon``,
+    the distribution that installed it, or ``in_process`` for one given to ``recon.open``),
+    what it is for, what running it can touch (``effects``, ``unknown`` when it does not
+    say), how its records end (``records_kind``), what it can do (``capabilities``), the JSON
+    Schema of the keys an entry of it takes beyond recon's own (``config``, None: none), and
+    the source kinds it runs against (``accepts``, None: any)."""
+
+    type: str
+    origin: str
+    summary: str
+    effects: list[str] | Literal["unknown"]
+    records_kind: RecordsKind
+    capabilities: list[str]
+    config: dict[str, Any] | None = None
+    accepts: list[str] | None = None
+
+
+class SourceKindInfo(Document):
+    """One catalog source kind (a source's ``type:``): the collector type that adds it, and the
+    JSON Schema of the keys a source of it takes beyond every source's (``config``, None: none,
+    so it needs a ``url``)."""
+
+    kind: str
+    added_by: str
+    config: dict[str, Any] | None = None
+
+
+class TypesDocument(Document):
+    """What a mission may name: every collector type installed or given, every source kind,
+    every transform (as a normalize spec names it, ``$name``), and what failed to load."""
+
+    schema_: Literal["recon.v1.types"] = Field(default="recon.v1.types", alias="schema")
+    collectors: list[TypeInfo]
+    sources: list[SourceKindInfo]
+    transforms: list[str]
+    broken: list[BrokenPluginInfo] = []
+
+
+class SchemaDocument(Document):
+    """The JSON Schema of a mission's config, ``recon.v1.mission-config``: the keys recon reads
+    in every mission. A collector entry's and a source's own keys are their type's
+    (``recon types --json`` gives each one's schema), so they are open here."""
+
+    schema_: Literal["recon.v1.mission-config"] = Field(
+        default="recon.v1.mission-config", alias="schema"
+    )
+    json_schema: dict[str, Any]
+
+
 # --- captures -------------------------------------------------------------------------------
 
 

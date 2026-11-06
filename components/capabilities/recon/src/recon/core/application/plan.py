@@ -347,6 +347,7 @@ def build_plan(
             schedule=schedule,
             subscriptions=[subscription for _, subscription in subscriptions],
         )
+        provenance += effective(config, set(raw), provenance)
     return Plan(
         config=config,
         runs=runs,
@@ -1414,6 +1415,67 @@ def _changes_problems(i: int, entry: CollectorEntry, is_stream: bool) -> list[Pr
             )
         )
     return problems
+
+
+#: What a key left unset (None, or an empty string) means, by its path, ``*`` for a list
+#: position.
+_NONE_MEANS = {
+    "deadline": "none: no bound on the survey as a whole; each table keeps its own deadline: "
+    "and each request its source's timeout",
+    "collectors.*.deadline": "none: no bound of its own beyond the survey's deadline:",
+    "collectors.*.extract": "none: each record is the body as parsed",
+    "collectors.*.normalize": "none: each record is kept as collected",
+    "collectors.*.source": "none: run against every catalog source of a kind its type accepts",
+    "catalog.*.user_agent": "none: recon's own User-Agent",
+    "catalog.*.auth.headers_helper": "none: no helper prints this source's headers",
+    "catalog.*.auth.token": "none: the source is sent no credential",
+}
+
+
+def effective(
+    config: ReconConfig, written: set[str], said: Sequence[SourcedValue]
+) -> list[SourcedValue]:
+    """Every effective value of the config's own keys that ``said`` does not already give, by
+    its path, as the mission wrote it (``mission``) or as recon filled it in (``recon``), with
+    why when unset means something (``note``): the top level (``written`` names the keys the
+    mission wrote there), each catalog source, each collector entry and each subscription. A
+    section an entry leaves out that turns a feature on (``window:``, ``paginate:``,
+    ``changes:``, ``range:``) is off, and is no default; a type's own settings are the
+    mission's, shown in each run; and a section ``said`` reports a key of (a stream's window,
+    a crawl, a range) is that report's to say, a bound left unset there being no bound. A
+    value is JSON data, as ``model_dump(mode="json")`` gives it."""
+    covered = {value.path for value in said}
+    found: list[SourcedValue] = []
+
+    def taken(path: str) -> bool:
+        return path in covered or any(path.startswith(f"{c}.") for c in covered)
+
+    def walk(model: BaseModel, at: str, given: set[str]) -> None:
+        dumped = model.model_dump(mode="json")
+        for name, info in type(model).model_fields.items():
+            path = f"{at}.{name}" if at else name
+            if taken(path) or (at == "" and name in ("catalog", "collectors", "subscriptions")):
+                continue
+            value = getattr(model, name)
+            if isinstance(value, BaseModel):
+                if any(c.startswith(f"{path}.") for c in covered):
+                    continue  # a section its own reporter said: what it says of it stands
+                walk(value, path, set(value.model_fields_set) if name in given else set())
+                continue
+            if value is None and name not in given and _model_in(info.annotation) is not None:
+                continue  # a section left out: its feature is off
+            key = ".".join("*" if part.isdigit() else part for part in path.split("."))
+            note = _NONE_MEANS.get(key, "") if value in (None, "") else ""
+            found.append(SourcedValue(path=path, value=dumped[name],
+                                      origin="mission" if name in given else "recon",
+                                      note=note))  # fmt: skip
+
+    walk(config, "", written)
+    for section, items in (("catalog", config.catalog), ("collectors", config.collectors),
+                           ("subscriptions", config.subscriptions)):  # fmt: skip
+        for i, item in enumerate(items):
+            walk(item, f"{section}.{i}", set(item.model_fields_set))
+    return found
 
 
 def _rate_limits(sources: list[tuple[int, SourceEntry]], used: set[str]) -> list[SourcedValue]:
