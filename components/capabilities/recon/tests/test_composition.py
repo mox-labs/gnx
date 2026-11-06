@@ -1,46 +1,62 @@
 """Collector types and transforms load from matrix's registry, at recon's points; a broken
 plugin breaks nothing else."""
 
+from __future__ import annotations
+
 import json
 import subprocess
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
-from pathlib import Path
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import pytest
 
 from recon._matrix import COLLECTOR, TRANSFORM, Register, register, short, type_url
+from recon.adapters._out.capture_files import MissionCaptureLogs
 from recon.adapters._out.cli_collector import PopenRunner
 from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.composition import load_plugins
 from recon.core.application.collectors import (
+    ActCollectors,
     CollectorPorts,
+    MissionPorts,
     ScopedEnv,
-    SurveyCollectors,
 )
 from recon.core.application.collectors import build_collectors as build
 from recon.core.application.plan import build_plan
-from recon.core.domain.capture import CaptureLog
-from recon.core.domain.collector import Collector, CollectorContext, CollectorType, Plugins
+from recon.core.domain.collector import Collector, Effect, Item, Plugins, Position, Record, Run
 from recon.core.domain.deadline import Deadline
-from recon.core.domain.documents import TableOutcome
 from recon.core.domain.errors import CollectionError, UsageError
 from recon.core.domain.http import HttpResponse
-from recon.core.domain.models import CollectorEntry, ReconConfig, SourceEntry
+from recon.core.domain.models import ReconConfig, SourceEntry
 from recon.core.domain.telemetry import Telemetry
-from tests.recon_fakes import EmptyCollector, NoConverter, ScriptedRequester, building
+from recon.testing import each_record, records
+from tests.recon_fakes import (
+    EmptyCollector,
+    FakeCollector,
+    ScriptedRequester,
+    building,
+    installed,
+    run_for,
+)
 from tests.recon_fakes import run_survey as run
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from recon.core.domain.documents import TableOutcome
 
 #: Telemetry with no sinks, for building collectors outside a survey.
 QUIET = Telemetry([], SystemClock())
+
+#: The built-in collector types (ruling R10 folded ``web`` into ``api``).
+BUILTINS = {"api", "cli", "capture", "mcp", "tail", "sse"}
 
 
 #: Ports to build collectors over that reach nothing: no test here sends a request.
 PORTS = CollectorPorts(
     requester=lambda telemetry, deadline, rate_limiter: ScriptedRequester({}),
-    converter=NoConverter(),
     shell=PopenRunner(),
     user_agent=DEFAULT_USER_AGENT,
     clock=SystemClock(),
@@ -54,8 +70,15 @@ def build_collectors(
     telemetry: Telemetry,
     *,
     env: Mapping[str, str],
-) -> SurveyCollectors:
-    return build(registry, PORTS, env, mission_dir, config, telemetry, Deadline(SystemClock()))
+) -> ActCollectors:
+    own = MissionPorts(
+        credentials=lambda scoped, deadline: Credentials(
+            scoped, mission_dir, PopenRunner(), deadline
+        ),  # fmt: skip
+        capture_logs=MissionCaptureLogs(mission_dir),
+        roots=(mission_dir,),
+    )
+    return build(registry, PORTS, env, own, config, telemetry, Deadline(SystemClock()))
 
 
 def test_builtins_register_at_recon_s_points_through_matrix_s_entry_point() -> None:
@@ -63,7 +86,10 @@ def test_builtins_register_at_recon_s_points_through_matrix_s_entry_point() -> N
     at recon's points on matrix's registry, from its ``matrix.extensions`` entry point:
     ``mcp`` among them, the type added after the others with no edit to the plan or survey."""
     registry = load_plugins()
-    assert {"api", "cli", "web", "capture", "mcp", "tail", "sse"} <= set(registry.collector_types)
+    assert set(registry.collector_types) >= BUILTINS
+    assert "web" not in registry.collector_types, "folded into api (ruling R10)"
+    assert set(registry.source_kinds) >= {"api", "file", "local", "mcp"}
+    assert set(registry.converters) >= {"json", "xml", "lines", "document", "mcp_result"}
     assert {"html2text", "inverted_index", "join", "first", "markitdown"} <= set(
         registry.transforms
     )
@@ -83,22 +109,18 @@ def test_a_built_in_keeps_its_short_name_and_any_other_its_type_url() -> None:
 def test_each_collector_type_says_the_package_that_registered_it() -> None:
     """Polish R6: a warning about a type can name whose it is. recon's own types are
     registered by recon; one registered in-process is ``in_process``."""
-    registry = load_plugins([_registers(COLLECTOR, "acme.v1.collector.good", GOOD)])
-    for name in ("api", "cli", "web", "capture", "mcp", "tail", "sse"):
-        assert registry.collector_packages[name] == "recon", name
-    assert registry.collector_packages["acme.v1.collector.good"] == "in_process"
+    registry = load_plugins([_registers(COLLECTOR, "acme.v1.collector.good", _Good)])
+    for name in BUILTINS:
+        assert registry.collector_types[name].package == "recon", name
+    assert registry.collector_types["acme.v1.collector.good"].package == "in_process"
 
 
-def test_the_types_that_read_extract_say_so() -> None:
-    """A survey suggests a missing ``extract:`` only for a type that takes one."""
-    types = load_plugins().collector_types
-    assert {name for name in ("api", "cli", "web", "capture") if types[name].extracts} == {
-        "api",
-        "capture",
-    }
+class _Good(FakeCollector):
+    effects = frozenset({"network"})
 
 
-GOOD = CollectorType(create=lambda ctx: EmptyCollector(), effects=frozenset({"network"}))
+#: A collector type's build: what an entry at recon.collector registers.
+GOOD = _Good
 
 
 def _shout(value: Any) -> str:
@@ -107,8 +129,12 @@ def _shout(value: Any) -> str:
 
 
 def _registers(point: str, url: str, value: object) -> Register:
+    """An in-process extension registering ``value`` at ``point``: a collector type's class,
+    built with no need, or what a transform's entry gives."""
+
     def register(registry: Any) -> None:
-        registry.register(point, url, lambda: value)
+        build = value if isinstance(value, type) else (lambda: value)
+        registry.register(point, url, build)
 
     return register
 
@@ -121,7 +147,7 @@ def test_an_extension_that_fails_to_load_is_quarantined_whole_and_others_load(
     from matrix import Extension, Registry
 
     def explodes(registry: Any) -> None:
-        registry.register(COLLECTOR, "boom.v1.collector.half", lambda: GOOD)
+        registry.register(COLLECTOR, "boom.v1.collector.half", GOOD)
         raise RuntimeError("boom on import")
 
     def installed() -> Registry:
@@ -149,16 +175,19 @@ def test_an_entry_that_builds_the_wrong_thing_is_reported_and_others_load() -> N
     assert "acme.v1.collector.good" in plugins.collector_types
     by_name = {b.name: b.error for b in plugins.broken}
     assert set(by_name) == {"acme.v1.collector.wrong", "acme.v1.transform.nope"}
-    assert "expected a recon CollectorType" in by_name["acme.v1.collector.wrong"]
+    assert "its build gave a int, which lacks" in by_name["acme.v1.collector.wrong"]
 
 
 def test_a_plugin_type_declares_a_stream_through_the_point_a_built_in_uses() -> None:
-    """ACES, extensible: a third party's type that never ends declares ``unbounded`` and
-    ``paced_by`` on its ``CollectorType``, registered at ``recon.collector`` as ``tail`` and
-    ``sse`` are, and the plan makes a stream of it with the defaults those declare."""
-    feed = CollectorType(create=lambda ctx: EmptyCollector(), effects=frozenset({"network"}),
-                         unbounded=True, paced_by="source")  # fmt: skip
-    plugins = load_plugins([_registers(COLLECTOR, "acme.v1.collector.feed", feed)])
+    """ACES, extensible: a third party's type that never ends declares so in its
+    ``records``, registered at ``recon.collector`` as ``tail`` and ``sse`` are, and the plan
+    makes a stream of it with the defaults that declares."""
+
+    class Feed(FakeCollector):
+        effects = frozenset({"network"})
+        records = "unbounded_source_paced"
+
+    plugins = load_plugins([_registers(COLLECTOR, "acme.v1.collector.feed", Feed)])
 
     plan = build_plan({"collectors": [{"name": "ticks", "type": "acme.v1.collector.feed"}]},
                       plugins, {})  # fmt: skip
@@ -191,10 +220,10 @@ def test_a_factory_that_raises_is_reported_and_others_build(tmp_path: Path) -> N
 
     registry = load_plugins()
 
-    def explode(ctx: CollectorContext) -> NoReturn:
+    def explode(**needs: Any) -> NoReturn:
         raise ValueError("no credentials file")
 
-    registry.collector_types["fragile"] = replace(registry.collector_types["cli"], create=explode)
+    registry.collector_types["fragile"] = replace(registry.collector_types["cli"], build=explode)
     config = _config(
         {"name": "f", "type": "fragile", "run": "true"}, {"name": "c", "type": "cli", "run": "true"}
     )
@@ -208,8 +237,8 @@ def test_only_the_types_a_mission_uses_are_built(tmp_path: Path) -> None:
     factory was a warning in every survey, whether or not the mission used it."""
     registry = load_plugins()
     built: list[str] = []
-    registry.collector_types["unused"] = CollectorType(
-        create=building(built, "unused"), effects=None
+    registry.collector_types["unused"] = installed(
+        "unused", building(built, "unused"), declared=EmptyCollector()
     )
     survey = build_collectors(registry, tmp_path, _config(), QUIET, env={})
     assert set(survey.collectors) == {"cli"} and survey.failed == [] and built == []
@@ -234,15 +263,17 @@ CATALOG = [_source("s2", "S2_KEY"), _source("db", "DB_TOKEN"), _source("soon", "
 
 
 def _plugin_env(tmp_path: Path, *collectors: dict[str, Any]) -> Mapping[str, str]:
-    """The ``ctx.env`` a plugin type named ``probe`` is handed for this mission."""
+    """The ``env`` need a plugin type named ``probe`` is handed for this mission."""
     handed: dict[str, Mapping[str, str]] = {}
 
-    def create(ctx: CollectorContext) -> Collector:
-        handed["env"] = ctx.env
+    def create(*, env: Mapping[str, str]) -> Collector:
+        handed["env"] = env
         return EmptyCollector()
 
     registry = load_plugins()
-    registry.collector_types["probe"] = CollectorType(create=create, effects=None)
+    registry.collector_types["probe"] = installed(
+        "probe", create, needs={"env"}, declared=EmptyCollector()
+    )
     build_collectors(
         registry,
         tmp_path,
@@ -300,8 +331,8 @@ def test_reading_an_undeclared_variable_fails_loudly_with_a_fix(
     assert "auth.token: env:" in (excinfo.value.fix or "")
 
 
-def _reading_home(ctx: CollectorContext) -> Collector:
-    _ = ctx.env["HOME"]
+def _reading_home(*, env: Mapping[str, str]) -> Collector:
+    _ = env["HOME"]
     return EmptyCollector()
 
 
@@ -309,7 +340,9 @@ def test_a_factory_that_reads_an_undeclared_variable_is_reported_with_the_fix(
     tmp_path: Path,
 ) -> None:
     registry = load_plugins()
-    registry.collector_types["eager"] = CollectorType(create=_reading_home, effects=None)
+    registry.collector_types["eager"] = installed(
+        "eager", _reading_home, needs={"env"}, declared=EmptyCollector()
+    )
     config = _config({"name": "e", "type": "eager"})
     built = build_collectors(registry, tmp_path, config, QUIET, env=PROCESS_ENV)
     assert "eager" not in built.collectors
@@ -347,9 +380,11 @@ def test_the_api_collector_still_reads_its_source_s_key(tmp_path: Path) -> None:
     entry = {"name": "p", "type": "api", "source": "s2", "endpoint": "/x"}
     config = _config(entry, catalog=CATALOG)
     collector = ApiCollector(
-        requester, Credentials(ScopedEnv(PROCESS_ENV, {"S2_KEY"}, "api")), DEFAULT_USER_AGENT
+        requester=requester,
+        credentials=Credentials(ScopedEnv(PROCESS_ENV, {"S2_KEY"}, "api")),
+        user_agent=DEFAULT_USER_AGENT,
     )
-    list(collector.collect(config.collectors[0], SourceEntry.model_validate(CATALOG[0])))
+    records(collector, run_for(config.collectors[0], SourceEntry.model_validate(CATALOG[0])))
     assert requester.params == {"k": "s2-secret"}
 
 
@@ -454,44 +489,39 @@ def test_markitdown_does_not_fetch_a_url_a_record_names(tmp_path: Path) -> None:
     assert table.status == "error", rows
     assert table.error is not None
     assert table.error.kind == "config"
-    assert "web" in (table.error.fix or "")
+    assert "response_format: document" in (table.error.fix or "")
 
 
 # --- normalize: is applied to every collector type's records ---------------------------
 
 
-def _returning(collector: Collector) -> Callable[[CollectorContext], Collector]:
-    def create(ctx: CollectorContext) -> Collector:
+def _returning(collector: Collector) -> Callable[..., Collector]:
+    def create(**needs: Any) -> Collector:
         return collector
 
     return create
 
 
-class _RawCollector:
-    """A plugin collector that yields what it read and never looks at ``entry.normalize``."""
+class _RawCollector(FakeCollector):
+    """A plugin collector that gives what it read and never looks at ``entry.normalize``:
+    there is no way for it to (ruling R-NS)."""
+
+    effects: frozenset[Effect] | None = frozenset()
 
     def __init__(self) -> None:
         self.closed = False
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-    ) -> Iterator[dict[str, Any]]:
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
         try:
-            yield {"Title": "A", "meta": {"year": 2020}}
-            yield {"Title": "B", "meta": {"year": 2021}}
+            yield Record({"Title": "A", "meta": {"year": 2020}})
+            yield Record({"Title": "B", "meta": {"year": 2021}})
         finally:
             self.closed = True
 
 
-def _registry_with(name: str, collector: Collector, **fields: Any) -> Plugins:
+def _registry_with(name: str, collector: Collector) -> Plugins:
     registry = load_plugins()
-    registry.collector_types[name] = CollectorType(
-        create=_returning(collector), effects=frozenset(), **fields
-    )
+    registry.collector_types[name] = installed(name, _returning(collector))
     return registry
 
 
@@ -522,24 +552,6 @@ def test_without_a_normalize_spec_a_plugin_collector_s_records_pass_through(tmp_
     assert rows[0] == {"Title": "A", "meta": {"year": 2020}}
 
 
-def test_a_type_that_normalizes_itself_is_not_normalized_twice(tmp_path: Path) -> None:
-    """Applying the spec to already-normalized records would null every column."""
-
-    class Own:
-        def collect(
-            self,
-            entry: CollectorEntry,
-            source: SourceEntry | None,
-            *,
-            captures: CaptureLog | None = None,
-        ) -> Iterator[dict[str, Any]]:
-            yield {"title": "already normalized", "year": 1999}
-
-    registry = _registry_with("own", Own(), normalizes=True)
-    rows = _survey(registry, tmp_path, {"name": "t", "type": "own", "normalize": NORMALIZE})
-    assert rows == [{"title": "already normalized", "year": 1999}]
-
-
 def test_the_built_in_types_are_not_normalized_twice(tmp_path: Path) -> None:
     entry = {
         "name": "t",
@@ -551,19 +563,20 @@ def test_the_built_in_types_are_not_normalized_twice(tmp_path: Path) -> None:
 
 
 def test_stopping_early_closes_the_plugin_s_generator(tmp_path: Path) -> None:
-    """Normalizing must not stand between a plugin and its cleanup (a held connection)."""
+    """recon's normalize: must not stand between a plugin and its cleanup (a held
+    connection)."""
     raw = _RawCollector()
     registry = _registry_with("raw", raw)
     config = ReconConfig.model_validate(
         {"collectors": [{"name": "t", "type": "raw", "normalize": NORMALIZE}]}
     )
     collector = build_collectors(registry, tmp_path, config, QUIET, env={}).collectors["raw"]
-    entry = config.collectors[0]
+    run_ = run_for(config.collectors[0], plugins=registry)
 
-    records = collector.collect(entry, None)
-    assert isinstance(records, Generator)
-    assert next(records) == {"title": "A", "year": 2020}
-    records.close()
+    made = each_record(collector, run_, registry)
+    assert isinstance(made, Generator)
+    assert next(made) == {"title": "A", "year": 2020}
+    made.close()
 
     assert raw.closed
 
@@ -572,25 +585,19 @@ def test_stopping_early_closes_the_plugin_s_generator(tmp_path: Path) -> None:
 
 
 def test_a_collector_type_s_spans_nest_under_its_table(tmp_path: Path) -> None:
-    """``CollectorContext`` carries the survey's telemetry, so a type that does its own I/O
-    (an MCP call) is traced where its table is, not left out of the event log."""
+    """The ``telemetry`` need is the act's, so a type that does its own I/O (an MCP call) is
+    traced where its table is, not left out of the event log."""
 
-    class Traced:
-        def __init__(self, ctx: CollectorContext) -> None:
-            self._telemetry = ctx.telemetry
+    class Traced(FakeCollector):
+        def __init__(self, *, telemetry: Telemetry) -> None:
+            self._telemetry = telemetry
 
-        def collect(
-            self,
-            entry: CollectorEntry,
-            source: SourceEntry | None,
-            *,
-            captures: CaptureLog | None = None,
-        ) -> Iterator[dict[str, Any]]:
+        def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
             with self._telemetry.span("acme.call", {"acme.op": "list"}):
-                yield {"a": 1}
+                yield Record({"a": 1})
 
     registry = load_plugins()
-    registry.collector_types["traced"] = CollectorType(create=Traced, effects=None)
+    registry.collector_types["traced"] = installed("traced", Traced, needs={"telemetry"})
     archive, [table] = run({"collectors": [{"name": "t", "type": "traced"}]}, tmp_path,
                            plugins=registry)  # fmt: skip
     assert table.status == "ok"
@@ -600,23 +607,18 @@ def test_a_collector_type_s_spans_nest_under_its_table(tmp_path: Path) -> None:
     assert call["parent"] == collect["span"] and call["attributes"] == {"acme.op": "list"}
 
 
-class _Server:
+class _Server(FakeCollector):
     """A collector type that starts one stdio server (``cat``) on its first table, asks it
     for every table after, and stops it in ``close()``."""
 
     started: list[subprocess.Popen[str]] = []
     closed: list[subprocess.Popen[str] | None] = []
 
-    def __init__(self, ctx: CollectorContext) -> None:
+    def __init__(self) -> None:
         self._process: subprocess.Popen[str] | None = None
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-    ) -> Iterator[dict[str, Any]]:
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+        entry = run.entry
         if self._process is None:
             self._process = subprocess.Popen(
                 ["cat"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
@@ -628,10 +630,11 @@ class _Server:
         line = self._process.stdout.readline().strip()
         if line == "boom":
             raise KeyboardInterrupt
-        yield {"echo": line, "pid": self._process.pid}
+        yield Record({"echo": line, "pid": self._process.pid})
 
     def close(self) -> None:
-        assert self._process is not None
+        if self._process is None:
+            return
         _Server.closed.append(self._process)
         self._process.terminate()
         self._process.wait()
@@ -641,7 +644,7 @@ def _server_registry() -> Plugins:
     _Server.started.clear()
     _Server.closed.clear()
     registry = load_plugins()
-    registry.collector_types["stdio"] = CollectorType(create=_Server, effects=None)
+    registry.collector_types["stdio"] = installed("stdio", _Server, declared=EmptyCollector())
     return registry
 
 
@@ -671,21 +674,17 @@ def test_a_survey_cut_short_still_ends_its_collectors_sessions(tmp_path: Path) -
 
 
 def test_a_close_that_raises_is_a_warning_and_the_rest_are_closed(tmp_path: Path) -> None:
-    class Fails:
-        def collect(
-            self,
-            entry: CollectorEntry,
-            source: SourceEntry | None,
-            *,
-            captures: CaptureLog | None = None,
-        ) -> Iterator[dict[str, Any]]:
-            yield {"a": 1}
+    class Fails(FakeCollector):
+        def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+            yield Record({"a": 1})
 
         def close(self) -> None:
             raise OSError("socket already gone")
 
     registry = _server_registry()
-    registry.collector_types["fails"] = CollectorType(create=_returning(Fails()), effects=None)
+    registry.collector_types["fails"] = installed(
+        "fails", _returning(Fails()), declared=EmptyCollector()
+    )
     config = {"collectors": [{"name": "f", "type": "fails"}, {"name": "s", "type": "stdio"}]}
     from recon.composition import root
 

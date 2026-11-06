@@ -16,43 +16,35 @@ from click.testing import CliRunner
 import recon
 from recon.adapters._in.cli import main
 from recon.composition import default
-from recon.core.domain.collector import CollectorType
+from recon.core.domain.collector import Record
 from recon.core.domain.errors import UsageError
 from recon.core.domain.models import ReconConfig
+from tests.recon_fakes import FakeCollector
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-    from recon.core.domain.capture import CaptureLog
-    from recon.core.domain.collector import Collector, CollectorContext
-    from recon.core.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.collector import Item, Position, Run
 
 
-class _Numbers:
+class _Numbers(FakeCollector):
     """A collector a program defines for itself: the numbers 1 to 3."""
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-    ) -> Iterator[dict[str, Any]]:
-        return iter([{"n": n} for n in (1, 2, 3)])
+    effects = frozenset()
+
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+        return iter([Record({"n": n}) for n in (1, 2, 3)])
 
 
-def _numbers(ctx: CollectorContext) -> Collector:
-    return _Numbers()
-
-
-NUMBERS = CollectorType(create=_numbers, effects=frozenset())
+#: What the program registers: the collector type's build, which takes no need.
+NUMBERS = _Numbers
 URL = "acme.v1.collector.numbers"
 
 
 def INLINE(registry: Any) -> None:  # noqa: N802 - an extension, named as one
     """A program's own extension, registered in-process at recon's collector point."""
-    registry.register("recon.collector", URL, lambda: NUMBERS)
+    registry.register("recon.collector", URL, NUMBERS)
 
 
 CONFIG = {"collectors": [{"name": "n", "type": URL}]}
@@ -96,7 +88,7 @@ def test_a_config_value_s_credentials_never_reach_its_archive(tmp_path: Path) ->
 
 def test_an_extension_may_not_take_an_installed_type_url(tmp_path: Path) -> None:
     def taking(registry: Any) -> None:
-        registry.register("recon.collector", "recon.v1.collector.api", lambda: NUMBERS)
+        registry.register("recon.collector", "recon.v1.collector.api", NUMBERS)
 
     with pytest.raises(UsageError) as refused:
         recon.open(tmp_path, extensions=[taking])

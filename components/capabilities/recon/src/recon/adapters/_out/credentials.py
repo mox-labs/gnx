@@ -1,9 +1,9 @@
 """Where a source's credential comes from, resolved the one way every collector type resolves
 it (ruling A1; the grammar is :mod:`recon.core.domain.credentials`).
 
-* ``env:NAME``: the variable, from the environment the mission declares for the type
-  (``CollectorContext.env``); unset, there is none, and the request goes without it, which the
-  plan warns about.
+* ``env:NAME``: the variable, from the environment the mission declares for the type (the
+  ``env`` need); unset, there is none, and the request goes without it, which the plan warns
+  about.
 * ``file:PATH``: the file's text, stripped, a relative path being the mission directory's. A
   file its group or others can read is refused (``config``, with the ``chmod`` that fixes it):
   a credential readable by every account on the host is not kept as one, and a scheduled
@@ -13,8 +13,9 @@ it (ruling A1; the grammar is :mod:`recon.core.domain.credentials`).
   string values. One that fails is ``auth`` (no credential was sent); one that prints
   anything else is ``config``.
 
-:class:`Credentials` holds what a survey resolved for each source, so a file is read and a
-helper run once a survey, however many requests (pages, reconnects) a source gets.
+:class:`Credentials` (the ``credentials`` need, ``recon.core.domain.credentials.Credentials``)
+holds what an act resolved for each source, so a file is read and a helper run once an act,
+however many requests (pages, reconnects) a source gets.
 """
 
 from __future__ import annotations
@@ -184,15 +185,25 @@ class Credentials:
         if command is None:
             return {}
         if source.name not in self._helped:
-            if self._shell is None:
-                raise CollectionError(
-                    f"source {source.name!r} names a headers_helper, and this collector was "
-                    "given no shell to run it",
-                    kind="config",
-                    fix="build the collector through recon's root, whose context has a shell",
-                )
-            timeout = source.timeout
-            if self._deadline is not None:
-                timeout = self._deadline.limit(timeout)
-            self._helped[source.name] = helper_headers(command, self._shell, timeout, source.name)
+            self._helped[source.name] = self.helper(command, source)
         return self._helped[source.name]
+
+    def resolve(self, written: str, where: str) -> str | None:
+        """The value an ``env:NAME`` or ``file:PATH`` reference names (a relative ``file:`` is
+        the mission's); None for an unset variable."""
+        return resolve_reference(written, self._env, self._mission_dir, where)
+
+    def helper(self, command: str, source: SourceEntry) -> dict[str, str]:
+        """The headers ``command`` prints, run within the source's ``timeout`` cut to what is
+        left of the act's deadline."""
+        if self._shell is None:
+            raise CollectionError(
+                f"source {source.name!r} names a headers_helper, and these credentials were "
+                "given no shell to run it",
+                kind="config",
+                fix="build the collector through recon's root, which hands it its credentials",
+            )
+        timeout = source.timeout
+        if self._deadline is not None:
+            timeout = self._deadline.limit(timeout)
+        return helper_headers(command, self._shell, timeout, source.name)

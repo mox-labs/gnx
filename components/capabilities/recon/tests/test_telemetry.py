@@ -194,17 +194,18 @@ def test_the_event_log_keeps_its_file_open_and_each_event_is_on_disk_as_it_happe
 def test_a_table_s_progress_is_an_event_at_most_once_a_second(tmp_path: Path) -> None:
     """A5: while a table is written, ``recon.collect.progress`` says how many of its records
     are written, at most once a second by the clock port, inside the table's span."""
+    from recon.core.domain.collector import Record
     from recon.core.domain.models import ReconConfig
-    from tests.recon_fakes import plugins_with, run_survey
+    from tests.recon_fakes import FakeCollector, plugins_with, run_survey
 
     clock = FixedClock()
 
-    class Slow:
-        def collect(self, entry: Any, source: Any, *, captures: Any = None) -> Any:
+    class Slow(FakeCollector):
+        def collect(self, run: Any, resume: Any) -> Any:
             for n in range(5):
                 if n:
                     clock.sleep(0.6)
-                yield {"n": n}
+                yield Record({"n": n})
 
     config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "x"}]})
     archive, _ = run_survey(config, tmp_path, plugins=plugins_with(x=Slow()), clock=clock)

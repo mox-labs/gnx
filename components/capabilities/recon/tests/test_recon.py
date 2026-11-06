@@ -19,57 +19,59 @@ import yaml
 
 import recon
 from recon.adapters._out.api_collector import ApiCollector
-from recon.adapters._out.cli_collector import CliCollector
+from recon.adapters._out.cli_collector import CliCollector, PopenRunner
 from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.http_requester import HttpRequester
 from recon.adapters._out.mission_layout import STATE
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
-from recon.adapters._out.web_collector import WebCollector
+from recon.composition import load_plugins
+from recon.core.application.collectors import ActCollectors, converters_of
 from recon.core.application.survey import Survey
 from recon.core.domain.archives import ArchiveRef
-from recon.core.domain.capture import CaptureLog
-from recon.core.domain.collector import Collector, CollectorContext, CollectorType
-from recon.core.domain.converters import ConversionResult
+from recon.core.domain.collector import Collector, Item, Position, Record, Run
 from recon.core.domain.documents import TableError, TableOutcome, failure_kind
 from recon.core.domain.errors import CollectionError, NoRecordsError, Problem
-from recon.core.domain.models import CollectorEntry, ReconConfig, SourceEntry
+from recon.core.domain.models import ReconConfig
+from recon.core.domain.normalize import BUILTIN_TRANSFORMS
 from recon.core.domain.ratelimit import RateLimiter
 from recon.core.domain.substitution import substitute
 from recon.core.domain.telemetry import Telemetry
 from tests.recon_fakes import (
     ARCHIVE_ID,
+    FakeCollector,
     FixedClock,
     LandedThrough,
     ScriptedRequester,
     WrappingArchives,
     archive_path,
     files_of,
+    installed,
     landing,
     plugins_with,
 )
 from tests.recon_fakes import run_survey as run
 
 
-class _NoOpConverter:
-    """Test-only converter that returns an empty ConversionResult.
-
-    `run()` tests focus on dispatch/sink/error paths; they never exercise
-    the web collector, so the converter never gets called.
-    """
-
-    def convert(self, content: bytes, content_type: str, url: str) -> ConversionResult:
-        return ConversionResult(title="", text="")
+def _built(**collectors: Collector) -> ActCollectors:
+    """An act's collectors, as recon builds them: these, recon's converters, the pure
+    transforms."""
+    return ActCollectors(dict(collectors), [], converters_of(load_plugins()),
+                         dict(BUILTIN_TRANSFORMS))  # fmt: skip
 
 
-def _collectors() -> dict[str, Collector]:
+def _collectors() -> ActCollectors:
     clock = SystemClock()
     req = HttpRequester(RateLimiter(clock), clock)
-    return {
-        "cli": CliCollector(),
-        "api": ApiCollector(req, Credentials({}), DEFAULT_USER_AGENT),
-        "web": WebCollector(req, _NoOpConverter(), DEFAULT_USER_AGENT),
-    }
+    return _built(
+        cli=CliCollector(shell=PopenRunner()),
+        api=ApiCollector(requester=req, credentials=Credentials({}), user_agent=DEFAULT_USER_AGENT),
+    )
+
+
+def _api(requester: Any) -> ActCollectors:
+    return _built(api=ApiCollector(requester=requester, credentials=Credentials({}),
+                                   user_agent=DEFAULT_USER_AGENT))  # fmt: skip
 
 
 class TestSubstitute:
@@ -95,7 +97,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, mission, converter=_NoOpConverter())
+            archive, _ = run(config, mission)
             assert archive.is_dir()
             assert (archive / "test.jsonl").exists()
             assert (archive / "meta.yaml").exists()
@@ -111,7 +113,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, mission, converter=_NoOpConverter())
+            archive, _ = run(config, mission)
             lines = (archive / "data.jsonl").read_text().strip().splitlines()
             records = [json.loads(line) for line in lines]
             assert len(records) == 1
@@ -129,7 +131,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, mission, converter=_NoOpConverter())
+            archive, _ = run(config, mission)
             assert (archive / "first.jsonl").exists()
             assert (archive / "second.jsonl").exists()
 
@@ -149,7 +151,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, mission, converter=_NoOpConverter())
+            archive, _ = run(config, mission)
             assert (archive / "scan-a.jsonl").exists()
             assert (archive / "scan-b.jsonl").exists()
             assert not (archive / "scan.jsonl").exists()
@@ -170,7 +172,7 @@ class TestReconRun:
             )
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, mission, converter=_NoOpConverter())
+            archive, _ = run(config, mission)
             assert (archive / "test.jsonl").exists()
             assert not (archive / "test-arxiv.jsonl").exists()
 
@@ -186,7 +188,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, mission, converter=_NoOpConverter())
+            archive, _ = run(config, mission)
             assert (archive / "solo.jsonl").exists()
 
     def test_a_source_not_in_the_catalog_stops_the_survey_before_it_starts(
@@ -217,7 +219,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, mission, converter=_NoOpConverter())
+            archive, _ = run(config, mission)
             meta = yaml.safe_load((archive / "meta.yaml").read_text())
             assert "timestamp" in meta
             assert meta["tables"][0]["name"] == "meta-test"
@@ -245,7 +247,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, mission, converter=_NoOpConverter())
+            archive, _ = run(config, mission)
             config_text = (mission / ".recon" / "m" / "config.yaml").read_bytes()
             meta = yaml.safe_load((archive / "meta.yaml").read_text())
             records = [json.loads(x) for x in (archive / "typed.jsonl").read_text().splitlines()]
@@ -273,7 +275,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, mission, converter=_NoOpConverter())
+            archive, _ = run(config, mission)
             meta = yaml.safe_load((archive / "meta.yaml").read_text())
             assert meta["tables"][0]["status"] == "error"
             assert meta["tables"][1]["status"] == "ok"
@@ -299,11 +301,11 @@ class TestReconRun:
         """A type unknown to the plan never reaches a survey (the plan refuses it); a type
         whose factory raised does, and its tables fail as config, naming it."""
 
-        def explode(ctx: CollectorContext) -> NoReturn:
+        def explode(**needs: Any) -> NoReturn:
             raise ValueError("no credentials file")
 
         plugins = plugins_with()
-        plugins.collector_types["fragile"] = CollectorType(create=explode, effects=None)
+        plugins.collector_types["fragile"] = installed("fragile", explode, declared=FakeCollector())
         config = {
             "collectors": [
                 {"name": "f", "type": "fragile"},
@@ -329,7 +331,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, mission, converter=_NoOpConverter())
+            archive, _ = run(config, mission)
             lines = (archive / "empty.jsonl").read_text().strip().splitlines()
             records = [json.loads(line) for line in lines]
             assert records == [{"_empty": True}]
@@ -349,9 +351,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, results = run(
-                config, mission, converter=_NoOpConverter(), on_event=events.append
-            )
+            archive, results = run(config, mission, on_event=events.append)
             meta = yaml.safe_load((archive / "meta.yaml").read_text())
 
         assert {r.name: r.records for r in results} == {"empty": 0, "one": 1}
@@ -370,7 +370,7 @@ class TestAtomicJsonlWrite:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, mission, converter=_NoOpConverter())
+            archive, _ = run(config, mission)
             # final file exists, no lingering .tmp
             assert (archive / "t.jsonl").exists()
             assert not (archive / "t.jsonl.tmp").exists()
@@ -537,7 +537,7 @@ class TestIncompleteSentinel:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, results = run(config, mission, converter=_NoOpConverter())
+            archive, results = run(config, mission)
             statuses = {r.name: r.status for r in results}
             assert statuses == {"ok": "ok", "bad": "error"}
             assert (archive / ".incomplete").exists()
@@ -550,7 +550,7 @@ class TestIncompleteSentinel:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, mission, converter=_NoOpConverter())
+            archive, _ = run(config, mission)
             assert not (archive / ".incomplete").exists()
 
 
@@ -563,7 +563,7 @@ class TestPreserveRaw:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, mission, converter=_NoOpConverter())
+            archive, _ = run(config, mission)
             assert not (archive / "raw").exists()
             assert not (archive / "captures.jsonl").exists()
 
@@ -582,7 +582,7 @@ class TestPreserveRaw:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, mission, converter=_NoOpConverter())
+            archive, _ = run(config, mission)
 
             lines = (archive / "captures.jsonl").read_text().splitlines()
             assert len(lines) == 1
@@ -613,7 +613,7 @@ class TestPreserveRaw:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, mission, converter=_NoOpConverter())
+            archive, _ = run(config, mission)
             assert (archive / "t.jsonl").exists()
             assert (archive / "captures.jsonl").exists()
 
@@ -624,7 +624,7 @@ class TestPreserveRaw:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            run(config, mission, converter=_NoOpConverter())
+            run(config, mission)
             store = files_of(mission, FixedClock())
             [ref] = store.archives("m")
             assert [t.output for t in store.tables(ref)] == ["t"]
@@ -675,7 +675,7 @@ class TestEventCallback:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            run(config, mission, converter=_NoOpConverter(), on_event=events.append)
+            run(config, mission, on_event=events.append)
         kinds = [e["kind"] for e in events]
         assert "ok" in kinds and "error" in kinds
         ok_event = next(e for e in events if e["kind"] == "ok")
@@ -689,16 +689,10 @@ class TestAnUnclassifiedTableError:
         kind ``unknown``, whose next step is "report it as a bug in recon", where the
         CHANGELOG and README said ``run_failed``."""
 
-        class Breaks:
-            def collect(
-                self,
-                entry: CollectorEntry,
-                source: SourceEntry | None,
-                *,
-                captures: CaptureLog | None = None,
-            ) -> Iterator[dict[str, Any]]:
+        class Breaks(FakeCollector):
+            def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
                 raise AttributeError("'list' object has no attribute 'items'")
-                yield {}
+                yield Record({})
 
         config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "x"}]})
         archive, [table] = run(config, tmp_path, plugins=plugins_with(x=Breaks()))
@@ -711,19 +705,13 @@ class TestAnUnclassifiedTableError:
 class TestTableErrorCarriesItsFix:
     """A collector that knows the remedy says so; the table's error keeps it."""
 
-    class _Refuses:
+    class _Refuses(FakeCollector):
         def __init__(self, fix: str | None) -> None:
             self._fix = fix
 
-        def collect(
-            self,
-            entry: CollectorEntry,
-            source: SourceEntry | None,
-            *,
-            captures: CaptureLog | None = None,
-        ) -> Iterator[dict[str, Any]]:
+        def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
             raise CollectionError("limit reached", kind="run_failed", fix=self._fix)
-            yield {}
+            yield Record({})
 
     def _error(self, tmp_path: Path, fix: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
         config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "x"}]})
@@ -833,17 +821,11 @@ class TestAnArchiveSaysWhetherItIsBeingWritten:
     def test_writing_while_the_survey_runs_then_complete(self, tmp_path: Path) -> None:
         seen: list[str] = []
 
-        class Looks:
-            def collect(
-                self,
-                entry: CollectorEntry,
-                source: SourceEntry | None,
-                *,
-                captures: CaptureLog | None = None,
-            ) -> Iterator[dict[str, Any]]:
+        class Looks(FakeCollector):
+            def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
                 [archive] = files_of(tmp_path).archives("m")
                 seen.append(files_of(tmp_path).state(archive))
-                yield {"a": 1}
+                yield Record({"a": 1})
 
         config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "x"}]})
         run(config, tmp_path, plugins=plugins_with(x=Looks()))
@@ -987,16 +969,10 @@ class TestAnArchiveSaysWhetherItIsBeingWritten:
     def test_a_table_being_written_is_listed_unsealed(self, tmp_path: Path) -> None:
         listed: list[list[tuple[str, bool]]] = []
 
-        class Looks:
-            def collect(
-                self,
-                entry: CollectorEntry,
-                source: SourceEntry | None,
-                *,
-                captures: CaptureLog | None = None,
-            ) -> Iterator[dict[str, Any]]:
-                yield {"a": 1}
-                if entry.name == "second":
+        class Looks(FakeCollector):
+            def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+                yield Record({"a": 1})
+                if run.entry.name == "second":
                     [archive] = files_of(tmp_path).archives("m")
                     tables = files_of(tmp_path).tables(archive)
                     listed.append([(t.output, t.sealed) for t in tables])
@@ -1018,17 +994,11 @@ class TestAnUnfinishedArchiveReadsIncomplete:
     def test_the_marker_exists_while_the_survey_runs(self, tmp_path: Path) -> None:
         seen: list[bool] = []
 
-        class Looks:
-            def collect(
-                self,
-                entry: CollectorEntry,
-                source: SourceEntry | None,
-                *,
-                captures: CaptureLog | None = None,
-            ) -> Iterator[dict[str, Any]]:
+        class Looks(FakeCollector):
+            def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
                 [archive] = files_of(tmp_path).archives("m")
                 seen.append((archive_path(tmp_path, archive) / ".incomplete").exists())
-                yield {"a": 1}
+                yield Record({"a": 1})
 
         config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "x"}]})
         archive, _ = run(config, tmp_path, plugins=plugins_with(x=Looks()))
@@ -1048,7 +1018,8 @@ class TestAnUnfinishedArchiveReadsIncomplete:
         archives = WrappingArchives(tmp_path / STATE, clock, NoMeta)
         started = clock.now()
         with landing(tmp_path, store=archives) as (archive, where):
-            survey = Survey(clock, recon.__version__, Telemetry([], clock), events.append)
+            survey = Survey(clock, recon.__version__, Telemetry([], clock), events.append,
+                            plugins=load_plugins())  # fmt: skip
             [table] = survey.run(config, _collectors(), archive, started=started)
         assert table.status == "ok"
         assert (where / ".incomplete").exists()
@@ -1064,7 +1035,7 @@ class TestAnUnfinishedArchiveReadsIncomplete:
             {"collectors": [{"name": "t", "type": "cli", "run": "echo '{\"a\": 1}'"}]}
         )
         with landing(tmp_path, store=files_of(tmp_path, clock)) as (archive, _):
-            survey = Survey(clock, recon.__version__, Telemetry([], clock))
+            survey = Survey(clock, recon.__version__, Telemetry([], clock), plugins=load_plugins())
             survey.run(config, _collectors(), archive, started=clock.now())
         assert survey.finished and survey.warnings == []
 
@@ -1095,9 +1066,8 @@ class TestOneRecordHoldingTheRecords:
         requester = ScriptedRequester({"https://export.arxiv.test/api/query": body})
         clock = FixedClock()
         with landing(tmp_path, store=files_of(tmp_path, clock)) as (archive, _):
-            survey = Survey(clock, "0", Telemetry([], clock), extracts={"api"})
-            collectors = {"api": ApiCollector(requester, Credentials({}), DEFAULT_USER_AGENT)}
-            tables = survey.run(config, collectors, archive, started=clock.now())
+            survey = Survey(clock, "0", Telemetry([], clock), plugins=load_plugins())
+            tables = survey.run(config, _api(requester), archive, started=clock.now())
         return tables, survey.warnings
 
     def test_one_record_holding_a_list_of_objects_is_warned_with_the_extract(
@@ -1145,9 +1115,8 @@ class TestNoPlausibleEmptyTable:
         events: list[dict[str, Any]] = []
         clock = FixedClock()
         with landing(tmp_path, store=files_of(tmp_path, clock)) as (archive, where):
-            survey = Survey(clock, "0", Telemetry([], clock), events.append)
-            collectors = {"api": ApiCollector(requester, Credentials({}), DEFAULT_USER_AGENT)}
-            tables = survey.run(config, collectors, archive, started=clock.now())
+            survey = Survey(clock, "0", Telemetry([], clock), events.append, plugins=load_plugins())
+            tables = survey.run(config, _api(requester), archive, started=clock.now())
         return tables, survey.warnings, events, where
 
     @pytest.mark.parametrize(
@@ -1180,15 +1149,9 @@ class TestNoPlausibleEmptyTable:
         """A collector type that says ``NoRecordsError`` after yielding records has not found
         nothing: keeping an empty table would drop what it gave."""
 
-        class Late:
-            def collect(
-                self,
-                entry: CollectorEntry,
-                source: SourceEntry | None,
-                *,
-                captures: CaptureLog | None = None,
-            ) -> Iterator[dict[str, Any]]:
-                yield {"a": 1}
+        class Late(FakeCollector):
+            def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+                yield Record({"a": 1})
                 raise NoRecordsError("too late", problem_kind="x", field="extract", fix="f")
 
         config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "late"}]})

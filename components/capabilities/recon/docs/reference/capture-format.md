@@ -49,9 +49,9 @@ Another tool may write either kind, or a log anywhere else that a `capture` coll
 | `id` | string | yes | Unique within the log. recon writes a uuid4 hex. |
 | `source` | string or null | no | Where it came from: a catalog source name, or an MCP server name. |
 | `collector` | string | yes | What produced it: the output name of a recon collector, or a tool name. |
-| `kind` | string | yes | `http`, `cli`, `web`, `mcp`, `external` or `stream`. |
+| `kind` | string | yes | What `request` holds: recon writes `http`, `cli`, `mcp`, `external` or `stream`; a collector type of another package writes its own (its type's name by default). `web` is read, as recon 0.18 and earlier wrote it. |
 | `request` | object | no | What was asked. Kind-specific (below). |
-| `status` | integer or null | no | HTTP status for `http`/`web`, exit code for `cli`, null when there is none. |
+| `status` | integer or null | no | HTTP status for `http`, exit code for `cli`, null when there is none. |
 | `content_type` | string | no | MIME type of the body, without parameters. Decides how the body is parsed. |
 | `headers` | object | no | Response headers, credential values redacted (below). |
 | `body` | string | yes | Path of the body relative to the log directory. Must be exactly `raw/<sha256>`. |
@@ -66,8 +66,8 @@ Another tool may write either kind, or a log anywhere else that a `capture` coll
 | `kind` | `request` holds |
 |---|---|
 | `http` | `method`, `url` (with an `auth.param` query value redacted), `body` for a JSON request body, and `page` for a page of a paginated table: its ordinal, from 0 |
-| `web` | `method`, `url` |
-| `cli` | `commands` (each substituted command, in order), `cwd`, `exit_codes` |
+| `web` | `method`, `url` (written by recon 0.18 and earlier) |
+| `cli` | `commands` and `exit_codes` (one capture a command: with `patterns:`, one each), `cwd` |
 | `mcp` | `server` (the stdio command line, or the remote's URL with user information redacted) and `tool` with `arguments`, or `resource`. The body is the whole result as JSON (`content`, `structuredContent`, `isError`; a resource's `contents`), with every credential value the source resolved (its token; each header its helper prints whose name says it is a credential, such as `Authorization`, `X-Api-Key` or `Private-Token`, and the token after an auth scheme; the variables a stdio server is given by reference) replaced by `«redacted by recon»`, in the body and the request: one of 8 characters or more wherever it appears, a shorter one only where it is a whole JSON string or query parameter value, never in a number, a boolean or longer text, so the body stays JSON. A helper's other headers (`X-Org`) are not credentials, and their values stay in the body |
 | `external` | the Claude Code hook payload minus `tool_response`: `tool_name`, `tool_input`, `tool_use_id`, `session_id`, `cwd`, `hook_event_name`, `mcp_server`, …, as given (a credential the tool took as an argument included) |
 | `stream` | `stream` (the stream's name) and `window` (the window's index). One per window of a stream that preserves raw, written when the window is sealed. The body (`application/x-ndjson`) holds a line per record the window wrote, in order of arrival: `{"n": <its order of arrival>, "at": <seconds from the window's open>, "record": <the record as its collector gave it, before normalize:>}`. A `capture` collector reads each line as one record, so a `normalize:` reaches the record as `record.<path>` |

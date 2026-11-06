@@ -251,7 +251,7 @@ class Observation:
         """The run of each ranged table of ``config``, at ``now``, after what each committed;
         ConfigError when one is refused (a span past ``max_steps``, a checkpoint committed
         under another request), before anything is begun."""
-        ranged = range_runs(self._archives, name, config, self._collection.collector_types,
+        ranged = range_runs(self._archives, name, config, self._collection.accepts,
                             now, interval=interval, rebase=rebase, restart=restart)  # fmt: skip
         if ranged.problems:
             raise ConfigError(

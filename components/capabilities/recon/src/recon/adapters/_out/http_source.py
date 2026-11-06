@@ -19,7 +19,7 @@ from recon.core.domain.substitution import substitute
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from recon.adapters._out.credentials import Credentials
+    from recon.core.domain.credentials import Credentials
     from recon.core.domain.models import SourceEntry
 
 

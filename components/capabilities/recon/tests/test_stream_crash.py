@@ -41,8 +41,9 @@ from recon.core.domain.archives import ArchiveRef
 from recon.core.domain.errors import CollectionError
 from recon.core.domain.models import CollectorEntry, SourceEntry
 from recon.core.domain.stream import BufferSpec, WindowSpec
-from tests.recon_fakes import StalledArchives, VirtualClock, files_of, window_kept
-from tests.test_streams import Script, _plan, _run, _seq, _telemetry
+from recon.testing import records
+from tests.recon_fakes import StalledArchives, VirtualClock, files_of, run_for, window_kept
+from tests.test_streams import Script, _events, _plan, _run, _seq, _telemetry
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
@@ -464,7 +465,7 @@ class TestACommandStoppedBeforeItStarts:
                 collector.close()
                 return super().run_lines(*args, **kwargs)
 
-        collector = CliCollector(ClosedMeanwhile())
+        collector = CliCollector(shell=ClosedMeanwhile())
         entry = CollectorEntry.model_validate(
             {"name": "quiet", "type": "cli", "source": "here",
              "run": self.COMMAND.format(pid=pid)}
@@ -475,7 +476,7 @@ class TestACommandStoppedBeforeItStarts:
 
         started = time.monotonic()
         with contextlib.suppress(CollectionError):
-            assert list(collector.collect(entry, source)) == []
+            assert records(collector, run_for(entry, source)) == []
 
         assert time.monotonic() - started < 5
         _not_left_running(pid)
@@ -531,7 +532,8 @@ def test_a_stream_that_ends_leaves_no_ticker_waiting_out_its_window(tmp_path: Pa
         yield {"seq": 0}
         time.sleep(0.3)  # the ticker is asleep on the hour by now
 
-    run = stream.run("m", _plan(WindowSpec(seconds=3600)), ends_soon, dict, close=lambda: None)
+    run = stream.run("m", _plan(WindowSpec(seconds=3600)), lambda after: _events(ends_soon(after)),
+                     lambda record, scope: dict(record), close=lambda: None)  # fmt: skip
 
     assert run.last is not None and run.last.closed_by == "eof"
     started = time.monotonic()
@@ -568,7 +570,8 @@ def test_memory_stays_flat_over_a_long_stream(tmp_path: Path) -> None:
         stream = Stream(store, store, clock, "test", telemetry=_telemetry(events))
         source = Long(clock, [])
         run = stream.run(
-            "m", plan, source.records, dict, close=source.close,
+            "m", plan, lambda after: _events(source.records(after)),
+            lambda record, scope: dict(record), close=source.close,
             sealed=lambda hold, outcome: measure(outcome),
             preserve_raw=True,
         )  # fmt: skip

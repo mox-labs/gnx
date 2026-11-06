@@ -19,7 +19,7 @@ from recon.adapters._out.archive_files import FLUSH_BYTES, FLUSH_S, ArchiveFiles
 from recon.adapters._out.mission_layout import STATE, archive_dir
 from recon.composition import load_plugins, root
 from recon.core.domain.archives import ArchiveRef
-from recon.core.domain.collector import CollectorType, Plugins
+from recon.core.domain.collector import InstalledType, Plugins
 from recon.core.domain.http import HttpResponse
 from recon.core.domain.models import CollectorEntry, ReconConfig
 
@@ -27,13 +27,23 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
     from pathlib import Path
 
+    from pydantic import BaseModel
+
     from recon.composition import RequesterFactory
     from recon.core.domain.archives import Hold, Landed, Sidecar, TableEnds
     from recon.core.domain.capture import CaptureLog
     from recon.core.domain.clock import Clock
-    from recon.core.domain.collector import Collector, CollectorContext
-    from recon.core.domain.converters import ConversionResult, DocumentConverter
+    from recon.core.domain.collector import (
+        Collector,
+        Effect,
+        Intent,
+        Item,
+        Position,
+        RecordsKind,
+        Run,
+    )
     from recon.core.domain.documents import SurveyDocument, TableOutcome, WindowOutcome
+    from recon.core.domain.errors import Problem
     from recon.core.domain.models import SourceEntry
     from recon.core.domain.shell import ShellRunner
     from recon.core.domain.telemetry import EventSink
@@ -309,7 +319,8 @@ class ScriptedRequester:
 
 
 class ScriptedShell:
-    """The ShellRunner port printing a fixed list of lines for each command, which exits 0."""
+    """The ShellRunner port printing a fixed list of lines for each command, which exits 0;
+    each line's bytes given to ``tee`` as the port says."""
 
     def __init__(self, lines: Mapping[str, list[str]]) -> None:
         self._lines = lines
@@ -322,15 +333,11 @@ class ScriptedShell:
         *,
         tee: Callable[[bytes], object] | None = None,
     ) -> Generator[str, None, int]:
-        yield from self._lines[cmd]
+        for line in self._lines[cmd]:
+            if tee is not None:
+                tee(f"{line}\n".encode())
+            yield line
         return 0
-
-
-class NoConverter:
-    """A DocumentConverter for a test that reaches none: converting a document is a failure."""
-
-    def convert(self, content: bytes, content_type: str, url: str) -> ConversionResult:
-        raise AssertionError("no test here converts a document")
 
 
 def collector_entry(**fields: Any) -> CollectorEntry:
@@ -339,45 +346,82 @@ def collector_entry(**fields: Any) -> CollectorEntry:
     return CollectorEntry(**fields)
 
 
+class FakeCollector:
+    """A collector (``recon.core.domain.collector.Collector``) for a test: it declares nothing
+    (effects unknown, finite records, any source), describes and checks nothing and holds
+    nothing to close; a subclass gives :meth:`collect` its items."""
+
+    effects: frozenset[Effect] | None = None
+    records: RecordsKind = "finite"
+    accepts: frozenset[str] | None = None
+
+    def describe(self, run: Run) -> Intent:
+        return {}
+
+    def check(self, run: Run) -> list[Problem]:
+        return []
+
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+        return iter(())
+
+    def close(self) -> None:
+        return None
+
+
+class EmptyCollector(FakeCollector):
+    """A Collector that finds no records: for a collector type that is registered, built and
+    never run."""
+
+
+def installed(
+    name: str,
+    build: Callable[..., Collector],
+    *,
+    settings: type[BaseModel] | None = None,
+    needs: Iterable[str] = (),
+    declared: Collector | None = None,
+    package: str = "test",
+) -> InstalledType:
+    """What recon reads of a collector type a test installs as ``name``: its ``build`` with
+    its ``needs``, and what it declares (``declared``, else what ``build`` makes with recon's
+    stand-ins)."""
+    from recon.adapters._out.system_clock import SystemClock
+    from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
+    from recon.core.application.collectors import stand_ins
+
+    wanted = frozenset(needs)
+    if declared is None:
+        given = stand_ins(SystemClock(), DEFAULT_USER_AGENT)
+        declared = build(**{need: given[need] for need in wanted})
+    return InstalledType(name, build, wanted, declared, settings, package=package)
+
+
 def plugins_with(**collectors: Collector) -> Plugins:
     """The installed plugins, and a collector type for each of ``collectors`` by name that
     builds that collector, declaring nothing else (no settings, no check)."""
     plugins = load_plugins()
     for name, collector in collectors.items():
-        plugins.collector_types[name] = CollectorType(create=_creating(collector), effects=None)
+        plugins.collector_types[name] = installed(name, _giving(collector))
     return plugins
 
 
-class EmptyCollector:
-    """A Collector that finds no records: for a collector type that is registered, built and
-    never run."""
+def building(built: list[str], name: str) -> Callable[..., Collector]:
+    """A collector type's build that records ``name`` in ``built`` and then fails: for a
+    test of a run that must build no collector, which then sees what was built. Install it
+    with a ``declared`` collector, so reading what it declares builds nothing."""
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-    ) -> Iterator[dict[str, Any]]:
-        return iter(())
-
-
-def building(built: list[str], name: str) -> Callable[[CollectorContext], Collector]:
-    """A collector type's ``create`` that records ``name`` in ``built`` and then fails: for a
-    test of a run that must build no collector, which then sees what was built."""
-
-    def create(ctx: CollectorContext) -> Collector:
+    def build(**needs: Any) -> Collector:
         built.append(name)
         raise AssertionError(f"a collector was built: {name!r}")
 
-    return create
+    return build
 
 
-def _creating(collector: Collector) -> Callable[[CollectorContext], Collector]:
-    def create(ctx: CollectorContext) -> Collector:
+def _giving(collector: Collector) -> Callable[..., Collector]:
+    def build(**needs: Any) -> Collector:
         return collector
 
-    return create
+    return build
 
 
 def run_survey(
@@ -388,7 +432,6 @@ def run_survey(
     plugins: Plugins | None = None,
     requester: RequesterFactory | None = None,
     shell: ShellRunner | None = None,
-    converter: DocumentConverter | None = None,
     clock: Clock | None = None,
     env: Mapping[str, str] | None = None,
     name: str = "m",
@@ -412,7 +455,24 @@ def run_survey(
         plugins=plugins,
         requester=requester,
         shell=shell,
-        converter=converter,
     )
     document = recon.observation.survey(name, on_event=on_event)
     return archive_path(project, ArchiveRef(name, document.archive)), document.tables
+
+
+def run_for(
+    entry: CollectorEntry | Mapping[str, Any],
+    source: SourceEntry | Mapping[str, Any] | None = None,
+    *,
+    plugins: Plugins | None = None,
+) -> Run:
+    """The run of ``entry`` against ``source`` as recon makes it: its type's own keys
+    validated by the installed type's schema."""
+    from recon.core.application.survey import run_of
+    from recon.core.domain.models import SourceEntry as Source
+
+    given = entry if isinstance(entry, CollectorEntry) else CollectorEntry.model_validate(entry)
+    against = (
+        source if source is None or isinstance(source, Source) else Source.model_validate(source)
+    )
+    return run_of(plugins or load_plugins(), given, against)

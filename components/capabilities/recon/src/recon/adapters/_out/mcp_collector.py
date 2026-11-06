@@ -1,7 +1,7 @@
 """McpCollector: calls a tool, or reads a resource, on an MCP server and yields records.
 
-Registered as the built-in collector type ``mcp`` (at ``recon.collector``, ``recon._matrix``),
-with the source kind ``mcp`` it adds. The client is FastMCP's (``fastmcp-slim[client]``, the
+Registered as the built-in collector type ``mcp``, with the source kind ``mcp`` and the
+converter ``mcp_result``. The client is FastMCP's (``fastmcp-slim[client]``, the
 one pydantic-ai's ``MCPToolset`` wraps), on the MCP SDK v2 and httpx2. This file is the only
 one that imports ``fastmcp``, ``mcp`` or ``jsonschema``, and it imports them when a survey or a
 dry run first reaches a server, so planning, status and the hook route never load them.
@@ -10,7 +10,7 @@ A source names its server:
 
 * **stdio**: ``command``, ``args`` and ``env``. The server is started on the first table that
   uses it, serves every other table of the survey, and is stopped by ``close()`` when the
-  survey ends. It runs in the project root (``ctx.project_dir``, where a ``local`` source's
+  survey ends. It runs in the project root (the ``project`` need, where a ``local`` source's
   relative url is anchored too), not recon's working directory, with the SDK's short list of
   inherited variables (``HOME``, ``LOGNAME``, ``PATH``, ``SHELL``, ``TERM``, ``USER``) and
   what ``env`` gives: each value is written as is, or is ``env:NAME``, a variable of recon's
@@ -25,11 +25,12 @@ A source names its server:
   credential leaves it. An HTTP 401 or 403 makes the failure ``auth``.
 
 A collector names a ``tool`` with its ``arguments``, or a ``resource``; ``vars`` fill their
-``{placeholders}``. A tool's records come from its structured content when it declares an
-output schema, else from the JSON in its text content; ``result:`` picks one explicitly. A
-resource's come from the JSON in its text. ``extract`` and ``normalize`` then apply as for
-``api``. A tool error fails the table; an answer with no content keeps it empty with a
-``result_empty`` warning; text that is not JSON fails it.
+``{placeholders}``. Each answer is one body, the whole result as JSON, which recon captures and
+converts with ``mcp_result`` (:class:`McpResultConverter`): a tool's records come from its
+structured content when it declares an output schema, else from the JSON in its text content;
+``result:`` picks one explicitly. A resource's come from the JSON in its text. ``extract`` and
+``normalize`` then apply as for ``api``. A tool error fails the table; an answer with no
+content keeps it empty with a ``result_empty`` warning; text that is not JSON fails it.
 
 Before each call the run's requirements are checked against the server's listing, taken
 once per survey: the tool is listed and the arguments match its input schema, or the
@@ -39,8 +40,8 @@ resource is listed or matches a listed template. A checked dry run asks the same
 is one ``recon.mcp.call`` client span that names the method, the tool and the source, and
 nothing the call carried. FastMCP's own spans are suppressed, since a failed one carries the
 tool's error text; the SDK's, which carry the method and a request id, nest under recon's.
-With ``preserve_raw``, each result is captured whole (kind ``mcp``), every credential value
-the source resolved replaced in it and in its request (:func:`redact_credentials`).
+With ``preserve_raw``, recon captures each result whole (kind ``mcp``), every credential value
+the source resolved (the body's ``secrets``) replaced in it and in its request.
 
 Why a thread: the client is async and recon is not. One event loop runs on a thread of its
 own while the collector lives; each call is handed to it, in the caller's context (so spans
@@ -60,23 +61,25 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict
 
-from recon.adapters._out.credentials import helper_headers, resolve_reference
-from recon.core.domain.capture import credential_values, redact_credentials
-from recon.core.domain.collector import CollectorType, Requirement
+from recon.core.domain.capture import credential_values
+from recon.core.domain.collector import Body, Requirement, source_needed
 from recon.core.domain.credentials import NOT_A_REFERENCE, REFERENCE_FIX, env_name, reference
 from recon.core.domain.errors import CollectionError, ErrorKind, NoRecordsError, Problem
 from recon.core.domain.http import REDACTED as REPORTED_REDACTED
 from recon.core.domain.http import reported_url
-from recon.core.domain.normalize import apply_normalize, to_records
 from recon.core.domain.substitution import find_unresolved, substitute
 from recon.core.domain.telemetry import MCP_CALL
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping
+    from pathlib import Path
 
-    from recon.core.domain.capture import CaptureLog
-    from recon.core.domain.collector import CollectorContext
-    from recon.core.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.collector import Effect, Intent, Item, Position, RecordsKind, Run
+    from recon.core.domain.credentials import Credentials
+    from recon.core.domain.deadline import Deadline
+    from recon.core.domain.models import SourceEntry
+    from recon.core.domain.ratelimit import RateLimiter
+    from recon.core.domain.telemetry import Telemetry
 
 T = TypeVar("T")
 
@@ -116,10 +119,6 @@ class McpSettings(BaseModel):
     resource: str | None = None
     vars: dict[str, str] = {}
     result: Literal["structured", "text"] | None = None
-
-
-def _settings(entry: CollectorEntry) -> McpSettings:
-    return McpSettings.model_validate(entry.settings)
 
 
 def _source_settings(source: SourceEntry) -> McpSourceSettings:
@@ -174,34 +173,63 @@ class _Server:
     resources: tuple[set[str], list[str]] | None = None
 
 
+@dataclass(frozen=True)
+class _Needs:
+    """What an mcp collector is built with."""
+
+    telemetry: Telemetry
+    deadline: Deadline
+    rate_limiter: RateLimiter
+    credentials: Credentials
+    user_agent: str
+    project: Path | None
+
+
 class McpCollector:
     """Calls a tool or reads a resource on each source's MCP server, one server per source
-    for the survey, and yields the records of its answer.
+    for the act, and gives its answer as a body.
 
     ``http_client`` builds the httpx2 ``AsyncClient`` a remote server is reached through,
     given ``headers``, ``timeout`` and ``auth`` (the SDK's ``create_mcp_http_client`` unless a
     test hands it one over a transport of its own); whatever it builds, the server's statuses
     are recorded on it."""
 
+    effects: frozenset[Effect] | None = frozenset({"network", "subprocess"})
+    records: RecordsKind = "finite"
+    accepts: frozenset[str] | None = frozenset({"mcp"})
+    preflight = (
+        "starts each stdio server a run names, and connects to each remote one, to list its "
+        "tools or resources and check each run against them; then stops and closes each"
+    )
+
     def __init__(
-        self, ctx: CollectorContext, *, http_client: Callable[..., Any] | None = None
+        self,
+        *,
+        telemetry: Telemetry,
+        deadline: Deadline,
+        rate_limiter: RateLimiter,
+        credentials: Credentials,
+        user_agent: str,
+        project: Path | None = None,
+        http_client: Callable[..., Any] | None = None,
     ) -> None:
-        self._ctx = ctx
+        self._ctx = _Needs(telemetry, deadline, rate_limiter, credentials, user_agent, project)
         self._http_client = http_client
         self._loop: _Loop | None = None
         self._servers: dict[str, _Server] = {}
 
     # --- the Collector port ---
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-    ) -> Iterator[dict[str, Any]]:
-        settings = _settings(entry)
-        assert source is not None  # the type requires a source, which the plan holds
+    def describe(self, run: Run) -> Intent:
+        return _describe(run)
+
+    def check(self, run: Run) -> list[Problem]:
+        return source_needed(run, "mcp") + _check(run)
+
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+        settings = run.settings_as(McpSettings)
+        source = run.source
+        assert source is not None  # check needs a source, which the plan holds
         server = self._reach(source)
         self._list(server, source, settings)
         for requirement in self._check(server, source, settings):
@@ -214,6 +242,11 @@ class McpCollector:
             result = self._call(server, source, "tools/call", settings.tool, arguments)
             raw: dict[str, Any] = result.model_dump(mode="json", by_alias=True, exclude_none=True)
             request: dict[str, Any] = {"tool": settings.tool, "arguments": arguments}
+            declared = (server.tools or {}).get(settings.tool)
+            read: str = settings.result or (
+                "structured" if declared is not None and declared.output_schema else "text"
+            )
+            where = f"tool {settings.tool!r} of source {source.name!r}"
         else:
             assert settings.resource is not None  # _check holds one of the two
             uri = substitute(settings.resource, settings.vars)
@@ -221,36 +254,26 @@ class McpCollector:
             raw = {"contents": [c.model_dump(mode="json", by_alias=True, exclude_none=True)
                                 for c in contents]}  # fmt: skip
             request = {"resource": uri}
-        if captures is not None:
-            captures.record(
-                collector=entry.name,
-                source=source.name,
-                kind="mcp",
-                request=redact_credentials({"server": server.named, **request}, server.secrets),
-                status=None,
-                content_type="application/json",
-                headers={},
-                body=json.dumps(
-                    redact_credentials(raw, server.secrets), ensure_ascii=False
-                ).encode(),
-            )
-        if settings.tool is not None:
-            body = _tool_body(result, server.tools or {}, settings, source.name)
-        else:
-            body = _resource_body(raw["contents"], request["resource"], source.name)
-        for record in to_records(body, entry.extract):
-            yield (
-                apply_normalize(record, entry.normalize, self._ctx.transforms)
-                if entry.normalize
-                else record
-            )
+            read = "resource"
+            where = f"resource {uri!r} of source {source.name!r}"
+        explicit = "; result=explicit" if settings.result is not None else ""
+        yield Body(
+            media_type=f"application/json; read={read}{explicit}",
+            data=json.dumps(raw, ensure_ascii=False).encode(),
+            request={"server": server.named, **request},
+            converter=RESULT_CONVERTER,
+            kind="mcp",
+            secrets=tuple(server.secrets),
+            origin=where,
+        )
 
-    def requirements(self, entry: CollectorEntry, source: SourceEntry | None) -> list[Requirement]:
+    def requirements(self, run: Run) -> list[Requirement]:
         """What the run needs of its server, each checked now: that it starts (stdio) or
         answers (remote), then that it lists the tool and the arguments match its input
         schema, or that it offers the resource."""
-        assert source is not None  # the type requires a source, which the plan holds
-        settings = _settings(entry)
+        source = run.source
+        assert source is not None  # check needs a source, which the plan holds
+        settings = run.settings_as(McpSettings)
         try:
             server = self._reach(source)
             self._list(server, source, settings)
@@ -312,7 +335,7 @@ class McpCollector:
             )
             # In the project root, not recon's working directory: a server given "." reads
             # the same tree wherever recon is run from.
-            project = self._ctx.project_dir
+            project = self._ctx.project
             transport: Any = StdioTransport(
                 settings.command,
                 list(settings.args),
@@ -358,12 +381,11 @@ class McpCollector:
     def _resolve(self, written: str, where: str) -> str | None:
         """The value an ``env:NAME`` or ``file:PATH`` reference names; None for an unset
         variable (the plan warned about it)."""
-        return resolve_reference(written, self._ctx.env, self._ctx.mission_dir, where)
+        return self._ctx.credentials.resolve(written, where)
 
     def _helper_headers(self, command: str, source: SourceEntry) -> dict[str, str]:
         """The headers the source's ``headers_helper`` prints, as a JSON object of strings."""
-        limit = self._ctx.deadline.limit(source.timeout)
-        return helper_headers(command, self._ctx.shell, limit, source.name)
+        return self._ctx.credentials.helper(command, source)
 
     def _client_factory(self, server: _Server) -> Callable[..., Any]:
         from mcp.shared._httpx_utils import create_mcp_http_client
@@ -604,44 +626,66 @@ def _empty(where: str, key: str) -> NoRecordsError:
     )
 
 
-def _tool_body(result: Any, tools: dict[str, Any], settings: McpSettings, source: str) -> Any:
+#: The converter an mcp body names: an MCP result read as the value its records are in.
+RESULT_CONVERTER = "mcp_result"
+
+
+class McpResultConverter:
+    """``mcp_result``: an MCP tool's result or a resource's contents, as the mcp type gives
+    them whole (the JSON of its ``content``, ``structuredContent`` and ``isError``; of a
+    resource's ``contents``), read as its media type's ``read`` says (``structured``, ``text``
+    or ``resource``); ``result=explicit`` when the mission chose it with ``result:``, so a
+    choice that does not fit is the mission's to change (``config``). ``origin`` names the
+    tool or resource and its source in every error."""
+
+    media_types = frozenset({"application/vnd.recon.mcp-result+json"})
+
+    def convert(self, chunks: Iterable[bytes], media_type: str, origin: str) -> Iterator[Any]:
+        raw = json.loads(b"".join(chunks))
+        params = dict(
+            (key.strip(), value.strip())
+            for key, _, value in (part.partition("=") for part in media_type.split(";")[1:])
+        )
+        read = params.get("read", "text")
+        if read == "resource":
+            yield _resource_body(raw.get("contents") or [], origin)
+            return
+        yield _tool_body(raw, read, params.get("result") == "explicit", origin)
+
+
+def _tool_body(raw: dict[str, Any], read: str, explicit: bool, where: str) -> Any:
     """The parsed body a tool's answer holds its records in."""
-    tool = settings.tool
-    where = f"tool {tool!r} of source {source!r}"
-    if result.is_error:
-        text = " ".join(b.text for b in result.content if getattr(b, "type", "") == "text")
+    content = [block for block in raw.get("content") or [] if isinstance(block, dict)]
+    texts = [str(b.get("text", "")) for b in content if b.get("type") == "text"]
+    if raw.get("isError"):
+        text = " ".join(texts)
         raise CollectionError(
             f"{where} returned an error: {text or '(no text)'}",
             fix="read the tool's error; correct arguments:, or the server's setup",
         )
-    declared = tools.get(tool or "")
-    read = settings.result or (
-        "structured" if declared is not None and declared.output_schema else "text"
-    )
-    texts = [b.text for b in result.content if getattr(b, "type", "") == "text"]
-    if result.structured_content is None and not result.content:
+    structured = raw.get("structuredContent")
+    if structured is None and not content:
         raise _empty(where, "tool")
     if read == "structured":
-        if result.structured_content is None:
+        if structured is None:
             raise CollectionError(
                 f"{where} returned no structured content",
-                kind="config" if settings.result else "run_failed",
+                kind="config" if explicit else "run_failed",
                 fix="set result: text to read the JSON in its text content",
             )
-        return result.structured_content
+        return structured
     if not texts:
-        kinds = ", ".join(sorted({getattr(b, "type", "?") for b in result.content}))
+        kinds = ", ".join(sorted({str(b.get("type", "?")) for b in content}))
         raise CollectionError(
             f"{where} returned no text content (it returned: {kinds or 'structured content'})",
-            kind="config" if settings.result == "text" else "run_failed",
+            kind="config" if explicit else "run_failed",
             fix="set result: structured when the tool returns structured content; recon reads "
             "records from JSON, not from images or audio",
         )
     return _json_of(texts, where)
 
 
-def _resource_body(contents: list[dict[str, Any]], uri: str, source: str) -> Any:
-    where = f"resource {uri!r} of source {source!r}"
+def _resource_body(contents: list[dict[str, Any]], where: str) -> Any:
     if not contents:
         raise _empty(where, "resource")
     texts = [c["text"] for c in contents if "text" in c]
@@ -730,8 +774,8 @@ def _tail(stderr: Any) -> str:
 # --- Registration ---
 
 
-def _check(entry: CollectorEntry) -> list[Problem]:
-    settings = _settings(entry)
+def _check(run: Run) -> list[Problem]:
+    settings = run.settings_as(McpSettings)
     problems = []
     if settings.tool is None and settings.resource is None:
         problems.append(
@@ -869,12 +913,13 @@ def _source_env(source: SourceEntry) -> dict[str, str]:
     return found
 
 
-def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, Any]:
+def _describe(run: Run) -> dict[str, Any]:
     """The server the run reaches and the call it makes; credentials as REDACTED, the
     variables a stdio server is given by name only."""
+    source = run.source
     if source is None:
         return {}
-    settings = _settings(entry)
+    settings = run.settings_as(McpSettings)
     server = _source_settings(source)
     described: dict[str, Any] = {}
     if server.command is not None:
@@ -896,21 +941,36 @@ def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, An
     return described
 
 
-collector_type = CollectorType(
-    create=McpCollector,
-    effects=frozenset({"network", "subprocess"}),
-    summary="MCP tool call or resource read → JSON → records",
-    settings=McpSettings,
-    source_kinds=frozenset({"mcp"}),
-    accepts_kinds=frozenset({"mcp"}),
-    source_settings=McpSourceSettings,
-    requires_source=True,
-    normalizes=True,
-    extracts=True,
-    check=_check,
-    describe=_describe,
-    check_source=_check_source,
-    source_env=_source_env,
-    preflight="starts each stdio server a run names, and connects to each remote one, to list "
-    "its tools or resources and check each run against them; then stops and closes each",
-)
+class McpSource:
+    """The ``mcp`` source kind: a stdio server recon starts, or a remote one."""
+
+    def check(self, source: SourceEntry) -> list[Problem]:
+        return _check_source(source)
+
+    def env(self, source: SourceEntry) -> dict[str, str]:
+        return _source_env(source)
+
+
+def register(registry: Any) -> None:
+    """The ``mcp`` collector type, the ``mcp`` source kind and the ``mcp_result`` converter."""
+    registry.register(
+        "recon.collector",
+        "recon.v1.collector.mcp",
+        McpCollector,
+        config=McpSettings,
+        needs={"telemetry", "deadline", "rate_limiter", "credentials", "user_agent", "project"},
+        summary="MCP tool call or resource read → JSON → records",
+    )
+    registry.register(
+        "recon.source",
+        "recon.v1.source.mcp",
+        McpSource,
+        config=McpSourceSettings,
+        summary="an MCP server: a stdio command recon starts, or a remote url",
+    )
+    registry.register(
+        "recon.converter",
+        "recon.v1.converter.mcp-result",
+        McpResultConverter,
+        summary="an MCP tool's result or a resource's contents, as the JSON it holds",
+    )

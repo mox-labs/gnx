@@ -5,7 +5,6 @@ them, and ``status`` shows each stream's state."""
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import threading
 from datetime import timedelta
@@ -18,18 +17,17 @@ from click.testing import CliRunner
 import recon
 from recon.adapters._in.cli import main
 from recon.composition import root
-from tests.recon_fakes import VirtualClock, plugins_with, window_kept
+from recon.core.domain.collector import Item, Position, Record, Run
+from tests.recon_fakes import FakeCollector, VirtualClock, plugins_with, window_kept
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
     from recon.composition import Recon
-    from recon.core.domain.capture import CaptureLog
-    from recon.core.domain.models import CollectorEntry, SourceEntry
 
 
-class Feed:
+class Feed(FakeCollector):
     """A source of records, each at its time on the virtual clock, then quiet (or ended, with
     ``ends``) until it is closed; started again, it goes on after the position it is given."""
 
@@ -52,14 +50,8 @@ class Feed:
         self.closed = threading.Event()
         self.started: list[Any] = []
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-        after: Any = None,
-    ) -> Iterator[dict[str, Any]]:
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+        after = None if resume is None else resume.value
         self.started.append(after)
         self.closed.clear()
         start = 0 if after is None else int(after) + 1
@@ -68,7 +60,7 @@ class Feed:
             if seq == self._pause_at:
                 assert self.go.wait(10), "the test never let the feed go on"
             self._clock.set(base + (seq - start + 1) * self._every)
-            yield {"seq": seq, "_position": seq}
+            yield Record({"seq": seq}, position=seq)
         if not self._ends:
             self._clock.advance(10_000)
             self.closed.wait(10)
@@ -416,9 +408,9 @@ class TestTheCommandLine:
     def test_recon_stream_dry_run_says_each_default(self, tmp_path: Path) -> None:
         clock = VirtualClock()
         _mission(tmp_path, {})
-        plugins = plugins_with(feed=Feed(clock, 1.0, 3))
-        unbounded = dataclasses.replace(plugins.collector_types["feed"], unbounded=True)
-        plugins.collector_types["feed"] = unbounded
+        feed = Feed(clock, 1.0, 3)
+        feed.records = "unbounded_recon_paced"  # the type says its records do not end
+        plugins = plugins_with(feed=feed)
         recon_ = root({}, project=tmp_path, clock=clock, plugins=plugins)
 
         result = CliRunner().invoke(

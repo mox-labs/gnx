@@ -201,7 +201,6 @@
     {
       "name": "adapter_support",
       "files": [
-        "src/recon/adapters/_out/parsing.py",
         "src/recon/adapters/_out/user_agent.py",
         "src/recon/adapters/_out/http_source.py",
         "src/recon/adapters/_out/private_files.py",
@@ -259,7 +258,6 @@
         "src/recon/adapters/_out/capture_collector.py",
         "src/recon/adapters/_out/cli_collector.py",
         "src/recon/adapters/_out/mcp_collector.py",
-        "src/recon/adapters/_out/web_collector.py",
         "src/recon/adapters/_out/tail_collector.py",
         "src/recon/adapters/_out/sse_collector.py"
       ],
@@ -268,18 +266,14 @@
         "recon.core.domain",
         "recon.adapters._out.parsing",
         "recon.adapters._out.user_agent",
-        "recon.adapters._out.capture_files",
-        "recon.adapters._out.http_source",
-        "recon.adapters._out.private_files",
-        "recon.adapters._out.credentials"
+        "recon.adapters._out.http_source"
       ],
       "forbid": [
         "yaml"
       ],
       "why": {
-        "*": "each collector type's own technology: a child process for cli, the MCP client (fastmcp, the mcp SDK, jsonschema) for mcp, the local filesystem for tail, nothing beyond the requester port for api, web and sse",
-        "parsing, user_agent, http_source, private_files, credentials": "the shared helpers (private_files: the cli collector tees its stdout into the archive's capture; credentials: every source kind's credential reference, ruling A1)",
-        "capture_files": "the capture collector reads the capture format through its one reader, so no second parser of the format exists"
+        "*": "each collector type's own technology: a child process for cli, the MCP client (fastmcp, the mcp SDK, jsonschema) for mcp, the local filesystem for tail, nothing beyond the requester port for api and sse",
+        "parsing, user_agent, http_source": "the shared helpers: the api type parses a page for its next token as recon's json and xml converters parse it for its records; the User-Agent; how a request to an HTTP source is addressed and carries its credential (shared by api and sse). A credential arrives through the credentials need, never an adapter of recon's (contract v2)"
       }
     },
     {
@@ -332,7 +326,6 @@
         "src/recon/adapters/_out/__init__.py",
         "src/recon/adapters/_out/event_channel.py",
         "src/recon/adapters/_out/http_requester.py",
-        "src/recon/adapters/_out/markitdown_converter.py",
         "src/recon/adapters/_out/otel_telemetry.py",
         "src/recon/adapters/_out/system_clock.py",
         "src/recon/adapters/_out/command_deliverer.py"
@@ -348,6 +341,24 @@
       "why": {
         "*": "one technology each behind one port: httpx2 and tenacity (Requester), markitdown (DocumentConverter), OpenTelemetry (EventSink), the system clock (Clock), a child process given a delivery on its standard input (Deliverer)",
         "recon.core.domain only": "an adapter reaches the port it implements, and no other adapter"
+      }
+    },
+    {
+      "name": "converters",
+      "files": [
+        "src/recon/adapters/_out/parsing.py",
+        "src/recon/adapters/_out/markitdown_converter.py"
+      ],
+      "allow": [
+        "*",
+        "recon.core.domain"
+      ],
+      "forbid": [
+        "yaml"
+      ],
+      "why": {
+        "*": "one format each behind the Converter port (recon.converter): JSON, XML (xmltodict, lazily) and text lines in parsing.py, documents (markitdown) in markitdown_converter.py, which also gives the $markitdown transform over the same conversion (review C9)",
+        "recon.core.domain": "the Converter port and the errors a body that is not its media type raises; a converter reaches no other adapter"
       }
     },
     {
@@ -427,6 +438,37 @@
       }
     },
     {
+      "name": "extension",
+      "files": [
+        "src/recon/extension.py"
+      ],
+      "allow": [
+        "recon.core.domain"
+      ],
+      "why": {
+        "recon.core.domain": "the published extension contract, re-exported from where it lives: what an extension imports of recon, and nothing else (tests/test_conformance.py holds a client type to it)"
+      }
+    },
+    {
+      "name": "testing",
+      "files": [
+        "src/recon/testing.py"
+      ],
+      "allow": [
+        "*",
+        "recon.composition",
+        "recon.core"
+      ],
+      "forbid": [
+        "yaml"
+      ],
+      "why": {
+        "*": "the stdlib alone (threads, a temporary project, and datetime as the type the clock port returns: the kit's clock reads no time, moved only by the waits asked of it)",
+        "recon.composition": "the installed plugins and a session over a temporary project: the kit reads a type as recon reads it, and plans its entry as recon plans one",
+        "recon.core": "recon's pipeline for one run (conversion, extract:, normalize:, the crawl), the contract's types, and the stand-in needs"
+      }
+    },
+    {
       "name": "package_data",
       "files": [
         "src/recon/assets/__init__.py",
@@ -492,5 +534,5 @@
       "only": "src/recon/_matrix.py"
     }
   ],
-  "single_importer_why": "one file per technology, each behind one port; the MCP client is the mcp collector's alone, and it reaches httpx2 only through the SDK's own client. YAML is two files by design, the archive store writing the archive's meta and the mission store reading the mission's config, so it is confined to the file store by 'forbid' in every other layer rather than by a single_importer rule; matrix is named by recon/_matrix.py alone, so a move of the harness contract to slick changes one module (owner ruling, REQ \u00a72; RUBRIC H6)"
+  "single_importer_why": "one file per technology, each behind one port; the MCP client is the mcp collector's alone, and it reaches httpx2 only through the SDK's own client. YAML is two files by design, the archive store writing the archive's meta and the mission store reading the mission's config, so it is confined to the file store by 'forbid' in every other layer rather than by a single_importer rule; matrix is named by recon/_matrix.py alone, so a move of the harness contract to slick changes one module (owner ruling, REQ §2; RUBRIC H6)"
 }

@@ -14,7 +14,11 @@ credentials``).
 from __future__ import annotations
 
 import re
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, Protocol
+
+if TYPE_CHECKING:
+    from recon.core.domain.errors import CollectionError
+    from recon.core.domain.models import SourceEntry
 
 #: Where a reference says the credential is.
 Scheme = Literal["env", "file"]
@@ -41,3 +45,38 @@ def env_name(written: str) -> str | None:
 #: What a token that is not a reference is told: the fix every kind's check gives.
 NOT_A_REFERENCE = "a token is a reference, never the credential itself"
 REFERENCE_FIX = "token: env:NAME (a variable recon reads) or token: file:PATH"
+
+
+class Credentials(Protocol):
+    """A source's credential, resolved the one way every source kind's is: the ``credentials``
+    need a collector type is built with (``recon.core.domain.collector.NEEDS``). Each is
+    resolved on first use and kept for the act, so a file is read and a helper run once."""
+
+    def token(self, source: SourceEntry) -> str | None:
+        """The secret the source's ``auth.token`` names, with its ``auth.prefix``; None when it
+        names none or its variable is unset."""
+        ...
+
+    def helped(self, source: SourceEntry) -> dict[str, str]:
+        """The headers the source's ``auth.headers_helper`` prints; none without one."""
+        ...
+
+    def resolve(self, written: str, where: str) -> str | None:
+        """The value an ``env:NAME`` or ``file:PATH`` reference names (a relative ``file:``
+        being the mission's), None for an unset variable; ``where`` names the key in an
+        error."""
+        ...
+
+    def helper(self, command: str, source: SourceEntry) -> dict[str, str]:
+        """The headers a helper command prints, run within the source's ``timeout`` and the
+        act's deadline: a kind's own ``headers_helper`` key."""
+        ...
+
+    def secrets(self, source: SourceEntry) -> list[str]:
+        """What of the source's credentials was resolved this act, to keep out of what is
+        captured and of an error's text."""
+        ...
+
+    def redacted(self, source: SourceEntry, error: CollectionError) -> CollectionError:
+        """``error``, its message with the source's credentials redacted."""
+        ...

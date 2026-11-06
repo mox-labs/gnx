@@ -24,9 +24,9 @@ from click.testing import CliRunner
 from pydantic import BaseModel, ConfigDict
 
 from recon.adapters._in.cli import main
-from recon.composition import root
+from recon.composition import load_plugins, root
 from recon.core.application.plan import build_plan
-from recon.core.domain.collector import CollectorType
+from recon.core.domain.collector import Record
 from recon.core.domain.errors import CollectionError, ConfigError, UsageError
 from recon.core.domain.models import CollectorEntry
 from recon.core.domain.ranges import (
@@ -45,17 +45,23 @@ from recon.core.domain.ranges import (
 )
 from recon.observe.application.ranges import committed_intervals, request_digest
 from recon.observe.domain.spans import plan_range
-from tests.recon_fakes import FixedClock, files_of, kept, plugins_with
+from tests.recon_fakes import FakeCollector, FixedClock, files_of, installed, kept
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
     from recon.composition import Recon
-    from recon.core.domain.capture import CaptureLog
-    from recon.core.domain.collector import Collector, Plugins
+    from recon.core.domain.collector import (
+        Collector,
+        Effect,
+        Intent,
+        Item,
+        Plugins,
+        Position,
+        Run,
+    )
     from recon.core.domain.errors import Problem
-    from recon.core.domain.models import SourceEntry
 
 NOW = datetime(2026, 10, 24, 12, 0, 30, 250000, tzinfo=UTC)
 #: ``NOW`` less the default settle, to the whole second.
@@ -288,35 +294,32 @@ class StepsSettings(BaseModel):
     until: str
 
 
-class Steps:
+class Steps(FakeCollector):
     """A collector type's collector that answers each request with one record naming the
     interval it was asked for (``since``, ``until``), or fails when :attr:`fails` is set."""
+
+    effects: frozenset[Effect] | None = frozenset()
 
     def __init__(self) -> None:
         self.asked: list[tuple[str, str]] = []
         self.fails = False
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-    ) -> Iterator[dict[str, Any]]:
-        asked = StepsSettings.model_validate(entry.settings)
+    def describe(self, run: Run) -> Intent:
+        return {"asks": run.entry.settings}
+
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+        asked = run.settings_as(StepsSettings)
         if self.fails:
             raise CollectionError("the source is down", kind="transient")
         self.asked.append((asked.since, asked.until))
-        yield {"id": asked.since, "since": asked.since, "until": asked.until}
+        yield Record({"id": asked.since, "since": asked.since, "until": asked.until})
 
 
 def _plugins(steps: Collector) -> Plugins:
-    plugins = plugins_with(steps=steps)
-    made = plugins.collector_types["steps"]
-    plugins.collector_types["steps"] = CollectorType(
-        create=made.create, effects=frozenset(), settings=StepsSettings,
-        describe=lambda entry, _: {"asks": entry.settings},
-    )  # fmt: skip
+    plugins = load_plugins()
+    plugins.collector_types["steps"] = installed(
+        "steps", lambda **needs: steps, settings=StepsSettings, declared=steps
+    )
     return plugins
 
 

@@ -33,6 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from recon.core.domain.archives import ArchiveState, Ended  # noqa: TC001
 from recon.core.domain.capture import CAPTURE_SCHEMA, CaptureKind
 from recon.core.domain.changes import ChangeOp, DeletesWithheld  # noqa: TC001
+from recon.core.domain.collector import RecordsKind  # noqa: TC001
 from recon.core.domain.errors import ERROR_KINDS, ErrorKind, ReconError
 from recon.core.domain.paginate import TruncatedBy  # noqa: TC001
 from recon.core.domain.schedule import Missed, Platform, Skipped  # noqa: TC001
@@ -91,8 +92,8 @@ class PlanWrites(Document):
 
 
 #: Where an effective setting came from: the mission's config, its collector type's
-#: declaration (a stream's overflow, from the type's ``paced_by``), the command's own flag
-#: (or the call's argument: ``recon stream --windows``), or recon's default.
+#: declaration (a stream's overflow, from who its ``records`` say paces them), the command's
+#: own flag (or the call's argument: ``recon stream --windows``), or recon's default.
 Origin = Literal["mission", "type", "command", "recon"]
 
 
@@ -771,19 +772,15 @@ class Act(Document):
 
 # --- discovery ------------------------------------------------------------------------------
 
-#: How a collector type's records end: ``finite`` (each run's do), or never, its stream paced by
-#: recon (it reads the next when ready: a file, a command) or by its source (which sends whether
-#: recon is ready or not: server-sent events).
-RecordsKind = Literal["finite", "unbounded_recon_paced", "unbounded_source_paced"]
-
 
 class TypeInfo(Document):
     """One collector type a mission may name as ``type:``: whose it is (``origin``: ``recon``,
     the distribution that installed it, or ``in_process`` for one given to ``recon.open``),
     what it is for, what running it can touch (``effects``, ``unknown`` when it does not
-    say), how its records end (``records_kind``), what it can do (``capabilities``), the JSON
-    Schema of the keys an entry of it takes beyond recon's own (``config``, None: none), and
-    the source kinds it runs against (``accepts``, None: any)."""
+    say), how its records end (``records_kind``), what it can do beyond the contract's members
+    (``capabilities``: ``paginate``, recon crawls it; ``preflight``, a checked dry run asks
+    it), the JSON Schema of the keys an entry of it takes beyond recon's own (``config``, None:
+    none), and the source kinds it runs against (``accepts``, None: any)."""
 
     type: str
     origin: str
@@ -796,23 +793,36 @@ class TypeInfo(Document):
 
 
 class SourceKindInfo(Document):
-    """One catalog source kind (a source's ``type:``): the collector type that adds it, and the
-    JSON Schema of the keys a source of it takes beyond every source's (``config``, None: none,
-    so it needs a ``url``)."""
+    """One catalog source kind (a source's ``type:``): whose it is (``origin``, as a collector
+    type's), what it is, and the JSON Schema of the keys a source of it takes beyond every
+    source's (``config``, None: none, so it needs a ``url``)."""
 
     kind: str
-    added_by: str
+    origin: str
+    summary: str = ""
     config: dict[str, Any] | None = None
+
+
+class ConverterInfo(Document):
+    """One converter: whose it is (``origin``), what it is, and the media types it converts
+    (``type/subtype``, ``+suffix``, ``type/*``), each a body's media type it is picked for."""
+
+    converter: str
+    origin: str
+    summary: str = ""
+    media_types: list[str]
 
 
 class TypesDocument(Document):
     """What a mission may name: every collector type installed or given, every source kind,
-    every transform (as a normalize spec names it, ``$name``), and what failed to load."""
+    every transform (as a normalize spec names it, ``$name``), every converter a body's media
+    type picks, and what failed to load."""
 
     schema_: Literal["recon.v1.types"] = Field(default="recon.v1.types", alias="schema")
     collectors: list[TypeInfo]
     sources: list[SourceKindInfo]
     transforms: list[str]
+    converters: list[ConverterInfo] = []
     broken: list[BrokenPluginInfo] = []
 
 

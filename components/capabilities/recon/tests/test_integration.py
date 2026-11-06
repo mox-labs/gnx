@@ -13,18 +13,15 @@ from typing import Any
 import pytest
 
 from recon.adapters._out.api_collector import ApiCollector
-from recon.adapters._out.cli_collector import CliCollector
 from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.http_requester import HttpRequester
-from recon.adapters._out.markitdown_converter import MarkitdownConverter
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
-from recon.adapters._out.web_collector import WebCollector
-from recon.core.domain.collector import Collector
 from recon.core.domain.errors import CollectionError
 from recon.core.domain.models import CollectorEntry, RateLimitConfig, ReconConfig, SourceEntry
 from recon.core.domain.ratelimit import RateLimiter
-from tests.recon_fakes import collector_entry
+from recon.testing import records
+from tests.recon_fakes import collector_entry, run_for
 from tests.recon_fakes import run_survey as run
 
 _asked = pytest.mark.skipif(
@@ -42,21 +39,11 @@ def _requester() -> HttpRequester:
     return HttpRequester(RateLimiter(clock), clock)
 
 
-def _collectors() -> dict[str, Collector]:
-    req = _requester()
-    conv = MarkitdownConverter()
-    return {
-        "cli": CliCollector(),
-        "api": ApiCollector(req, Credentials({}), DEFAULT_USER_AGENT),
-        "web": WebCollector(req, conv, DEFAULT_USER_AGENT),
-    }
-
-
 def _api_records(entry: CollectorEntry, source: SourceEntry | None) -> list[dict[str, Any]]:
-    """Helper — materializes the streaming iterator for test assertions."""
-    return list(
-        ApiCollector(_requester(), Credentials({}), DEFAULT_USER_AGENT).collect(entry, source)
-    )
+    """The records recon makes of the run, as an act does."""
+    api = ApiCollector(requester=_requester(), credentials=Credentials({}),
+                       user_agent=DEFAULT_USER_AGENT)  # fmt: skip
+    return records(api, run_for(entry, source))
 
 
 # --- OpenAlex (no auth, fast) ---

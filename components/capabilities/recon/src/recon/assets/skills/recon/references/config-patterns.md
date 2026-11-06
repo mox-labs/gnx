@@ -361,24 +361,26 @@ collectors:
 
 ## RSS / Blog Tracking
 
-Track a set of blogs or RSS feeds via the web collector. The web collector emits uniform records (`url`, `title`, `content`, `status_code`, `content_type`); feed items get parsed from the content field.
+Track a set of blogs or RSS feeds with an api collector that reads each answer as a document (`response_format: document`): one uniform record a page (`url`, `title`, `content`, `content_type`), its `content` the page as markdown.
 
 ```yaml
 catalog:
   - name: overreacted
-    type: web
+    type: api
     url: https://overreacted.io
     rate_limit: { rps: 1, burst: 1 }
 
   - name: simonwillison
-    type: web
+    type: api
     url: https://simonwillison.net
     rate_limit: { rps: 1, burst: 1 }
 
 collectors:
   # Fetch the index page for each blog
   - name: index
-    type: web
+    type: api
+    endpoint: /
+    response_format: document
     # no source: → fans out across both blogs
 ```
 
@@ -433,37 +435,40 @@ SELECT name, version, vulns FROM python_audit WHERE len(vulns) > 0
 
 ## Doc Site Survey
 
-Scrape a documentation site section by section via the web collector. Useful for building a structured index of a docs tree.
+Scrape a documentation site section by section, each page read as a document. Useful for building a structured index of a docs tree.
 
 ```yaml
 catalog:
   - name: svelte-docs
-    type: web
+    type: api
     url: https://svelte.dev
     rate_limit: { rps: 1, burst: 1 }
 
 collectors:
   - name: docs-intro
-    type: web
+    type: api
     source: svelte-docs
     endpoint: /docs/svelte/overview
+    response_format: document
 
   - name: docs-runes
-    type: web
+    type: api
     source: svelte-docs
     endpoint: /docs/svelte/what-are-runes
+    response_format: document
 
   - name: docs-state
-    type: web
+    type: api
     source: svelte-docs
     endpoint: /docs/svelte/$state
+    response_format: document
 
   # ...one collector per docs page to fetch
 ```
 
 Each collector produces one record per page with markdown content. Claude can then SQL-query for specific topics or diff across time to catch doc changes.
 
-For dozens of pages, generate the collectors from a sitemap with a script: each page is one `web` collector.
+For dozens of pages, generate the collectors from a sitemap with a script: each page is one collector.
 
 ---
 

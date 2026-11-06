@@ -4,7 +4,7 @@ Determinism (the contract the tests in ``test_determinism.py`` hold):
 
     Given the same mission config, the same answers from the network (the ``Requester``
     port), the same output from shell commands (``ShellRunner``), the same documents from
-    the converter (``DocumentConverter``) and the same files under the mission's declared
+    the converters and the same files under the mission's declared
     directories, a survey writes the same records, in the same order, to the same tables.
     The time enters only through the ``Clock`` port. With the clock fixed too, the whole
     archive is the same: its name, every table, and its meta. The one exception is the
@@ -37,17 +37,18 @@ cannot record its meta or mark the archive complete is not ``finished``, and say
 is a ``recon.collect`` span, which says how many of its records are written, while it is
 written, at most once a second by the clock (``recon.collect.progress``).
 
-A table of a type that reads ``extract:`` (``CollectorType.extracts``) that gets exactly one
-record holding a list of objects, with neither ``extract:`` nor ``normalize:`` shaping it,
-is most likely the whole response read as one record (arXiv's feed without ``extract:
-feed.entry``): the survey keeps the table and warns, naming the list's path. A table with an
-``extract:`` is not warned about its lists: its one record is a record, and they are its own.
+Every table's records are what recon found in its collector's items
+(:mod:`recon.core.application.items`): each body captured, converted and its records found
+(``extract:``), each record shaped (``normalize:``). A table whose one record came from a body
+and holds a list of objects, with neither ``extract:`` nor ``normalize:`` shaping it, is most
+likely the whole response read as one record (arXiv's feed without ``extract: feed.entry``):
+the survey keeps the table and warns, naming the list's path. A table with an ``extract:`` is
+not warned about its lists: its one record is a record, and they are its own.
 
-A collector that finds nothing to keep for a reason it can name raises ``NoRecordsError``
-before its first record (an ``extract:`` that resolves to nothing in a response that is not
-empty, items that are not objects, captures no filter kept): the survey keeps the table,
-empty, and warns with the reason, so an empty table never reads as a source that had
-nothing.
+A table that finds nothing to keep for a reason recon or its type can name (an ``extract:``
+that fits none of its bodies, items that are not objects, captures no filter kept) ends with
+``NoRecordsError`` before its first record: the survey keeps the table, empty, and warns with
+the reason, so an empty table never reads as a source that had nothing.
 
 A table of an entry with ``range:`` asks its source for the run's span step by step
 (:mod:`recon.core.domain.ranges`): each step is one call of its collector, the entry's settings
@@ -55,8 +56,8 @@ filled with the step's bounds, and every record it gives carries the step as ``_
 (``{start, end}``); the steps land in the one table, all or nothing, and its outcome records
 the span (``range``), which commits with the archive's meta.
 
-A table read page by page (``paginate:``) says each page and why its crawl stopped short
-through the survey's page log (:class:`TablePages`, the collectors' ``CollectorContext.pages``).
+A table read page by page (``paginate:``, or a type's own crawl that marks its pages) keeps
+each page and why its crawl stopped short in the survey's page log (:class:`TablePages`).
 Once the table is sealed its page log is kept beside it (its ``pages`` sidecar); a crawl
 cut short seals the table ``ok`` and ``truncated``, with what cut it, and warns
 (``paginate_pages``, ``paginate_loop``, ``paginate_empty``). A table that fails keeps no page log.
@@ -67,8 +68,12 @@ from __future__ import annotations
 import contextlib
 from typing import TYPE_CHECKING, Any, Literal
 
+from pydantic import ValidationError
+
+from recon.core.application.items import Raw, Unpacking, run_events
 from recon.core.application.plan import fan_out
 from recon.core.domain.archives import META_FORMAT_VERSION
+from recon.core.domain.collector import PageMark, Run, Truncated
 from recon.core.domain.deadline import Deadline, DeadlineExceededError
 from recon.core.domain.documents import RangeOutcome, TableError, TableOutcome
 from recon.core.domain.errors import CollectionError, ErrorKind, NoRecordsError, Problem, ReconError
@@ -80,10 +85,11 @@ if TYPE_CHECKING:
     from collections.abc import Collection, Generator, Mapping
     from datetime import datetime
 
+    from recon.core.application.collectors import ActCollectors
     from recon.core.domain.archives import Landed
     from recon.core.domain.capture import CaptureLog
     from recon.core.domain.clock import Clock
-    from recon.core.domain.collector import Collector
+    from recon.core.domain.collector import Collector, Plugins
     from recon.core.domain.models import CollectorEntry, ReconConfig, SourceEntry
     from recon.core.domain.paginate import TruncatedBy
     from recon.core.domain.ranges import RangeRun
@@ -111,28 +117,20 @@ class CollectorError(CollectionError):
 
 
 class TablePages:
-    """The page log of a survey's tables (``recon.core.domain.paginate.PageLog``), one table at a
-    time, as tables run: :meth:`begin` starts a table's, and :meth:`end` hands it over. Each
-    page is one entry, ``{"page", "token"}``, so it holds a crawl's ``pages`` entries at most.
-    Every page is wanted, and a snapshot's crawl never resumes, so it is never restarted or
-    shifted."""
+    """The page log of a survey's tables, one table at a time, as tables run: :meth:`begin`
+    starts a table's, and :meth:`end` hands it over. Each page is one entry, ``{"page",
+    "token"}``, so it holds a crawl's ``pages`` entries at most. Every page is wanted, and a
+    snapshot's crawl never resumes."""
 
     def __init__(self) -> None:
         self.pages: list[dict[str, Any]] = []
         self.truncated_by: TruncatedBy | None = None
 
-    def page(self, index: int, token: Any) -> bool:
+    def page(self, index: int, token: Any) -> None:
         self.pages.append({"page": index, "token": token})
-        return True
 
     def truncated(self, by: TruncatedBy) -> None:
         self.truncated_by = by
-
-    def restarted(self, index: int) -> None:
-        return None
-
-    def shifted(self, index: int, by: int | None) -> None:
-        return None
 
     def begin(self) -> None:
         self.pages, self.truncated_by = [], None
@@ -146,15 +144,14 @@ class TablePages:
 class Survey:
     """One survey's run: the ports it writes through and the tables it has recorded.
 
-    ``extracts`` names the collector types that read ``extract:``, and ``kinds`` the source
-    kinds each type accepts (a type it does not name accepts every kind), so an unpinned
-    collector runs against the sources the plan resolved for it; ``warnings`` collects
-    what the run found worth saying about tables that succeeded, and about an archive it
-    could not finish. ``finished`` is false when its meta could not be recorded or the
-    archive could not be marked complete, so it reads incomplete whatever its tables did.
-    ``progress_s`` is the least time between two progress events of a table. ``pages`` is the
-    page log its collectors were built with (``CollectorContext.pages``). ``ranges`` is the
-    run of each ranged table, by output (:func:`recon.observe.application.ranges.range_runs`)."""
+    ``plugins`` is what is installed: each type's settings schema, and the source kinds it
+    accepts, so an unpinned collector runs against the sources the plan resolved for it;
+    ``warnings`` collects what the run found worth saying about tables that succeeded, and
+    about an archive it could not finish. ``finished`` is false when its meta could not be
+    recorded or the archive could not be marked complete, so it reads incomplete whatever its
+    tables did. ``progress_s`` is the least time between two progress events of a table.
+    ``pages`` is the survey's page log. ``ranges`` is the run of each ranged table, by output
+    (:func:`recon.observe.application.ranges.range_runs`)."""
 
     def __init__(
         self,
@@ -163,8 +160,7 @@ class Survey:
         telemetry: Telemetry,
         on_event: EventCallback | None = None,
         *,
-        extracts: Collection[str] = (),
-        kinds: Mapping[str, Collection[str]] | None = None,
+        plugins: Plugins,
         deadline: Deadline | None = None,
         progress_s: float = PROGRESS_S,
         pages: TablePages | None = None,
@@ -178,15 +174,14 @@ class Survey:
         self._recon_version = recon_version
         self._telemetry = telemetry
         self._on_event = on_event
-        self._extracts = frozenset(extracts)
-        self._kinds = dict(kinds or {})
+        self._plugins = plugins
         self.warnings: list[Problem] = []
         self.finished = True
 
     def run(
         self,
         config: ReconConfig,
-        collectors: Mapping[str, Collector],
+        built: ActCollectors,
         archive: Landed,
         *,
         started: datetime,
@@ -229,7 +224,7 @@ class Survey:
                 for index, entry in enumerate(config.collectors):
                     if index in streams:
                         continue
-                    tables += self._run_entry(index, entry, config, collectors, archive, captures)
+                    tables += self._run_entry(index, entry, config, built, archive, captures)
         except KeyboardInterrupt:
             # Stopped on request (Ctrl-C, SIGTERM): the tables that ended are recorded, and
             # that it was stopped, so it never reads as a survey that died. One that cannot
@@ -288,14 +283,14 @@ class Survey:
         index: int,
         entry: CollectorEntry,
         config: ReconConfig,
-        collectors: Mapping[str, Collector],
+        built: ActCollectors,
         archive: Landed,
         captures: CaptureLog | None,
     ) -> list[TableOutcome]:
         catalog = {s.name: s for s in config.catalog}
-        collector = collectors.get(entry.type)
+        collector = built.collectors.get(entry.type)
         tables = []
-        for source, output in fan_out(entry, catalog, self._kinds.get(entry.type)):
+        for source, output in fan_out(entry, catalog, self._plugins.accepts(entry.type)):
             table = _table(entry, output, source.name if source else None)
             with self._telemetry.span(COLLECT, _attributes(table)) as span:
                 if collector is None:  # its type's factory raised: a plugin_broken warning
@@ -304,7 +299,7 @@ class Survey:
                     tables.append(self._failed(span, table, "config", message, 0, fix))
                     continue
                 outcome = self._run_table(
-                    span, table, collector, (index, entry), source, archive, captures
+                    span, table, collector, built, (index, entry), source, archive, captures
                 )
                 tables.append(outcome)
         return tables
@@ -314,6 +309,7 @@ class Survey:
         span: Span,
         table: TableOutcome,
         collector: Collector,
+        built: ActCollectors,
         at: tuple[int, CollectorEntry],
         source: SourceEntry | None,
         archive: Landed,
@@ -335,6 +331,7 @@ class Survey:
         start = self._clock.monotonic()
         self._pages.begin()
         first: list[dict[str, Any]] = []
+        bodied: list[bool] = []
         nothing: NoRecordsError | None = None
         what = f"table {output}'s deadline ({entry.deadline:g}s)" if entry.deadline else ""
         raise_it = f"raise deadline: on collector {entry.name!r}, or narrow what it asks for"
@@ -348,11 +345,11 @@ class Survey:
                     _within(
                         self._deadline,
                         _keeping_first(
-                            _tagged(collector, target, source, captures)
-                            if ranged is None
-                            else _stepped(collector, target, source, captures, ranged),
+                            self._records(
+                                collector, built, target, source, captures, ranged, bodied
+                            ),
                             first,
-                        ),
+                        ),  # fmt: skip
                     ),
                 )
                 columns = list(entry.normalize or ())
@@ -381,7 +378,7 @@ class Survey:
                     fix=nothing.fix or "",
                 ),
             )
-        if count == 1:
+        if count == 1 and bodied[:1] == [True]:
             self._check_extract(index, entry, output, first[0])
         update: dict[str, Any] = {"records": count, "seconds": seconds}
         pages, truncated_by = self._pages.end()
@@ -392,6 +389,45 @@ class Survey:
             entry_at = f"collectors.{index}"
             self._warn(output, crawl_truncated(entry_at, entry, output, truncated_by, len(pages)))
         return table.model_copy(update=update)
+
+    def _records(
+        self,
+        collector: Collector,
+        built: ActCollectors,
+        entry: CollectorEntry,
+        source: SourceEntry | None,
+        captures: CaptureLog | None,
+        ranged: RangeRun | None,
+        bodied: list[bool],
+    ) -> Generator[dict[str, Any], None, None]:
+        """A table's records: each run's (a ranged table's step by step, its entry's settings
+        filled with the step's bounds, each record carrying the step as ``_range``), found and
+        shaped by recon; its pages kept in the page log. ``bodied`` is told whether its first
+        record came from a body. Closing this closes the run being read, so its collector's
+        cleanup runs."""
+        unpacking = Unpacking(built.converters, captures)
+        steps: list[Any] = [None] if ranged is None else list(ranged.steps)
+        for step in steps:
+            asked = entry if step is None else entry.model_copy(update=fill(entry.settings, step))
+            run = run_of(self._plugins, asked, source)
+            shaping = built.shaping(run)
+            events = _tagged(run_events(collector, run, unpacking, shaping), run)
+            try:
+                for event in events:
+                    if isinstance(event, Raw):
+                        record = shaping.raw(event)
+                        if step is not None:
+                            record[RANGE_FIELD] = step.document()
+                        if not bodied:
+                            bodied.append(event.bodied)
+                        yield record
+                    elif isinstance(event, PageMark):
+                        self._pages.page(event.index, event.token)
+                    elif isinstance(event, Truncated):
+                        self._pages.truncated(event.by)
+            finally:
+                events.close()
+        unpacking.end()
 
     def _keep_pages(self, archive: Landed, output: str, pages: list[dict[str, Any]]) -> None:
         """Keep a sealed table's page log beside it; an archive that cannot keep it cannot be
@@ -406,7 +442,7 @@ class Survey:
     ) -> None:
         # With an extract, the one record is one of the records the extract names, and a
         # list inside it is that record's own (a paper's authors), not the response's.
-        if entry.type not in self._extracts or entry.normalize or entry.extract:
+        if entry.normalize or entry.extract:
             return
         found = nested_records(record)
         if found is None:
@@ -461,40 +497,35 @@ class Survey:
             self._on_event(event)
 
 
-def _tagged(
-    collector: Collector,
-    entry: CollectorEntry,
-    source: SourceEntry | None,
-    captures: CaptureLog | None,
-) -> Generator[dict[str, Any], None, None]:
-    """The collector's records; any exception it raises, eagerly or mid-stream, comes out
-    as a CollectorError naming the entry and source."""
+def _tagged(events: Generator[Any, None, None], run: Run) -> Generator[Any, None, None]:
+    """``events``; any exception their collector (or recon's conversion of what it gave)
+    raises, eagerly or mid-stream, comes out as a CollectorError naming the entry and source.
+    Closing this closes ``events``."""
     try:
-        yield from collector.collect(entry, source, captures=captures)
+        yield from events
     except (CollectorError, NoRecordsError):
         raise
     except Exception as exc:
-        raise CollectorError(entry.name, source.name if source else None, exc) from exc
+        source = run.source.name if run.source else None
+        raise CollectorError(run.entry.name, source, exc) from exc
 
 
-def _stepped(
-    collector: Collector,
-    entry: CollectorEntry,
-    source: SourceEntry | None,
-    captures: CaptureLog | None,
-    ranged: RangeRun,
-) -> Generator[dict[str, Any], None, None]:
-    """A ranged table's records: each step's, its collector asked with the entry's settings
-    filled with the step's bounds, each record carrying its step. Closing this closes the step
-    being read, so its collector's cleanup runs."""
-    for step in ranged.steps:
-        asked = entry.model_copy(update=fill(entry.settings, step))
-        records = _tagged(collector, asked, source, captures)
-        try:
-            for record in records:
-                yield {**record, RANGE_FIELD: step.document()}
-        finally:
-            records.close()
+def run_of(plugins: Plugins, entry: CollectorEntry, source: SourceEntry | None) -> Run:
+    """The run of ``entry`` against ``source``: its type's own keys validated by the type's
+    schema. A value its schema refuses (a range's bound filled into a key that cannot take
+    it) fails the table as ``config``."""
+    schema = plugins.collector_types[entry.type].settings
+    if schema is None:
+        return Run(entry, source)
+    try:
+        return Run(entry, source, schema.model_validate(entry.settings))
+    except ValidationError as exc:
+        raise CollectionError(
+            f"collector {entry.name!r}: its settings as filled for this run are refused: {exc}",
+            kind="config",
+            fix="check the values the run fills in (a range's placeholders) against the type's "
+            "keys (recon types --json)",
+        ) from exc
 
 
 def _no_records() -> Generator[dict[str, Any], None, None]:

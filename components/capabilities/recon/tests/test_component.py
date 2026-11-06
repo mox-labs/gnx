@@ -31,17 +31,16 @@ from recon._matrix import (
 )
 from recon.adapters._out.system_clock import SystemClock
 from recon.composition import load_plugins, root
-from recon.core.domain.collector import CollectorType
+from recon.core.domain.collector import Record
 from recon.core.domain.documents import Act, Change, Span
-from tests.recon_fakes import VirtualClock
+from tests.recon_fakes import FakeCollector, VirtualClock
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
     from recon.composition import Recon
-    from recon.core.domain.capture import CaptureLog
-    from recon.core.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.collector import Item, Position, Run
 
 SPANS = "acme.v1.collector.spans"
 QUIET = "acme.v1.collector.quiet"
@@ -54,34 +53,26 @@ class _Asked(BaseModel):
     until: str
 
 
-class _Spans:
+class _Spans(FakeCollector):
     """A source that answers each request with the window it was asked for."""
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-    ) -> Iterator[dict[str, Any]]:
-        asked = _Asked.model_validate(entry.settings)
-        yield {"id": asked.since, "since": asked.since, "until": asked.until}
+    effects = frozenset()
+
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+        asked = run.settings_as(_Asked)
+        yield Record({"id": asked.since, "since": asked.since, "until": asked.until})
 
 
-class _Quiet:
+class _Quiet(FakeCollector):
     """A stream's source that sends nothing until it is closed."""
+
+    effects = frozenset()
+    records = "unbounded_recon_paced"
 
     def __init__(self) -> None:
         self.closed = threading.Event()
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-        after: Any = None,
-    ) -> Iterator[dict[str, Any]]:
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
         self.closed.wait()
         yield from ()
 
@@ -90,10 +81,8 @@ class _Quiet:
 
 
 def _extensions(registry: Any) -> None:
-    spans = CollectorType(create=lambda ctx: _Spans(), effects=frozenset(), settings=_Asked)
-    quiet = CollectorType(create=lambda ctx: _Quiet(), effects=frozenset(), unbounded=True)
-    registry.register("recon.collector", SPANS, lambda: spans)
-    registry.register("recon.collector", QUIET, lambda: quiet)
+    registry.register("recon.collector", SPANS, _Spans, config=_Asked)
+    registry.register("recon.collector", QUIET, _Quiet)
 
 
 RANGED = {"name": "hours", "type": SPANS, "since": "{range.start}", "until": "{range.end}",

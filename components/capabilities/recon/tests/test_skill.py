@@ -176,10 +176,13 @@ def test_the_streaming_page_is_the_skill_reference() -> None:
         pytest.skip("not run from the repository")
     assert page.read_text(encoding="utf-8") == REFERENCES["streaming"]
     assert "recon --skill -r streaming" in SKILL
+    # Contract v2: a type declares whether its records end, and who paces them, in its one
+    # ``records`` enum, which replaced ``unbounded`` and ``paced_by``.
     for taught in ("window", "buffer.overflow", "drop_newest", "retain_unset", "provenance",
                    "--windows", "--until", "--forever", "--stream", "--since", "closed_by",
-                   "_position", "records_dropped", "windows_many", "unbounded", "paced_by", "busy",
-                   "usage", "tail", "sse", "Last-Event-ID", "tombstone"):  # fmt: skip
+                   "_position", "records_dropped", "windows_many", "unbounded_recon_paced",
+                   "unbounded_source_paced", "busy", "usage", "tail", "sse", "Last-Event-ID",
+                   "tombstone"):  # fmt: skip
         assert taught in REFERENCES["streaming"], taught
 
 

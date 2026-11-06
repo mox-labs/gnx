@@ -320,10 +320,12 @@ class TestMarkitdown:
         from recon.adapters._out.markitdown_converter import markitdown_path
         from recon.core.domain.errors import CollectionError
 
-        def missing(self: Any, path: str) -> NoReturn:
+        def missing(self: Any, stream: Any, **kwargs: Any) -> NoReturn:
             raise markitdown.MissingDependencyException("pdfminer is not installed")
 
-        monkeypatch.setattr(markitdown.MarkItDown, "convert_local", missing)
+        # $markitdown converts a file's bytes through the document converter (one
+        # conversion, review C9), which hands them to markitdown's convert_stream.
+        monkeypatch.setattr(markitdown.MarkItDown, "convert_stream", missing)
         declared, _outside = dirs
         with pytest.raises(CollectionError) as excinfo:
             markitdown_path(str(declared / "data.csv"), roots=[declared])
@@ -338,10 +340,10 @@ class TestMarkitdown:
 
         from recon.adapters._out.markitdown_converter import markitdown_path
 
-        def broken(self: Any, path: str) -> NoReturn:
+        def broken(self: Any, stream: Any, **kwargs: Any) -> NoReturn:
             raise ZeroDivisionError
 
-        monkeypatch.setattr(markitdown.MarkItDown, "convert_local", broken)
+        monkeypatch.setattr(markitdown.MarkItDown, "convert_stream", broken)
         with pytest.raises(ZeroDivisionError):
             markitdown_path(str(dirs[0] / "data.csv"), roots=[dirs[0]])
 
@@ -394,7 +396,8 @@ class TestMarkitdown:
     )
     def test_a_uri_is_refused_not_fetched(self, dirs: tuple[Path, Path], uri: str) -> None:
         error = self._refused(uri, [dirs[0]])
-        assert "web" in (error.fix or "")
+        # The fix names what fetches a document now (ruling R10 folded web into api).
+        assert "response_format: document" in (error.fix or "")
 
     def test_a_relative_path_is_relative_to_the_directory_given_as_base(
         self, dirs: tuple[Path, Path], tmp_path: Path
@@ -416,8 +419,8 @@ class TestMarkitdown:
 
 
 class TestAConvertedDocument:
-    """The ``web`` collector's converter: bytes, the content type and the URL the server
-    gave, in; markdown out."""
+    """The ``document`` converter (what an api collector's ``response_format: document``
+    converts with): bytes, the content type and the URL the server gave, in; markdown out."""
 
     def test_the_content_type_the_server_gave_is_honoured(self) -> None:
         """Regression: the converter ignored ``content_type`` and let markitdown guess from
@@ -427,10 +430,10 @@ class TestAConvertedDocument:
 
         body = b"name,city\nAlice,Paris\n"
         converter = MarkitdownConverter()
-        as_text = converter.convert(body, "text/plain", "https://x.test/data")
-        as_csv = converter.convert(body, "text/csv", "https://x.test/data")
-        assert as_text.text.strip() == "name,city\nAlice,Paris"
-        assert "| name | city |" in as_csv.text
+        [as_text] = converter.convert([body], "text/plain", "https://x.test/data")
+        [as_csv] = converter.convert([body], "text/csv", "https://x.test/data")
+        assert as_text["content"] == "name,city\nAlice,Paris"
+        assert "| name | city |" in as_csv["content"]
 
     def test_a_youtube_page_is_converted_from_its_bytes_and_nothing_more_is_fetched(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -456,11 +459,11 @@ class TestAConvertedDocument:
         page = b"<html><head><title>A talk</title></head><body><p>About it</p></body></html>"
         url = "https://www.youtube.com/watch?v=abc123"
 
-        result = MarkitdownConverter().convert(page, "text/html", url)
+        [result] = MarkitdownConverter().convert([page], "text/html", url)
 
         assert asked == []
         assert capsys.readouterr().out == ""
-        assert result.title == "A talk" and "About it" in result.text
+        assert result["title"] == "A talk" and "About it" in result["content"]
 
 
 def _wav() -> bytes:
@@ -482,7 +485,7 @@ class TestAudioIsNeverSentAnywhere:
     """Regression: markitdown's audio converter uploads the whole recording to Google's
     speech API (``speech_recognition.Recognizer.recognize_google``): a request outside the
     requester, its rate limit, its spans and the capture log, to a third party the mission
-    never named. Neither the ``web`` collector's converter nor ``$markitdown`` may reach it.
+    never named. Neither the ``document`` converter nor ``$markitdown`` may reach it.
 
     The speech client is faked, so a call is seen rather than sent."""
 
@@ -497,17 +500,21 @@ class TestAudioIsNeverSentAnywhere:
         monkeypatch.setattr("speech_recognition.Recognizer.recognize_google", recognize_google)
         return calls
 
-    def test_audio_the_web_collector_fetched_is_not_transcribed(
+    def test_audio_an_api_collector_fetched_as_a_document_is_not_transcribed(
         self, speech_calls: list[int]
     ) -> None:
-        from recon.adapters._out.markitdown_converter import MarkitdownConverter
+        from recon.adapters._out.api_collector import ApiCollector
+        from recon.adapters._out.credentials import Credentials
         from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
-        from recon.adapters._out.web_collector import WebCollector
         from recon.core.domain.http import HttpResponse
-        from recon.core.domain.models import CollectorEntry, SourceEntry
+        from recon.core.domain.models import SourceEntry
+        from recon.testing import records
+        from tests.recon_fakes import run_for
 
         class Requester:
-            def get(self, source: SourceEntry, url: str, **kwargs: Any) -> HttpResponse:
+            def request(
+                self, source: SourceEntry, method: str, url: str, **kwargs: Any
+            ) -> HttpResponse:
                 body = _wav()
                 return HttpResponse(
                     status_code=200,
@@ -518,12 +525,14 @@ class TestAudioIsNeverSentAnywhere:
                     content_type="audio/x-wav",
                 )
 
-        collector = WebCollector(Requester(), MarkitdownConverter(), DEFAULT_USER_AGENT)  # type: ignore[arg-type]
-        source = SourceEntry(name="s", type="web", url="https://x.test/talk.wav")
-        entry = CollectorEntry(name="c", type="web", source="s")
+        collector = ApiCollector(requester=Requester(), credentials=Credentials({}),  # type: ignore[arg-type]
+                                 user_agent=DEFAULT_USER_AGENT)  # fmt: skip
+        entry = {"name": "c", "type": "api", "source": "s", "endpoint": "/talk.wav",
+                 "response_format": "document"}  # fmt: skip
+        run = run_for(entry, {"name": "s", "url": "https://x.test"})
 
         with pytest.raises(CollectionError) as excinfo:
-            list(collector.collect(entry, source))
+            records(collector, run)
 
         assert speech_calls == []
         assert "audio" in (excinfo.value.fix or "")

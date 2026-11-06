@@ -1,17 +1,20 @@
 """The composition root: the one place adapters meet ports.
 
-It names recon's built-in collector types and transforms (:func:`builtins`), which recon
-registers on matrix's registry from its ``matrix.extensions`` entry point exactly as a third
-party registers its own (``recon._matrix``, the one module that names matrix); and it reads the
-installed ones back from there (:func:`load_plugins`). A plugin that fails to load is reported
-as a ``BrokenPlugin`` and left out; every other plugin still loads.
+It names recon's built-ins (:func:`builtins`): each built-in adapter module's own
+``register(registry)`` (collector types, source kinds, converters, the ``$markitdown``
+transform) and the pure transforms, which recon registers on matrix's registry from its
+``matrix.extensions`` entry point exactly as a third party registers its own (``recon._matrix``,
+the one module that names matrix); and it reads the installed ones back from there
+(:func:`load_plugins`). A plugin that fails to load is reported as a ``BrokenPlugin`` and left
+out; every other plugin still loads.
 
 :func:`root` binds the rest: missions as files under the project root, archives as
 directories of JSONL, DuckDB for queries, the system clock, httpx2 for HTTP, a shell for
-commands, markitdown for documents, and telemetry to two sinks: the survey's event log in its
-archive, always, and OpenTelemetry's API, which exports only when the application has
-installed an SDK. It holds no policy of its own: what each collector type is handed, and what
-recon holds every type to, is the application's (``recon.core.application.collectors``).
+commands, credentials and capture logs over each mission's files, and telemetry to two sinks:
+the survey's event log in its archive, always, and OpenTelemetry's API, which exports only when
+the application has installed an SDK. It holds no policy of its own: what each collector type
+is handed, and what recon holds every type to, is the application's
+(``recon.core.application.collectors``, ``recon.core.application.items``).
 
 recon is a library here, so the root never installs OpenTelemetry's SDK: OpenTelemetry's
 guidance is that libraries use the API and applications configure the SDK.
@@ -30,11 +33,12 @@ from typing import TYPE_CHECKING
 
 from recon import __version__
 from recon.adapters._out.archive_files import ArchiveFiles
+from recon.adapters._out.capture_files import MissionCaptureLogs
 from recon.adapters._out.cli_collector import PopenRunner
 from recon.adapters._out.command_deliverer import CommandDeliverer
+from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.duckdb_query import DuckdbJoin, DuckdbQuery, TableFiles
 from recon.adapters._out.event_channel import ThreadChannel
-from recon.adapters._out.markitdown_converter import MarkitdownConverter
 from recon.adapters._out.mission_files import MissionFiles, find_project
 from recon.adapters._out.mission_layout import JOINS, mission_dir
 from recon.adapters._out.otel_telemetry import OtelEvents, export_from_env
@@ -52,9 +56,11 @@ from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.core.application.collection import Collection
 from recon.core.application.collectors import (
+    ActCollectors,
     CollectorPorts,
-    SurveyCollectors,
+    MissionPorts,
     build_collectors,
+    stand_ins,
 )
 from recon.core.application.stream import StreamStop as StreamStop
 from recon.core.domain.errors import UsageError
@@ -72,17 +78,15 @@ if TYPE_CHECKING:
     from recon.core.application.collection import ChannelFactory
     from recon.core.domain.archives import Store
     from recon.core.domain.clock import Clock
-    from recon.core.domain.collector import CollectorType, Plugins, Transform
-    from recon.core.domain.converters import DocumentConverter
+    from recon.core.domain.collector import Plugins, Transform
+    from recon.core.domain.credentials import Credentials as CredentialsPort
     from recon.core.domain.deadline import Deadline
     from recon.core.domain.errors import Problem
     from recon.core.domain.http import Requester
     from recon.core.domain.models import ReconConfig
-    from recon.core.domain.paginate import PageLog
     from recon.core.domain.ratelimit import RateLimiter
     from recon.core.domain.schedule import Platform
     from recon.core.domain.shell import ShellRunner
-    from recon.core.domain.stream import GapLog
     from recon.core.domain.telemetry import Channel, EventSink
     from recon.observe.domain.delivery import Deliverer
     from recon.observe.domain.joins import KeyJoin
@@ -104,42 +108,43 @@ class Recon:
     observation: Observation
 
 
-def builtins() -> tuple[dict[str, CollectorType], dict[str, Transform]]:
-    """recon's own collector types and transforms, by their short names: what recon registers
-    at its points (``recon._matrix.register``)."""
+def builtins() -> tuple[tuple[Register, ...], dict[str, Transform]]:
+    """recon's own built-ins: each built-in adapter module's ``register(registry)``, and the
+    pure transforms by their short names: what recon registers at its points
+    (``recon._matrix.register``)."""
     from recon.adapters._out import (
         api_collector,
         capture_collector,
         cli_collector,
         markitdown_converter,
         mcp_collector,
+        parsing,
         sse_collector,
         tail_collector,
-        web_collector,
     )
 
-    collectors = {
-        "api": api_collector.collector_type,
-        "cli": cli_collector.collector_type,
-        "web": web_collector.collector_type,
-        "capture": capture_collector.collector_type,
-        "mcp": mcp_collector.collector_type,
-        "tail": tail_collector.collector_type,
-        "sse": sse_collector.collector_type,
-    }
-    to_markdown: Transform = markitdown_converter.markitdown_path
-    transforms: dict[str, Transform] = {**BUILTIN_TRANSFORMS, "markitdown": to_markdown}
-    return collectors, transforms
+    registers: tuple[Register, ...] = (
+        api_collector.register,
+        cli_collector.register,
+        capture_collector.register,
+        mcp_collector.register,
+        tail_collector.register,
+        sse_collector.register,
+        parsing.register,
+        markitdown_converter.register,
+    )
+    return registers, dict(BUILTIN_TRANSFORMS)
 
 
 def load_plugins(extensions: Iterable[Register] = ()) -> Plugins:
-    """Every collector type and transform registered at recon's points on matrix's registry,
-    recon's own and every installed extension's, and each of ``extensions`` registers
-    in-process; with what failed to load. Raises UsageError for an extension given that takes
-    a type URL registered already."""
+    """Every collector type, source kind, converter and transform registered at recon's points
+    on matrix's registry, recon's own and every installed extension's, and each of
+    ``extensions`` registers in-process; each collector type built once with stand-in needs to
+    read what it declares; with what failed to load. Raises UsageError for an extension given
+    that takes a type URL registered already."""
     from recon import _matrix
 
-    return _matrix.plugins(extensions)
+    return _matrix.plugins(extensions, stand_ins=stand_ins(SystemClock(), DEFAULT_USER_AGENT))
 
 
 def root(
@@ -151,7 +156,6 @@ def root(
     archives: Callable[[Path], Store] | None = None,
     requester: RequesterFactory | None = None,
     shell: ShellRunner | None = None,
-    converter: DocumentConverter | None = None,
     channel: ChannelFactory | None = None,
     schedulers: Callable[[Platform | None], Scheduler] | None = None,
     schedule_host: ScheduleHost | None = None,
@@ -168,8 +172,8 @@ def root(
     the installed plugins, the archives (``archives`` builds them over the project's
     ``.recon`` directory; they are the landing, what is read back, and the files DuckDB
     queries), the survey's Requester (built per survey by
-    ``requester`` from the survey's telemetry), the shell, the document converter, and each
-    survey's event channel (``channel``, default a :class:`ThreadChannel` with its defaults),
+    ``requester`` from the survey's telemetry), the shell, and each survey's event channel
+    (``channel``, default a :class:`ThreadChannel` with its defaults),
     the operating system's scheduler of each platform (``schedulers``: the user's own
     launchd, systemd or crontab, run by their commands), what a scheduled tick runs
     (``schedule_host``: this installation's ``recon`` command, and the ``PATH`` of ``env``
@@ -197,12 +201,13 @@ def root(
             fix="land into recon's archive directory (no landing), or one built over another "
             "directory: recon.open(landing=...) with recon's own archive store",
         )
+    runner = shell or PopenRunner()
     ports = CollectorPorts(
         requester=requester or partial(_http_requester, clock),
-        converter=converter or MarkitdownConverter(),
-        shell=shell or PopenRunner(),
+        shell=runner,
         user_agent=DEFAULT_USER_AGENT,
         clock=clock,
+        project=missions.project,
     )
 
     def telemetry(
@@ -220,14 +225,14 @@ def root(
         telemetry: Telemetry,
         deadline: Deadline,
         /,
-        *,
-        gaps: GapLog | None = None,
-        pages: PageLog | None = None,
-    ) -> SurveyCollectors:
-        return build_collectors(
-            plugins, ports, process_env, mission_dir(home, mission), config, telemetry,
-            deadline, project=missions.project, gaps=gaps, pages=pages,
-        )  # fmt: skip
+    ) -> ActCollectors:
+        directory = mission_dir(home, mission)
+        own = MissionPorts(
+            credentials=partial(_credentials, directory, runner),
+            capture_logs=MissionCaptureLogs(directory),
+            roots=(directory,),
+        )
+        return build_collectors(plugins, ports, process_env, own, config, telemetry, deadline)
 
     host = schedule_host or ScheduleHost(
         this_recon(), safe_path(process_env.get("PATH", ""), project=found)
@@ -313,6 +318,14 @@ def _mission_join(home: Path, mission: str) -> KeyJoin:
 def _local(at: datetime) -> datetime:
     """``at`` in the host's local time, which every scheduler keeps its calendar in."""
     return at.astimezone()
+
+
+def _credentials(
+    directory: Path, shell: ShellRunner, env: Mapping[str, str], deadline: Deadline
+) -> CredentialsPort:
+    """A type's credentials for one act: over the environment it may read, a relative
+    ``file:`` the mission's, a helper run through the shell within the act's deadline."""
+    return Credentials(env, directory, shell, deadline)
 
 
 def _http_requester(

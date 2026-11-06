@@ -17,11 +17,11 @@ credentials included: recon cannot tell one from any other argument (SECURITY.md
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol
 from urllib.parse import parse_qsl, quote_plus, unquote_plus, urlencode, urlsplit, urlunsplit
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable, Iterator, Mapping
 
     from recon.core.domain.documents import Capture
 
@@ -154,9 +154,12 @@ def redact_query_params(url: str, names: Iterable[str], replacement: str = REDAC
     return urlunsplit(parts._replace(query=urlencode(pairs)))
 
 
-#: ``stream``: one window's arrivals, each with its order and its offset in time from the
-#: window's open, from which the window replays (:mod:`recon.core.domain.stream`).
-CaptureKind = Literal["http", "cli", "web", "mcp", "external", "stream"]
+#: What a capture's ``request`` holds, named by the capture's ``kind``: recon writes ``http``,
+#: ``cli``, ``mcp``, ``external`` and ``stream`` (one window's arrivals, each with its order and
+#: its offset in time from the window's open, from which the window replays); a collector type
+#: names its own (a body's ``kind``, by default its type's name). ``web`` is read, as recon
+#: 0.18 and earlier wrote it. An open vocabulary: a reader handles a kind it does not know.
+CaptureKind = str
 
 
 class CaptureLog(Protocol):
@@ -194,4 +197,20 @@ class CaptureLog(Protocol):
         content_type: str,
     ) -> Capture | None:
         """Log the streamed body; None when nothing was streamed for ``collector``."""
+        ...
+
+
+class CaptureLogs(Protocol):
+    """The capture logs of one mission, read as the ``capture`` collector type reads them: the
+    ``capture_logs`` need (``recon.core.domain.collector.NEEDS``). A log is named by what
+    :meth:`logs` gives, never built by the type."""
+
+    def logs(self, pattern: str) -> list[str]:
+        """Each log the glob ``pattern`` names (relative to the mission, or absolute), in
+        order; raises CollectionError (``config``) when it names none."""
+        ...
+
+    def read(self, log: str) -> Iterator[tuple[dict[str, Any], bytes]]:
+        """Each capture line of ``log`` that is one, with its body, in order; raises
+        CollectionError naming the line for one that is not."""
         ...

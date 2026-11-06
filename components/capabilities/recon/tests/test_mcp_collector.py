@@ -251,7 +251,7 @@ def test_one_stdio_server_serves_every_table_and_is_stopped_once(tmp_path: Path)
             super().close()
 
     plugins = load_plugins()
-    plugins.collector_types["mcp"] = replace(plugins.collector_types["mcp"], create=Counted)
+    plugins.collector_types["mcp"] = replace(plugins.collector_types["mcp"], build=Counted)
     archive, tables = _survey(
         tmp_path, [_call("one", "whoami"), _call("two", "whoami")], plugins=plugins
     )
@@ -374,7 +374,7 @@ def test_a_plan_starts_no_server_unless_it_is_asked_to_check(tmp_path: Path) -> 
     built: list[str] = []
     plugins = load_plugins()
     plugins.collector_types["mcp"] = replace(
-        plugins.collector_types["mcp"], create=building(built, "mcp")
+        plugins.collector_types["mcp"], build=building(built, "mcp")
     )
     plan = _plan(tmp_path, [_call("a", "whoami")], check=False, plugins=plugins)
 
@@ -488,7 +488,7 @@ def test_a_checked_dry_run_builds_no_collector_whose_type_has_no_preflight(
 
     for name, ct in list(plugins.collector_types.items()):
         if name != "mcp":
-            plugins.collector_types[name] = replace(ct, create=building(built, name))
+            plugins.collector_types[name] = replace(ct, build=building(built, name))
     plan = _plan(
         tmp_path,
         [_call("good", "whoami"), {"name": "c", "type": "capture"}],
@@ -600,13 +600,13 @@ def _captured(archive: Path) -> tuple[str, dict[str, Any]]:
 def _replayed(project: Path, archive: Path, extract: str) -> list[dict[str, Any]]:
     """The records a ``capture`` collector reads back from the survey's capture log."""
     from recon.adapters._out.capture_collector import CaptureCollector
-    from recon.core.domain.models import CollectorEntry
+    from recon.adapters._out.capture_files import MissionCaptureLogs
+    from recon.testing import records
+    from tests.recon_fakes import run_for
 
     log = str(archive / "captures.jsonl")
-    entry = CollectorEntry.model_validate(
-        {"name": "again", "type": "capture", "path": log, "extract": extract}
-    )
-    return list(CaptureCollector(project).collect(entry, None))
+    entry = {"name": "again", "type": "capture", "path": log, "extract": extract}
+    return records(CaptureCollector(capture_logs=MissionCaptureLogs(project)), run_for(entry))
 
 
 def test_a_long_credential_a_server_echoes_is_never_in_the_capture(
@@ -711,7 +711,8 @@ def _mock(answer: Any) -> Any:
 
     plugins = load_plugins()
     plugins.collector_types["mcp"] = replace(
-        plugins.collector_types["mcp"], create=lambda ctx: McpCollector(ctx, http_client=client)
+        plugins.collector_types["mcp"],
+        build=lambda **needs: McpCollector(**needs, http_client=client),
     )
     return plugins
 

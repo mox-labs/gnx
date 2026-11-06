@@ -25,15 +25,18 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from recon.core.application.captures import record_hook_payload
 from recon.core.application.collectors import declared_env
+from recon.core.application.items import Unpacking, run_events
 from recon.core.application.plan import Plan, build_plan, fan_out, plugin_warning
-from recon.core.application.stream import Stream, StreamGaps, StreamPages, StreamPlan
-from recon.core.application.survey import CollectorError, Survey, TablePages
+from recon.core.application.stream import Stream, StreamPlan
+from recon.core.application.survey import CollectorError, Survey, TablePages, run_of
 from recon.core.domain.archives import ARCHIVE_ID_FORMAT, ArchiveRef
+from recon.core.domain.collector import Position
 from recon.core.domain.deadline import Deadline
 from recon.core.domain.documents import (
     Act,
     BrokenPluginInfo,
     CollectorTypeInfo,
+    ConverterInfo,
     InstalledPlugins,
     MissionDocument,
     QueryRows,
@@ -61,7 +64,7 @@ from recon.core.domain.errors import (
 from recon.core.domain.http import reported_url
 from recon.core.domain.missions import ConfigFile, ConfigGiven
 from recon.core.domain.models import ReconConfig
-from recon.core.domain.normalize import apply_normalize
+from recon.core.domain.paginate import Resume
 from recon.core.domain.ranges import Interval, RangeRun, fill
 from recon.core.domain.stream import window_opened
 from recon.core.domain.telemetry import QUERY, SURVEY
@@ -70,7 +73,8 @@ if TYPE_CHECKING:
     from collections.abc import Generator, Iterator, Sequence
     from contextlib import AbstractContextManager
 
-    from recon.core.application.collectors import SurveyCollectors
+    from recon.core.application.collectors import ActCollectors
+    from recon.core.application.items import Event
     from recon.core.application.plan import PlannedRun, PlannedStream
     from recon.core.application.stream import StreamRun
     from recon.core.domain.archives import (
@@ -82,39 +86,26 @@ if TYPE_CHECKING:
         Landing,
     )
     from recon.core.domain.clock import Clock
-    from recon.core.domain.collector import Collector, CollectorType, Plugins
+    from recon.core.domain.collector import Collector, Plugins, Run
     from recon.core.domain.documents import (
         Capture,
-        RecordsKind,
         Span,
         TableOutcome,
         WindowOutcome,
     )
     from recon.core.domain.missions import MissionStore
-    from recon.core.domain.models import CollectorEntry, SourceEntry
-    from recon.core.domain.paginate import PageLog
-    from recon.core.domain.stream import GapLog, Stop
+    from recon.core.domain.stream import Stop
     from recon.core.domain.telemetry import Channel, EventCallback, EventSink, Telemetry
 
 
 class CollectorFactory(Protocol):
     """Builds a collector for each installed type the mission ``mission`` uses, reporting
-    through the act's telemetry, with the types whose factory failed (which an act reports and
-    whose tables fail with a config error), and what to close when the act ends; ``gaps`` is
-    where a stream's collector says when its source was not read, and ``pages`` where a
-    paginated table's collector says its pages."""
+    through the act's telemetry, with the types whose build failed (which an act reports and
+    whose tables fail with a config error), and what to close when the act ends."""
 
     def __call__(
-        self,
-        mission: str,
-        config: ReconConfig,
-        telemetry: Telemetry,
-        deadline: Deadline,
-        /,
-        *,
-        gaps: GapLog | None = None,
-        pages: PageLog | None = None,
-    ) -> SurveyCollectors: ...
+        self, mission: str, config: ReconConfig, telemetry: Telemetry, deadline: Deadline, /
+    ) -> ActCollectors: ...
 
 
 class TelemetryFactory(Protocol):
@@ -226,10 +217,9 @@ class Collection:
         self._root_found_by = root_found_by
         self._channel = channel
 
-    @property
-    def collector_types(self) -> Mapping[str, CollectorType]:
-        """The installed collector types, by config name."""
-        return self._plugins.collector_types
+    def accepts(self, type_name: str) -> frozenset[str] | None:
+        """The source kinds the installed type ``type_name`` accepts; None for any."""
+        return self._plugins.accepts(type_name)
 
     # --- missions ------------------------------------------------------------------------
 
@@ -391,7 +381,8 @@ class Collection:
         source = next((s for s in config.catalog if s.name == run.source), None)
         if span.steps:
             asked = target.model_copy(update=fill(target.settings, span.steps[0]))
-            document |= self._plugins.collector_types[run.type].describe(asked, source)
+            declared = self._plugins.collector_types[run.type].declared
+            document |= dict(declared.describe(run_of(self._plugins, asked, source)))
         return {**document, "range": span.document()}
 
     def preflight(
@@ -400,7 +391,7 @@ class Collection:
         """Ask the collector of each type that declares a preflight what each of its runs
         needs: the requirements, each said once with the outputs that need it; what was done,
         a sentence per type; and a warning for each type that could not be built or closed."""
-        types = {n: ct for n, ct in self._plugins.collector_types.items() if ct.preflight}
+        types = {n: it for n, it in self._plugins.collector_types.items() if it.preflight}
         entries = [entry for entry in config.collectors if entry.type in types]
         if not entries:
             return [], [], []
@@ -419,11 +410,11 @@ class Collection:
                 ask = built.requirements.get(entry.type)
                 if ask is None:
                     continue
-                for source, output in fan_out(entry, catalog, types[entry.type].accepts_kinds):
+                for source, output in fan_out(entry, catalog, self._plugins.accepts(entry.type)):
                     target = (
                         entry if output == entry.name else entry.model_copy(update={"name": output})
                     )
-                    for found in ask(target, source):
+                    for found in ask(run_of(self._plugins, target, source)):
                         key = (found.need, found.holds, found.why, found.fix)
                         needed_by = merged.setdefault(key, [])
                         if output not in needed_by:
@@ -459,36 +450,38 @@ class Collection:
 
     def types(self) -> TypesDocument:
         """Every collector type a mission may name, installed or given, with its config's JSON
-        Schema; every source kind and the type that adds it; every transform; and what failed
-        to load. ``recon.v1.types``."""
+        Schema; every source kind and whose it is; every transform; every converter and the
+        media types it converts; and what failed to load. ``recon.v1.types``."""
         plugins = self._plugins
         collectors = []
-        sources = []
-        for name, ct in sorted(plugins.collector_types.items()):
-            records: RecordsKind = (
-                "finite" if not ct.unbounded
-                else "unbounded_source_paced" if ct.paced_by == "source"
-                else "unbounded_recon_paced"
-            )  # fmt: skip
-            capabilities = [flag for flag, has in (("extract", ct.extracts),
-                            ("paginate", ct.paginates), ("preflight", bool(ct.preflight)))
-                            if has]  # fmt: skip
+        for name, it in sorted(plugins.collector_types.items()):
+            declared = it.declared
+            capabilities = [flag for flag, has in (("paginate", it.paged),
+                            ("preflight", bool(it.preflight))) if has]  # fmt: skip
             collectors.append(TypeInfo(
                 type=name,
-                origin=plugins.collector_packages.get(name, "unknown"),
-                summary=ct.summary,
-                effects=sorted(ct.effects) if ct.effects is not None else "unknown",
-                records_kind=records,
+                origin=it.package,
+                summary=it.summary,
+                effects=sorted(declared.effects) if declared.effects is not None else "unknown",
+                records_kind=declared.records,
                 capabilities=capabilities,
-                config=ct.settings.model_json_schema() if ct.settings is not None else None,
-                accepts=sorted(ct.accepts_kinds) if ct.accepts_kinds is not None else None,
+                config=it.settings.model_json_schema() if it.settings is not None else None,
+                accepts=sorted(declared.accepts) if declared.accepts is not None else None,
             ))  # fmt: skip
-            schema = ct.source_settings.model_json_schema() if ct.source_settings else None
-            sources += [SourceKindInfo(kind=kind, added_by=name, config=schema)
-                        for kind in sorted(ct.source_kinds)]  # fmt: skip
+        sources = [
+            SourceKindInfo(kind=name, origin=kind.package, summary=kind.summary,
+                           config=kind.settings.model_json_schema() if kind.settings else None)
+            for name, kind in sorted(plugins.source_kinds.items())
+        ]  # fmt: skip
+        converters = [
+            ConverterInfo(converter=name, origin=found.package, summary=found.summary,
+                          media_types=sorted(found.converter.media_types))
+            for name, found in sorted(plugins.converters.items())
+        ]  # fmt: skip
         installed = self.installed()
         return TypesDocument(collectors=collectors, sources=sources,
-                             transforms=installed.transforms, broken=installed.broken)  # fmt: skip
+                             transforms=installed.transforms, converters=converters,
+                             broken=installed.broken)  # fmt: skip
 
     def schema(self) -> SchemaDocument:
         """The JSON Schema of a mission's config. ``recon.v1.mission-config``."""
@@ -501,10 +494,12 @@ class Collection:
             collectors=[
                 CollectorTypeInfo(
                     type=name,
-                    summary=ct.summary,
-                    effects=sorted(ct.effects) if ct.effects is not None else "unknown",
+                    summary=it.summary,
+                    effects=sorted(it.declared.effects)
+                    if it.declared.effects is not None
+                    else "unknown",
                 )
-                for name, ct in sorted(plugins.collector_types.items())
+                for name, it in sorted(plugins.collector_types.items())
             ],
             transforms=sorted(f"${name}" for name in plugins.transforms),
             broken=[
@@ -557,7 +552,7 @@ class Collection:
             deadline = Deadline(self._clock)
             pages = TablePages()
             with _ending(telemetry, channel), telemetry.span(SURVEY, about) as span:
-                built = self._build_collectors(name, config, telemetry, deadline, pages=pages)
+                built = self._build_collectors(name, config, telemetry, deadline)
                 try:
                     for broken in built.failed:
                         warnings.append(plugin_warning(broken))
@@ -566,17 +561,12 @@ class Collection:
                     emit({"kind": "start", "runs": len(prepared.plan.runs),
                           "collectors": len(full.collectors),
                           "sources": len(full.catalog)})  # fmt: skip
-                    types = self._plugins.collector_types
-                    extracts = {n for n, ct in types.items() if ct.extracts}
-                    kinds = {n: ct.accepts_kinds for n, ct in types.items()
-                             if ct.accepts_kinds is not None}  # fmt: skip
                     survey = Survey(
                         self._clock, self._version, telemetry, on_event,
-                        extracts=extracts, kinds=kinds, deadline=deadline, pages=pages,
-                        ranges=ranges,
+                        plugins=self._plugins, deadline=deadline, pages=pages, ranges=ranges,
                     )  # fmt: skip
                     tables = survey.run(
-                        full, built.collectors, landed, started=started,
+                        full, built, landed, started=started,
                         config_sha256=prepared.sha256, config_value=prepared.recorded,
                         resolved=self.resolved(full),
                         streams=streams, scheduled=scheduled,
@@ -623,24 +613,21 @@ class Collection:
         what it found worth saying, one problem of each kind."""
         config = prepared.config
         entry = config.collectors[planned.index]
-        ctype = self._plugins.collector_types[entry.type]
         catalog = {source.name: source for source in config.catalog}
-        [(source, output)] = fan_out(entry, catalog, ctype.accepts_kinds)
+        [(source, output)] = fan_out(entry, catalog, self._plugins.accepts(entry.type))
         target = entry if output == entry.name else entry.model_copy(update={"name": output})
         subset = config.model_copy(update={"collectors": [entry]})
         warnings: list[Problem] = []
-        gaps, pages = StreamGaps(), StreamPages()
         # The collector's own telemetry, used on the stream's pump thread alone.
         telemetry = self._telemetry(None, None)
-        built = self._build_collectors(name, subset, telemetry, Deadline(self._clock),
-                                       gaps=gaps, pages=pages)  # fmt: skip
+        built = self._build_collectors(name, subset, telemetry, Deadline(self._clock))
         warnings += [plugin_warning(broken) for broken in built.failed]
 
         def close() -> None:
             warnings.extend(plugin_warning(broken) for broken in built.close())
 
         try:
-            collector = built.raw.get(entry.type)
+            collector = built.collectors.get(entry.type)
             if collector is None:
                 raise ReconError(
                     f"collector type {entry.type!r} could not be built, so stream "
@@ -648,7 +635,8 @@ class Collection:
                     kind="config",
                     fix="see the plugin_broken warning for why; fix or reinstall its package",
                 )
-            normalize = _shaping(entry, ctype.normalizes, built.transforms)
+            run_ = run_of(self._plugins, target, source)
+            shaping = built.shaping(run_)
             engine = Stream(
                 self._landing, self._archives, self._clock, self._version,
                 telemetry=partial(self._window_telemetry, on_event=on_event, warnings=warnings),
@@ -662,16 +650,14 @@ class Collection:
                 buffer=planned.buffer,
                 overflow=planned.overflow,
                 columns=tuple(entry.normalize or ()),
-                package=self._plugins.collector_packages.get(entry.type),
+                package=self._plugins.collector_types[entry.type].package,
             )
             run = engine.run(
                 name,
                 plan_,
-                partial(_collect, collector, target, source),
-                normalize,
+                partial(_collect, collector, run_, built),
+                shaping,
                 close=close,
-                gaps=gaps,
-                pages=pages,
                 windows=windows,
                 until=until,
                 preserve_raw=config.preserve_raw,
@@ -790,7 +776,7 @@ class Collection:
     def resolved(self, config: ReconConfig) -> dict[str, Any]:
         """Where an act's inputs came from: how the project root was found, and each variable
         the mission declares, by name, ``set`` or ``unset``. Never a value."""
-        names = sorted(set().union(*declared_env(config, self._plugins.collector_types).values()))
+        names = sorted(set().union(*declared_env(config, self._plugins).values()))
         return {
             "root": self._root_found_by,
             "env": {name: "set" if self._env.get(name) else "unset" for name in names},
@@ -1057,28 +1043,27 @@ def once_each(problems: list[Problem]) -> list[Problem]:
 
 
 def _collect(
-    collector: Collector, entry: CollectorEntry, source: SourceEntry | None, after: Any
-) -> Generator[dict[str, Any], None, None]:
-    """The stream's records from its collector, after the position ``after`` when there is
-    one; an exception it raises comes out as a CollectorError naming the entry and source."""
-    resume: dict[str, Any] = {} if after is None else {"after": after}
+    collector: Collector, run: Run, built: ActCollectors, after: Any
+) -> Generator[Event, None, None]:
+    """The stream's events: a crawl recon drives going on from ``after`` (a
+    :class:`~recon.core.domain.paginate.Resume`'s document), or the collector's items after the
+    position ``after``, when there is one, found by recon (captured in the window's capture, not
+    as bodies). An exception it raises comes out as a CollectorError naming the entry and
+    source."""
+    paged = run.entry.paginate is not None
+    resume = Resume.of(after) if paged else None
+    position = Position(after) if after is not None and not paged else None
+    unpacking = Unpacking(built.converters, None)
+    events = run_events(collector, run, unpacking, built.shaping(run), position=position,
+                        resume=resume)  # fmt: skip
     try:
-        yield from collector.collect(entry, source, captures=None, **resume)
+        yield from events
+        unpacking.end()
     except (CollectorError, NoRecordsError):
         raise
     except Exception as exc:
-        raise CollectorError(entry.name, source.name if source else None, exc) from exc
-
-
-def _shaping(
-    entry: CollectorEntry, normalizes: bool, transforms: Mapping[str, Any]
-) -> Callable[[dict[str, Any]], dict[str, Any]]:
-    """What a stream applies to each record: the entry's ``normalize:``, unless its type
-    applies it itself."""
-    spec = entry.normalize
-    if normalizes or not spec:
-        return dict
-    return lambda record: apply_normalize(record, spec, transforms)
+        source = run.source.name if run.source else None
+        raise CollectorError(run.entry.name, source, exc) from exc
 
 
 def _ignore(event: dict[str, Any]) -> None:
