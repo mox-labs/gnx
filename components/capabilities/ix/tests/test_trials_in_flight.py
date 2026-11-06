@@ -276,11 +276,16 @@ class TestTheWidthIsAConditionOfTheRun:
         examined = ix.application.experiments.examine(
             yaml.safe_load((folder / "experiment.yaml").read_text()), vocabulary
         )
-        with pytest.raises(ix.UsageError, match="changed for this run"):
+        # The rule is checked in one place, ``prepare``: called directly, it refuses with the
+        # same kind, flag and fix as the command does.
+        note = "trials_in_flight: 3 in place of 1 (--trials-in-flight)"
+        with pytest.raises(ix.UsageError, match="--trials-in-flight 3 changes the design") as held:
             running.prepare(
                 examined, vocabulary, None, run="r", base=str(folder), now="", version="",
-                overridden=("trials_in_flight: 3 in place of 1 (--trials-in-flight)",),
+                overridden=(running.Override("--trials-in-flight", "trials_in_flight", 3, note),),
             )  # fmt: skip
+        assert held.value.details == {"path": "--trials-in-flight", "value": 3}
+        assert "--exploratory --trials-in-flight N" in str(held.value.fix)
 
 
 class TestAWidthIsPlannedBeforeItIsTried:

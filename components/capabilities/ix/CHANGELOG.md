@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- **An override on a run that gives a verdict is refused in one place, in one wording.**
+  `--repeats` and `--trials-in-flight` on a run that is neither `--exploratory` nor
+  `--dry-run` were refused twice, by the command's root and again by the run path, with two
+  messages that could drift. The run path holds the rule alone now: it is given each
+  override as `(flag, key, value, note)` and refuses with `usage` (exit 2), its
+  `details.path` the first flag, its fix the pilot to run instead. Given both flags, it
+  names both. The refusal comes before the changed experiment is judged, so a gated run
+  given `--repeats 3` under a genre whose minimum is 5 is told about the flag, not about
+  the repeats.
 - **`examples/delay-server` accepts every connection that arrives at once** (up to 128).
   Its listen queue held 5, so the trials-in-flight control's four runs, opening sixteen
   connections together, could have some dropped. The client retries a second later, and
