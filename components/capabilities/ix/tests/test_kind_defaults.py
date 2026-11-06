@@ -27,9 +27,10 @@ import ix
 from ix.adapters._out.matrix_judge import JudgeSensor
 from ix.application.experiments import Vocabulary, examine, find_deviations, register
 from ix.composition import Root
-from ix.domain.kind import Kind, Kinds, Option
+from ix.domain.kind import Kind, Kinds, Option, kinds
 from ix.domain.ports import Surroundings
 from ix.domain.run import Target
+from ix.domain.schema import DeclarationFile
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
@@ -78,6 +79,16 @@ class TestTheDeclaration:
                     "options": {"runtime": {}, "model": {"default_from": named}},
                 }
             )
+
+    def test_a_kind_file_with_a_default_its_option_cannot_take_is_refused_whole(self) -> None:
+        bad = {
+            "name": "lab.v1.probe.x",
+            "summary": "s",
+            "options": {"timeout": {"type": "duration", "default": "soon"}},
+        }
+        found = kinds([DeclarationFile(origin="x.yaml", data=bad)], grammar=lambda name: None)
+        assert "lab.v1.probe.x" not in found.kinds
+        assert {problem.kind for problem in found.rejected["lab.v1.probe.x"]} == {"kind_invalid"}
 
     def test_what_an_entry_leaves_out_is_what_it_is_given(self, builtin_kinds: Kinds) -> None:
         load = builtin_kinds.get("probe", "http-load")

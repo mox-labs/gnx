@@ -13,9 +13,9 @@ disturbed by it) and reports a verdict: `holds`, `fails` or `inconclusive`. The 
 
 ```bash
 # the ix command
-uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.7.0#subdirectory=components/capabilities/ix"
+uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.8.0#subdirectory=components/capabilities/ix"
 # the library, in a project
-uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.7.0#subdirectory=components/capabilities/ix"
+uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.8.0#subdirectory=components/capabilities/ix"
 ```
 
 ix is installed from its repository at the release's tag. It is on no package index, and the
@@ -912,5 +912,6 @@ cut short by Ctrl-C, which prints the error envelope instead.
 | `ix --skill` | The skill an agent reads, with frontmatter so it is a `SKILL.md` as printed: what ix is for and when not to use it, install and prerequisites, a quick start that runs, the commands in order, the errors and exit codes with what to do next. Generated from what is installed |
 | `ix --skill -r NAME` | One reference the skill lists: `experiment` (every key and value form), `genres`, `kinds`, `running` (registration, running, the verdict), `agents` (an agent evaluation end to end), `problems` |
 | [Design record, 2026-10-19](docs/design/2026-10-19-record.md) | Every design judgment ix rests on, one row each with its test and evidence: the verdict's statistics with their sources and simulations, the agent path, the runtime ports, what a verdict is tied to, requirements in place of effects, environments, the layer map, the evaluator sensor, and the owner's rulings they follow |
+| [CONTRACT.md](CONTRACT.md) | What each published surface 0.8 changed hides, its members, defaults, failure behaviour and stability: the extension contract, a kind option's default, the registered design and the plan digest, the work a plan counts, `check` with its probe and sensor, and an override on a gated run |
 | [CHANGELOG.md](CHANGELOG.md) | What each release changed |
 | [SECURITY.md](SECURITY.md) | What ix reads, writes, starts, runs and sends |

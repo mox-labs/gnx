@@ -1,6 +1,12 @@
 # Changelog — ix
 
-## Unreleased
+## 0.8.0 — 2026-11-06
+
+`docs/design/2026-10-19-record.md` has the reasons for this release's changes, in §28, and
+`CONTRACT.md` what each surface it changed now promises. **Amend every registration once**
+(`ix register <path> --amend --reason "ix 0.8: kind defaults and the registered form"`): the
+plan digest of every experiment moves, with the kind defaults and the registered design's new
+form below.
 
 ### Changed (breaking)
 
@@ -69,6 +75,8 @@
 
 ### Added
 
+- **`CONTRACT.md`**: for each published surface this release changed, the decision it hides,
+  its members, its defaults, how it fails and how far it is promised.
 - **`check`, a genre for a predicate observed on every trial**, with an analysis of its own
   (`ix.v1.analysis.check`). One subject, a boolean primary, `repeats` 1 by default and at
   least 1, factors allowed. Three-way, with no interval: `holds` when the primary read true
