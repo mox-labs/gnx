@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 import yaml
+from ix_fakes import carried
 
 from ix.adapters._out.k6_load import K6Load
 from ix.adapters._out.matrix_process import MatrixLauncher
@@ -191,7 +192,8 @@ def _stats(url: str) -> dict[str, int]:
 
 def _load(options: dict[str, Any]) -> dict[str, Any]:
     probe = K6Load(MatrixLauncher())
-    applied = asyncio.run(probe.apply(options, Target(subject="slow"), seed=1))
+    given = carried("probe", "http-load", options)
+    applied = asyncio.run(probe.apply(given, Target(subject="slow"), seed=1))
     return dict(applied["load"])
 
 

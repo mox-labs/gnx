@@ -72,7 +72,7 @@ from ix.application.experiments import Examined, FolderProbes, Vocabulary
 from ix.application.running import Kit
 from ix.composition.settings import IxSettings
 from ix.domain import schema
-from ix.domain.design import entries_in_use
+from ix.domain.design import entries_in_use, sensor_entry
 from ix.domain.errors import ConfigError, IxError, NotFoundError, UsageError
 from ix.domain.experiment import Experiment
 from ix.domain.genre import Genres, genres
@@ -734,26 +734,30 @@ class Root:
         checked now; and what the runtimes they build warn of (a permissive
         ``permission_mode``), each at ``<entry>.runtime_options.<option>``: an entry's
         runtime options are its runtime's config. Each cell's options are asked as its
-        trials will have them, so a factor on one option hides nothing, and its prompt text as
-        text (``declared``: the kinds, which say which options are). An adapter that cannot
-        be built has nothing to check: that is told as a kind with no adapter."""
+        trials will have them (each default its kind declares filled in), so a factor on one
+        option hides nothing, and its prompt text as text (``declared``: the kinds, which say
+        which options are). An adapter that cannot be built has nothing to check: that is
+        told as a kind with no adapter."""
         adapters: dict[str, object] = {}
         found: list[tuple[str, Requirement]] = []
         cautions: list[Problem] = []
-        for where, kind, written in entries_in_use(experiment, design, probes):
-            if kind not in adapters:
-                adapters[kind] = self._built(kind)
-            adapter = adapters[kind]
+        for entry in entries_in_use(experiment, design, probes):
+            if entry.kind not in adapters:
+                adapters[entry.kind] = self._built(entry.kind)
+            adapter = adapters[entry.kind]
             if not isinstance(adapter, Preflight):
                 continue
-            entry = declared.kinds.get(kind)
-            text = entry.text_options if entry else ()
-            for options in per_cell(written, experiment.factors, text=text):
+            kind = declared.kinds.get(entry.kind)
+            text = kind.text_options if kind else ()
+            for options in per_cell(entry.options, experiment.factors, text=text):
                 with self._runtimes.listening() as heard:
-                    found += [(where, needed) for needed in _required(adapter, kind, options, base)]
+                    found += [
+                        (entry.where, needed)
+                        for needed in _required(adapter, entry.kind, options, base)
+                    ]
                 for caution in converted(heard):
                     moved = caution.model_copy(
-                        update={"path": f"{where}.runtime_options.{caution.path}"}
+                        update={"path": f"{entry.where}.runtime_options.{caution.path}"}
                     )
                     if moved not in cautions:
                         cautions.append(moved)
@@ -1024,7 +1028,7 @@ def _reads_spans(design: Design, kit: Kit) -> bool:
     :class:`~ix.domain.ports.SpanReader` and says so of its options."""
     return any(
         isinstance(sensor := kit.sensors.get(selected.kind), SpanReader)
-        and sensor.reads_spans(selected.options)
+        and sensor.reads_spans(design.options(sensor_entry(selected.kind), selected.options))
         for selected in design.sensors
     )
 

@@ -35,7 +35,7 @@ from ix.application.skill import (
 )
 from ix.domain.errors import ERROR_KINDS, EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT
 from ix.domain.experiment import Experiment, Margin
-from ix.domain.kind import arrivals, seconds
+from ix.domain.kind import Kinds, arrivals, seconds
 from ix.domain.problem import PROBLEM_KINDS
 
 Write = Any  # the write_experiment fixture
@@ -550,12 +550,8 @@ class TestTheAgentsReference:
             for key in sensor.truth:
                 assert f"`{key}`" in text, (name, key)
 
-    def test_its_numbers_and_words_are_the_codes(self) -> None:
-        from ix.adapters._out.matrix_agents import (
-            SESSION_TIMEOUT_S,
-            VERIFIED,
-            Loop,
-        )
+    def test_its_numbers_and_words_are_the_codes(self, builtin_kinds: Kinds) -> None:
+        from ix.adapters._out.matrix_agents import VERIFIED, Loop
         from ix.domain.summaries import NOISY
 
         text = " ".join(_reference("agents").split())
@@ -569,7 +565,10 @@ class TestTheAgentsReference:
         assert "`model_runtime` (one model call per reading" in text
         assert "`agent_runtime` (a one-turn session with no tools per reading" in text
         assert "and has no default" in text
-        assert f"`timeout` ({SESSION_TIMEOUT_S:g}s)" in text and f"`{VERIFIED}`" in text
+        prompt = builtin_kinds.get("probe", "prompt")
+        assert prompt is not None
+        timeout = prompt.options["timeout"].default
+        assert f"`timeout` ({timeout} when left out)" in text and f"`{VERIFIED}`" in text
         for strategy in get_args(Loop.model_fields["strategy"].annotation):
             assert f"strategy: {strategy}" in text, strategy
         assert f"more than {NOISY:g} of the range" in text

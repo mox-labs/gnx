@@ -11,10 +11,14 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from ix.adapters._out.processes import answers, is_up, startable, wait_ready
-from ix.adapters._out.subjects import STARTUP_TIMEOUT_S
 from ix.domain.kind import seconds
 from ix.domain.ports import StoodIn
 from ix.domain.run import HarnessError
+
+#: How long a service has to come up when its entry under ``services`` gives no
+#: ``startup_timeout``: a key inside the ``services`` mapping, which the kind's options do
+#: not declare one by one, so its default is this adapter's.
+SERVICE_STARTUP_TIMEOUT_S = 30.0
 
 if TYPE_CHECKING:
     from ix.domain.experiment import EnvironmentConfig
@@ -72,7 +76,13 @@ class ProcessEnvironment:
         for name, service in environment.options["services"].items():
             command = [str(part) for part in service["command"]]
             ready = service.get("ready")
-            timeout_s = seconds(service.get("startup_timeout")) or STARTUP_TIMEOUT_S
+            timeout_s = seconds(service.get("startup_timeout", SERVICE_STARTUP_TIMEOUT_S))
+            if timeout_s is None:
+                raise HarnessError(
+                    "option",
+                    f"service {name}: startup_timeout {service['startup_timeout']!r} is not a "
+                    "duration",
+                )
             if ready and await is_up(ready=ready):
                 raise HarnessError(
                     "address_in_use",

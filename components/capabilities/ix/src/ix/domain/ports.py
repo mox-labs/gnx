@@ -154,7 +154,8 @@ class Subject(Protocol):
     ) -> AbstractAsyncContextManager[Target]:
         """Bring the subject up and yield how to address it; release it on exit.
 
-        ``subject`` has its options filled in for the trial's cell.
+        ``subject`` has its options as carried out, each default its kind declares for one
+        left out among them, filled in for the trial's cell.
         """
         ...
 
@@ -182,7 +183,8 @@ class Preflight(Protocol):
     def requirements(self, options: Mapping[str, Any], *, base: str) -> Sequence[Requirement]:
         """What carrying out an entry whose options are ``options`` needs of this host, each
         checked now. ``base`` is the directory the experiment's relative paths resolve
-        against. It is asked once for each cell's options, a factor's ``{name}`` filled in;
+        against. It is asked once for each cell's options, as carried out (each default
+        its kind declares for one left out among them), a factor's ``{name}`` filled in;
         a requirement that depends on a placeholder only a trial fills (an environment's
         binding, ``{db.url}``) is left out: it is told when the trial starts."""
         ...
@@ -247,7 +249,8 @@ class Probe(Protocol):
         self, options: Mapping[str, Any], target: Target, *, seed: int
     ) -> Mapping[str, Mapping[str, Any]]:
         """Apply the stimulus and return what it left behind, by the facet the probe kind
-        offers. ``options`` are the probe's, with every placeholder filled in for this
+        offers. ``options`` are the probe's as carried out (each default its kind declares
+        for one left out among them), with every placeholder filled in for this
         trial. ``seed`` is the trial's own, drawn from the registered seed: a probe kind that
         makes a random choice (a sampled payload, a jittered arrival) draws it from ``seed``,
         so a rerun of the plan applies the same stimulus. One that chooses nothing ignores
@@ -272,7 +275,8 @@ class Sensor(Protocol):
     ) -> Mapping[str, Measured] | Sensed:
         """This sensor's metrics for one interaction, by metric name, or a :class:`Sensed`
         that holds them with what more it has to say. A metric it cannot give is left out;
-        raising gives every metric a ``sensor`` failure. ``options`` are the sensor's, each
+        raising gives every metric a ``sensor`` failure. ``options`` are the sensor's as
+        carried out (each default its kind declares for one left out among them), each
         option its kind declares a ``path`` already resolved against the experiment's
         directory."""
         ...

@@ -22,12 +22,45 @@
   Import the ports from `ix.extension`: `ix.domain` no longer exports them, nor `Target`,
   `Bindings`, `SubjectError`, `HarnessError` or `TrialError`. `ix.domain` holds what ix
   returns; `ix.extension` what an extension implements and is handed.
+- **A kind option's default is declared data.** `ix.v1.kind`'s `Option` gains `default`
+  (the value an entry that leaves the option out is carried out with) and `default_from`
+  (the options that name the runtime whose own value it is then, which ix cannot know). A
+  default must fit its option's type and allowed values, hold no placeholder, and stand on
+  an option that is not required; `default_from` names other options of the kind. Every
+  "N when absent" moved from a built-in kind's prose into its declaration (`prompt`'s
+  `timeout` 600s; `http-load`'s `timeout` 60s, `warmup` 0s, `method` GET; `process`'s
+  `startup_timeout` 30s and `cwd` `.`; `compose`'s `wait_timeout` 120s and `build` false;
+  `memory`'s `interval` 200ms; `function-test`'s `timeout` 30s and `pass_at` 1; `outcome`'s
+  `timeout` 30s and `pass_above` 0.5; `text-match`'s `ignore_case` false and `strip` true;
+  `judge`'s `repeats` 1 and `pass_at` 0.5), and the adapter constants that duplicated them
+  are gone. An agent session's `model` and `max_turns`, a model call's `model`, a judge's and
+  an evaluator's `model` declare `default_from`. An agent session's `tools` is unchanged:
+  what it means left out awaits a ruling.
+- **The design holds every default it carries an entry out with** (`Design.defaults`, by
+  entry: `environment`, `subjects.<name>`, `probes.<id>`, `sensors.<kind>`), and its
+  provenance lists each, from `kind` with the kind's type URL, and each value left to the
+  runtime, from `runtime`, naming it: `SourcedValue.origin` takes `kind` and `runtime`. The
+  plan shows them; `ix plan` prints a runtime's as `(unknown to ix)`. A registration freezes
+  the defaults, so a default that moves is a deviation (`design.defaults.probes.<id>.timeout`)
+  and never a silent change of a registered run. **Every plan digest of an experiment whose
+  kinds default an option it leaves out moves once: amend each registration**
+  (`ix register <path> --amend --reason "kind defaults frozen"`).
+- **An adapter is given every default with what is written.** A run hands each entry's
+  options as carried out (as written, each default filled in) to its adapter, and so does a
+  preflight; a review and a stand-in see the entry as written. An adapter that read an
+  option with a fallback of its own reads it as given. `python_checks`' `run_cases` and
+  `run_grader` take their `timeout_s` from the caller, always.
+- **A judge asked to read each response fewer than once is refused** at validate
+  (`option_invalid` at `sensors.<n>.repeats`); it was quietly read once.
 - **ix's `matrix.extensions` entry point is `ix.composition.entry_point:register`**, renamed
   from `ix.composition.extension` so that it is not mistaken for the public contract. It
   registers ix's run path and its adapters, and declares nothing a third party uses.
 
 ### Fixed
 
+- **A deviation under a key that holds a dot names its values.** Deviations were found by a
+  path split again on its dots, so one under a probe id like `a.b` (or an entry's key) was
+  reported with `registered` and `current` both empty; paths are compared as keys now.
 - **README lists all four needs**, `judge_models` among them, in a table with the Protocol
   each gives; it listed three, and the fourth was documented only in a private module.
 

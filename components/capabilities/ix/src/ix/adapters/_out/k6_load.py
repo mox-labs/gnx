@@ -11,8 +11,8 @@ response complete, ``ttfb_ms`` to the first byte. Both distributions count the r
 the subject answered successfully, so a fast refusal never reads as a fast answer.
 
 Every request sent in the measured window is waited for, past the window if need be, until
-it is answered or its ``timeout`` (k6's 60s when absent) runs out, so a request the subject
-never answers is a failure, not a request nobody counted. ``sent`` counts every request
+it is answered or its ``timeout`` runs out, so a request the subject never answers is a
+failure, not a request nobody counted. ``sent`` counts every request
 sent in the window and ``failed`` those that failed: refused, broken, timed out, or never
 answered at all. ``requests`` and ``throughput`` (per second of measured load) count only
 the answers that came inside the window. ``dropped`` counts the arrivals an open model
@@ -35,11 +35,12 @@ import math
 import os
 import shutil
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ix.adapters._out.processes import startable
-from ix.domain.kind import arrivals, seconds
+from ix.domain.kind import arrivals, duration_of
 from ix.domain.run import HarnessError, SubjectError
 
 if TYPE_CHECKING:
@@ -51,9 +52,6 @@ if TYPE_CHECKING:
 
 #: Time allowed beyond the load itself for k6 to start, stop and write its summary.
 OVERHEAD_S = 60.0
-
-#: How long a request may go unanswered before it fails, when the probe does not say: k6's.
-REQUEST_TIMEOUT_S = 60.0
 
 #: Time past a request's timeout for its iteration to end, before k6 cuts it off.
 SETTLE_S = 1.0
@@ -132,11 +130,32 @@ export function handleSummary(data) {
 """
 
 
-def request_timeout(options: Mapping[str, Any]) -> float:
-    """How long, in seconds, a request may go unanswered before it fails (option
-    ``timeout``)."""
-    found = seconds(options.get("timeout"))
-    return REQUEST_TIMEOUT_S if found is None else found
+@dataclass(frozen=True)
+class Times:
+    """A probe's times, in seconds: the warm-up, the measured load, and how long one request
+    may go unanswered before it fails."""
+
+    warmup: float
+    duration: float
+    timeout: float
+
+
+def times(options: Mapping[str, Any]) -> Times:
+    """The times a probe's options give. Validation holds the options as written; this raises
+    :class:`HarnessError` (``option``) for a value bound per cell that is not a duration, or
+    a measured load or a timeout of no time at all."""
+    try:
+        found = Times(
+            warmup=duration_of(options, "warmup"),
+            duration=duration_of(options, "duration"),
+            timeout=duration_of(options, "timeout"),
+        )
+    except ValueError as error:
+        raise HarnessError("option", str(error)) from error
+    for name in ("duration", "timeout"):
+        if getattr(found, name) <= 0:
+            raise HarnessError("option", f"{name} {options[name]!r} is no time at all")
+    return found
 
 
 def scenarios(options: Mapping[str, Any]) -> tuple[dict[str, Any], float]:
@@ -144,10 +163,8 @@ def scenarios(options: Mapping[str, Any]) -> tuple[dict[str, Any], float]:
 
     Validation holds the options as written; this raises :class:`HarnessError` for a value
     bound per cell that k6 cannot carry out."""
-    duration = seconds(options.get("duration"))
-    if duration is None or duration <= 0:
-        raise HarnessError("option", f"duration {options.get('duration')!r} is not a duration")
-    warmup = seconds(options.get("warmup")) or 0.0
+    timed = times(options)
+    duration, warmup = timed.duration, timed.warmup
     model = options.get("load_model")
     clients = int(options.get("concurrency") or 0)
     if model == "open":
@@ -171,9 +188,7 @@ def scenarios(options: Mapping[str, Any]) -> tuple[dict[str, Any], float]:
     else:
         raise HarnessError("option", f"load_model {model!r} is not open or closed")
     found: dict[str, Any] = {}
-    timeout = request_timeout(options)
-    if timeout <= 0:
-        raise HarnessError("option", f"timeout {options.get('timeout')!r} is not a duration")
+    timeout = timed.timeout
     if warmup > 0:
         found["warmup"] = {**executor, "duration": f"{warmup:g}s", "gracefulStop": "0s"}
     found["measured"] = {
@@ -284,8 +299,8 @@ class K6Load:
         return [] if found is None else [found]
 
     def budget_s(self, options: Mapping[str, Any]) -> float | None:
-        total = (seconds(options.get("warmup")) or 0.0) + (seconds(options.get("duration")) or 0.0)
-        return total + request_timeout(options) + SETTLE_S + OVERHEAD_S
+        timed = times(options)
+        return timed.warmup + timed.duration + timed.timeout + SETTLE_S + OVERHEAD_S
 
     async def apply(
         self, options: Mapping[str, Any], target: Target, *, seed: int
@@ -298,10 +313,10 @@ class K6Load:
         scenarios_by_name, duration = scenarios(options)
         config = {
             "url": str(options["target"]),
-            "method": str(options.get("method") or "GET").upper(),
+            "method": str(options["method"]).upper(),
             "headers": {**(target.facets.get("headers") or {}), **(options.get("headers") or {})},
             "verify": options.get("verify_body") == "sha256",
-            "timeout_s": request_timeout(options),
+            "timeout_s": times(options).timeout,
             "window_ms": duration * 1000,
             "scenarios": scenarios_by_name,
         }

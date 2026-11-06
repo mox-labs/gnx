@@ -37,7 +37,7 @@ from pydantic import ValidationError
 from ix.application.experiments import standing, valid
 from ix.domain import schema
 from ix.domain.analysis import ANALYSES, analysis_unsupported
-from ix.domain.design import Design, kinds_in_use, missing_adapters
+from ix.domain.design import Design, carried_out, kinds_in_use, missing_adapters
 from ix.domain.errors import ConfigError, UnregisteredError, UsageError
 from ix.domain.experiment import Experiment, ProbeConfig, SubjectConfig
 from ix.domain.kind import fill_options, placed, placeholders
@@ -381,7 +381,9 @@ def check_startable(requirements: Sequence[Required]) -> None:
 
 @dataclass(frozen=True)
 class Setup:
-    """A manifest read back into the records the run path works with."""
+    """A manifest read back into the records the run path works with: every entry's options
+    as the run carries them out, each default its kind declared, as the design froze it,
+    beside what was written (:func:`~ix.domain.design.carried_out`)."""
 
     manifest: RunManifest
     experiment: Experiment
@@ -394,15 +396,14 @@ class Setup:
 
 
 def setup_of(manifest: RunManifest) -> Setup:
-    """The experiment, design and probes a manifest holds. Raises :class:`ConfigError` when
-    this ix cannot read them (the manifest was written by another)."""
+    """The experiment, design and probes a manifest holds, as the run carries them out.
+    Raises :class:`ConfigError` when this ix cannot read them (the manifest was written by
+    another)."""
     try:
-        probes = [ProbeConfig.model_validate(probe) for probe in manifest.probes]
-        return Setup(
-            manifest=manifest,
-            experiment=Experiment.model_validate(manifest.declared),
-            design=Design.model_validate(manifest.design),
-            probes={probe.id: probe for probe in probes},
+        experiment, design, probes = carried_out(
+            Experiment.model_validate(manifest.declared),
+            Design.model_validate(manifest.design),
+            [ProbeConfig.model_validate(probe) for probe in manifest.probes],
         )
     except ValidationError as error:
         raise ConfigError(
@@ -410,6 +411,12 @@ def setup_of(manifest: RunManifest) -> Setup:
             f"problem(s)); it was written by ix {manifest.ix_version or '(unknown)'}",
             fix="read the run with the ix that wrote it",
         ) from error
+    return Setup(
+        manifest=manifest,
+        experiment=experiment,
+        design=design,
+        probes={probe.id: probe for probe in probes},
+    )
 
 
 def _failure(error: BaseException) -> Failure:

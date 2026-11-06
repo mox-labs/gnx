@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 import matrix
 import pytest
+from ix_fakes import carried
 
 from ix.adapters._out.agent_sensors import (
     ActivationSensor,
@@ -171,7 +172,7 @@ async def _ask(
     async with reached.reach("agent", subject or _subject(), base=str(base)) as target:
         assert set(target.facets) == {"respondent", "workdir"}
         workdir = Path(target.facets["workdir"])
-        seen = await PromptProbe(sessions).apply(probe, target, seed=0)
+        seen = await PromptProbe(sessions).apply(carried("probe", "prompt", probe), target, seed=0)
         assert workdir.is_dir()
     return seen, workdir, target.simulated
 
@@ -707,8 +708,23 @@ class TestStandIn:
 # --- the sensors ----------------------------------------------------------------------------
 
 
+#: The built-in sensor kind each adapter carries out.
+_SENSOR_KINDS: dict[type, str] = {
+    ActivationSensor: "activation",
+    ToolUsageSensor: "tool-usage",
+    FunctionTestSensor: "function-test",
+    OutcomeSensor: "outcome",
+    TextMatchSensor: "text-match",
+    UsageSensor: "usage",
+    JudgeSensor: "judge",
+}
+
+
 async def _sense(sensor: Any, interaction: Interaction, truth: Any, **options: Any) -> Sensed:
-    found = await sensor.sense(interaction, truth=truth, options=options)
+    """What ``sensor`` reads of ``interaction``, given ``options`` as a run gives them: with
+    each default its kind declares for an option they leave out."""
+    given = carried("sensor", _SENSOR_KINDS[type(sensor)], options)
+    found = await sensor.sense(interaction, truth=truth, options=given)
     return found if isinstance(found, Sensed) else Sensed(values=found)
 
 
@@ -1238,7 +1254,7 @@ async def _call_trial(
     subject = SubjectConfig.model_validate({"kind": "model-call", "runtime": "hardline", **options})
     async with ModelCallSubject(sessions, runtimes).reach("model", subject, base=".") as target:
         assert set(target.facets) == {"respondent"}  # no working directory
-        seen = await PromptProbe(sessions).apply(probe, target, seed=0)
+        seen = await PromptProbe(sessions).apply(carried("probe", "prompt", probe), target, seed=0)
     return seen, target.simulated
 
 

@@ -130,7 +130,7 @@ class JudgeSensor:
     """Scores a response against a rubric with a model: see the module docstring.
 
     Options: ``rubric`` or ``rubric_file``; ``model_runtime`` or ``agent_runtime`` (one is
-    required), ``model``, ``runtime_options``; ``repeats`` (1); ``pass_at`` (0.5). A
+    required), ``model``, ``runtime_options``; ``repeats``; ``pass_at``. A
     :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight` (its runtime
     builds and can judge) and a :class:`~ix.domain.ports.StandIn`."""
 
@@ -141,8 +141,11 @@ class JudgeSensor:
         return None
 
     def review(self, options: Mapping[str, Any], around: Surroundings) -> Sequence[Problem]:
-        """A judge that names no runtime, or both: it would never start, or start the
-        wrong one."""
+        """A judge that names no runtime, or both: it would never start, or start the wrong
+        one; and one asked to read each response fewer than once."""
+        return [*self._runtime_named(options, around), *self._repeats(options, around)]
+
+    def _runtime_named(self, options: Mapping[str, Any], around: Surroundings) -> list[Problem]:
         named = [key for key in PORTS if options.get(key)]
         if len(named) == 1 or any(placeholders(options.get(key)) for key in named):
             return []
@@ -166,6 +169,20 @@ class JudgeSensor:
                 fix="add model_runtime (hardline: one model call; mock: canned, calls no "
                 "model) or agent_runtime (claude-sdk: a one-turn session with no tools; mock: "
                 "canned, calls no model)",
+            )
+        ]
+
+    def _repeats(self, options: Mapping[str, Any], around: Surroundings) -> list[Problem]:
+        repeats = options.get("repeats")
+        if not isinstance(repeats, int) or isinstance(repeats, bool) or repeats >= 1:
+            return []  # left out it is the kind's default; a wrong type is the kind's to say
+        return [
+            problem(
+                f"{around.path}.repeats",
+                kind="option_invalid",
+                message=f"the judge reads each response {repeats} times; it reads it at least once",
+                fix="repeats: 1, or more to check that the judge agrees with itself",
+                got=repeats,
             )
         ]
 
@@ -263,12 +280,12 @@ class JudgeSensor:
         point, name = _port(options)
         config = dict(options.get("runtime_options") or {})
         model = None if options.get("model") is None else str(options["model"])
-        repeats = max(1, int(options.get("repeats") or 1))
+        repeats = int(options["repeats"])
         by = self._by_model if point == MODEL_RUNTIME else self._by_agent
         replies = await by(name, config, task, model, repeats)
         scored = [_score(reply.text) for reply in replies]
         scores = [score for score, _ in scored]
-        pass_at = float(options.get("pass_at", 0.5))
+        pass_at = float(options["pass_at"])
         passes = sum(score >= pass_at for score in scores)
         mean = sum(scores) / len(scores)
         values: dict[str, Any] = {

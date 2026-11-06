@@ -7,6 +7,6 @@ options:
   collect: {type: list, description: "files of an agent session's working directory, read back after the session and kept in the record for sensors to grade; a model call writes none"}
   feedback: {type: mapping, description: "for a test-feedback loop: {function_name, test_cases}, the tests whose failures the agent is shown"}
   mock_response: {type: string, text: true, description: "what a stand-in runtime (mock) replies to this probe; any other runtime ignores it"}
-  timeout: {type: duration, description: "how long one session (every round of it), or one call, may take before the trial is the subject's failure (overran); 600s when absent"}
+  timeout: {type: duration, default: 600s, description: "how long one session (every round of it), or one call, may take before the trial is the subject's failure (overran)"}
 needs: [respondent]
 offers: [response, usage]

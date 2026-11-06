@@ -9,8 +9,8 @@ options:
   excludes: {type: any, description: "the reply contains none of this text, or of a list of texts"}
   equals: {type: string, description: "the reply is exactly this"}
   matches: {type: string, description: "a Python regular expression found somewhere in the reply (anchor it with ^ and $ for the whole)"}
-  ignore_case: {type: boolean, description: "compare without regard to case; false when absent"}
-  strip: {type: boolean, description: "ignore whitespace at the start and end of the reply; true when absent"}
+  ignore_case: {type: boolean, default: false, description: "compare without regard to case"}
+  strip: {type: boolean, default: true, description: "ignore whitespace at the start and end of the reply"}
 needs: [response]
 truth: [starts_with, ends_with, contains, excludes, equals, matches]
 metrics:

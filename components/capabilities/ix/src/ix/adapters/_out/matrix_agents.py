@@ -75,7 +75,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from ix.adapters._out.processes import startable
 from ix.adapters._out.python_checks import code_in, run_cases
 from ix.domain.errors import IxError
-from ix.domain.kind import fill, placeholders, seconds
+from ix.domain.kind import duration_of, fill, placeholders
 from ix.domain.ports import Requirement, StoodIn
 from ix.domain.problem import Problem, problem
 from ix.domain.run import HarnessError, SubjectError, Target
@@ -88,15 +88,17 @@ if TYPE_CHECKING:
     from ix.domain.ports import Surroundings
     from ix.extension import Launcher, Respondent, Runtimes, Sessions
 
-#: How long one session (every round of it) may take when the probe does not say.
-SESSION_TIMEOUT_S = 600.0
-
 #: How long past a session's own limit the run waits for the probe to give up, before it
 #: records a harness timeout: a session that does not stop when its time is up.
 BACKSTOP_S = 30.0
 
-#: How long a subject's ``setup`` command may take.
+#: How long a subject's ``setup`` command may take: a bound on the apparatus, not an
+#: option of the experiment.
 SETUP_TIMEOUT_S = 300.0
+
+#: How long the tests a ``test-feedback`` loop runs on one round's answer may take: a bound
+#: on the apparatus, not an option of the experiment.
+FEEDBACK_TIMEOUT_S = 30.0
 
 #: The largest file a probe collects from the working directory, in bytes.
 COLLECT_LIMIT = 1_000_000
@@ -296,7 +298,13 @@ class Session:
                 "no_feedback",
                 "a test-feedback loop needs the probe's feedback: {function_name, test_cases}",
             )
-        run = await run_cases(self.launcher, code_in(text), str(feedback["function_name"]), cases)
+        run = await run_cases(
+            self.launcher,
+            code_in(text),
+            str(feedback["function_name"]),
+            cases,
+            timeout_s=FEEDBACK_TIMEOUT_S,
+        )
         return [
             f"- {case.get('description') or f'case {index}'}: {result.message}"
             for index, (case, result) in enumerate(zip(cases, run.results, strict=True))
@@ -861,8 +869,12 @@ class PromptProbe:
 
 def _limit(options: Mapping[str, Any]) -> float:
     """How long one session (every round of it), or one call, may take: the probe's
-    ``timeout``."""
-    return seconds(options.get("timeout")) or SESSION_TIMEOUT_S
+    ``timeout``. Raises :class:`HarnessError` (``option``) for one a cell filled with what
+    is not a duration."""
+    try:
+        return duration_of(options, "timeout")
+    except ValueError as error:
+        raise HarnessError("option", str(error)) from error
 
 
 async def released(runtime: object) -> None:

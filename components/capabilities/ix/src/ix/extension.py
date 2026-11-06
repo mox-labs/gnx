@@ -38,9 +38,13 @@ An adapter that is none of them has nothing to say there, and the run proceeds. 
 run hands an environment is a :class:`Scope`, and may also be :class:`Traced` and
 :class:`Recorded`.
 
-**What an adapter is given.** A sensor's options have each ``path`` option resolved
-against the experiment's directory; a subject, an environment and a preflight are given that
-directory as ``base``.
+**What an adapter is given.** A :class:`Review` and a :class:`StandIn` are given an
+entry's options as written: they judge or rewrite the writing. Everything that carries an
+entry out (a :class:`Preflight` and every member of the family ports) is given its options
+as carried out: every option the entry leaves out that its kind declares a ``default`` for
+is there, with that default, so an adapter holds no default of its own. A sensor's options
+also have each ``path`` option resolved against the experiment's directory; a subject, an
+environment and a preflight are given that directory as ``base``.
 
 **Failure is part of the contract.** ``reach`` and ``apply`` raise :class:`SubjectError`
 when the subject failed and :class:`HarnessError` when the harness or its tool did; anything

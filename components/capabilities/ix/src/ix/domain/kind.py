@@ -1,9 +1,12 @@
 """Kinds: what a subject, a probe, a sensor or an environment of a given kind is, as data.
 
-A kind's declaration says which options it takes (their types, which are required), which
-facets it ``offers`` and which it ``needs``, and, for a sensor, the metrics it provides (with
-whether a model judges them) and the probe truth it reads. ``validate`` holds an experiment
-to these declarations, so it does not depend on the author asserting them.
+A kind's declaration says which options it takes (their types, which are required, and the
+``default`` an entry that leaves one out is carried out with), which facets it ``offers``
+and which it ``needs``, and, for a sensor, the metrics it provides (with whether a model
+judges them) and the probe truth it reads. ``validate`` holds an experiment to these
+declarations, so it does not depend on the author asserting them. A default is the
+declaration's, never an adapter's constant: the design resolves it, the plan shows it, a
+registration freezes it, and an adapter is given it with the options written.
 
 A declaration starts nothing and measures nothing: the adapter registered under the kind's
 type URL does. What carrying a kind out needs of the host (a program, a daemon, a variable)
@@ -202,6 +205,18 @@ def seconds(value: Any) -> float | None:
     return None
 
 
+def duration_of(options: Mapping[str, Any], name: str) -> float:
+    """The duration option ``name`` of ``options`` as an adapter is given them (its default
+    filled in when it was left out), in seconds. Raises :class:`ValueError`, naming the
+    option and its value, when it is not a duration: a placeholder a cell filled with
+    something else, since validation holds what is written."""
+    value = options[name]
+    found = seconds(value)
+    if found is None:
+        raise ValueError(f"{name} {value!r} is not a duration")
+    return found
+
+
 def arrivals(value: Any) -> tuple[int, Literal["s", "m"]] | None:
     """A rate option as (arrivals, per second or per minute): ``80/s``, ``600/m`` or a bare
     number of arrivals per second. None when it is not a whole number of at least one
@@ -294,7 +309,33 @@ class Option(Record):
     #: since a prompt may hold code (``f"{user}"``), and validation warns of it rather
     #: than refusing it.
     text: bool = False
+    #: The value an entry that leaves the option out is carried out with. Data, not an
+    #: adapter's constant: the design holds it, the plan shows it with the kind it came
+    #: from, and a registration freezes it, so a later default moves no registered verdict
+    #: unseen. None: the option has no value when it is left out (a feature not used).
+    default: Level | None = None
+    #: For an option whose value, left out, is the runtime's own (an agent's ``max_turns``):
+    #: the options of the same kind that may name that runtime, the first one written
+    #: deciding. ix cannot know such a value, so the plan says whose it is instead.
+    default_from: tuple[str, ...] = ()
     description: str = ""
+
+    @model_validator(mode="after")
+    def _one_default(self) -> Option:
+        if self.default is not None and self.default_from:
+            raise ValueError("an option takes its default from the kind or from a runtime")
+        if (self.default is not None or self.default_from) and (
+            self.required or self.required_when
+        ):
+            raise ValueError("a required option has no default")
+        if self.default is not None and (
+            placeholders(self.default) or not _fits(self.default, self)
+        ):
+            raise ValueError(
+                f"default {self.default!r} is not a {_TYPE_WORDS.get(self.type, self.type)}"
+                + (f" of {', '.join(self.allowed)}" if self.allowed else "")
+            )
+        return self
 
 
 class Kind(Record):
@@ -352,6 +393,11 @@ class Kind(Record):
                 raise ValueError(f"{name} is required_when {unknown}, which are not options")
             if option.within and (option.type != "command" or option.within not in self.options):
                 raise ValueError(f"{name} is within {option.within!r}: a command names an option")
+            if name in option.default_from or not set(option.default_from) <= set(self.options):
+                raise ValueError(
+                    f"{name} takes its default from {list(option.default_from)}: each names "
+                    "another option of the kind"
+                )
         return self
 
     @property
@@ -367,6 +413,25 @@ class Kind(Record):
     def text_options(self) -> tuple[str, ...]:
         """The options whose value is prompt text (``text``)."""
         return tuple(name for name, option in self.options.items() if option.text)
+
+    def defaults(self, written: Mapping[str, Any]) -> dict[str, Level]:
+        """The ``default`` of each option ``written`` leaves out: what an entry written so is
+        carried out with besides what it writes."""
+        return {
+            name: option.default
+            for name, option in self.options.items()
+            if option.default is not None and name not in written
+        }
+
+    def left_to_runtime(self, written: Mapping[str, Any]) -> dict[str, str]:
+        """Each option ``written`` leaves out whose value is then its runtime's own
+        (``default_from``), with that runtime as ``written`` names it: the value of the first
+        of its ``default_from`` options written, or empty when none is."""
+        return {
+            name: next((str(written[key]) for key in option.default_from if written.get(key)), "")
+            for name, option in self.options.items()
+            if option.default_from and name not in written
+        }
 
     def required(self, options: Mapping[str, Any]) -> tuple[str, ...]:
         """The options that must be written beside this kind, given the ``options`` that are."""

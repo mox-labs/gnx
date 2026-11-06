@@ -258,7 +258,13 @@ def _field(label: str, text: str, *more: str) -> None:
 
 
 #: Where a design value came from, as a plan's lines say it.
-_SOURCED = {"experiment": "set in the experiment", "genre": "the genre's default", "ix": "ix's"}
+_SOURCED = {
+    "experiment": "set in the experiment",
+    "genre": "the genre's default",
+    "ix": "ix's",
+    "kind": "its kind's default",
+    "runtime": "its runtime's own",
+}
 
 
 def _print_plan_decision(plan: ix.Plan) -> None:
@@ -339,8 +345,11 @@ def _print_plan_design(plan: ix.Plan, path: str) -> None:
         design.add_column(column)
     footnotes = []
     for value in plan.provenance:
-        design.add_row(escape(value.path), escape(_text(value.value)), value.origin)
-        if value.note and value.path != "margin":  # the margin's is on its own line above
+        shown = "(unknown to ix)" if value.origin == "runtime" else _text(value.value)
+        design.add_row(escape(value.path), escape(shown), value.origin)
+        # The margin's note is on its own line above; a kind's default names its kind, which
+        # the entry's own line already implies.
+        if value.note and value.path != "margin" and value.origin != "kind":
             footnotes.append(f"{value.path}: {value.note}")
     out.print(design)
     for note in footnotes:
@@ -1124,6 +1133,7 @@ def kinds(lab: str | None, as_json: bool) -> None:
     for kind in found.kinds.values():
         label = kind.label
         # One option a line: a name folded across lines could not be read or searched for.
+        # Its default is in `--json` and `--skill -r kinds`: beside the name it would not fit.
         options = "\n".join(
             f"{name}{'*' if option.required else ''}" for name, option in kind.options.items()
         )

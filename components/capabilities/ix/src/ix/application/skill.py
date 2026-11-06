@@ -925,14 +925,34 @@ def _genres(genres: Genres) -> str:
 
 
 def _option_values(option: Option) -> str:
-    """What an option takes: its closed set, its open choices, or its type; and whether it
-    is prompt text."""
+    """What an option takes: its closed set, its open choices, or its type; whether it is
+    prompt text; and what it is left out."""
     text = ", prompt text" if option.text else ""
+    if option.default is not None:
+        text += f"; {_written(option.default)} when left out"
+    elif option.default_from:
+        text += "; left out, its runtime's own"
     if option.allowed:
         return f" ({'|'.join(option.allowed)}{text})"
     if option.choices:
         return f" ({option.type}: {', '.join(option.choices)} or another{text})"
     return f" ({option.type}{text})"
+
+
+def _written(value: object) -> str:
+    """A value as an author writes it in YAML."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _default(kinds: Kinds, family: str, kind: str, option: str) -> str:
+    """The default the installed ``kind`` of ``family`` declares for ``option``, as an author
+    writes it; ``(none)`` when it is not installed or declares none, which the skill's tests
+    refuse for a built-in."""
+    declared = kinds.get(family, kind)
+    found = declared.options.get(option) if declared is not None else None
+    return "(none)" if found is None or found.default is None else _written(found.default)
 
 
 def _kind_line(kind: Kind, runnable: bool) -> str:
@@ -982,12 +1002,16 @@ def _kinds(kinds: Kinds) -> str:
         )
         blocks.append(f"### {titles[family]}\n\n{lines}")
     families = "\n\n".join(blocks)
+    startup = _default(kinds, "subject", "process", "startup_timeout")
     return f"""\
 ## Kinds
 
 Subjects and probes must fit: a probe kind needs facets, and every subject's kind must offer
 them (`kind_unfit`). A sensor needs facets from the subjects or from what the probes leave
-behind. Required options are marked `*`.
+behind. Required options are marked `*`. An option left out is carried out with the default
+its kind declares (`600s when left out`), which `ix plan` lists under the entry
+(`probes.<id>.timeout`, from `kind`) and a registration freezes; `its runtime's own` is a
+value ix cannot know, which the plan names as the runtime's.
 
 A kind marked **declared only** has no adapter in this ix: an experiment that uses it can be
 validated, planned and registered, `validate` warns (`kind_unimplemented`), the plan says
@@ -1000,7 +1024,8 @@ experiment can still be registered.
 
 A `process` subject is up when its `ready` URL answers an HTTP GET with a status below 500;
 without `ready`, when its `url` accepts a connection; with neither, as soon as it starts. One
-that is not up within `startup_timeout` (30s) fails the trial as the subject's (`not_ready`).
+that is not up within `startup_timeout` ({startup} when left out) fails the trial as the
+subject's (`not_ready`).
 
 Each kind's `overlap` says whether two trials may use it at once: `allowed` when neither
 changes what the other measures (a fresh agent session each), `forbidden` when they would (a
@@ -1012,7 +1037,7 @@ trial (a time, a throughput, a memory peak).
 """
 
 
-def _running() -> str:
+def _running(kinds: Kinds) -> str:
     method = "\n".join(f"- {line}" for line in METHOD)
     return f"""\
 ## Registration
@@ -1123,7 +1148,8 @@ experiment writes `trials_in_flight`. It prints progress on stderr and then the 
   {EXIT_CODES["run_failed"]}). A *sensor* failure is a reading that could not be taken. The
   report counts each. A subject too slow for an open model's rate is measured, not
   dropped. `error_rate` counts a request that failed, timed out (`http-load`'s
-  `timeout`, k6's 60s) or was never answered, and each arrival dropped, as an error.
+  `timeout`, {_default(kinds, "probe", "http-load", "timeout")} when left out) or was never
+  answered, and each arrival dropped, as an error.
 
 ## Reading a verdict
 
@@ -1152,7 +1178,7 @@ the margin. Choose the comparison for the claim to be made.
 """
 
 
-def _agents() -> str:
+def _agents(kinds: Kinds) -> str:
     dry, usage = EXIT_CODES["ok"], EXIT_CODES["usage"]
     return f"""\
 ## Evaluating an agent
@@ -1191,8 +1217,8 @@ probes and a metric. What makes it one is the kinds.
   (it never reaches the agent). Probe options, under `options:` in a file: `collect`
   (files the agent writes, kept for grading), `feedback` (tests a test-feedback loop shows
   the agent), `mock_response` (the reply a stand-in runtime such as `mock` gives),
-  `timeout` (600s): a session or call that runs past it fails the trial as the subject's
-  (`overran`).
+  `timeout` ({_default(kinds, "probe", "prompt", "timeout")} when left out): a session or
+  call that runs past it fails the trial as the subject's (`overran`).
   An option written beside the truth is truth, which the probe never sees: validate says
   so (`truth_unclaimed`) and shows where it goes. `probes/review-ask.md`:
 
@@ -1432,9 +1458,9 @@ def render(
         case "kinds":
             body = _kinds(kinds)
         case "running":
-            body = _running()
+            body = _running(kinds)
         case "agents":
-            body = _agents()
+            body = _agents(kinds)
         case _:
             body = _problems()
     return f"# ix {version} reference: {reference}\n\n{body}"

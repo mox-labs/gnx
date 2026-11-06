@@ -105,7 +105,7 @@ and the sensor from the metric: `timing` provides `latency`. `ix plan` shows eac
 where it came from, the decision first:
 
 ```
-delay-slower  compare (ix.v1.genre.compare)  plan 7ec2dd8efab9
+delay-slower  compare (ix.v1.genre.compare)  plan 49f385a0c04b
 Question:     Is a server that waits 50% longer per request faster than the one it would replace?
 Decides:      candidate is better than baseline on latency p50
 Comparison:   superiority
@@ -269,6 +269,16 @@ metric's `judged` and `contended`.
 | sensor | `timing`, `memory`, `activation`, `tool-usage`, `function-test`, `outcome`, `text-match`, `usage`, `judge`, `evaluator` |
 | environment | `none`, `process`, `compose` |
 
+An option a kind declares a `default` for has that value when an entry leaves it out (a
+`prompt` probe's `timeout` is `600s`, a `process` subject's `startup_timeout` `30s`): the
+declaration holds it, not the adapter, so `ix plan` lists it under the entry
+(`probes.<id>.timeout`, from `kind`), a registration freezes it, and a later ix that changes
+it shows a deviation (`design.defaults.probes.<id>.timeout`) rather than moving a
+registered verdict unseen. An option whose value, left out, is its runtime's own (an agent
+session's `model` and `max_turns`, a judge's `model`) is listed from `runtime`, naming the
+runtime: ix cannot know that value. `ix kinds --json` and `ix --skill -r kinds` show each
+default.
+
 A declaration is not an adapter. ix can **run** these:
 
 | family | kind | what the adapter does |
@@ -277,7 +287,7 @@ A declaration is not an adapter. ix can **run** these:
 | subject | `http` | starts nothing: an endpoint that is already up, with optional `headers` and a bearer token read from `auth: env:NAME` |
 | subject | `agent-session` | a fresh session per trial on the matrix agent runtime its required `runtime` names (`claude-sdk` calls a model provider; `pydantic-ai` runs pydantic-ai's loop with every model call through hardline; `mock` calls no model; any agent runtime installed, by type URL), in a new temporary working directory seeded from `fixtures`, `skills` and a `setup` command, removed after the trial; `runtime_options` are the runtime's config, passed through as written; a `loop` asks again for a self-review or with the tests that failed |
 | subject | `model-call` | one call per trial on the matrix model runtime its required `runtime` names (`hardline` calls a model provider; `mock` calls no model; any model runtime installed), with its `model` resolved before anything starts; no tools, turns or working directory, so `activation`, `tool-usage`, `collect` and a `function-test` `file` are refused on it (`unobservable`) |
-| probe | `http-load` | runs k6 for `warmup` then `duration`, with `load_model: closed` (`concurrency` clients) or `open` (an arrival `rate`); only the measured part is read, and each request sent in it is waited for until it is answered or its `timeout` (k6's 60s) runs out |
+| probe | `http-load` | runs k6 for `warmup` then `duration`, with `load_model: closed` (`concurrency` clients) or `open` (an arrival `rate`); only the measured part is read, and each request sent in it is waited for until it is answered or its `timeout` (60s when left out) runs out |
 | probe | `prompt` | puts the prompt to the session or the call and keeps the reply; for a session also every tool call, each round's transcript and the files named in `collect` |
 | sensor | `timing` | `latency`, `ttfb`, `throughput`, and `error_rate` as a count (failed requests and dropped arrivals, of those sent and dropped), from what the load probe recorded |
 | sensor | `memory` | `memory_peak`: the highest resident memory of the subject's process group, sampled with `ps` every `interval` while the probe runs |
@@ -438,6 +448,8 @@ env/a.yaml]` the program and its config. A program found on PATH is not the expe
 - `ix deviations <path>` lists each frozen value that changed, with what was registered and
   what it is now, and exits 14 when it finds any. A genre that changes after registration
   shows up here, because its values were frozen and not just its name.
+- A kind's default is frozen with the design (`defaults`, by entry): one that a later ix
+  declares otherwise is a deviation, as a genre's value is.
 - A comment, key order or a default written out is not a deviation. A reworded `question` or
   `rationale` changes the experiment's digest and not the plan's.
 - `ix register` on a changed experiment is refused (exit 7, `conflict`) and the record is
@@ -525,7 +537,7 @@ read at the same width, one at a time for a kind that forbids overlap.
   or broken, no request sent, a timeout, a stop request, an environment that went down, a
   model runtime that was unavailable, rate-limited or refused its credentials) is missing
   data. Every request sent in the measured time is waited for, past it if need be, until
-  it is answered or the probe's `timeout` (k6's 60s when absent) runs out. Latency and time
+  it is answered or the probe's `timeout` (60s, k6's own, when left out) runs out. Latency and time
   to first byte count the requests the subject answered successfully, and throughput only
   those answered within the measured time. `error_rate` counts every request that failed,
   timed out or was never answered, of those sent. Under an open model, k6 starts every

@@ -7,7 +7,7 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING, Any
 
-from ix.domain.kind import seconds
+from ix.domain.kind import duration_of
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
@@ -17,9 +17,6 @@ if TYPE_CHECKING:
     from ix.domain.run import Interaction, Target
 
 MEMORY = "ix.v1.sensor.memory"
-
-#: Time between memory samples when the experiment does not say.
-INTERVAL_S = 0.2
 
 
 class TimingSensor:
@@ -81,15 +78,13 @@ class MemorySensor:
     It samples the resident set size of the subject's process group (the process ix
     started and everything it forked) every ``interval`` and keeps the highest total. It is
     a sampled peak: a spike between two samples is missed, and the sampler shares the
-    machine with the subject it measures. Option ``interval`` (default 200ms).
+    machine with the subject it measures. Option ``interval``, the time between samples.
     """
 
     def watch(
         self, target: Target, options: Mapping[str, Any]
     ) -> AbstractAsyncContextManager[dict[str, Any]] | None:
-        return self._watch(
-            int(target.facets["pid"]), seconds(options.get("interval")) or INTERVAL_S
-        )
+        return self._watch(int(target.facets["pid"]), duration_of(options, "interval"))
 
     @asynccontextmanager
     async def _watch(self, group: int, interval_s: float) -> AsyncIterator[dict[str, Any]]:

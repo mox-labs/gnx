@@ -163,29 +163,32 @@ def freeze(
     )
 
 
-def _leaves(value: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
-    """A nested mapping as dotted path → value. A list is one value: its order and length
-    are part of what it says."""
-    flat: dict[str, Any] = {}
+type _Path = tuple[str, ...]
+
+
+def _leaves(value: Mapping[str, Any], prefix: _Path = ()) -> dict[_Path, Any]:
+    """A nested mapping as path (its keys, outermost first) → value. A key may hold a dot
+    (an entry's key, ``probes.ask``), so a path is never a string split again. A list is one
+    value: its order and length are part of what it says."""
+    flat: dict[_Path, Any] = {}
     for key, item in value.items():
-        path = f"{prefix}{key}"
+        path = (*prefix, str(key))
         if isinstance(item, Mapping):
-            flat.update(_leaves(item, f"{path}."))
+            flat.update(_leaves(item, path))
         else:
             flat[path] = item
     return flat
 
 
-def _ancestors(path: str) -> list[str]:
-    """``a.b.c`` gives ``a`` and ``a.b``."""
-    parts = path.split(".")
-    return [".".join(parts[:end]) for end in range(1, len(parts))]
+def _ancestors(path: _Path) -> list[_Path]:
+    """``(a, b, c)`` gives ``(a,)`` and ``(a, b)``."""
+    return [path[:end] for end in range(1, len(path))]
 
 
-def _at(value: Mapping[str, Any], path: str) -> Any:
-    """What ``value`` holds at the dotted ``path``; None where it holds nothing."""
+def _at(value: Mapping[str, Any], path: _Path) -> Any:
+    """What ``value`` holds at ``path``; None where it holds nothing."""
     held: Any = value
-    for part in path.split("."):
+    for part in path:
         if not isinstance(held, Mapping):
             return None
         held = held.get(part)
@@ -198,8 +201,10 @@ def deviations(registered: Registration, current: Registration) -> tuple[Deviati
     Design values are compared path by path over the paths both records hold, so a value an
     older record never stored is not a deviation; a mapping on one side that is a value on
     the other (a margin removed: ``margin.value`` against ``margin: null``) is compared
-    whole, at its own path. Then the three digests, then each file and folder the subjects
-    and sensors name, by what it is (``skill review changed after registration``).
+    whole, at its own path. A deviation's ``field`` is its path dotted
+    (``design.defaults.probes.ask.timeout``). Then the three digests, then each file and
+    folder the subjects and sensors name, by what it is (``skill review changed after
+    registration``).
     """
     found: list[Deviation] = []
     before = {k: v for k, v in registered.design.items() if k not in _NOT_COMPARED}
@@ -215,12 +220,13 @@ def deviations(registered: Registration, current: Registration) -> tuple[Deviati
         if ancestor in was or ancestor in now
     }
     for path in sorted(changed, key=list((*was, *now)).index):
+        dotted = ".".join(path)
         found.append(
             Deviation(
-                field=f"design.{path}",
+                field=f"design.{dotted}",
                 registered=_at(before, path),
                 current=_at(after, path),
-                message=f"{path} changed after registration",
+                message=f"{dotted} changed after registration",
             )
         )
     for field, what in _DIGESTS.items():
