@@ -15,22 +15,23 @@ from __future__ import annotations
 import json
 import random
 from functools import partial
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 import yaml
 
-from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.duckdb_query import DuckdbJoin
 from recon.application.changes import Comparison, Hasher, MemoryJoin, canonical, told_lines
 from recon.composition import root
+from recon.domain.archives import ArchiveRef
 from recon.domain.changes import ChangesSpec
 from recon.domain.errors import CollectionError
 from recon.domain.http import HttpResponse
-from tests.recon_fakes import FixedClock
+from tests.recon_fakes import FixedClock, archive_path, files_of
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from recon.domain.changes import KeyJoin
     from recon.domain.models import SourceEntry
 
@@ -510,7 +511,7 @@ def test_end_to_end_each_survey_s_change_table_is_the_oracle_s(
             clock.advance(1)
             mailbox.snapshot = (records, status)
             document = recon.survey("m")
-            archive = Path(document.path)
+            archive = archive_path(project, ArchiveRef("m", document.archive))
             [table] = document.tables
             where = f"seed {seed}, survey {step} ({status})"
             if status == "failed":
@@ -533,14 +534,14 @@ def test_end_to_end_each_survey_s_change_table_is_the_oracle_s(
         clock.advance(1)
         mailbox.snapshot = ([], "truncated")
         document = recon.survey("m")
-        archive = Path(document.path)
+        archive = archive_path(project, ArchiveRef("m", document.archive))
         assert _lines(archive / "inbox.changes.jsonl") == [], f"seed {seed}"
         again = [
             json.loads(line) for line in (archive / "inbox.keys.jsonl").read_text().splitlines()
         ]
         assert again[1:] == index[1:], f"seed {seed}: computed again, it is the one kept"
         assert again[0]["keys"] == index[0]["keys"] == len(index) - 1
-        store = ArchiveFiles(clock)
-        assert store.read_sidecar(last, "inbox", "keys") is None, (
+        store = files_of(project, clock)
+        assert store.sidecar(ArchiveRef("m", last.name), "inbox", "keys") is None, (
             "an earlier archive is not written"
         )

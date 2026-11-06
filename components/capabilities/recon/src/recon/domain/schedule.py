@@ -29,7 +29,6 @@ from recon.domain.missions import MISSION_NAME
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
 
 #: What a tick the host missed (asleep, off) becomes: one run once it is back, or none.
 Missed = Literal["once", "skip"]
@@ -570,19 +569,19 @@ class ScheduleStore(Protocol):
     place, so ``status`` can tell an installed schedule from one changed or gone since, and
     the log of its ticks."""
 
-    def record(self, mission_dir: Path, installed: dict[str, Any] | None) -> None:
+    def record(self, mission: str, installed: dict[str, Any] | None) -> None:
         """Keep ``installed`` as the mission's install record; None forgets it."""
         ...
 
-    def recorded(self, mission_dir: Path) -> dict[str, Any] | None:
+    def recorded(self, mission: str) -> dict[str, Any] | None:
         """The mission's install record; None when it has none."""
         ...
 
-    def append(self, mission_dir: Path, tick: dict[str, Any]) -> None:
+    def append(self, mission: str, tick: dict[str, Any]) -> None:
         """Log one tick, whole, after those before it; the log is bounded (the oldest go)."""
         ...
 
-    def lines(self, mission_dir: Path) -> list[dict[str, Any]]:
+    def lines(self, mission: str) -> list[dict[str, Any]]:
         """The ticks the log still holds, oldest first."""
         ...
 

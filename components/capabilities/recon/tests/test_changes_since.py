@@ -13,11 +13,11 @@ from typing import TYPE_CHECKING, Any
 import pytest
 import yaml
 
-from recon.adapters._out.archive_files import ArchiveFiles
 from recon.application.subscriptions import Position, row_id
 from recon.composition import root
+from recon.domain.archives import ArchiveRef
 from recon.domain.errors import NotFoundError, UsageError
-from tests.recon_fakes import FixedClock, VirtualClock, plugins_with
+from tests.recon_fakes import FixedClock, VirtualClock, files_of, landing, plugins_with
 from tests.test_changes import Surveys, _Feed, _mission, _rows, _stream_mission, _windows
 
 if TYPE_CHECKING:
@@ -245,7 +245,8 @@ class TestD2ARetiredArchiveIsSaid:
         first, _ = surveys.survey(A)
         middle, _ = surveys.survey(A, B)
         surveys.survey(A, B, C)
-        ArchiveFiles(FixedClock()).retire(middle, {"id": middle.name, "rule": "test"})
+        with files_of(tmp_path, FixedClock()).hold("m") as held:
+            held.retire(ArchiveRef("m", middle.name), {"rule": "test"})
         read = surveys.recon.changes_since("m", "inbox")
         assert [row.key for row in read.rows] == [{"id": "a"}] and read.more
         assert read.retired_range is None
@@ -278,18 +279,15 @@ class TestD3AnUnsealedChangeTableIsNeverRead:
         _mission(tmp_path, {"key": ["id"]})
         surveys = Surveys(tmp_path)
         surveys.survey(A)
-        store = ArchiveFiles(FixedClock())
-        mission = tmp_path / ".recon" / "m"
-        writing = store.create(mission, "2030-01-01-000000-000000")
         row = {"op": "insert", "key": {"id": "z"}, "record": {"id": "z"}}
-        (writing / "inbox.changes.jsonl.tmp").write_text(json.dumps(row) + "\n")
-        read = surveys.recon.changes_since("m", "inbox")
-        assert [r.key for r in read.rows] == [{"id": "a"}]
-        assert read.state == "writing" and not read.more
-        held = surveys.recon.changes_since("m", "inbox", read.cursor)
-        assert held.rows == [] and held.state == "writing", "the reader waits on it"
-        (writing / "inbox.changes.jsonl.tmp").rename(writing / "inbox.changes.jsonl")
-        store.release(writing)
+        with landing(tmp_path, archive_id="2030-01-01-000000-000000") as (_, writing):
+            (writing / "inbox.changes.jsonl.tmp").write_text(json.dumps(row) + "\n")
+            read = surveys.recon.changes_since("m", "inbox")
+            assert [r.key for r in read.rows] == [{"id": "a"}]
+            assert read.state == "writing" and not read.more
+            held = surveys.recon.changes_since("m", "inbox", read.cursor)
+            assert held.rows == [] and held.state == "writing", "the reader waits on it"
+            (writing / "inbox.changes.jsonl.tmp").rename(writing / "inbox.changes.jsonl")
         sealed = surveys.recon.changes_since("m", "inbox", held.cursor)
         assert [r.key for r in sealed.rows] == [{"id": "z"}]
 

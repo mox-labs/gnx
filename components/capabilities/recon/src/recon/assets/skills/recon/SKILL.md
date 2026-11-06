@@ -78,11 +78,11 @@ Do these in order. Every command takes `--json`: it then prints one JSON documen
          extract: feed.entry
      ```
 
-   - **An object keyed by data, not by field names**, such as OpenAlex's `abstract_inverted_index` (keyed by word). SQL cannot make columns of it when two keys differ only in case, so its table cannot be queried: the survey warns (`table_unreadable`), a query of another table warns again, and one of that table fails with exit 10. Normalize the field (`abstract: "abstract_inverted_index|$inverted_index"`) or leave it out, then survey again; until then `SELECT json FROM read_ndjson_objects('<file>')` reads the raw lines.
+   - **An object keyed by data, not by field names**, such as OpenAlex's `abstract_inverted_index` (keyed by word). SQL cannot make columns of it when two keys differ only in case, so its table cannot be queried: the survey warns (`table_unreadable`), a query of another table warns again, and one of that table fails with exit 10. Normalize the field (`abstract: "abstract_inverted_index|$inverted_index"`) or leave it out, then survey again; until then `SELECT json FROM json.<table>` reads each record as its JSON text.
 4. **Normalize.** Write `normalize:` from the shape you saw, raise the limits, plan again (step 2), then survey.
-5. **Query.** `recon query <name> "<SQL>" --json`. Each table is a view named after its output, with every character but a letter, a digit or `_` turned into `_` (`oa-works` is `oa_works`, `v1.2` is `v1_2`); SQL matches the name without regard to case. Two outputs that would be one view (`a-b` and `a_b`, `Foo` and `foo`) are a plan problem, as is an output name holding `/`, `\` or `..`, or not starting with a letter, a digit or `_`. The document names the archive the rows came from by its id, `archive` (what `--archive` takes), and its directory, `path`. Each row is an object keyed by column, so a name the SQL gives twice (`SELECT a.id, b.id`) is made unique in `columns` and in every row: `id`, `id_1`. The SQL is DuckDB's; a refused query exits 10 with DuckDB's message in the `fix`. To count the items of a list column, unnest it in a subquery and group outside it (DuckDB does not unnest beside `count(*)`): `SELECT author, count(*) AS n FROM (SELECT unnest(authors) AS author FROM papers) GROUP BY author ORDER BY n DESC`.
+5. **Query.** `recon query <name> "<SQL>" --json`. Each table is a view named after its output, with every character but a letter, a digit or `_` turned into `_` (`oa-works` is `oa_works`, `v1.2` is `v1_2`); SQL matches the name without regard to case. Two outputs that would be one view (`a-b` and `a_b`, `Foo` and `foo`) are a plan problem, as is an output name holding `/`, `\` or `..`, or not starting with a letter, a digit or `_`. The document names the archive the rows came from by its id, `archive` (what `--archive` takes); no document says where an archive is kept, and none needs to: every read goes through recon. Each row is an object keyed by column, so a name the SQL gives twice (`SELECT a.id, b.id`) is made unique in `columns` and in every row: `id`, `id_1`. The SQL is DuckDB's; a refused query exits 10 with DuckDB's message in the `fix`. To count the items of a list column, unnest it in a subquery and group outside it (DuckDB does not unnest beside `count(*)`): `SELECT author, count(*) AS n FROM (SELECT unnest(authors) AS author FROM papers) GROUP BY author ORDER BY n DESC`.
 
-A survey with failed tables still writes its archive, marked incomplete, and lists every table's status; its exit code says what to do about the failures. `recon status --json` lists missions, their latest archive, and the installed collector types and transforms; `recon status <name> --json` lists every archive of that mission, oldest first, as `missions[0].history`: each archive's `id`, `path`, `started_at`, `finished_at`, `state` and `tables`. `state`: `complete`, `incomplete` or `writing`; for an incomplete one, `ended` says whether its survey `finished` (a table failed), was `stopped` on request, or `crashed`.
+A survey with failed tables still writes its archive, marked incomplete, and lists every table's status; its exit code says what to do about the failures. `recon status --json` lists missions, their latest archive, and the installed collector types and transforms; `recon status <name> --json` lists every archive of that mission, oldest first, as `missions[0].history`: each archive's `id`, `started_at`, `finished_at`, `state` and `tables`. `state`: `complete`, `incomplete` or `writing`; for an incomplete one, `ended` says whether its survey `finished` (a table failed), was `stopped` on request, or `crashed`.
 
 **Watch.** `recon watch <name> --json` follows an archive as a survey writes it, a `recon.v1.records-since` line per read, and returns when the survey ends: `--stream` of a `--forever` stream never returns. To follow, poll: `--once` reads once and returns, and the next call passes the `cursor` it printed as `--cursor` (with `--archive`, or `--stream`). Records of a table later `retracted` are void. Flags, defaults, refusals, `state`, `ended` and the library calls: `recon --skill -r live-reading`.
 
@@ -187,32 +187,27 @@ A spec maps each output column to a path into the record, optionally piped throu
 
 ## Reading results
 
-```
-.recon/<mission>/                  under the git root, or the working directory outside a repository
-  config.yaml
-  captures/captures.jsonl          the log recon capture appends to
-  archive/<archive id>/            one per survey; the id is its start time, so ids sort; a
-                                   directory not named so is not an archive
-    <table>.jsonl                  one record per line
-    meta.yaml                      recon version, config sha256, times, table_layout (1:
-                                   this layout of the tables), and per table: type_url,
-                                   status, records, seconds, error {kind, message, fix}
-    telemetry.jsonl                the survey's recon.v1.event lines: a start and an end per
-                                   span (survey, table, HTTP request); not a table
-    .incomplete                    present unless the survey finished with every table: one
-                                   failed, it was stopped or crashed, or meta.yaml failed
-    captures.jsonl, raw/<sha256>   the capture log, with preserve_raw: true
-```
+Everything a survey lands is read through recon, never from its files: where and how an archive is kept is recon's own, and changes without notice. An archive is named by its id, which `recon status <name> --json` lists, oldest first, under `missions[0].history`.
 
-A table that collected nothing holds the one line `{"_empty": true}`; it is not a record, its view has no rows, and it counts as 0 records. When its collector has `normalize:`, the line keeps the spec's columns (`"_columns": [...]`) and the view has them, so a query of them runs on an empty table as it does on a full one; without `normalize:` the view has only `_empty`. `query` reads the latest archive unless `--archive <archive id>` names another (`recon status <mission>` lists the ids), and reports `state: incomplete` for an incomplete archive, whose rows may be partial, or `state: writing`: the table being written is not a view yet. SQL reads only files under the mission's `archive/` directory (an earlier archive's too; for what changed since, `changes:`), loads no extension and reaches no network. The session is in UTC (`now()`, `current_date`, `date_trunc`). A query runs SELECT statements only (`WITH`, `FROM`, `DESCRIBE` and `SUMMARIZE` among them); `COPY`, `ATTACH`, `CREATE` and the rest exit 10.
+`query` reads the latest archive unless `--archive <archive id>` names another, and reports `state: incomplete` for an incomplete archive, whose rows may be partial, or `state: writing`: the table being written is not a view yet. Beside each table's view, three schemas of views read the same records:
 
-To cite a row, cite its line in one archive's file: each record is one line. Take the archive's `path` from `recon status <name> --json` (`missions[0].latest.path`, or an older archive's in `missions[0].history`; a query's document names its own as `path`), then `SELECT ordinality AS line, title FROM read_json_auto('<path>/<table>.jsonl') WITH ORDINALITY` gives `<archive id>/<table>.jsonl` line `line` for each row. The number is the line in the file, counted before any `WHERE` or `ORDER BY`. Read one file, not a glob across archives (`archive/*/<table>.jsonl`): a glob numbers the lines of all its files as one, and archives surveyed with different `normalize:` specs (one raw, one normalized) have different columns. A table's view leaves the number out, so `SELECT *` shows only the record.
+| View | Holds |
+|---|---|
+| `json.<table>` | each record as its JSON text, the one column `json`: for records SQL cannot make columns of (`json->>'id'`) |
+| `lines.<table>` | each record with `line`, its place in its table counted from 1, as it was landed, before any `WHERE` or `ORDER BY` |
+| `baseline.<table>` | with `--baseline <archive id>`: that earlier archive's table |
+
+A table that collected nothing has no rows; when its collector has `normalize:`, its view still has the spec's columns, so a query of them runs on an empty table as on a full one (`_empty` is a column of it too). SQL reads only the tables of the archives the query names (the archive, and the baseline), loads no extension and reaches no network: a file path in SQL is refused. The session is in UTC (`now()`, `current_date`, `date_trunc`). A query runs SELECT statements only (`WITH`, `FROM`, `DESCRIBE` and `SUMMARIZE` among them); `COPY`, `ATTACH`, `CREATE` and the rest exit 10.
+
+**What is new since an earlier archive:** name it as the baseline, `recon query <name> "SELECT title FROM papers EXCEPT SELECT title FROM baseline.papers" --baseline <archive id> --json`. For what changed record by record, with keys, across every archive and survey after survey, give the collector `changes:` (`recon --skill -r changes`).
+
+**To cite a row,** cite its archive, its table and its line: `recon query <name> "SELECT line, title FROM lines.papers WHERE title = 'q'" --archive <archive id> --json` gives the `line`, and the citation is `<archive id>`, `papers`, line `line`. Over a stream's windows, query one window (`--stream <c> --archive <window id>`), since a line belongs to one window's table.
 
 The same mission and the same answers from its sources give the same records: recon adds nothing that depends on the time.
 
 ## Telemetry
 
-Every survey writes its event log, `telemetry.jsonl`, into its archive, a `recon.v1.event` line per span start and end; no secret or body is logged. A failed span's `error.type`, the spans, their attributes, exporting through OpenTelemetry: `recon --skill -r telemetry`.
+Every survey keeps its event log in its archive, a `recon.v1.event` line per span start and end; no secret or body is logged. A failed span's `error.type`, the spans, their attributes, exporting through OpenTelemetry: `recon --skill -r telemetry`.
 
 ## Captures
 

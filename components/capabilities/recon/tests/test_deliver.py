@@ -30,6 +30,7 @@ from click.testing import CliRunner
 from recon.adapters._in.cli import main
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.command_deliverer import CommandDeliverer
+from recon.adapters._out.mission_layout import STATE
 from recon.adapters._out.subscription_files import SubscriptionFiles
 from recon.adapters._out.system_clock import SystemClock
 from recon.application.plan import build_plan
@@ -166,7 +167,7 @@ class TestAPoisonRow:
         assert (run.delivered, run.dead_lettered, run.failing) == (2, 1, None)
         assert [w["kind"] for w in document.warnings] == ["delivery_dead_lettered"]
         assert [d["key"]["id"] for d in poison.given[4:]] == ["m2", "m3", "m4"]
-        assert SubscriptionFiles().dead_letters(mission, "new") == 1
+        assert SubscriptionFiles(tmp_path / STATE).dead_letters("m", "new") == 1
         [letter] = [json.loads(line) for line in (mission / "subscriptions" / "new.dead.jsonl")
                     .read_text().splitlines()]  # fmt: skip
         assert letter["attempts"] == 3 and letter["delivery"]["key"] == {"id": "m2"}
@@ -221,7 +222,7 @@ class TestAPoisonRow:
         for _ in range(3):
             mail.recon.deliver("m")
         assert [d["key"]["id"] for d in recording.given] == ["m0", "m1", "m1", "m1", "m2"]
-        assert SubscriptionFiles().dead_letters(tmp_path / ".recon" / "m", "new") == 0
+        assert SubscriptionFiles(tmp_path / STATE).dead_letters("m", "new") == 0
 
 
 def _script(tmp_path: Path, body: str, *args: str) -> dict[str, Any]:
@@ -513,7 +514,7 @@ class TestAcksInADelivery:
         mail.survey(*_messages(3))
         with pytest.raises(SystemExit):
             mail.recon.deliver("m")
-        state = SubscriptionFiles().state(tmp_path / ".recon" / "m", "new")
+        state = SubscriptionFiles(tmp_path / STATE).state("m", "new")
         assert state is not None
         acked = mail.recon.changes_since("m", "inbox", state.cursor)
         assert [row.key for row in acked.rows] == [{"id": "m1"}, {"id": "m2"}]
@@ -529,12 +530,12 @@ class TestAcksInADelivery:
         recording = Recording()
         mail = Mail(tmp_path, recording)
         mail.survey(*_messages(1))
-        store = SubscriptionFiles()
-        store.hold(tmp_path / ".recon" / "m", "new")
+        store = SubscriptionFiles(tmp_path / STATE)
+        store.hold("m", "new")
         try:
             document = mail.recon.deliver("m")
         finally:
-            store.release(tmp_path / ".recon" / "m", "new")
+            store.release("m", "new")
         [run] = document.deliveries
         assert run.skipped_by == "busy" and recording.given == []
         assert [w["kind"] for w in document.warnings] == ["subscription_busy"]
@@ -560,14 +561,14 @@ class TestAcksInADelivery:
         assert "free space" in document.warnings[0]["fix"]
         monkeypatch.undo()
 
-        mission = tmp_path / ".recon" / "m"
         from recon.domain.subscriptions import SubscriptionState
 
-        SubscriptionFiles().keep(mission, "new", SubscriptionState(output="outbox", cursor="c1"))
+        kept = SubscriptionState(output="outbox", cursor="c1")
+        SubscriptionFiles(tmp_path / STATE).keep("m", "new", kept)
         document = mail.recon.deliver("m")
         assert [w["kind"] for w in document.warnings] == ["delivery_failed"]
         assert "unsubscribe" in document.warnings[0]["fix"]
-        SubscriptionFiles().remove(mission, "new")
+        SubscriptionFiles(tmp_path / STATE).remove("m", "new")
 
         from recon.application.subscriptions import ChangeReader
         from recon.domain.errors import ReconError
@@ -817,10 +818,9 @@ class TestATickDelivers:
         mission = tmp_path / ".recon" / "m"
 
         def holds_the_mission(d: dict[str, Any]) -> Delivered:
-            other = ArchiveFiles(FixedClock())
-            other.hold_mission(mission)  # busy (raises) were the tick still holding it
-            other.release_mission(mission)
-            return Delivered(True, 0)
+            # busy (raises) were the tick still holding it
+            with ArchiveFiles(mission.parent, FixedClock()).hold("m"):
+                return Delivered(True, 0)
 
         clock = FixedClock(SLOT + timedelta(seconds=2))
         recon = self._root(tmp_path, host, clock, inbox, Recording(holds_the_mission))

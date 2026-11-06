@@ -11,13 +11,12 @@ import json
 import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 import yaml
 
-from recon.adapters._out.archive_files import ArchiveFiles
+from recon.adapters._out.mission_layout import STATE
 from recon.application.stream import (
     Arrivals,
     ConservationError,
@@ -28,6 +27,7 @@ from recon.application.stream import (
     StreamStop,
 )
 from recon.composition import root
+from recon.domain.archives import ArchiveRef
 from recon.domain.models import CollectorEntry
 from recon.domain.stream import (
     POSITION_FIELD,
@@ -37,15 +37,26 @@ from recon.domain.stream import (
     WindowSpec,
 )
 from recon.domain.telemetry import Telemetry
-from tests.recon_fakes import StalledArchives, VirtualClock
+from tests.recon_fakes import (
+    LandedThrough,
+    StalledArchives,
+    VirtualClock,
+    WrappingArchives,
+    archive_path,
+    files_of,
+    kept,
+    window_kept,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator, Sequence
+    from pathlib import Path
 
+    from recon.adapters._out.archive_files import ArchiveFiles
     from recon.domain.archives import TableEnds
     from recon.domain.clock import Clock
     from recon.domain.documents import WindowOutcome
-    from recon.domain.telemetry import EventCallback
+    from recon.domain.telemetry import EventCallback, EventSink
 
 
 class Script:
@@ -108,11 +119,11 @@ def _plan(
     )
 
 
-def _telemetry(store: ArchiveFiles, events: list[dict[str, Any]]) -> Any:
-    def open_window(archive: Path, clock: Clock) -> Any:
+def _telemetry(events: list[dict[str, Any]]) -> Any:
+    def open_window(sink: EventSink, clock: Clock) -> Any:
         @contextmanager
         def window() -> Iterator[tuple[Telemetry, EventCallback]]:
-            telemetry = Telemetry([store.event_log(archive)], clock)
+            telemetry = Telemetry([sink], clock)
             try:
                 yield telemetry, events.append
             finally:
@@ -137,7 +148,7 @@ def _run(
     on_window: Callable[[WindowOutcome], None] | None = None,
     gaps: StreamGaps | None = None,
 ) -> tuple[StreamRun, list[WindowOutcome], list[dict[str, Any]]]:
-    store = store or ArchiveFiles(clock)
+    store = store or files_of(project, clock)
     events: list[dict[str, Any]] = []
     outcomes: list[WindowOutcome] = []
 
@@ -146,9 +157,9 @@ def _run(
         if on_window is not None:
             on_window(outcome)
 
-    stream = Stream(store, clock, "test", telemetry=_telemetry(store, events))
+    stream = Stream(store, store, clock, "test", telemetry=_telemetry(events))
     run = stream.run(
-        project,
+        "m",
         plan,
         source.records,
         normalize,
@@ -162,14 +173,23 @@ def _run(
     return run, outcomes, events
 
 
-def _rows(outcome: WindowOutcome) -> list[dict[str, Any]]:
-    table = Path(outcome.path) / outcome.table.file
+def _kept(project: Path, outcome: WindowOutcome) -> Path:
+    """Where the file adapter keeps the window ``outcome`` of mission m's stream."""
+    return window_kept(project, "m", outcome)
+
+
+def _ref(outcome: WindowOutcome) -> ArchiveRef:
+    return ArchiveRef("m", outcome.id, outcome.stream)
+
+
+def _rows(project: Path, outcome: WindowOutcome) -> list[dict[str, Any]]:
+    table = _kept(project, outcome) / f"{outcome.table.name}.jsonl"
     rows = [json.loads(line) for line in table.read_text().splitlines()]
     return [] if rows == [{"_empty": True}] else rows
 
 
-def _meta(outcome: WindowOutcome) -> dict[str, Any]:
-    meta = yaml.safe_load((Path(outcome.path) / "meta.yaml").read_text())
+def _meta(project: Path, outcome: WindowOutcome) -> dict[str, Any]:
+    meta = yaml.safe_load((_kept(project, outcome) / "meta.yaml").read_text())
     assert isinstance(meta, dict)
     return meta
 
@@ -187,7 +207,10 @@ class TestWindowsEndOnTheClock:
 
         run, outcomes, _ = _run(tmp_path, clock, _plan(WindowSpec(seconds=60)), source)
 
-        assert [[r["at"] for r in _rows(o)] for o in outcomes] == [[0.0, 59.999], [60.0, 60.001]]
+        assert [[r["at"] for r in _rows(tmp_path, o)] for o in outcomes] == [
+            [0.0, 59.999],
+            [60.0, 60.001],
+        ]
         assert [o.closed_by for o in outcomes] == ["seconds", "eof"]
         assert run.windows == 2
 
@@ -200,7 +223,7 @@ class TestWindowsEndOnTheClock:
         _, outcomes, _ = _run(tmp_path, clock, _plan(WindowSpec(records=k)), Script(clock, _seq(n)))
 
         assert len(outcomes) == -(-n // k)
-        assert [len(_rows(o)) for o in outcomes] == [
+        assert [len(_rows(tmp_path, o)) for o in outcomes] == [
             min(k, n - i * k) for i in range(len(outcomes))
         ]
 
@@ -212,16 +235,18 @@ class TestWindowsEndOnTheClock:
         _, [window], _ = _run(tmp_path, clock, _plan(WindowSpec(seconds=60)), source, windows=1)
 
         assert window.closed_by == "seconds"
-        assert _meta(window)["stream"]["closed_by"] == "seconds", "the durable record says so"
+        assert _meta(tmp_path, window)["stream"]["closed_by"] == "seconds", (
+            "the durable record says so"
+        )
         assert window.closed_at == "2026-01-02T03:05:05+00:00", "opened 03:04:05, plus 60 s"
-        assert _rows(window) == [{"seq": 0}]
+        assert _rows(tmp_path, window) == [{"seq": 0}]
         assert source.closed.is_set(), "the source was closed once the stream had its window"
 
     def test_each_quiet_window_is_sealed_when_its_time_comes(self, tmp_path: Path) -> None:
         """The writer is woken at each window's close, not only at the stream's last: a
         quiet stretch seals its windows one by one, as the clock reaches each."""
         clock = VirtualClock()
-        store = ArchiveFiles(clock)
+        store = files_of(tmp_path, clock)
         source = Script(clock, [(1.0, {"seq": 0})], then="quiet", quiet_to=15.0)
         result: list[Any] = []
         writer = threading.Thread(
@@ -234,7 +259,7 @@ class TestWindowsEndOnTheClock:
         writer.start()
 
         def sealed(count: int) -> bool:
-            windows = store.archives(tmp_path, stream="s")
+            windows = store.archives("m", stream="s")
             return sum(store.state(w) == "complete" for w in windows) >= count
 
         _wait_for(lambda: sealed(1))  # at 15 s: window 0 is sealed, the clock no further
@@ -261,9 +286,9 @@ class TestWindowsEndOnTheClock:
             ("ok", "seconds", None),
             ("ok", "seconds", None),
         ]
-        store = ArchiveFiles(clock)
-        assert [store.state(Path(o.path)) for o in outcomes] == ["complete", "complete"]
-        assert [_meta(o)["tables"][0]["status"] for o in outcomes] == ["ok", "ok"]
+        store = files_of(tmp_path, clock)
+        assert [store.state(_ref(o)) for o in outcomes] == ["complete", "complete"]
+        assert [_meta(tmp_path, o)["tables"][0]["status"] for o in outcomes] == ["ok", "ok"]
 
 
 class TestTheChain:
@@ -273,7 +298,7 @@ class TestTheChain:
 
         _, outcomes, _ = _run(tmp_path, clock, _plan(WindowSpec(records=3)), Script(clock, records))
 
-        streams = [_meta(o)["stream"] for o in outcomes]
+        streams = [_meta(tmp_path, o)["stream"] for o in outcomes]
         assert [s["index"] for s in streams] == [0, 1, 2]
         assert [s["previous"] for s in streams] == [None, outcomes[0].id, outcomes[1].id]
         sources = [s["sources"][0] for s in streams]
@@ -281,7 +306,9 @@ class TestTheChain:
         arrivals = [s["arrivals"] for s in sources]
         for before, after in zip(arrivals, arrivals[1:], strict=False):
             assert before["last"] + 1 == after["first"], "the chain has no hole"
-        assert all(row[POSITION_FIELD] == row["seq"] * 10 for o in outcomes for row in _rows(o))
+        assert all(
+            row[POSITION_FIELD] == row["seq"] * 10 for o in outcomes for row in _rows(tmp_path, o)
+        )
 
     def test_a_source_that_fails_seals_its_window_error_and_keeps_its_records(
         self, tmp_path: Path
@@ -295,8 +322,10 @@ class TestTheChain:
         assert window.table.error is not None
         assert window.table.error.kind == "run_failed"
         assert "broke off" in window.table.error.message
-        assert _rows(window) == [{"seq": 0}, {"seq": 1}, {"seq": 2}], "push records are kept"
-        assert ArchiveFiles(clock).state(Path(window.path)) == "incomplete"
+        assert _rows(tmp_path, window) == [{"seq": 0}, {"seq": 1}, {"seq": 2}], (
+            "push records are kept"
+        )
+        assert files_of(tmp_path, clock).state(_ref(window)) == "incomplete"
         assert run.last is not None and run.last.closed_by == "error"
 
 
@@ -307,7 +336,7 @@ class TestFlow:
         self, tmp_path: Path, overflow: Overflow, bound: int, extra: int
     ) -> tuple[list[int], WindowOutcome]:
         clock = VirtualClock()
-        store = StalledArchives(clock)
+        store = StalledArchives(tmp_path / STATE, clock)
         timeline = [(0.0, {"seq": i}) for i in range(bound + extra)]
         source = Script(clock, timeline)
         plan = _plan(WindowSpec(seconds=60), buffer=BufferSpec(records=bound), overflow=overflow)
@@ -323,7 +352,7 @@ class TestFlow:
         store.go.set()
         writer.join(10)
         _, [window], _ = result[0]
-        return [row["seq"] for row in _rows(window)], window
+        return [row["seq"] for row in _rows(tmp_path, window)], window
 
     @pytest.mark.parametrize(
         ("overflow", "kept"),
@@ -341,13 +370,13 @@ class TestFlow:
 
         assert written == kept
         assert window.dropped == 13 - len(kept)
-        assert _meta(window)["stream"]["sources"][0]["dropped"] == window.dropped
+        assert _meta(tmp_path, window)["stream"]["sources"][0]["dropped"] == window.dropped
         assert window.high_water == 8, "the buffer filled to its bound, and no further"
 
     def test_what_arrives_is_written_or_dropped_once_by_sequence_id(self, tmp_path: Path) -> None:
         """B10 #2: across windows and a burst, emitted = written + dropped; no id twice."""
         clock = VirtualClock()
-        store = StalledArchives(clock)
+        store = StalledArchives(tmp_path / STATE, clock)
         timeline = [(i * 0.5, {"seq": i}) for i in range(200)]
         source = Script(clock, timeline)
         plan = _plan(WindowSpec(seconds=7), buffer=BufferSpec(records=16), overflow="drop_newest")
@@ -361,14 +390,14 @@ class TestFlow:
         writer.join(10)
         run, outcomes, _ = result[0]
 
-        written = [row["seq"] for o in outcomes for row in _rows(o)]
+        written = [row["seq"] for o in outcomes for row in _rows(tmp_path, o)]
         assert len(written) == len(set(written)), "no record is written twice"
         assert written == sorted(written), "in order of arrival"
         dropped = sum(o.dropped for o in outcomes)
         assert dropped > 0, "the burst overflowed: the check has something to check"
         assert len(written) + dropped == 200
         assert run.records + run.dropped == 200
-        spans = [_meta(o)["stream"]["sources"][0]["arrivals"] for o in outcomes]
+        spans = [_meta(tmp_path, o)["stream"]["sources"][0]["arrivals"] for o in outcomes]
         admitted = [span for span in spans if span is not None]
         for o, span in zip(outcomes, spans, strict=True):
             if span is not None:  # drop_newest drops before admitting: admitted = written
@@ -384,7 +413,7 @@ class TestFlow:
         what a window wrote and dropped is the records whose stamps fall in it, and each it
         wrote is one of those, whichever record the policy drops."""
         clock = VirtualClock()
-        store = StalledArchives(clock)
+        store = StalledArchives(tmp_path / STATE, clock)
         timeline = [(i * 0.5, {"seq": i}) for i in range(200)]
         source = Script(clock, timeline)
         plan = _plan(WindowSpec(seconds=7), buffer=BufferSpec(records=16), overflow=overflow)
@@ -403,10 +432,10 @@ class TestFlow:
             stamped.setdefault(int(at // 7), []).append(record["seq"])
         assert sum(o.dropped for o in outcomes) > 0, "the burst overflowed"
         assert [o.index for o in outcomes] == sorted(stamped)
-        everything = [row["seq"] for o in outcomes for row in _rows(o)]
+        everything = [row["seq"] for o in outcomes for row in _rows(tmp_path, o)]
         assert len(everything) == len(set(everything)), "no record is written twice"
         for o in outcomes:
-            written = [row["seq"] for row in _rows(o)]
+            written = [row["seq"] for row in _rows(tmp_path, o)]
             assert o.table.records + o.dropped == len(stamped[o.index]), o.index
             assert set(written) <= set(stamped[o.index]), o.index
         assert run.records + run.dropped == 200
@@ -426,7 +455,7 @@ class TestFlow:
             Script(clock, timeline),
         )
 
-        assert [r["seq"] for r in _rows(window)] == [0, 2]
+        assert [r["seq"] for r in _rows(tmp_path, window)] == [0, 2]
         assert window.dropped == 1
 
 
@@ -440,14 +469,14 @@ class TestDropsAreWarnedByCause:
         self, tmp_path: Path, timeline: list[tuple[float, dict[str, Any]]], buffer: BufferSpec
     ) -> tuple[WindowOutcome, dict[str, Any]]:
         clock = VirtualClock()
-        store = StalledArchives(clock)
+        store = StalledArchives(tmp_path / STATE, clock)
         source = Script(clock, timeline)
         plan = _plan(WindowSpec(seconds=60), buffer=buffer, overflow="drop_newest")
-        stream = Stream(store, clock, "test", telemetry=_telemetry(store, []))
+        stream = Stream(store, store, clock, "test", telemetry=_telemetry([]))
         outcomes: list[WindowOutcome] = []
         writer = threading.Thread(
             target=lambda: stream.run(
-                tmp_path, plan, source.records, dict, close=source.close, on_window=outcomes.append
+                "m", plan, source.records, dict, close=source.close, on_window=outcomes.append
             )  # fmt: skip
         )
         writer.start()
@@ -512,7 +541,7 @@ class TestEveryRecordIsCountedWhenTheStreamBreaks:
         self, tmp_path: Path
     ) -> None:
         clock = VirtualClock()
-        store = StalledArchives(clock)
+        store = StalledArchives(tmp_path / STATE, clock)
         timeline = [(i * 0.5, {"seq": i}) for i in range(40)]
         source = Script(clock, timeline)
 
@@ -555,7 +584,7 @@ class TestEveryRecordIsCountedWhenTheStreamBreaks:
         )  # fmt: skip
 
         assert (window.table.records, window.dropped) == (2, 1)
-        assert _meta(window)["stream"]["reproducible"] is False
+        assert _meta(tmp_path, window)["stream"]["reproducible"] is False
         assert run.records + run.dropped == 3
 
     def test_a_source_that_dies_of_a_base_exception_ends_the_stream(self, tmp_path: Path) -> None:
@@ -582,14 +611,14 @@ class TestAWindowThatWroteMoreThanItWasGiven:
     ) -> None:
         clock = VirtualClock()
 
-        class Forged(ArchiveFiles):
-            def table_ends(self, archive: Path, output: str) -> TableEnds:
-                ends = super().table_ends(archive, output)
+        class Forged(LandedThrough):
+            def ends(self, output: str) -> TableEnds:
+                ends = super().ends(output)
                 return dataclasses.replace(ends, records=ends.records + 1)
 
         with pytest.raises(ConservationError, match="3 admitted.*4"):
             _run(tmp_path, clock, _plan(WindowSpec(seconds=60)), Script(clock, _seq(3)),
-                 store=Forged(clock))  # fmt: skip
+                 store=WrappingArchives(tmp_path / STATE, clock, Forged))  # fmt: skip
 
 
 class TestAStopAsked:
@@ -602,7 +631,7 @@ class TestAStopAsked:
         self, tmp_path: Path, plan: StreamPlan, stop: StreamStop, **given: Any
     ) -> tuple[Script, StalledArchives, threading.Thread, list[Any]]:
         clock = VirtualClock()
-        store = StalledArchives(clock)
+        store = StalledArchives(tmp_path / STATE, clock)
         source = Script(clock, _seq(10), then="quiet", quiet_to=10.0)
         result: list[Any] = []
         writer = threading.Thread(
@@ -735,13 +764,13 @@ class TestASourceThatWillNotStop:
             let_go.wait(10)  # a read its close() cannot end
             yield from ()
 
-        store = ArchiveFiles(clock)
-        stream = Stream(store, clock, "test", telemetry=_telemetry(store, []), stop_s=0.05)
+        store = files_of(tmp_path, clock)
+        stream = Stream(store, store, clock, "test", telemetry=_telemetry([]), stop_s=0.05)
         plan = dataclasses.replace(_plan(WindowSpec(records=1)), package=package)
         stop = StreamStop()
         stop.ask()  # the stream stops as it starts, its source still in its read
         try:
-            stream.run(tmp_path, plan, deaf, dict, close=lambda: None, stop=stop)
+            stream.run("m", plan, deaf, dict, close=lambda: None, stop=stop)
         finally:
             let_go.set()
 
@@ -761,10 +790,9 @@ class TestTheMetaIsTheSealedFile:
     ) -> None:
         clock = VirtualClock()
 
-        class Failing(ArchiveFiles):
-            def write_table(
+        class Failing(LandedThrough):
+            def write(
                 self,
-                archive: Path,
                 output: str,
                 records: Generator[dict[str, Any], None, None],
                 *,
@@ -773,26 +801,26 @@ class TestTheMetaIsTheSealedFile:
             ) -> int:
                 def failing() -> Generator[dict[str, Any], None, None]:
                     for n, record in enumerate(records):
-                        if n == 3:  # the store takes the fourth, and fails on it
+                        if n == 3:  # the landing takes the fourth, and fails on it
                             raise OSError("no space left on device")
                         yield record
 
-                return super().write_table(
-                    archive, output, failing(), columns=columns, keep_on_error=keep_on_error
+                return super().write(
+                    output, failing(), columns=columns, keep_on_error=keep_on_error
                 )
 
         timeline = [(float(i), {"seq": i, POSITION_FIELD: i}) for i in range(6)]
         run, [window], _ = _run(
             tmp_path, clock, _plan(WindowSpec(seconds=60)), Script(clock, timeline),
-            store=Failing(clock),
+            store=WrappingArchives(tmp_path / STATE, clock, Failing),
         )  # fmt: skip
 
-        rows = _rows(window)
-        source = _meta(window)["stream"]["sources"][0]
+        rows = _rows(tmp_path, window)
+        source = _meta(tmp_path, window)["stream"]["sources"][0]
         assert window.closed_by == "error"
         assert [r["seq"] for r in rows] == [0, 1, 2]
         assert (window.table.records, source["records"]) == (3, 3)
-        assert _meta(window)["tables"][0]["records"] == 3
+        assert _meta(tmp_path, window)["tables"][0]["records"] == 3
         assert (source["first"], source["last"]) == (0, 2), "a resume goes on after 2"
         assert window.dropped == 3 and run.records + run.dropped == 6
 
@@ -804,13 +832,13 @@ class TestSealedIsSealed:
         """B10 #3: the digest of a sealed window holds while later windows are written; a
         reader is told it sealed only once its table ended."""
         clock = VirtualClock()
-        store = ArchiveFiles(clock)
+        store = files_of(tmp_path, clock)
         seen: dict[str, Any] = {}
         digests: list[str] = []
         gate = threading.Event()
 
         def look() -> None:
-            [first] = store.archives(tmp_path, stream="s")[:1]
+            [first] = store.archives("m", stream="s")[:1]
             seen["while"] = store.read_since(first, None, max_records=100, max_bytes=1 << 20)
             gate.set()
 
@@ -819,24 +847,24 @@ class TestSealedIsSealed:
                 for at, record in self._timeline:
                     self._clock.set(at)
                     if at == 2.0:
-                        _wait_for(lambda: bool(store.archives(tmp_path, stream="s")))
+                        _wait_for(lambda: bool(store.archives("m", stream="s")))
                         look()
                     if at == 30.0:
                         digests.append(_digest(_sealed_first()))
                     yield record
 
         def _sealed_first() -> Path:
-            first = store.archives(tmp_path, stream="s")[0]
+            first = store.archives("m", stream="s")[0]
             _wait_for(lambda: store.state(first) == "complete")
-            return first
+            return archive_path(tmp_path, first)
 
         source = Watched(clock, _seq(40, every=1.0))
         _, outcomes, _ = _run(tmp_path, clock, _plan(WindowSpec(seconds=10)), source, store=store)
 
         assert gate.is_set()
         assert seen["while"].exhausted == [], "a table being written is not read to its end"
-        assert digests == [_digest(Path(outcomes[0].path))]
-        after = store.read_since(Path(outcomes[0].path), seen["while"].cursor, max_records=100,
+        assert digests == [_digest(_kept(tmp_path, outcomes[0]))]
+        after = store.read_since(_ref(outcomes[0]), seen["while"].cursor, max_records=100,
                                  max_bytes=1 << 20)  # fmt: skip
         assert after.exhausted == ["s"]
 
@@ -853,7 +881,7 @@ class TestDeterminism:
             clock = VirtualClock()
             project = tmp_path / run
             _run(project, clock, _plan(WindowSpec(seconds=9, records=11)), Script(clock, timeline))
-            trees.append(_tree(project / "streams" / "s"))
+            trees.append(_tree(project / STATE / "m" / "streams" / "s"))
 
         assert trees[0] == trees[1]
         assert len(trees[0]) > 10, "several windows were compared"
@@ -864,7 +892,7 @@ class TestDeterminism:
         replayed, though it keeps a capture (one that dropped nothing can: the replay test
         below)."""
         clock = VirtualClock()
-        store = StalledArchives(clock)
+        store = StalledArchives(tmp_path / STATE, clock)
         source = Script(clock, [(0.0, {"seq": i}) for i in range(12)])
         plan = _plan(WindowSpec(seconds=20), buffer=BufferSpec(records=8),
                      overflow="drop_newest")  # fmt: skip
@@ -881,8 +909,8 @@ class TestDeterminism:
         _, [burst], _ = result[0]
 
         assert burst.dropped == 4
-        assert _meta(burst)["stream"]["reproducible"] is False
-        assert (Path(burst.path) / "captures.jsonl").exists(), "captured, yet not replayable"
+        assert _meta(tmp_path, burst)["stream"]["reproducible"] is False
+        assert (_kept(tmp_path, burst) / "captures.jsonl").exists(), "captured, yet not replayable"
 
     def test_a_window_kept_without_captures_is_not_reproducible(self, tmp_path: Path) -> None:
         clock = VirtualClock()
@@ -893,8 +921,8 @@ class TestDeterminism:
         )  # fmt: skip
 
         assert window.dropped == 0
-        assert _meta(window)["stream"]["reproducible"] is False
-        assert not (Path(window.path) / "captures.jsonl").exists()
+        assert _meta(tmp_path, window)["stream"]["reproducible"] is False
+        assert not (_kept(tmp_path, window) / "captures.jsonl").exists()
 
     def test_a_sealed_window_replays_exactly_from_its_capture_under_another_clock(
         self, tmp_path: Path
@@ -919,15 +947,15 @@ class TestDeterminism:
         sealed = [o for o in outcomes if o.closed_by == "seconds"]
         assert len(sealed) >= 2
         for window in sealed:
-            archive = Path(window.path)
-            table = (archive / window.table.file).read_bytes()
-            assert _meta(window)["stream"]["reproducible"] is True
+            archive = _kept(tmp_path / "streamed", window)
+            table = (archive / f"{window.table.name}.jsonl").read_bytes()
+            assert _meta(tmp_path / "streamed", window)["stream"]["reproducible"] is True
             assert table.count(b"\n") >= 7, "the window holds records to replay"
             assert _replayed(tmp_path / f"replay-{window.index}", archive) == table
             assert _members(_frames(archive), spec, window.index)
 
         # Check the checker: one arrival moved across the boundary leaves the window.
-        frames = _frames(Path(sealed[0].path))
+        frames = _frames(_kept(tmp_path / "streamed", sealed[0]))
         frames[-1] = {**frames[-1], "at": spec.seconds}
         assert not _members(frames, spec, sealed[0].index)
 
@@ -998,4 +1026,4 @@ def _replayed(project: Path, window: Path) -> bytes:
 
     assert document.status == "complete", document.warnings
     [table] = document.tables
-    return (Path(document.path) / table.file).read_bytes()
+    return (kept(project, document) / f"{table.name}.jsonl").read_bytes()

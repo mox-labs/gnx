@@ -19,13 +19,13 @@ import signal
 import subprocess
 import threading
 from collections.abc import Generator
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
 from recon.adapters._out.parsing import parse_line
-from recon.adapters._out.private_files import make_dirs, open_file
 from recon.domain.collector import CollectorType
 from recon.domain.errors import CollectionError, Problem
 from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, bound
@@ -108,16 +108,16 @@ class PopenRunner:
         cwd: Path | None,
         timeout: float,
         *,
-        capture_path: Path | None = None,
+        tee: Callable[[bytes], object] | None = None,
     ) -> Generator[str, None, int]:
-        return _Command(lambda command: self._lines(cmd, cwd, timeout, capture_path, command))
+        return _Command(lambda command: self._lines(cmd, cwd, timeout, tee, command))
 
     def _lines(
         self,
         cmd: str,
         cwd: Path | None,
         timeout: float,
-        capture_path: Path | None,
+        tee: Callable[[bytes], object] | None,
         command: _Command,
     ) -> Generator[str, None, int]:
         # shell=True is intentional: configs are trusted local input.
@@ -142,10 +142,10 @@ class PopenRunner:
         timer.start()
         stderr = bytearray()
         try:
-            with _tee(capture_path) as tee:
-                for line in _stdout_lines(proc, stderr):
-                    tee(line)
-                    yield line.removesuffix("\n").removesuffix("\r")
+            for line in _stdout_lines(proc, stderr):
+                if tee is not None:
+                    tee(line.encode("utf-8"))
+                yield line.removesuffix("\n").removesuffix("\r")
             proc.wait()
         finally:
             timer.cancel()
@@ -203,18 +203,6 @@ def _kill_group(proc: subprocess.Popen[bytes]) -> None:
             os.killpg(proc.pid, signal.SIGKILL)
 
 
-@contextlib.contextmanager
-def _tee(path: Path | None) -> Iterator[Callable[[str], object]]:
-    """A function writing each line to ``path`` (appended: a pattern fan-out concatenates
-    into one body), or one that does nothing when there is no path."""
-    if path is None:
-        yield lambda line: None
-        return
-    make_dirs(path.parent)
-    with os.fdopen(open_file(path, os.O_WRONLY | os.O_APPEND), "a", encoding="utf-8") as f:
-        yield f.write
-
-
 class CliCollector:
     """Runs shell commands, yields parsed stdout records as they stream."""
 
@@ -258,8 +246,8 @@ class CliCollector:
         commands = _commands(entry, source)
 
         # Raw capture: tee every invocation's stdout into one body per collector entry
-        # (patterns concatenate). Path is None when the mission does not preserve raw.
-        capture_path = captures.stream_path(entry.name) if captures is not None else None
+        # (patterns concatenate). None when the mission does not preserve raw.
+        tee = partial(captures.tee, entry.name) if captures is not None else None
         exit_codes: list[int] = []
 
         # A path a command prints is relative to where it ran: a transform that reads one
@@ -274,7 +262,7 @@ class CliCollector:
                 if self._deadline is not None:
                     self._deadline.check()
                     limit = self._deadline.limit(timeout)
-                lines = self._runner.run_lines(cmd, cwd, limit, capture_path=capture_path)
+                lines = self._runner.run_lines(cmd, cwd, limit, tee=tee)
                 self._running = lines
                 if self._closed.is_set():  # closed meanwhile, before it saw these lines
                     lines.close()

@@ -35,7 +35,7 @@ The cursor is recon's: pass it on unchanged. One recon did not give for that arc
 
 ## 3. Read a failed table right
 
-A table that fails is retracted: the records printed from it are void, and stderr (or `retracted`, under `--json`) names it. Its error is in the archive's `meta.yaml`, and `recon status my-scan` shows it once the survey ends.
+A table that fails is retracted: the records printed from it are void, and stderr (or `retracted`, under `--json`) names it. Its error is in the archive's meta, and `recon status my-scan` shows it once the survey ends.
 
 ## 4. Query what is sealed
 

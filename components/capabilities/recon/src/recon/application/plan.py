@@ -27,8 +27,7 @@ from typing import TYPE_CHECKING, Any, get_args
 
 from pydantic import BaseModel, ValidationError
 
-from recon.domain.archives import EVENT_LOG_NAME, SIDECARS, table_name
-from recon.domain.capture import CAPTURE_LOG_NAME
+from recon.domain.archives import RESERVED_OUTPUTS, SIDECARS, table_name
 from recon.domain.changes import CHANGES_SUFFIX, changes_output
 from recon.domain.credentials import env_name
 from recon.domain.documents import SourcedValue
@@ -59,16 +58,11 @@ _TOP_LEVEL_KEYS = tuple(sorted(ReconConfig.model_fields))
 #: a YAML anchor that collectors alias. recon ignores it. Every other unknown key is an error.
 IGNORED_KEY_PREFIX = "_"
 
-#: Output names that would overwrite a file recon itself writes into an archive.
-RESERVED_OUTPUT_NAMES = frozenset(
-    name.removesuffix(".jsonl") for name in (CAPTURE_LOG_NAME, EVENT_LOG_NAME)
-)
+#: What an output name may not hold: it names one table of the archive, and nothing else.
+_NOT_IN_A_NAME = ("/", "\\", "..")
 
-#: What an output name may not hold: it is the stem of one file in the archive.
-_NOT_IN_A_FILE_NAME = ("/", "\\", "..")
-
-#: The suffixes recon gives the files it writes beside a table, each with what it holds: an
-#: output named so would be one of them.
+#: The suffixes recon gives what it keeps beside a table, each with what it holds: an output
+#: named so would be one of them.
 _BESIDE = {"pages": "page log", "keys": "key index", CHANGES_SUFFIX: "change table"}
 assert set(SIDECARS) < set(_BESIDE)
 
@@ -96,7 +90,6 @@ class PlannedRun:
         stream = {} if self.stream is None else {"stream": self.stream}
         return {
             "output": self.output,
-            "file": f"{self.output}.jsonl",
             "collector": self.collector,
             "type": self.type,
             "source": self.source,
@@ -1286,12 +1279,12 @@ def _output_problems(
 ) -> list[Problem]:
     at = f"collectors.{i}.name"
     problems = []
-    if any(part in output for part in _NOT_IN_A_FILE_NAME):
+    if any(part in output for part in _NOT_IN_A_NAME):
         problems.append(
             Problem(
                 at,
-                f"output {output!r} is not one file name: it names the table's file in the "
-                f"archive, so it holds no {', no '.join(_NOT_IN_A_FILE_NAME)}",
+                f"output {output!r} is not one name: it names one table of the archive, so "
+                f"it holds no {', no '.join(_NOT_IN_A_NAME)}",
                 fix="rename the collector (or, for an output <collector>-<source>, the source)",
                 got=output,
             )
@@ -1301,16 +1294,17 @@ def _output_problems(
             Problem(
                 at,
                 f"output {output!r} must start with a letter, a digit or _: it names the "
-                "table's file in the archive, which would otherwise be hidden or empty-named",
+                "table in the archive, and a name that does not is refused",
                 fix="rename the collector",
                 got=output,
             )
         )
-    if output.casefold() in RESERVED_OUTPUT_NAMES:
+    if output.casefold() in RESERVED_OUTPUTS:
         problems.append(
             Problem(
                 at,
-                f"output {output!r} is reserved for a file recon writes into every archive",
+                f"output {output!r} is reserved for a log recon keeps in every archive (its "
+                "events, its captures)",
                 kind="name_taken",
                 fix="rename the collector",
                 got=output,
@@ -1320,8 +1314,8 @@ def _output_problems(
         problems.append(
             Problem(
                 at,
-                f"output {output!r} is named as recon names a file of its own beside a table "
-                f"(<table>.{suffix}.jsonl: its {_BESIDE[suffix]})",
+                f"output {output!r} is named as recon names what it keeps beside a table "
+                f"(<table>.{suffix}: its {_BESIDE[suffix]})",
                 kind="name_taken",
                 fix="rename the collector",
                 got=output,
@@ -1332,7 +1326,7 @@ def _output_problems(
         problems.append(
             Problem(
                 at,
-                f"output {output}.jsonl is also produced by collectors.{taken[0]}",
+                f"output {output} is also produced by collectors.{taken[0]}",
                 kind="name_taken",
                 fix="rename one of the two collectors so each output is unique",
                 got=output,

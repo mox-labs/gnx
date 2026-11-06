@@ -1,6 +1,6 @@
 # Streams: sources that do not end
 
-A file that keeps growing, or a server that keeps sending events, never finishes, so a survey cannot wait for it. recon collects such a source as a **stream**: its records go into **windows**, each window an ordinary archive (a `meta.yaml`, one table, a state, a query), sealed when the window ends and chained to the one before. This page is the contract: every key and flag, its default, and every refusal with its fix.
+A file that keeps growing, or a server that keeps sending events, never finishes, so a survey cannot wait for it. recon collects such a source as a **stream**: its records go into **windows**, each window an ordinary archive (its meta, one table, a state, a query), sealed when the window ends and chained to the one before. This page is the contract: every key and flag, its default, and every refusal with its fix.
 
 ## Contents
 
@@ -80,19 +80,19 @@ It always returns unless told otherwise, and says when: before it runs, `--dry-r
 
 Refused with exit 2 (`usage`) and a fix: `--forever` with `--windows` or `--until`; `--windows` below 1; an `--until` that has passed. A collector that is no stream of the mission is `not_found` (exit 4), naming the mission's streams.
 
-Under `--json`, one `recon.v1.stream` document: `mission`, `stream`, `path`, `returns_s` and `returns` (when the run was to return at the latest, as it said when it started), `state` (the stream's, after the run), `windows` (sealed by this run), `records`, `dropped`, `first` (the first window's id), `last_window` (the last window sealed, a window outcome) and `warnings`. Without it, each window is a line on stderr as it is sealed. A window whose source failed exits with that failure's kind.
+Under `--json`, one `recon.v1.stream` document: `mission`, `stream`, `returns_s` and `returns` (when the run was to return at the latest, as it said when it started), `state` (the stream's, after the run), `windows` (sealed by this run), `records`, `dropped`, `first` (the first window's id), `last_window` (the last window sealed, a window outcome) and `warnings`. Without it, each window is a line on stderr as it is sealed, and the last window's id is printed on stdout. A window whose source failed exits with that failure's kind.
 
 `recon survey <mission>` runs **one** window of each stream entry, in turn, after the snapshot tables, and lists each in the survey document's `stream_windows`: a stream run from cron. A window that failed makes the survey `incomplete`. Two streams of 300 s hold the survey ten minutes past its tables, so `recon survey <mission> --dry-run` says when it returns at the latest as `survey.returns`: the mission's `deadline:` (which bounds the snapshot tables) plus each stream's window `seconds`, or null, with a note of what is unbounded, when there is no `deadline:` beside snapshot tables or a window has no `seconds`.
 
 ## How a window ends
 
-A window outcome (in `recon.v1.stream`'s `last_window` and `recon.v1.survey`'s `stream_windows`) holds `stream`, `index`, `id` (its archive id, what `--archive` takes), `path` (its directory), `opened_at`, `closed_at`, `closed_by`, `dropped`, `high_water` (the most records that waited) and `table` (its one table: `status`, `records`, `error`).
+A window outcome (in `recon.v1.stream`'s `last_window` and `recon.v1.survey`'s `stream_windows`) holds `stream`, `index`, `id` (its archive id, what `--archive` takes), `opened_at`, `closed_at`, `closed_by`, `dropped`, `high_water` (the most records that waited) and `table` (its one table: `status`, `records`, `error`).
 
 | `closed_by` | Means | `status` |
 |---|---|---|
 | `seconds`, `records`, `bytes`, `pages` | the window's own bound was reached, named by its key in `window:` | `ok` |
 | `eof` | the source ended (a crawl's last page; a crawl cut short says so in `table.truncated`) | `ok` |
-| `stopped` | the stream was stopped on request (Ctrl-C, SIGTERM, a `StreamStop` asked); its `meta.yaml` says `ended: stopped` | `ok` |
+| `stopped` | the stream was stopped on request (Ctrl-C, SIGTERM, a `StreamStop` asked); the window reads `ended: stopped` | `ok` |
 | `until` | the stream reached `--until` | `ok` |
 | `error` | the source failed (or reconnects ran out): the window **keeps the records it got**, since a source that sends cannot be asked again, and reads `incomplete` | `error` |
 
@@ -100,35 +100,35 @@ A window that ends is a success, never `transient`. A survey's table that fails 
 
 ## Flow: the buffer and its overflow
 
-The source is read on a thread of the stream's own into the buffer, and each window is written from it, so a source that sends while a window is being written is read meanwhile. Each record is stamped by the clock as the buffer takes it and assigned its window there. Every record that arrives is written or dropped, and every drop is counted in the window it fell in: in `meta.yaml` (`stream.sources[0].dropped`), the window's `recon.collect` end event (`recon.dropped`), its progress events, and a `records_dropped` warning for the run, one for each cause, its total in `got` and at the path of the key that governs it: `collectors.<i>.buffer` for a full buffer (fix: raise `buffer.records` and `buffer.bytes`, or `overflow: block` for a source recon paces), `collectors.<i>.buffer.max_record_bytes` for records too large (fix: raise `buffer.max_record_bytes`), and `collectors.<i>` for what waited when the stream was stopped at once (a second stop, or a failure).
+The source is read on a thread of the stream's own into the buffer, and each window is written from it, so a source that sends while a window is being written is read meanwhile. Each record is stamped by the clock as the buffer takes it and assigned its window there. Every record that arrives is written or dropped, and every drop is counted in the window it fell in: in its record (`window.sources[0].dropped` in `recon status`), the window's `recon.collect` end event (`recon.dropped`), its progress events, and a `records_dropped` warning for the run, one for each cause, its total in `got` and at the path of the key that governs it: `collectors.<i>.buffer` for a full buffer (fix: raise `buffer.records` and `buffer.bytes`, or `overflow: block` for a source recon paces), `collectors.<i>.buffer.max_record_bytes` for records too large (fix: raise `buffer.max_record_bytes`), and `collectors.<i>` for what waited when the stream was stopped at once (a second stop, or a failure).
 
 ## Stopping, crashing and resuming
 
-A stream killed mid-window (SIGKILL, a crash) leaves that window unsealed: it reads `incomplete`, `ended: crashed`, and keeps every whole line it had; it is never changed, but a torn last line (a write the kill cut short) is moved aside to `<table>.jsonl.tmp.torn`. The next run chains its first window to it (`previous`) and resumes the source after the position of the last whole record kept: exactly once for a source with positions (`tail`, and `sse` whose server honours `Last-Event-ID`). Every restart is recorded as a gap in the first window of the run, from the last window's close (unknown after a crash) to the restart: `resumed: true` when the source was asked to go on from a position, which marks a restart, not a loss (a source that does not honour it shows where); `resumed: false` for a source without positions (`cli`), which cannot go on from where it was, and for a crawl that ended, which a run after it begins again. A crawl goes on from the last page its windows' page logs name, read past the records kept from it, exactly once; a page that moved under it, and a token its source no longer takes, are each a warning, and a gap `resumed: false` where the crawl could not go on from where it was (`recon --skill -r pagination`).
+A stream killed mid-window (SIGKILL, a crash) leaves that window unsealed: it reads `incomplete`, `ended: crashed`, and keeps every whole line it had; it is never changed, but a torn last record (a write the kill cut short) is set aside, no record of it. The next run chains its first window to it (`previous`) and resumes the source after the position of the last whole record kept: exactly once for a source with positions (`tail`, and `sse` whose server honours `Last-Event-ID`). Every restart is recorded as a gap in the first window of the run, from the last window's close (unknown after a crash) to the restart: `resumed: true` when the source was asked to go on from a position, which marks a restart, not a loss (a source that does not honour it shows where); `resumed: false` for a source without positions (`cli`), which cannot go on from where it was, and for a crawl that ended, which a run after it begins again. A crawl goes on from the last page its windows' page logs name, read past the records kept from it, exactly once; a page that moved under it, and a token its source no longer takes, are each a warning, and a gap `resumed: false` where the crawl could not go on from where it was (`recon --skill -r pagination`).
 
 ## Reading a stream
 
 | | Does |
 |---|---|
 | `recon watch <mission> --stream <name>` | follows the stream from its latest window (or `--archive <window id>`) into each window after it, exactly as an archive is followed; returns once nothing extends the stream and its last window is read. The cursor carries the window; one whose window `retain:` removed since goes on from the next window kept, and that read's `retired_range` (`{first, last, count}`) names the windows it jumped |
-| `recon query <mission> "<SQL>" --stream <name>` | each table is the union of its windows' records, by column name; `--since` and `--until` choose the windows that meet `[since, until)` from their ids alone; `--archive` names one window. Windows collected under different configs are refused (`query`, exit 10) with the ranges to narrow to. `recon.v1.query-rows` gains `stream` and `window_range`: `{first, last, count}`, the windows it read; its `archive` is the last window read, and `path` the stream's directory. Past 300 windows it warns `windows_many`, with how to narrow |
-| `recon status <mission> --json` | each mission's `streams`: `name`, `path`, `state` (`writing` while a stream runs, else its last window's), `windows`, `first`, `latest`, `retired` |
+| `recon query <mission> "<SQL>" --stream <name>` | each table is the union of its windows' records, by column name; `--since` and `--until` choose the windows that meet `[since, until)` from their ids alone; `--archive` names one window. Windows collected under different configs are refused (`query`, exit 10) with the ranges to narrow to. `recon.v1.query-rows` gains `stream` and `window_range`: `{first, last, count}`, the windows it read; its `archive` is the last window read. Past 300 windows it warns `windows_many`, with how to narrow |
+| `recon status <mission> --json` | each mission's `streams`: `name`, `state` (`writing` while a stream runs, else its last window's), `windows`, `first`, `latest` (with its `window` record, below), `retired`, and, of one mission, `history`: every window, oldest first |
 
 A window's id is its index, then when it opened (`00000003-2026-10-24-010203-456789`), so ids sort by order and say when each window began.
 
 ## What a window records
 
-`meta.yaml` holds what a survey's does (its `tables`, `config_sha256`, times) and `stream`:
+A window's meta holds what a survey's does (its `tables`, `config_sha256`, times) and the window's own record, which `recon status <mission> --json` gives as `window`: of each stream's `latest`, and of every window in each stream's `history` (oldest first), as a mission's `history` lists its survey archives:
 
 | Field | Holds |
 |---|---|
 | `name`, `index`, `previous` | the stream, the window's index, and the window before it (null for the first) |
 | `opened_at`, `closed_at`, `closed_by` | the window's span and how it was closed |
 | `window` | the window spec in effect |
-| `sources` | one entry: `source`, `output`, `first` and `last` (the positions of its first and last record; `last` carries the one before through a window with no record), `records`, `dropped`, `gaps` (`{from, to, resumed}` each), `arrivals` (`{first, last}`: the order of its first and last record admitted), and `restarted`, for a crawl begun again in it, the page it was begun again at |
+| `sources` | one entry: `source`, `output`, `first` and `last` (the positions of its first and last record, which `recon status` gives as `first_position` and `last_position`, the one shape of `first` and `last` being a span's ends; `last` carries the one before through a window with no record), `records`, `dropped`, `gaps` (`{from, to, resumed}` each), `arrivals` (`{first, last}`: the order of its first and last record admitted), and `restarted`, for a crawl begun again in it, the page it was begun again at |
 | `reproducible` | true when the window kept a capture and dropped nothing |
 
-Every record written carries `_position` when its source gives one, in the same line, so a stream resumes from its last whole line. With `preserve_raw: true`, each window keeps one capture of kind `stream` (`recon --skill -r capture-format`): each record as its collector gave it, before `normalize:`, with its order and its offset from the window's open, from which the window replays to the same bytes. The same arrivals give the same windows and the same `meta.yaml` and event log, whatever thread wrote them.
+Every record written carries `_position` when its source gives one, in the same line, so a stream resumes from its last whole line. With `preserve_raw: true`, each window keeps one capture of kind `stream` (`recon --skill -r capture-format`): each record as its collector gave it, before `normalize:`, with its order and its offset from the window's open, from which the window replays to the same bytes. The same arrivals give the same windows and the same meta and event log, whatever thread wrote them.
 
 ## In a program
 

@@ -12,15 +12,17 @@ import signal
 import subprocess
 import sys
 import time
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.composition import root
 from tests.paged_server import PagedServer
-from tests.recon_fakes import FixedClock
+from tests.recon_fakes import FixedClock, kept
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 CLI = "import sys; from recon.adapters._in.cli import main; sys.exit(main())"
 
@@ -57,7 +59,7 @@ def test_every_page_draws_a_token_and_is_retried_as_a_request_is(tmp_path: Path)
         document = root({}, project=tmp_path, clock=clock).survey("m")
 
     assert document.status == "complete", document.warnings
-    assert _ids(Path(document.path) / "items.jsonl") == [0, 1, 2, 3, 4]
+    assert _ids(kept(tmp_path, document) / "items.jsonl") == [0, 1, 2, 3, 4]
     assert server.hits == 5 + 1, "each page once, and one retry"
     assert 2.0 in clock.slept, "the 429's Retry-After"
     assert sum(1 for s in clock.slept if s == 1.0) == 4, "each page past the burst waits"
@@ -119,7 +121,7 @@ def test_a_crawl_kept_raw_replays_from_its_captures_byte_for_byte(tmp_path: Path
     with PagedServer(7, 3) as server:
         _write(tmp_path, "m", _mission(server.url, normalize={"title": "title"},
                                        top={"preserve_raw": True}))  # fmt: skip
-        archive = Path(root({}, project=tmp_path).survey("m").path)
+        archive = kept(tmp_path, root({}, project=tmp_path).survey("m"))
     log = archive / "captures.jsonl"
     assert len(log.read_text().splitlines()) == 3, "a capture a page"
 
@@ -127,7 +129,8 @@ def test_a_crawl_kept_raw_replays_from_its_captures_byte_for_byte(tmp_path: Path
         _write(tmp_path, name, {"collectors": [
             {"name": "items", "type": "capture", "path": str(log), "extract": "items",
              "normalize": {"title": "title"}}]})  # fmt: skip
-        return (Path(root({}, project=tmp_path).survey(name).path) / "items.jsonl").read_bytes()
+        surveyed = root({}, project=tmp_path).survey(name)
+        return (kept(tmp_path, surveyed) / "items.jsonl").read_bytes()
 
     original = (archive / "items.jsonl").read_bytes()
     assert replay("r1") == original
@@ -159,12 +162,13 @@ def test_a_survey_killed_mid_crawl_reads_crashed_and_the_next_starts_again(
         finally:
             if process.poll() is None:
                 process.kill()
-        store = ArchiveFiles(FixedClock())
-        [crashed] = store.archives(tmp_path / ".recon" / "m")
+        store = ArchiveFiles(tmp_path / ".recon", FixedClock())
+        [ref] = store.archives("m")
+        crashed = tmp_path / ".recon" / "m" / "archive" / ref.id
         deadline = time.monotonic() + 10
-        while store.state(crashed) == "writing" and time.monotonic() < deadline:
+        while store.state(ref) == "writing" and time.monotonic() < deadline:
             time.sleep(0.01)  # the lock goes with the process, as the kernel releases it
-        assert store.state(crashed) == "incomplete"
+        assert store.state(ref) == "incomplete"
         assert not (crashed / "meta.yaml").exists(), "it left no record of its end: crashed"
         assert not (crashed / "items.jsonl").exists(), "the table is not sealed"
         assert not (crashed / "items.pages.jsonl").exists(), "nor its page log written"
@@ -175,5 +179,5 @@ def test_a_survey_killed_mid_crawl_reads_crashed_and_the_next_starts_again(
         document = root({}, project=tmp_path).survey("m")
 
     assert server.asked[asked] is None, "the next survey starts at the first page"
-    assert _ids(Path(document.path) / "items.jsonl") == list(range(6))
+    assert _ids(kept(tmp_path, document) / "items.jsonl") == list(range(6))
     assert document.status == "complete"

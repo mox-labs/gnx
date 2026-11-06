@@ -22,7 +22,6 @@ from urllib.parse import parse_qsl, quote_plus, unquote_plus, urlencode, urlspli
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
-    from pathlib import Path
 
     from recon.domain.documents import Capture
 
@@ -178,17 +177,10 @@ class CaptureLog(Protocol):
         """Store ``body`` and append one capture line; return the line as written."""
         ...
 
-    def stream_path(self, collector: str) -> Path:
-        """A file the collector may tee a body into as it streams (CLI stdout).
-
-        Call ``finalize_stream`` with the same collector name once writing is done; the
-        file is then hashed, moved under ``raw/`` and logged.
-        """
-        ...
-
     def tee(self, collector: str, data: bytes) -> None:
-        """Append ``data`` to the body streaming for ``collector`` (its ``stream_path``), for
-        a caller that writes no file itself."""
+        """Append ``data`` to the body streaming for ``collector`` (a command's stdout as it
+        flows, a stream window's arrivals): one body per collector until
+        :meth:`finalize_stream` logs it."""
         ...
 
     def finalize_stream(

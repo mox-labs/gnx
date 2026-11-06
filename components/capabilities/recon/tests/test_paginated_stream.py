@@ -22,10 +22,10 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from recon.adapters._out.archive_files import ArchiveFiles
 from recon.composition import root
+from recon.domain.archives import ArchiveRef
 from tests.paged_server import PagedServer
-from tests.recon_fakes import FixedClock
+from tests.recon_fakes import FixedClock, archive_path, files_of
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -57,7 +57,14 @@ def _stream(project: Path, **bound: Any) -> StreamDocument:
 
 
 def _windows(project: Path) -> list[Path]:
-    return ArchiveFiles(FixedClock()).archives(project / ".recon" / "m", stream="items")
+    store = files_of(project, FixedClock())
+    return [archive_path(project, ref) for ref in store.archives("m", stream="items")]
+
+
+def _state(window: Path) -> str:
+    """The window's state, as the file adapter reads it (the project is its fifth parent)."""
+    ref = ArchiveRef("m", window.name, window.parent.name)
+    return files_of(window.parents[4], FixedClock()).state(ref)
 
 
 def _lines(path: Path) -> list[dict[str, Any]]:
@@ -178,9 +185,8 @@ def _kill_mid_crawl(project: Path, server: PagedServer, held: int) -> None:
     finally:
         if process.poll() is None:
             process.kill()
-    store = ArchiveFiles(FixedClock())
     started = time.monotonic()
-    while store.state(_windows(project)[-1]) == "writing" and time.monotonic() - started < 10:
+    while _state(_windows(project)[-1]) == "writing" and time.monotonic() - started < 10:
         time.sleep(0.01)  # the lock goes with the process, as the kernel releases it
 
 
@@ -213,7 +219,7 @@ class TestKilledMidCrawl:
             _kill_mid_crawl(tmp_path, server, held)
             first, dead = _windows(tmp_path)
             assert _meta(first)["stream"]["closed_by"] == "pages"
-            assert ArchiveFiles(FixedClock()).state(dead) == "incomplete"
+            assert _state(dead) == "incomplete"
             assert not (dead / "meta.yaml").exists(), "killed: no record of its end"
             assert _pages(dead) == [2, 3] and [r["id"] for r in _rows(dead)] == [4, 5]
             server.release.set()

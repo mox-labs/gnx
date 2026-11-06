@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 from recon.composition import root
-from tests.recon_fakes import VirtualClock, plugins_with
+from tests.recon_fakes import VirtualClock, kept, plugins_with
 from tests.test_stream_use import Feed
 
 if TYPE_CHECKING:
@@ -116,7 +116,7 @@ def test_a_crawl_s_page_log_and_change_detection_s_files_are_0600_too(
 
     assert survey.status == "complete"
     modes = _modes(tmp_path / ".recon")
-    archive = Path(survey.path).relative_to(tmp_path)
+    archive = kept(tmp_path, survey).relative_to(tmp_path)
     for name in ("items.pages.jsonl", "items.changes.jsonl", "items.keys.jsonl"):
         assert modes[str(archive / name)] == 0o600, f"{name}: {modes[str(archive / name)]:o}"
     assert modes[".recon/m/changes.key"] == 0o600

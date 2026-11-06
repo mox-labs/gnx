@@ -305,7 +305,7 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
     if as_json:
         _emit(document.document())
     else:
-        click.echo(document.path)
+        click.echo(document.archive)
     failure = recon.survey_failure(document)
     if failure is not None:
         _fail(failure, as_json=as_json)
@@ -420,7 +420,8 @@ def stream(
         err.print(f"[dim]{document.windows} window(s), {document.records} record(s), "
                   f"{document.dropped} dropped; stream {escape(document.stream)}: "
                   f"{document.state}[/]")  # fmt: skip
-        click.echo(document.path)
+        if document.last_window is not None:
+            click.echo(document.last_window.id)
     failure = recon.stream_failure(document)
     if failure is not None:
         _fail(failure, as_json=as_json)
@@ -569,7 +570,7 @@ def status(mission: str | None, as_json: bool) -> None:
     """List missions, their archives, and the installed collector types and transforms.
 
     Given a mission, list every archive it has, oldest first (under --json, as
-    missions[0].history): the id `query --archive` takes, its path, when it started and
+    missions[0].history): the id `query --archive` takes, when it started and
     finished, its state, and its tables. A plugin that failed to load is listed, and warned
     about, rather than hidden.
 
@@ -589,7 +590,8 @@ def status(mission: str | None, as_json: bool) -> None:
             f"failed to load: {escape(broken.error)}[/]"
         )
     if not document.missions:
-        err.print(f"[dim]No missions under {document.root}. Start one: recon init <name>[/]")
+        err.print(f"[dim]No missions in {escape(document.project)}. Start one: recon init "
+                  "<name>[/]")  # fmt: skip
     else:
         _print_table(_missions_table(document))
     for table in _archive_tables(document):
@@ -688,6 +690,12 @@ def _archive_tables(document: recon.StatusDocument) -> list[Table]:
     metavar="TIME",
     help="With --stream: only the windows that open before TIME",
 )
+@click.option(
+    "--baseline",
+    default=None,
+    metavar="ARCHIVE",
+    help="An earlier archive's id: its tables are read too, as baseline.<table>",
+)
 @_json_option
 def query(
     name: str,
@@ -696,35 +704,39 @@ def query(
     stream: str | None,
     since: datetime | None,
     until: datetime | None,
+    baseline: str | None,
     as_json: bool,
 ) -> None:
     """Query a mission's latest archive, or the one --archive names, with SQL (DuckDB).
 
-    Each table is a view named after its file, every character but a letter, digit or _
-    becoming _ (oa-works is oa_works); SQL ignores its case. The output names the archive
-    the rows came from. An older archive's table, or a table's raw lines, is read by its
-    file: read_json_auto('<archive dir>/<table>.jsonl') for an earlier archive,
-    read_ndjson_objects(...) for each line as JSON text, and WITH ORDINALITY after either
-    for each row's line number in the file. Read one archive's file: a glob across archives
-    numbers all its files' lines as one, and their columns can differ. With --stream, the
-    stream's windows are read as one, chosen by --since and --until from their ids alone;
-    windows collected under different configs are refused, with the ranges to narrow to.
+    Each table is a view named after its collector's output, every character but a letter,
+    digit or _ becoming _ (oa-works is oa_works); SQL ignores its case. The output names the
+    archive the rows came from. json.<table> holds each record as its JSON text (json),
+    lines.<table> each record with its line, counted from 1 as it was landed: cite a row as
+    its archive, table and line. --baseline reads an earlier archive's tables as
+    baseline.<table>, so what is new since it is ... EXCEPT SELECT ... FROM
+    baseline.<table>. With --stream, the stream's windows are read as one, chosen by --since
+    and --until from their ids alone; windows collected under different configs are refused,
+    with the ranges to narrow to.
 
     \b
     recon query my-scan "SELECT title, year FROM s2_search LIMIT 10"
     recon status my-scan
     recon query my-scan "SELECT count(*) FROM s2_search" --archive 2026-04-01-143022-000000
+    recon query my-scan "SELECT title FROM s2_search EXCEPT
+      SELECT title FROM baseline.s2_search" --baseline 2026-04-01-143022-000000
     recon query my-feed "SELECT count(*) FROM events" --stream events --since 2026-10-24T00:00Z
     """
     setup = _telemetry_warnings()
     document = _operations().query(
-        name, sql, archive=archive, stream=stream, since=since, until=until
+        name, sql, archive=archive, stream=stream, since=since, until=until, baseline=baseline
     )
     document = document.model_copy(update={"warnings": setup + document.warnings})
     if as_json:
         _emit(document.document())
         return
-    err.print(f"[dim]archive {document.archive} ({escape(document.path)})[/]")
+    against = "" if document.baseline is None else f", against {document.baseline}"
+    err.print(f"[dim]archive {document.archive}{against}[/]")
     _print_warnings(document.warnings)
     if document.state == "incomplete":
         err.print(
@@ -1030,7 +1042,7 @@ def _print_schedule(document: recon.ScheduleDocument) -> None:
 def _print_schedules(document: recon.SchedulesDocument) -> None:
     _print_warnings(document.warnings)
     if not document.schedules:
-        err.print(f"[dim]No schedules on {document.platform} for {escape(document.root)}[/]")
+        err.print(f"[dim]No schedules on {document.platform} for {escape(document.project)}[/]")
         return
     table = Table(show_header=True, header_style="dim")
     for column in ("Mission", "Every", "Installed", "Config changed", "Next"):
@@ -1143,7 +1155,7 @@ def tick(name: str, project: Path, config_sha256: str, as_json: bool) -> None:
     if as_json:
         _emit(document.document())
     elif document.survey is not None:
-        click.echo(document.survey.path)
+        click.echo(document.survey.archive)
     else:
         err.print(f"[dim]tick skipped ({document.skipped_by}): {escape(name)}[/]")
     if document.survey is not None:

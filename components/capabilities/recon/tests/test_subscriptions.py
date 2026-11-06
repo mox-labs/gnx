@@ -16,6 +16,7 @@ import yaml
 from click.testing import CliRunner
 
 from recon.adapters._in.cli import main
+from recon.adapters._out.mission_layout import STATE
 from recon.adapters._out.subscription_files import SubscriptionFiles
 from recon.application.plan import build_plan
 from recon.application.subscriptions import Position
@@ -181,7 +182,7 @@ class TestAcks:
         same ids, and what is kept is unchanged."""
         surveys = self._surveyed(tmp_path)
         first = surveys.recon.subscribe("m", "all")
-        kept = SubscriptionFiles().state(tmp_path / ".recon" / "m", "all")
+        kept = SubscriptionFiles(tmp_path / STATE).state("m", "all")
         assert kept is None, "a read keeps nothing"
         again = surveys.recon.subscribe("m", "all")
         assert [row.id for row in again.rows] == [row.id for row in first.rows] != []
@@ -201,7 +202,7 @@ class TestAcks:
         assert refused.value.details["acked"]["row"] > refused.value.details["got"]["row"]
         assert refused.value.fix
         assert surveys.recon.ack("m", "all", later).outcome == "unchanged"
-        kept = SubscriptionFiles().state(tmp_path / ".recon" / "m", "all")
+        kept = SubscriptionFiles(tmp_path / STATE).state("m", "all")
         assert kept is not None and kept.cursor == later
 
     def test_an_ack_of_an_earlier_archive_after_a_later_one_is_refused(
@@ -234,7 +235,7 @@ class TestAcks:
         with pytest.raises(UsageError) as refused:
             surveys.recon.ack("m", "all", never)
         assert "neither has nor retired" in str(refused.value)
-        assert SubscriptionFiles().state(tmp_path / ".recon" / "m", "all") is None
+        assert SubscriptionFiles(tmp_path / STATE).state("m", "all") is None
 
     def test_one_consumer_a_name_a_second_is_busy(self, tmp_path: Path) -> None:
         surveys = self._surveyed(tmp_path)
@@ -244,7 +245,7 @@ class TestAcks:
             import sys, time
             from pathlib import Path
             from recon.adapters._out.subscription_files import SubscriptionFiles
-            SubscriptionFiles().hold(Path({str(mission)!r}), "all")
+            SubscriptionFiles(Path({str(mission.parent)!r})).hold("m", "all")
             print("held", flush=True)
             time.sleep(60)
         """)
@@ -262,23 +263,25 @@ class TestAcks:
             child.kill()
             child.wait()
         assert surveys.recon.subscribe("m", "all").count == 2, "free once its holder died"
-        assert SubscriptionFiles().state(mission, "all") is None, "nothing was acked meanwhile"
+        assert SubscriptionFiles(tmp_path / STATE).state("m", "all") is None, (
+            "nothing was acked meanwhile"
+        )
 
     def test_one_process_s_second_consumer_is_busy_too(self, tmp_path: Path) -> None:
         self._surveyed(tmp_path)
-        store = SubscriptionFiles()
-        mission = tmp_path / ".recon" / "m"
-        store.hold(mission, "all")
+        store = SubscriptionFiles(tmp_path / STATE)
+        tmp_path / ".recon" / "m"
+        store.hold("m", "all")
         try:
             with pytest.raises(ReconError) as busy:
-                store.hold(mission, "all")
+                store.hold("m", "all")
             assert busy.value.kind == "busy"
             with pytest.raises(ReconError):
-                SubscriptionFiles().hold(mission, "all")
+                SubscriptionFiles(tmp_path / STATE).hold("m", "all")
         finally:
-            store.release(mission, "all")
-        store.hold(mission, "all")
-        store.release(mission, "all")
+            store.release("m", "all")
+        store.hold("m", "all")
+        store.release("m", "all")
 
     def test_a_subscription_the_config_does_not_declare_is_not_found(self, tmp_path: Path) -> None:
         surveys = self._surveyed(tmp_path)

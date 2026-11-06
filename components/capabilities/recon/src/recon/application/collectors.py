@@ -78,10 +78,13 @@ class SurveyCollectors:
     """One survey's collectors by type name, the types whose factory raised, what to end
     when the survey ends, and, by type name, each collector's ``requirements`` when it has
     one. ``raw`` is each collector as its type built it, before ``normalize:`` is applied to
-    what it yields: a stream normalizes each record itself, after it has captured it."""
+    what it yields: a stream normalizes each record itself, after it has captured it, with
+    ``transforms``, the ones the survey's collectors run with (each that reads files confined
+    to the mission's directories)."""
 
     collectors: dict[str, Collector]
     failed: list[BrokenPlugin]
+    transforms: Mapping[str, Transform] = field(default_factory=dict)
     _ends: list[tuple[str, Callable[[], object]]] = field(default_factory=list)
     requirements: dict[
         str, Callable[[CollectorEntry, SourceEntry | None], Collection[Requirement]]
@@ -161,7 +164,7 @@ def declared_env(
     return declared
 
 
-def confined_transforms(
+def _confined_transforms(
     transforms: Mapping[str, Transform], config: ReconConfig, mission_dir: Path
 ) -> dict[str, Transform]:
     """The transforms a survey runs with: each that takes ``roots`` bound to the directories
@@ -222,7 +225,7 @@ def build_collectors(
     sources, ``project``, the project root, the clock, ``gaps``, where a stream's collector
     says when its source was not read, and ``pages``, where a paginated table's collector says
     its pages (none kept, without one)."""
-    transforms = confined_transforms(plugins.transforms, config, mission_dir)
+    transforms = _confined_transforms(plugins.transforms, config, mission_dir)
     rate_limiter = RateLimiter(ports.clock)
     requester = ports.requester(telemetry, deadline, rate_limiter)
     ctx = CollectorContext(
@@ -242,7 +245,7 @@ def build_collectors(
         pages=pages if pages is not None else NoPages(),
     )
     declared = declared_env(config, plugins.collector_types)
-    built = SurveyCollectors({}, [])
+    built = SurveyCollectors({}, [], transforms=transforms)
     for name in dict.fromkeys(entry.type for entry in config.collectors):
         ct = plugins.collector_types[name]
         scoped = ScopedEnv(env, declared.get(name, ()), name)

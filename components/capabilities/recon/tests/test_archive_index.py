@@ -12,8 +12,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from recon.adapters._out.archive_files import ArchiveFiles
-from tests.recon_fakes import FixedClock
+from tests.recon_fakes import FixedClock, files_of
 from tests.test_changes import Surveys, _mission, _rows
 
 if TYPE_CHECKING:
@@ -51,8 +50,8 @@ class TestAClockThatStepsBack:
         surveys.clock.advance(-3600)
         second, _ = surveys.survey(A, B)
         assert (_meta(first)["index"], _meta(second)["index"]) == (1, 2)
-        listed = ArchiveFiles(FixedClock()).archives(tmp_path / ".recon" / "m")
-        assert [a.name for a in listed] == [first.name, second.name]
+        listed = files_of(tmp_path, FixedClock()).archives("m")
+        assert [a.id for a in listed] == [first.name, second.name]
         history = surveys.recon.status("m").missions[0].history
         assert history is not None and [a.id for a in history] == [first.name, second.name]
         assert surveys.recon.query("m", "SELECT 1 AS one").archive == second.name, "the latest"
@@ -94,8 +93,8 @@ def test_a_retired_archive_leaves_the_index_record(tmp_path: Path) -> None:
         surveys.survey(*messages)
     record = tmp_path / ".recon" / "m" / "archive-index.jsonl"
     lines = [json.loads(line) for line in record.read_text().splitlines()]
-    [kept] = ArchiveFiles(FixedClock()).archives(tmp_path / ".recon" / "m")
-    assert lines == [{"id": kept.name, "index": 3}]
+    [kept] = files_of(tmp_path, FixedClock()).archives("m")
+    assert lines == [{"id": kept.id, "index": 3}]
     fourth, _ = surveys.survey(A, B, C)
     assert _meta(fourth)["index"] == 4
 
@@ -117,8 +116,8 @@ class TestTheLegacyRule:
         (older_still / "meta.yaml").write_text(yaml.safe_dump(meta))
         surveys.clock.advance(-7200)
         new, _ = surveys.survey(A, B)
-        listed = ArchiveFiles(FixedClock()).archives(tmp_path / ".recon" / "m")
-        assert [a.name for a in listed] == [older_still.name, new.name]
+        listed = files_of(tmp_path, FixedClock()).archives("m")
+        assert [a.id for a in listed] == [older_still.name, new.name]
         assert _meta(new)["index"] == 1
         assert [r["key"] for r in _rows(new)] == [{"id": "b"}], "compared with the legacy one"
 
@@ -131,8 +130,8 @@ class TestTheLegacyRule:
         surveys.clock.advance(-3600)
         third, _ = surveys.survey(A, B, C)
         assert _meta(third)["index"] == 3
-        listed = ArchiveFiles(FixedClock()).archives(tmp_path / ".recon" / "m")
-        assert listed[-1].name == third.name
+        listed = files_of(tmp_path, FixedClock()).archives("m")
+        assert listed[-1].id == third.name
 
 
 class TestALostRecordIsReadFromTheArchives:
@@ -157,11 +156,9 @@ class TestALostRecordIsReadFromTheArchives:
 
     def test_the_order_is_the_order_made_while_the_record_is_gone(self, tmp_path: Path) -> None:
         surveys, first, second = self._stepped(tmp_path)
-        listed = ArchiveFiles(FixedClock()).archives(tmp_path / ".recon" / "m")
-        assert [a.name for a in listed] == [first.name, second.name]
-        assert ArchiveFiles(FixedClock()).indexes(tmp_path / ".recon" / "m") == {
-            first.name: 1, second.name: 2,
-        }  # fmt: skip
+        listed = files_of(tmp_path, FixedClock()).archives("m")
+        assert [a.id for a in listed] == [first.name, second.name]
+        assert {a.id: a.index for a in listed} == {first.name: 1, second.name: 2}
         assert not (tmp_path / ".recon" / "m" / "archive-index.jsonl").exists(), "it wrote nothing"
 
     def test_a_subscriber_s_unread_archives_are_still_held(self, tmp_path: Path) -> None:

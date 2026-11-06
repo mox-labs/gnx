@@ -250,38 +250,38 @@ class SubscriptionStore(Protocol):
     """Where what is kept of a mission's subscriptions is: each one's state, its dead letters,
     and the lock its one consumer holds."""
 
-    def hold(self, mission_dir: Path, name: str) -> None:
+    def hold(self, mission: str, name: str) -> None:
         """Hold the subscription ``name`` for this consumer until :meth:`release` or its death:
         no other, in this process or another on this host, holds it meanwhile. Raises
         ReconError (``busy``), naming the holder's pid in ``details`` when it is known."""
         ...
 
-    def release(self, mission_dir: Path, name: str) -> None:
+    def release(self, mission: str, name: str) -> None:
         """Let go of a subscription :meth:`hold` held; one not held is left as it is."""
         ...
 
-    def state(self, mission_dir: Path, name: str) -> SubscriptionState | None:
+    def state(self, mission: str, name: str) -> SubscriptionState | None:
         """What is kept of ``name``; None when nothing is."""
         ...
 
-    def keep(self, mission_dir: Path, name: str, state: SubscriptionState) -> None:
+    def keep(self, mission: str, name: str, state: SubscriptionState) -> None:
         """Keep ``state`` as ``name``'s, whole or not at all. Raises OSError when it cannot."""
         ...
 
-    def dead_letter(self, mission_dir: Path, name: str, letter: Mapping[str, Any]) -> None:
+    def dead_letter(self, mission: str, name: str, letter: Mapping[str, Any]) -> None:
         """Keep ``letter``, a row set aside, as one line of ``name``'s dead letters: bounded,
         the oldest let go first. Raises OSError when it cannot."""
         ...
 
-    def dead_letters(self, mission_dir: Path, name: str) -> int:
+    def dead_letters(self, mission: str, name: str) -> int:
         """How many dead letters ``name`` keeps."""
         ...
 
-    def names(self, mission_dir: Path) -> list[str]:
+    def names(self, mission: str) -> list[str]:
         """The subscriptions something is kept of, sorted."""
         ...
 
-    def remove(self, mission_dir: Path, name: str) -> bool:
+    def remove(self, mission: str, name: str) -> bool:
         """Remove everything kept of ``name``: its state and dead letters. False when there was
         nothing."""
         ...

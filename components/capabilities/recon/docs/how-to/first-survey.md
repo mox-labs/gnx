@@ -81,17 +81,17 @@ You should see:
 ```
 1 run(s) from 1 collector(s), 1 source(s)
   probe: 1 records
-/Users/you/project/.recon/dep-releases/archive/2026-04-06-143022-123456
+2026-04-06-143022-123456
 ```
 
-One request, one record, one timestamped archive. The last line, the archive path, is the only thing on stdout (the summary and any warning go to stderr), so it pipes; `--json` prints the whole result instead, every table's status included.
+One request, one record, one timestamped archive. The last line, the archive's id (what `--archive` takes), is the only thing on stdout (the summary and any warning go to stderr), so it pipes; `--json` prints the whole result instead, every table's status included.
 
 ## Stage 2 — Inspect the raw shape
 
 Look at what GitHub actually returned:
 
 ```bash
-cat .recon/dep-releases/archive/*/probe.jsonl | jq .
+recon query dep-releases "SELECT json FROM json.probe" --json | jq -r '.rows[].json' | jq .
 ```
 
 ```json
@@ -136,8 +136,7 @@ Re-run on the same one-record sample:
 
 ```bash
 recon survey dep-releases
-latest=$(recon status dep-releases --json | jq -r '.missions[0].latest.path')
-jq . "$latest/probe.jsonl"
+recon query dep-releases "SELECT * FROM probe" --json | jq '.rows'
 ```
 
 ```json
@@ -218,10 +217,10 @@ recon survey dep-releases
   tokio: 10 records
   axum: 10 records
   serde: 10 records
-/Users/you/project/.recon/dep-releases/archive/2026-04-06-151107-654321
+2026-04-06-151107-654321
 ```
 
-Three JSONL files in the latest archive, one per collector. The `probe` collector is gone because you renamed it — that file only lives in the earlier archive.
+Three tables in the latest archive, one per collector. The `probe` table is gone because you renamed its collector: it lives only in the earlier archive, which `recon query dep-releases "SELECT * FROM probe" --archive 2026-04-06-143022-123456` still reads.
 
 A longer survey can be read while it runs: in another terminal, `recon watch dep-releases` prints each record as it is written and returns when the survey ends ([watch-a-survey.md](./watch-a-survey.md)).
 
@@ -271,9 +270,9 @@ recon schedule install dep-releases --json
 recon schedule status dep-releases --json
 ```
 
-Every hour, a fresh timestamped archive lands under `.recon/dep-releases/archive/`, and each tick is a line of `.recon/dep-releases/schedule.log`. A tick runs the config that was installed and no other: after editing the mission, read the change and run `recon schedule install` again. A tick does not see your shell's environment, so a token named `env:NAME` is unset there, and the plan warns `env_unscheduled`: name it `auth.token: file:PATH` (a file only you can read) or `auth.headers_helper` instead (`recon --skill -r schedules`). The next time Claude looks, it can diff the latest archive against the previous one to find releases that are new — without needing to have been awake when they shipped.
+Every hour, a fresh timestamped archive lands (`recon status dep-releases` lists them), and each tick is a line of `.recon/dep-releases/schedule.log`. A tick runs the config that was installed and no other: after editing the mission, read the change and run `recon schedule install` again. A tick does not see your shell's environment, so a token named `env:NAME` is unset there, and the plan warns `env_unscheduled`: name it `auth.token: file:PATH` (a file only you can read) or `auth.headers_helper` instead (`recon --skill -r schedules`). The next time Claude looks, it can ask what is new in the latest archive since an earlier one (`recon query dep-releases "SELECT tag FROM tokio EXCEPT SELECT tag FROM baseline.tokio" --baseline <archive id>`) — without needing to have been awake when they shipped.
 
-If a table fails (GitHub down, token expired), the archive is still written and marked incomplete, and the exit code says what kind of failure it was: 5 when every failure was transient (retry later), 6 when any failed on credentials (replace the token), 8 otherwise. `recon status` shows which archives are incomplete, and the archive's `telemetry.jsonl` shows what happened to each table and each request: every `recon.collect` and `recon.http.request` span that ended with `status: error` names its `error.type` (`503`, `auth`, `httpx2.ConnectTimeout`).
+If a table fails (GitHub down, token expired), the archive is still written and marked incomplete, and the exit code says what kind of failure it was: 5 when every failure was transient (retry later), 6 when any failed on credentials (replace the token), 8 otherwise. `recon status dep-releases --json` shows which archives are incomplete and each failed table's error, and the survey's telemetry shows what happened to each table and each request: every `recon.collect` and `recon.http.request` span that ended with `status: error` names its `error.type` (`503`, `auth`, `httpx2.ConnectTimeout`).
 
 ## Where to go next
 

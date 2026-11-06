@@ -150,7 +150,7 @@ def status(mission: str | None = None, *, root: Path | None = None) -> StatusDoc
     """Every mission with its latest archive, and the installed plugins. ``recon.v1.status``.
 
     Given ``mission``, that mission alone, the one entry of ``missions``, with every archive
-    it has (id, path, times, state, tables) as its ``history``: the ids ``query`` takes as
+    it has (id, times, state, tables) as its ``history``: the ids ``query`` takes as
     ``archive``. Raises NotFoundError for a mission that does not exist."""
     return _root(root).status(mission)
 
@@ -163,18 +163,22 @@ def query(
     stream: str | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
+    baseline: str | None = None,
     root: Path | None = None,
 ) -> QueryRows:
     """Rows from the latest archive of ``name``, or the archive named (an id ``status(name)``
-    lists). ``recon.v1.query-rows``, naming the archive by its id, ``archive``, and its
-    directory, ``path``.
+    lists). ``recon.v1.query-rows``, naming the archive by its id, ``archive``. Each table is
+    also ``json.<table>`` (each record's JSON text, ``json``) and ``lines.<table>`` (each
+    record with its ``line``, what a row is cited by). With ``baseline``, an earlier
+    archive's id, its tables are ``baseline.<table>``: what is new since it is
+    ``... EXCEPT SELECT ... FROM baseline.<table>``.
 
     With ``stream``, rows from that stream's windows, each table the union of its windows':
     every window, the one ``archive`` names, or those meeting ``[since, until)`` (times with
     their zones), which ``window_range`` says. Windows collected under different configs are
     refused (QueryError), with the ranges to narrow to."""
     return _root(root).query(name, sql, archive=archive, stream=stream, since=since,
-                             until=until)  # fmt: skip
+                             until=until, baseline=baseline)  # fmt: skip
 
 
 def read_since(

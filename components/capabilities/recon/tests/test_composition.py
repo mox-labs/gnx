@@ -381,7 +381,7 @@ def _markitdown_table(
         catalog=catalog,
     )
     archive, [table] = run(config, tmp_path)
-    path = archive / table.file
+    path = archive / f"{table.name}.jsonl"
     lines = path.read_text().splitlines() if path.exists() else []
     return table, [json.loads(line) for line in lines]
 
