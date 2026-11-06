@@ -373,10 +373,7 @@
         "src/recon/_matrix.py"
       ],
       "allow": [
-        "matrix",
-        "__future__",
-        "typing",
-        "collections",
+        "*",
         "recon.core.domain",
         "recon.composition"
       ],
@@ -384,9 +381,9 @@
         "yaml"
       ],
       "why": {
-        "matrix": "the one module of recon that names matrix: its registry, its errors (single_importer below)",
-        "recon.core.domain": "the descriptors a point's entries build, and the errors a refusal is said as",
-        "recon.composition": "recon's built-ins, which only the composition root names, registered at recon's points"
+        "*": "matrix (its registry, its component contract, its errors: single_importer below), pydantic for the members' configs, and asyncio to run the synchronous core on a worker thread (ruling R16)",
+        "recon.core.domain": "the descriptors a point's entries build, the rows the members exchange, and the errors a refusal is said as",
+        "recon.composition": "recon's built-ins, which only the composition root names, and the session a member runs over"
       }
     },
     {

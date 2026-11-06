@@ -1,6 +1,6 @@
 # recon — contracts
 
-What each surface touched in 0.17.0 and 0.18.0 promises: the decision it hides, its members, its defaults, how it fails, and how stable it is (ruling G6). The surfaces recon 0.17.0 did not touch (the collector contract, `root()`, the component face) are described where they live and get theirs as they are refactored.
+What each surface touched in 0.17.0 and 0.18.0 promises: the decision it hides, its members, its defaults, how it fails, and how stable it is (ruling G6). The surface not yet refactored, the collector contract (`recon.core.domain.collector`), is described where it lives and gets its section with contract v2.
 
 "Stable" means: a change that breaks a caller is a major version of the document schema (`recon.v2.*`) or, for a library call or a default, a line under "Changed (breaking)" in the CHANGELOG, never silent. A field or kind added is not breaking: a reader ignores a field it does not know, and handles a kind it does not know by the exit code.
 
@@ -9,6 +9,7 @@ What each surface touched in 0.17.0 and 0.18.0 promises: the decision it hides, 
 - [The two layers](#the-two-layers)
 - [Opening recon, and what a mission may name](#opening-recon-and-what-a-mission-may-name)
 - [Extension points](#extension-points)
+- [The component face](#the-component-face)
 - [Ranges: `range:`](#ranges-range)
 - [The plan](#the-plan)
 - [Queries over archives](#queries-over-archives)
@@ -49,6 +50,20 @@ What each surface touched in 0.17.0 and 0.18.0 promises: the decision it hides, 
 **Failure.** An installed extension that fails to load is quarantined whole (matrix's rule), every entry it registered with it, and reported (`recon status`, `recon types --json`, a plan's `plugin_broken` warning). An in-process one matrix refuses is `usage` (exit 2). An entry that builds the wrong kind of thing is reported broken. A normalize column whose name starts with `_` is a plan problem: the prefix is recon's own (ruling R18).
 
 **Stability:** experimental. The collector contract changes once more (contract v2: items, `Paged`, the core normalizing every type); the point names and the naming rule are kept.
+
+## The component face
+
+**Hides:** how a harness drives recon: matrix's component contract, kept in `recon/_matrix.py` alone.
+
+**Members.** At matrix's `component` point: `recon.v1.component.plan` (requires nothing; provides `recon.v1.span`, one row per table: `snapshot`, `window`, or a range's `continuing`, `fixed` or `rolling` span with its `steps`), `recon.v1.component.collect` (requires `recon.v1.span`; provides `recon.v1.act`, one row per act as it seals: its archive, its stream when a window, its tables as sealed, each range the checkpoint it committed), `recon.v1.component.changes` (requires `recon.v1.act`; provides `recon.v1.change`, each change row with its mission and output). Config: `mission`, `root` (default: the directory the host composed for, matrix's `cwd` need), `kinds` (`span`, `act`, `change`, each renamable); `collect` takes `records: true` too. Payload schemas `recon.v1.span`, `recon.v1.act`, `recon.v1.change` (`recon.core.domain.documents`).
+
+**Defaults.** By reference: an act's row names its archive, and its records stay there; `records: true` hands each sealed table's records over as rows of its entry's `type_url`.
+
+**Guarantees.** An act's row is durable in the run's store when the act's archive is sealed, so a run killed mid-way keeps every act it sealed; the run's stop asks a stream's window to seal. A kind with no provider is a run input: a harness that schedules recon itself gives `recon.v1.span` rows and leaves `plan` out, and every ranged table of the mission must have one.
+
+**Failure.** A member whose mission cannot be planned is refused when it is built (matrix's `ConfigError`). A span of another mission or output, or a ranged table given none, is `usage` when the run reaches `collect`.
+
+**Stability:** beta. The kinds and their payloads are open vocabularies: a reader ignores a field it does not know.
 
 ## Ranges: `range:`
 

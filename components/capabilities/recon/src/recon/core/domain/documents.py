@@ -672,6 +672,16 @@ class ChangeRow(Document):
     record: dict[str, Any] | None = Field(json_schema_extra=UNTRUSTED)
 
 
+class Change(ChangeRow):
+    """One change row as a flow is handed it (``recon.v1.change``): the row, and the mission and
+    output it is of, so it stands alone among other rows. ``key`` and ``record`` are the
+    source's content, **untrusted**."""
+
+    schema_: Literal["recon.v1.change"] = Field(default="recon.v1.change", alias="schema")
+    mission: str
+    output: str
+
+
 class ChangesSince(Document):
     """What one read of an output's change rows found, across the mission's archives (or a
     stream's windows), from the cursor it was given: each row of a change table sealed since,
@@ -713,6 +723,50 @@ class TemplateInfo(Document):
 class TemplatesDocument(Document):
     schema_: Literal["recon.v1.templates"] = Field(default="recon.v1.templates", alias="schema")
     templates: list[TemplateInfo]
+
+
+# --- a flow's rows -------------------------------------------------------------------------
+
+#: What one span asks a table for: its whole source now (``snapshot``), one window of a stream
+#: (``window``), or a range's source time (``continuing``, ``fixed``, ``rolling``).
+SpanKind = Literal["snapshot", "window", "continuing", "fixed", "rolling"]
+
+
+class Span(Document):
+    """What one act is to collect of one table (``recon.v1.span``): the mission and output, its
+    source, and the span: the source as it is now, one window of its stream, or a range's source
+    time, ``[start, end)``, cut into ``steps``, where it began (``from``) and the request it is
+    asked with; ``moves`` when committing it moves the table's checkpoint. The observe layer's
+    planner gives these; a harness that schedules recon itself may give its own."""
+
+    schema_: Literal["recon.v1.span"] = Field(default="recon.v1.span", alias="schema")
+    mission: str
+    output: str
+    source: str | None = None
+    kind: SpanKind
+    #: The stream a window is of (its collector's name).
+    stream: str | None = None
+    start: str | None = None
+    end: str | None = None
+    from_: Literal["checkpoint", "start", "default", "override", "rebase", "restart"] | None = (
+        Field(default=None, alias="from")
+    )
+    request: str | None = None
+    steps: list[dict[str, str]] = []
+    moves: bool = False
+
+
+class Act(Document):
+    """One act the core sealed (``recon.v1.act``): the mission, the archive (a survey's, or a
+    stream's window, ``stream``) and each table as it was sealed, its range the checkpoint it
+    committed; ``finished`` false when the archive could not be finished."""
+
+    schema_: Literal["recon.v1.act"] = Field(default="recon.v1.act", alias="schema")
+    mission: str
+    archive: str
+    stream: str | None = None
+    tables: list[TableOutcome]
+    finished: bool = True
 
 
 # --- discovery ------------------------------------------------------------------------------

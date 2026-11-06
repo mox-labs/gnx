@@ -10,10 +10,10 @@ nobody thought to forbid, a call to the builtin ``open``, a file operation on a 
 read of the clock.
 
 Outside the inner layers: only ``recon.composition`` wires outbound adapters; outbound
-adapters know neither the use cases nor the command line; every driving adapter, each file
+adapters know neither the services nor the command line; every driving adapter, each file
 under ``adapters/_in``, reaches recon only through its declared API; importing ``recon``
-loads no adapter library; the clock is read only by the clock adapter; and recon names no
-matrix.
+loads no adapter library; the clock is read only by the clock adapter; and only
+``recon/_matrix.py`` names matrix.
 
 Every import counts, including one under ``TYPE_CHECKING``: a type-only dependency on an
 adapter is still a dependency on its shape.
@@ -307,7 +307,7 @@ def test_only_composition_wires_outbound_adapters() -> None:
     }
 
 
-def test_outbound_adapters_know_neither_use_cases_nor_the_command_line() -> None:
+def test_outbound_adapters_know_neither_the_services_nor_the_command_line() -> None:
     for file in _files("adapters", "_out"):
         reached = {m for m in _imports(file) if m.split(".")[0] == "recon"}
         allowed = ("recon.core.domain", "recon.observe.domain", "recon.adapters._out")

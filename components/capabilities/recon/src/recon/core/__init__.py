@@ -53,7 +53,9 @@ from recon.core.domain.collector import (
     CollectorType,
 )
 from recon.core.domain.documents import (
+    Act,
     ArchiveStatus,
+    Change,
     ChangeRow,
     ChangesSince,
     ChangeSummary,
@@ -70,6 +72,7 @@ from recon.core.domain.documents import (
     SchedulesDocument,
     ScheduleStatus,
     SourcedValue,
+    Span,
     StatusDocument,
     StreamDocument,
     StreamStatus,
@@ -117,6 +120,7 @@ from recon.core.domain.ranges import (
     committed_in,
     committed_kept,
     interval_of,
+    iso,
     kept_in_tombstone,
 )
 from recon.core.domain.schedule import (
@@ -146,6 +150,10 @@ from recon.core.domain.telemetry import (
 )
 
 __all__ = [
+    "iso",
+    "Span",
+    "Change",
+    "Act",
     "ARCHIVE_ID_FORMAT",
     "ArchiveRef",
     "ArchiveState",

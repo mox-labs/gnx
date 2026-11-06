@@ -17,16 +17,21 @@ from recon.core import (
     READ_MAX_RECORDS,
     WATCH_INTERVAL_S,
     ArchiveRef,
+    Change,
     ConfigError,
     NotFoundError,
     PlanDocument,
     PlanWrites,
     Problem,
     SourcedValue,
+    Span,
     StreamDocument,
     SurveyDocument,
+    TableOutcome,
     UsageError,
+    changes_output,
     interval_of,
+    iso,
     once_each,
 )
 from recon.observe.application.changes import MEMORY_KEYS, ChangeDetector, Derivation
@@ -42,6 +47,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from recon.core import (
+        Act,
         Archives,
         ChangesSince,
         Clock,
@@ -64,7 +70,6 @@ if TYPE_CHECKING:
         Stop,
         StreamRun,
         SubscriptionDocument,
-        TableOutcome,
         TickDocument,
         WindowOutcome,
         WindowSpec,
@@ -255,6 +260,72 @@ class Observation:
                 fix=f"fix each problem, then: recon survey {name} --dry-run",
             )
         return ranged
+
+    def spans(self, name: str, *, config: ConfigGiven = None) -> list[Span]:
+        """What each of the mission's tables is to collect now (``recon.v1.span``): a ranged
+        table its source time after what it committed, at the clock's time; every other
+        snapshot table its source as it is; a stream one window. Pure as a plan is: it reads
+        what was committed and writes nothing. ConfigError when a range is refused."""
+        prepared = self._collection.prepare(name, config)
+        plan, config_ = prepared.plan, prepared.config
+        ranged = self._ranged(name, config_, self._clock.now(), None, (), ())
+        spans = []
+        for run in plan.runs:
+            span = ranged.runs.get(run.output)
+            if run.stream is not None:
+                spans.append(Span(mission=name, output=run.output, source=run.source,
+                                  kind="window", stream=run.stream))  # fmt: skip
+            elif span is None:
+                spans.append(Span(mission=name, output=run.output, source=run.source,
+                                  kind="snapshot"))  # fmt: skip
+            else:
+                spans.append(Span.model_validate({
+                    "mission": name, "output": run.output, "source": run.source,
+                    "kind": span.kind, "start": iso(span.interval.start),
+                    "end": iso(span.interval.end), "from": span.began, "request": span.request,
+                    "moves": span.moves, "steps": [step.document() for step in span.steps],
+                }))  # fmt: skip
+        return spans
+
+    def changes_of(self, name: str, act: Act, *, config: ConfigGiven = None) -> list[Change]:
+        """What changed in the tables an act sealed, derived into its archive (after any the
+        mission left pending, oldest first, under the hold of its mission or its stream), as
+        rows each standing alone (``recon.v1.change``); none when no entry asks for
+        ``changes:``. A row read again has the same ``id``."""
+        prepared = self._collection.prepare(name, config)
+        derivation = self._derivation(name, prepared)
+        if derivation is None:
+            return []
+        ref = ArchiveRef(name, act.archive, act.stream)
+        with self._collection.hold(name, stream=act.stream) as hold:
+            told = derivation.catch_up(hold, name, stream=act.stream)[0]
+            if act.archive not in told:  # not pending: derived already, or now
+                tables = [
+                    TableOutcome.model_validate(t) for t in self._archives.meta(ref)["tables"]
+                ]
+                if act.stream is None:
+                    derivation.snapshot(hold, ref, tables)
+                elif tables:
+                    derivation.window(hold, ref, tables[0])
+        rows: list[Change] = []
+        for table in self._archives.meta(ref).get("tables") or []:
+            output = str(table.get("name"))
+            summary = table.get("changes")
+            if (
+                not isinstance(summary, dict)
+                or summary.get("error")
+                or output not in prepared.plan.changes
+            ):
+                continue
+            reader = self._follow.change_reader(name, output, prepared)
+            found = self._archives.records(ref, changes_output(output)) or iter(())
+            for row, change in enumerate(found):
+                rows.append(Change(
+                    id=reader.row_id(act.archive, row, str(change.get("op")), change.get("key")),
+                    archive=act.archive, op=change["op"], key=change.get("key"),
+                    record=change.get("record"), mission=name, output=output,
+                ))  # fmt: skip
+        return rows
 
     def survey(
         self,

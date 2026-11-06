@@ -29,16 +29,24 @@ built with no config and no need.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from matrix import MatrixError, Registry, default_registry
+from matrix import ConfigError, MatrixError, Registry, default_registry
+from pydantic import BaseModel, ConfigDict
 
 from recon.core.domain.collector import BrokenPlugin, CollectorType, Plugins
-from recon.core.domain.errors import UsageError
+from recon.core.domain.documents import Act, Change, Span
+from recon.core.domain.errors import ReconError, UsageError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
+    from matrix import Context, Inputs
+
+    from recon.composition import Recon, StreamStop
     from recon.core.domain.collector import Transform
 
 #: recon's extension points on matrix's registry.
@@ -82,6 +90,7 @@ def register(registry: Registry) -> None:
 
     for point in POINTS:
         registry.add_point(point)
+    register_components(registry)
     collectors, transforms = builtins()
     for name, collector_type in collectors.items():
         registry.register(COLLECTOR, type_url(COLLECTOR, name), _giving(collector_type),
@@ -158,3 +167,202 @@ def _giving(value: object) -> Callable[[], Any]:
         return value
 
     return build
+
+
+# --- the component face ------------------------------------------------------------------
+
+#: The kinds recon's flow members exchange, each a payload schema of recon's (ruling R4).
+SPAN = "recon.v1.span"
+ACT = "recon.v1.act"
+CHANGE = "recon.v1.change"
+
+#: The three flow members, at matrix's ``component`` point.
+PLAN = "recon.v1.component.plan"
+COLLECT = "recon.v1.component.collect"
+CHANGES = "recon.v1.component.changes"
+
+
+class Kinds(BaseModel):
+    """The kinds a member requires and provides, each renamable: matrix lets one component
+    provide a kind (ruling R7: renamable until fan-in is legal), so two recon members of one
+    flow name theirs apart."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    span: str = SPAN
+    act: str = ACT
+    change: str = CHANGE
+
+
+class MemberConfig(BaseModel):
+    """A recon flow member's config: the mission it collects, the project it is in (default:
+    the directory the host composed for), and its kinds."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    mission: str
+    root: str | None = None
+    kinds: Kinds = Kinds()
+
+
+class CollectConfig(MemberConfig):
+    """``records: true`` hands each sealed table's records over too, by value, as rows of the
+    kind its entry's ``type_url`` names; by default only each act's row, which names the
+    archive the records are in (ruling R4: by reference)."""
+
+    records: bool = False
+
+
+class PlanMember:
+    """``recon.v1.component.plan`` (the observe layer): what each table of the mission is to
+    collect now, as ``recon.v1.span`` rows. A harness that schedules recon itself leaves it out
+    and gives the spans as a run input."""
+
+    def __init__(self, session: Recon, config: MemberConfig) -> None:
+        self._session = session
+        self._config = config
+        self.requires: tuple[str, ...] = ()
+        self.provides = (config.kinds.span,)
+
+    async def run(self, inputs: Inputs, ctx: Context) -> Mapping[str, Any]:
+        spans = await asyncio.to_thread(self._session.observation.spans, self._config.mission)
+        return {self._config.kinds.span: [span.document() for span in spans]}
+
+
+class CollectMember:
+    """``recon.v1.component.collect`` (the core): the acts the spans ask for, each act's row
+    (``recon.v1.act``) handed over as it seals, so a killed run keeps every act it sealed. The
+    core is synchronous and runs on a worker thread of its own (ruling R16); the run's stop asks
+    a stream's window to seal."""
+
+    def __init__(
+        self, session: Recon, config: CollectConfig, *, record_kinds: Sequence[str]
+    ) -> None:
+        self._session = session
+        self._config = config
+        self.requires = (config.kinds.span,)
+        self.provides = (config.kinds.act, *record_kinds)
+
+    async def run(self, inputs: Inputs, ctx: Context) -> None:
+        from recon.composition import StreamStop
+
+        spans = [Span.model_validate(row) for row in inputs[self._config.kinds.span]]
+        hand = _Handing(asyncio.get_running_loop(), ctx)
+        types = _type_urls(self._session, self._config.mission) if self._config.records else {}
+        stop = StreamStop()
+
+        def sealed(act: Act) -> None:
+            hand.over(self._config.kinds.act, act.document())
+            for table in act.tables if self._config.records else ():
+                if table.status == "ok" and table.name in types:
+                    for record in self._session.collection.records(act, table.name):
+                        hand.over(types[table.name], record)
+
+        watch = asyncio.ensure_future(_stopping(ctx, stop))
+        try:
+            await asyncio.to_thread(self._session.collection.collect, self._config.mission,
+                                    spans, sink=sealed, stop=stop)  # fmt: skip
+        finally:
+            watch.cancel()
+
+
+class ChangesMember:
+    """``recon.v1.component.changes`` (the observe layer): what changed in each act's tables,
+    derived into its archive after its seal, as ``recon.v1.change`` rows."""
+
+    def __init__(self, session: Recon, config: MemberConfig) -> None:
+        self._session = session
+        self._config = config
+        self.requires = (config.kinds.act,)
+        self.provides = (config.kinds.change,)
+
+    async def run(self, inputs: Inputs, ctx: Context) -> None:
+        for row in inputs[self._config.kinds.act]:
+            act = Act.model_validate(row)
+            changes = await asyncio.to_thread(self._session.observation.changes_of,
+                                              self._config.mission, act)  # fmt: skip
+            for change in changes:
+                ctx.provide(self._config.kinds.change, change.document())
+
+
+class _Handing:
+    """Hands rows over from the worker thread an act runs on: each on the run's loop, waited
+    for, so a row is durable in the run's store when ``over`` returns (matrix's ``provide``)."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, ctx: Context) -> None:
+        self._loop = loop
+        self._ctx = ctx
+
+    def over(self, kind: str, row: Any) -> None:
+        done: concurrent.futures.Future[None] = concurrent.futures.Future()
+
+        def provide() -> None:
+            try:
+                self._ctx.provide(kind, row)
+            except BaseException as exc:  # the worker raises it, as provide would have
+                done.set_exception(exc)
+            else:
+                done.set_result(None)
+
+        self._loop.call_soon_threadsafe(provide)
+        done.result()
+
+
+async def _stopping(ctx: Context, stop: StreamStop) -> None:
+    """Ask ``stop`` once the run asks the member to finish now."""
+    await ctx.stopping.wait()
+    stop.ask()
+
+
+def _type_urls(session: Recon, mission: str) -> dict[str, str]:
+    """The kind each snapshot output's records are, by output: its entry's ``type_url``."""
+    prepared = session.collection.prepare(mission)
+    entries = {entry.name: entry for entry in prepared.config.collectors}
+    return {run.output: entries[run.collector].type_url for run in prepared.plan.runs
+            if run.stream is None}  # fmt: skip
+
+
+def _member[M](make: Callable[[Recon], M], config: MemberConfig, cwd: str | None) -> M:
+    """A member over the session of its project, refusing at build time (matrix's
+    ``ConfigError``, B9) a mission its config cannot plan."""
+    from recon.composition import open_session
+
+    try:
+        session = open_session(Path(config.root or cwd or Path.cwd()))
+        session.collection.prepare(config.mission)
+        return make(session)
+    except ReconError as exc:
+        raise ConfigError(f"recon mission {config.mission!r}: {exc.message}", fix=exc.fix) from exc
+
+
+def _plan(config: MemberConfig, *, cwd: str | None) -> PlanMember:
+    return _member(lambda session: PlanMember(session, config), config, cwd)
+
+
+def _collect(config: CollectConfig, *, cwd: str | None) -> CollectMember:
+    def make(session: Recon) -> CollectMember:
+        kinds = sorted(set(_type_urls(session, config.mission).values())) if config.records else []
+        return CollectMember(session, config, record_kinds=kinds)
+
+    return _member(make, config, cwd)
+
+
+def _changes(config: MemberConfig, *, cwd: str | None) -> ChangesMember:
+    return _member(lambda session: ChangesMember(session, config), config, cwd)
+
+
+def register_components(registry: Registry) -> None:
+    """recon's three flow members at matrix's ``component`` point, and the payload schemas of
+    the kinds they exchange."""
+    members = (
+        (PLAN, _plan, MemberConfig,
+         "What each table of a recon mission is to collect now; provides recon.v1.span"),
+        (COLLECT, _collect, CollectConfig,
+         "Runs the acts the spans ask for; provides recon.v1.act as each seals"),
+        (CHANGES, _changes, MemberConfig,
+         "What changed in each act's tables, derived after the seal; provides recon.v1.change"),
+    )  # fmt: skip
+    for url, build, model, summary in members:
+        registry.register("component", url, build, config=model, needs={"cwd"}, summary=summary)
+    for kind, payload in ((SPAN, Span), (ACT, Act), (CHANGE, Change)):
+        registry.register_payload(kind, payload)

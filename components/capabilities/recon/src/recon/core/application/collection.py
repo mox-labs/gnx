@@ -18,7 +18,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -28,9 +28,10 @@ from recon.core.application.collectors import declared_env
 from recon.core.application.plan import Plan, build_plan, fan_out, plugin_warning
 from recon.core.application.stream import Stream, StreamGaps, StreamPages, StreamPlan
 from recon.core.application.survey import CollectorError, Survey, TablePages
-from recon.core.domain.archives import ARCHIVE_ID_FORMAT
+from recon.core.domain.archives import ARCHIVE_ID_FORMAT, ArchiveRef
 from recon.core.domain.deadline import Deadline
 from recon.core.domain.documents import (
+    Act,
     BrokenPluginInfo,
     CollectorTypeInfo,
     InstalledPlugins,
@@ -61,21 +62,19 @@ from recon.core.domain.http import reported_url
 from recon.core.domain.missions import ConfigFile, ConfigGiven
 from recon.core.domain.models import ReconConfig
 from recon.core.domain.normalize import apply_normalize
-from recon.core.domain.ranges import fill
+from recon.core.domain.ranges import Interval, RangeRun, fill
 from recon.core.domain.stream import window_opened
 from recon.core.domain.telemetry import QUERY, SURVEY
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Iterator
+    from collections.abc import Generator, Iterator, Sequence
     from contextlib import AbstractContextManager
-    from datetime import datetime
 
     from recon.core.application.collectors import SurveyCollectors
     from recon.core.application.plan import PlannedRun, PlannedStream
     from recon.core.application.stream import StreamRun
     from recon.core.domain.archives import (
         ArchiveQuery,
-        ArchiveRef,
         Archives,
         ArchiveState,
         Ended,
@@ -84,11 +83,16 @@ if TYPE_CHECKING:
     )
     from recon.core.domain.clock import Clock
     from recon.core.domain.collector import Collector, CollectorType, Plugins
-    from recon.core.domain.documents import Capture, RecordsKind, TableOutcome, WindowOutcome
+    from recon.core.domain.documents import (
+        Capture,
+        RecordsKind,
+        Span,
+        TableOutcome,
+        WindowOutcome,
+    )
     from recon.core.domain.missions import MissionStore
     from recon.core.domain.models import CollectorEntry, SourceEntry
     from recon.core.domain.paginate import PageLog
-    from recon.core.domain.ranges import RangeRun
     from recon.core.domain.stream import GapLog, Stop
     from recon.core.domain.telemetry import Channel, EventCallback, EventSink, Telemetry
 
@@ -683,6 +687,83 @@ class Collection:
         warnings += engine.warnings
         return run, once_each(warnings)
 
+    def collect(
+        self,
+        name: str,
+        spans: Sequence[Span],
+        *,
+        config: ConfigGiven = None,
+        sink: Callable[[Act], object] | None = None,
+        stop: Stop | None = None,
+    ) -> list[Act]:
+        """The acts ``spans`` ask for, each told to ``sink`` as it seals: the mission's snapshot
+        tables, each ranged one asking for its span's source time, in one archive, when a span
+        names a table that is no stream's; then one window of each stream a ``window`` span
+        names, until ``stop`` is asked. The core computes no span of its own: every ranged
+        table of the mission must have one (UsageError naming those that do not), and a span
+        of another mission, or of an output the mission does not make, is refused. Returns the
+        acts, in the order they sealed."""
+        prepared = self.prepare(name, config)
+        plan = prepared.plan
+        made = {run.output: run for run in plan.runs}
+        wrong = sorted({s.output for s in spans if s.mission != name or s.output not in made})
+        if wrong:
+            raise UsageError(
+                f"spans name outputs mission {name!r} does not make: {', '.join(wrong)}",
+                fix=f"give spans of mission {name}'s outputs (recon.v1.span), as its plan names "
+                "them",
+                details={"value": wrong, "allowed": sorted(made)},
+            )
+        ranges = {s.output: _range_run(s) for s in spans if s.kind not in ("snapshot", "window")}
+        entries = {entry.name: entry for entry in prepared.config.collectors}
+        ranged = sorted(
+            run.output
+            for run in plan.runs
+            if run.stream is None and entries[run.collector].range is not None
+        )
+        missing = [output for output in ranged if output not in ranges]
+        snapshot = [s for s in spans if s.kind != "window"]
+        if snapshot and missing:
+            raise UsageError(
+                f"ranged tables of mission {name!r} were given no span: {', '.join(missing)}",
+                fix="give each its span (recon.v1.span): the observe layer's planner gives them",
+                details={"value": missing},
+            )
+        acts: list[Act] = []
+
+        def told(act: Act) -> None:
+            acts.append(act)
+            if sink is not None:
+                sink(act)
+
+        if snapshot:
+            with self.hold(name) as hold:
+                run = self.snapshot(hold, name, prepared, started=self._clock.now(),
+                                    ranges=ranges)  # fmt: skip
+            told(Act(mission=name, archive=run.archive.id, tables=run.tables,
+                     finished=run.finished))  # fmt: skip
+        streams = {stream.name: stream for stream in plan.streams}
+        for stream in dict.fromkeys(s.stream for s in spans if s.kind == "window"):
+            planned = streams.get(stream or "")
+            if planned is None:
+                raise UsageError(
+                    f"a window span names {stream!r}, which is no stream of mission {name!r}",
+                    fix="name one of its streams: " + (", ".join(sorted(streams)) or "(none)"),
+                )
+            self.stream(
+                name, prepared, planned, windows=1, until=None, on_event=None, stop=stop,
+                sealed=lambda hold, window: told(Act(
+                    mission=name, archive=window.id, stream=window.stream, tables=[window.table],
+                )),
+            )  # fmt: skip
+        return acts
+
+    def records(self, act: Act, output: str) -> Iterator[dict[str, Any]]:
+        """The records of the table ``output`` an act sealed, in the order written; none when it
+        has no such sealed table."""
+        found = self._archives.records(ArchiveRef(act.mission, act.archive, act.stream), output)
+        return iter(()) if found is None else found
+
     @contextlib.contextmanager
     def _window_telemetry(
         self,
@@ -903,6 +984,28 @@ class Collection:
             stream=stream,
             window_range=WindowRange(first=selected[0].id, last=last.id, count=len(selected)),
         )
+
+
+def _range_run(span: Span) -> RangeRun:
+    """The run of a ranged table a span asks for, as the core executes it."""
+    if span.kind not in ("continuing", "fixed", "rolling") or not span.start or not span.end:
+        raise UsageError(
+            f"the span of {span.output} is a {span.kind} range with no start or end",
+            fix="give a ranged span its start and end, and its steps (recon.v1.span)",
+        )
+    steps = tuple(Interval(_instant(step["start"]), _instant(step["end"])) for step in span.steps)
+    return RangeRun(
+        kind=span.kind,
+        interval=Interval(_instant(span.start), _instant(span.end)),
+        steps=steps,
+        began=span.from_ or "default",
+        request=span.request or "",
+        moves=span.moves,
+    )
+
+
+def _instant(text: str) -> datetime:
+    return datetime.fromisoformat(text)
 
 
 def _value(config: ReconConfig | Mapping[str, Any]) -> ConfigFile:

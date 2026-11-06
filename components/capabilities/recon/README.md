@@ -19,7 +19,7 @@ For the full argument, see [docs/explanation/capability.md](docs/explanation/cap
 recon is a package in the [gnx](https://github.com/mox-labs/gnx) repository, installed from it at the release's tag; it is not on a package index:
 
 ```bash
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.16.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.18.0#subdirectory=components/capabilities/recon"
 recon --version
 ```
 
@@ -176,6 +176,8 @@ Collector types and transforms are extensions, registered at recon's points on m
 
 A plugin that fails to load is reported by `recon status` and `survey --dry-run` and does not break the others. A collector type declares the keys it takes (a schema the plan validates them by), the source kinds it adds and the keys those take, and may hold a session across its tables, which recon closes when the survey ends; a type that declares a preflight is asked by a dry run what each of its runs needs of the host. To write one: [docs/reference/extending.md](docs/reference/extending.md).
 
+A harness drives recon as three matrix flow members (`recon/_matrix.py`): `recon.v1.component.plan` gives each table's span, `recon.v1.component.collect` runs the acts and hands each `recon.v1.act` over as it seals, and `recon.v1.component.changes` gives what changed (`recon.v1.change`). A harness that schedules recon itself gives the spans and leaves `plan` out.
+
 The tests run offline, except the live integration tests against OpenAlex, arXiv, Semantic Scholar and Zenodo, which run only with `RECON_LIVE=1` (`just recon-live`).
 
 ## Docs
@@ -198,7 +200,7 @@ The tests run offline, except the live integration tests against OpenAlex, arXiv
 - [docs/reference/subscriptions.md](docs/reference/subscriptions.md) — subscriptions: `subscriptions:`, `match:`, `recon.changes_since`, `recon subscribe`, `ack`, `unsubscribe`, and `deliver:` with `recon deliver`: the cursor, the ids, what a command is given; every default and refusal
 - [docs/reference/schedules.md](docs/reference/schedules.md) — schedules: `schedule:`, `recon schedule install`, `list`, `remove`, `status` and `tick`, what is projected onto launchd, systemd and cron, the tick's log; every default and refusal
 - [docs/design/2026-10-19-record.md](docs/design/2026-10-19-record.md) — the design judgments behind 0.11.0 and 0.12.0, and recon's claims
-- [CONTRACT.md](CONTRACT.md) — what each surface touched in 0.17.0 promises: the decision it hides, its members, defaults, failure behaviour and stability
+- [CONTRACT.md](CONTRACT.md) — what each surface touched in 0.17.0 and 0.18.0 promises: the decision it hides, its members, defaults, failure behaviour and stability
 - [CHANGELOG.md](CHANGELOG.md)
 - `recon --skill` — the skill Claude uses to author missions; `-r normalize-spec`, `-r config-patterns`, `-r capture-format`, `-r live-reading`, `-r streaming`, `-r pagination`, `-r ranges`, `-r changes`, `-r subscriptions`, `-r schedules`, `-r telemetry`, `-r errors` for the references. The plugin's copy is generated from it (`just recon-skill`).
 
