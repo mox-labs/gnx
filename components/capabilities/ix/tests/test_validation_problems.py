@@ -8,6 +8,7 @@ decides, and whether a metric is judged is its sensor's word, not the author's.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -264,6 +265,23 @@ def _unit_mismatch(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     return _found(e, v)
 
 
+def _a_check(e: dict[str, Any], **changes: Any) -> dict[str, Any]:
+    """The evaluate experiment as a check: no threshold, which a check never reads."""
+    data = {**e, "genre": "check", **changes}
+    del data["threshold"]
+    return data
+
+
+def _metric_shape(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
+    e["sensors"] = [{"kind": "usage"}]
+    del e["probes"][0]["truth"]
+    return _found(_a_check(e, primary={"metric": "turns"}), v)
+
+
+def _decision_inapplicable(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
+    return _found({**_a_check(e), "threshold": {"op": ">=", "value": 0.9}}, v)
+
+
 def _probes_empty(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     return _found({**c, "probes": []}, v) - {("primary.metric", "metric_unprovided")}
 
@@ -332,7 +350,9 @@ def _genre_narrowing(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
 def _kind_invalid(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     file = write(c)
     (file.parent / "kinds").mkdir()
-    (file.parent / "kinds" / "bad.yaml").write_text("name: lab.v1.sensor.bad\nsummary: s\n")
+    # A probe whose duration names no duration option breaks a rule of the declaration.
+    bad = {"name": "lab.v1.probe.bad", "summary": "s", "duration": ["length"]}
+    (file.parent / "kinds" / "bad.yaml").write_text(yaml.safe_dump(bad))
     rejected = ix.kinds(file.parent).rejected
     return {(p.path, p.kind) for problems in rejected.values() for p in problems}
 
@@ -475,6 +495,8 @@ CASES: dict[str, tuple[Any, str, str]] = {
     "estimator_illegal": (_estimator_illegal, "primary.estimator", "estimator_illegal"),
     "judged_gate": (_judged_gate, "primary.metric", "judged_gate"),
     "unit_mismatch": (_unit_mismatch, "guardrails.0.threshold.value", "unit_mismatch"),
+    "metric_shape": (_metric_shape, "primary.metric", "metric_shape"),
+    "decision_inapplicable": (_decision_inapplicable, "threshold", "decision_inapplicable"),
     "trials_in_flight_refused": (
         _trials_in_flight_refused,
         "trials_in_flight",
@@ -609,8 +631,10 @@ def test_the_document_carries_the_genres_short_name_and_its_url(
     unknown = ix.validate(write_experiment({**compare_data, "genre": "benchmark"}))
     (found,) = unknown.problems
     assert found.got == "benchmark"
-    assert found.allowed == ("characterize", "compare", "evaluate", "regress")
-    assert found.fix == "genre: one of characterize, compare, evaluate, regress"
+    genres = ("characterize", "check", "compare", "evaluate", "mutation-regress",
+              "mutation-score", "regress")  # fmt: skip
+    assert found.allowed == genres
+    assert found.fix == f"genre: one of {', '.join(genres)}"
 
 
 # --- placeholders ----------------------------------------------------------------------
@@ -1131,3 +1155,43 @@ def test_too_few_repeats_is_one_problem_with_one_fix(
     problems = [p for p in _problems({**evaluate_data, "repeats": 1}, vocabulary)]
     (only,) = [p for p in problems if p.kind == "repeats_below_min"]
     assert "genre evaluate" in only.message
+
+
+class TestAGenreWithNoVerdict:
+    """Regression: ``characterize`` accepted a ``threshold`` and a ``margin`` and ignored
+    them, so an author who wrote one was told nothing and decided nothing."""
+
+    def _characterize(self, compare_data: dict[str, Any], **changes: Any) -> dict[str, Any]:
+        data = copy.deepcopy(compare_data)
+        data["genre"], data["factors"] = "characterize", {"size": ["1MiB", "1GiB"]}
+        data["subjects"] = {"buffered": data["subjects"]["buffered"]}
+        for key in ("comparison", "margin"):
+            del data[key]
+        return {**data, **changes}
+
+    @pytest.mark.parametrize(
+        ("change", "path"),
+        [
+            ({"threshold": {"op": "<", "value": 300}}, "threshold"),
+            ({"margin": "5%"}, "margin"),
+            ({"guardrails": [{"metric": "ttfb", "threshold": {"op": "<", "value": 9}}]},
+             "guardrails.0"),
+        ],
+    )  # fmt: skip
+    def test_a_threshold_or_a_margin_it_never_reads_is_refused_at_its_key(
+        self,
+        compare_data: dict[str, Any],
+        vocabulary: Vocabulary,
+        change: dict[str, Any],
+        path: str,
+    ) -> None:
+        examined = examine(self._characterize(compare_data, **change), vocabulary)
+        (refused,) = [p for p in examined.problems if p.path == path]
+        assert refused.kind == "decision_inapplicable"
+        assert "characterize gives no verdict" in refused.message
+        assert refused.got == "characterize"
+
+    def test_without_one_it_is_valid(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        assert examine(self._characterize(compare_data), vocabulary).problems == ()

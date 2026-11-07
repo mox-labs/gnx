@@ -31,11 +31,11 @@ from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.mission_files import MissionFiles
 from recon.adapters._out.schedule_files import SCHEDULE_LOG, ScheduleFiles
 from recon.adapters._out.system_clock import SystemClock
-from recon.application.schedules import offset_s
 from recon.composition import root
-from recon.domain.errors import ReconError
-from recon.domain.schedule import ScheduleHost
-from tests.recon_fakes import FixedClock, plugins_with
+from recon.core.domain.errors import ReconError
+from recon.observe.application.schedules import offset_s
+from recon.observe.domain.scheduling import ScheduleHost
+from tests.recon_fakes import FixedClock, kept, plugins_with
 from tests.test_mission_lock import Slow
 from tests.test_schedule_install import FakeRunner, Host
 
@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from recon.composition import Recon
-    from recon.domain.clock import Clock
+    from recon.core.domain.clock import Clock
 
 EVERY = 600
 #: A tick of mission ``m``'s grid on 2026-10-24, the clock's time zone being UTC here.
@@ -83,7 +83,12 @@ def _going() -> Slow:
 
 
 def _installed(project: Path, host: Host, clock: Clock) -> str:
-    return _root(project, host, clock).schedule_install("m", platform="launchd").config_sha256 or ""
+    return (
+        _root(project, host, clock)
+        .observation.schedule_install("m", platform="launchd")
+        .config_sha256
+        or ""
+    )
 
 
 def _log(mission: Path) -> list[dict[str, Any]]:
@@ -105,7 +110,7 @@ class TestATick:
         clock = FixedClock(SLOT + timedelta(seconds=2))
         digest = _installed(tmp_path, host, clock)
 
-        document = _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest)
+        document = _root(tmp_path, host, clock).observation.schedule_tick("m", config_sha256=digest)
 
         assert document.skipped_by is None and document.survey is not None
         assert document.survey.status == "complete"
@@ -116,15 +121,15 @@ class TestATick:
                              "skipped_by", "late_s", "warning_kinds"}  # fmt: skip
         assert (line["exit"], line["kind"], line["skipped_by"]) == (0, "ok", None)
         assert line["archive"] == document.survey.archive and line["late_s"] == 2.0
-        meta = yaml.safe_load((Path(document.survey.path) / "meta.yaml").read_text())
+        meta = yaml.safe_load((kept(tmp_path, document.survey) / "meta.yaml").read_text())
         assert (meta["scheduled_at"], meta["late_s"]) == (SLOT.isoformat(), 2.0)
         assert oct((mission / SCHEDULE_LOG).stat().st_mode & 0o777) == oct(0o600)
 
     def test_a_survey_by_hand_records_no_schedule(self, tmp_path: Path, host: Host) -> None:
         _mission(tmp_path)
-        document = _root(tmp_path, host, FixedClock(SLOT)).survey("m")
+        document = _root(tmp_path, host, FixedClock(SLOT)).observation.survey("m")
 
-        meta = yaml.safe_load((Path(document.path) / "meta.yaml").read_text())
+        meta = yaml.safe_load((kept(tmp_path, document) / "meta.yaml").read_text())
         assert "scheduled_at" not in meta and "late_s" not in meta
 
     def test_a_failed_survey_is_logged_with_its_kind_and_exit(
@@ -137,7 +142,7 @@ class TestATick:
         clock = FixedClock(SLOT)
         digest = _installed(tmp_path, host, clock)
 
-        document = _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest)
+        document = _root(tmp_path, host, clock).observation.schedule_tick("m", config_sha256=digest)
 
         assert document.survey is not None and document.survey.status == "incomplete"
         [line] = _log(mission)
@@ -157,13 +162,15 @@ class TestOverlap:
         first: list[Any] = []
         ticking = _root(tmp_path, host, clock, slow)
         running = threading.Thread(
-            target=lambda: first.append(ticking.schedule_tick("m", config_sha256=digest))
+            target=lambda: first.append(
+                ticking.observation.schedule_tick("m", config_sha256=digest)
+            )
         )
         running.start()
         try:
             assert slow.inside.wait(10)
             with pytest.raises(ReconError) as raised:
-                _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest)
+                _root(tmp_path, host, clock).observation.schedule_tick("m", config_sha256=digest)
         finally:
             slow.go.set()
             running.join(10)
@@ -176,21 +183,22 @@ class TestOverlap:
         assert len(list((mission / "archive").iterdir())) == 1
 
     def test_two_skips_in_a_row_are_an_overrun_with_a_fix(self, tmp_path: Path, host: Host) -> None:
-        mission = _mission(tmp_path)
+        _mission(tmp_path)
         clock = FixedClock(SLOT)
         digest = _installed(tmp_path, host, clock)
-        ArchiveFiles(SystemClock()).hold_mission(mission)  # another survey, the whole test
+        another = ArchiveFiles(tmp_path / ".recon", SystemClock()).hold("m")
+        another.__enter__()  # another survey, the whole test
 
         with pytest.raises(ReconError) as first:
-            _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest)
+            _root(tmp_path, host, clock).observation.schedule_tick("m", config_sha256=digest)
         clock.advance(EVERY)
         with pytest.raises(ReconError) as second:
-            _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest)
+            _root(tmp_path, host, clock).observation.schedule_tick("m", config_sha256=digest)
 
         assert first.value.details["skips"] == 1 and "every" not in (first.value.fix or "")
         assert second.value.details["skips"] == 2
         assert "every" in (second.value.fix or "") and "deadline" in (second.value.fix or "")
-        status = _root(tmp_path, host, clock).schedule_status("m", platform="launchd")
+        status = _root(tmp_path, host, clock).observation.schedule_status("m", platform="launchd")
         [listed] = status.schedules
         assert (
             listed.skips == 2
@@ -216,7 +224,7 @@ class TestTheConfigIsTheOneInstalled:
         config.write_text(config.read_text().replace("slow", changed))
 
         with pytest.raises(ReconError) as raised:
-            _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest)
+            _root(tmp_path, host, clock).observation.schedule_tick("m", config_sha256=digest)
 
         assert raised.value.kind == "stale" and raised.value.exit_code == 12
         assert "recon schedule install m" in (raised.value.fix or "")
@@ -224,7 +232,9 @@ class TestTheConfigIsTheOneInstalled:
         assert (line["skipped_by"], line["kind"], line["exit"]) == ("config_changed", "stale", 12)
         assert not (mission / "archive").exists() and not pwned.exists()
         config.write_text(config.read_text().replace(changed, "slow"))
-        assert _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest).survey
+        assert (
+            _root(tmp_path, host, clock).observation.schedule_tick("m", config_sha256=digest).survey
+        )
 
     def test_a_config_swapped_after_the_check_is_never_run(
         self, tmp_path: Path, host: Host, monkeypatch: pytest.MonkeyPatch
@@ -238,18 +248,18 @@ class TestTheConfigIsTheOneInstalled:
         config = mission / "config.yaml"
         pwned = tmp_path / "pwned"
         evil = config.read_text().replace("slow", f"cli\n  run: touch '{pwned}'")
-        read_config = MissionFiles.read_config
-        reads: list[Path] = []
+        read_config = MissionFiles.config
+        reads: list[str] = []
 
-        def swapped_first(self: MissionFiles, path: Path) -> Any:
+        def swapped_first(self: MissionFiles, name: str) -> Any:
             if not reads:  # the swap lands as the config is read to be run
                 config.write_text(evil)
-            reads.append(path)
-            return read_config(self, path)
+            reads.append(name)
+            return read_config(self, name)
 
-        monkeypatch.setattr(MissionFiles, "read_config", swapped_first)
+        monkeypatch.setattr(MissionFiles, "config", swapped_first)
         with pytest.raises(ReconError) as raised:
-            _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest)
+            _root(tmp_path, host, clock).observation.schedule_tick("m", config_sha256=digest)
 
         assert raised.value.kind == "stale"
         assert not (mission / "archive").exists() and not pwned.exists()
@@ -263,7 +273,7 @@ class TestStaleIsItsOwnKind:
     ) -> None:
         """One kind, one next step (rule 18): a tick's changed config is acted on by
         installing the schedule again, which is not conflict's ``--replace``."""
-        from recon.domain.errors import ERROR_KINDS, EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT
+        from recon.core.domain.errors import ERROR_KINDS, EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT
 
         assert "stale" in ERROR_KINDS and EXIT_CODES["stale"] == 12
         assert "recon schedule install" in EXIT_NEXT["stale"]
@@ -301,14 +311,14 @@ class TestASpringForward:
         install = FixedClock(datetime(2026, 3, 7, 20, 0, tzinfo=UTC))
         digest = (
             _root(tmp_path, host, install, local=_new_york)
-            .schedule_install("m", platform="launchd")
+            .observation.schedule_install("m", platform="launchd")
             .config_sha256
             or ""
         )
 
-        tick = _root(tmp_path, host, FixedClock(self.NOW), local=_new_york).schedule_tick(
-            "m", config_sha256=digest
-        )
+        tick = _root(
+            tmp_path, host, FixedClock(self.NOW), local=_new_york
+        ).observation.schedule_tick("m", config_sha256=digest)
 
         assert tick.skipped_by is None and tick.survey is not None
         assert tick.scheduled_at == "2026-03-08T03:00:00-04:00"
@@ -337,7 +347,7 @@ class TestADaylightSavingChange:
 
     def _install(self, project: Path, host: Host) -> str:
         clock = FixedClock(datetime(2026, 10, 31, 20, 0, tzinfo=UTC))
-        installed = _root(project, host, clock, local=_new_york).schedule_install(
+        installed = _root(project, host, clock, local=_new_york).observation.schedule_install(
             "m", platform="launchd"
         )
         return installed.config_sha256 or ""
@@ -349,7 +359,7 @@ class TestADaylightSavingChange:
         digest = self._install(tmp_path, host)
         clock = FixedClock(self.NOW)
 
-        tick = _root(tmp_path, host, clock, local=_new_york).schedule_tick(
+        tick = _root(tmp_path, host, clock, local=_new_york).observation.schedule_tick(
             "m", config_sha256=digest
         )
 
@@ -364,9 +374,9 @@ class TestADaylightSavingChange:
         _, offset = self._mission(tmp_path, "once")
         self._install(tmp_path, host)
 
-        status = _root(tmp_path, host, FixedClock(self.NOW), local=_new_york).schedule_status(
-            "m", platform="launchd"
-        )
+        status = _root(
+            tmp_path, host, FixedClock(self.NOW), local=_new_york
+        ).observation.schedule_status("m", platform="launchd")
 
         [listed] = status.schedules
         assert listed.late_s == 9000 - offset
@@ -380,9 +390,9 @@ class TestADaylightSavingChange:
         mission, offset = self._mission(tmp_path, "skip")
         digest = self._install(tmp_path, host)
 
-        tick = _root(tmp_path, host, FixedClock(self.NOW), local=_new_york).schedule_tick(
-            "m", config_sha256=digest
-        )
+        tick = _root(
+            tmp_path, host, FixedClock(self.NOW), local=_new_york
+        ).observation.schedule_tick("m", config_sha256=digest)
 
         assert tick.skipped_by == "missed" and tick.late_s == 9000 - offset
         [line] = _log(mission)
@@ -395,7 +405,7 @@ class TestADaylightSavingChange:
         due = datetime(2026, 11, 1, 8, 0, tzinfo=UTC) + timedelta(seconds=offset)
         clock = FixedClock(due + timedelta(seconds=20))
 
-        tick = _root(tmp_path, host, clock, local=_new_york).schedule_tick(
+        tick = _root(tmp_path, host, clock, local=_new_york).observation.schedule_tick(
             "m", config_sha256=digest
         )
 
@@ -408,7 +418,7 @@ class TestMissedTicks:
         clock = FixedClock(SLOT + timedelta(seconds=200))
         digest = _installed(tmp_path, host, clock)
 
-        document = _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest)
+        document = _root(tmp_path, host, clock).observation.schedule_tick("m", config_sha256=digest)
 
         assert document.skipped_by == "missed" and document.survey is None
         [line] = _log(mission)
@@ -420,14 +430,16 @@ class TestMissedTicks:
         clock = FixedClock(SLOT + timedelta(seconds=30))
         digest = _installed(tmp_path, host, clock)
 
-        assert _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest).survey
+        assert (
+            _root(tmp_path, host, clock).observation.schedule_tick("m", config_sha256=digest).survey
+        )
 
     def test_once_runs_a_late_tick_and_says_how_late(self, tmp_path: Path, host: Host) -> None:
         _mission(tmp_path)
         clock = FixedClock(SLOT + timedelta(seconds=540))
         digest = _installed(tmp_path, host, clock)
 
-        document = _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest)
+        document = _root(tmp_path, host, clock).observation.schedule_tick("m", config_sha256=digest)
 
         assert document.survey is not None and document.late_s == 540.0
 
@@ -441,15 +453,15 @@ class TestTheLogIsBounded:
     }  # fmt: skip
 
     def test_ten_thousand_ticks_keep_the_log_under_2_mib(self, tmp_path: Path) -> None:
-        store = ScheduleFiles()
+        store = ScheduleFiles(tmp_path)
         for n in range(10_000):
-            store.append(tmp_path, {**self.LINE, "late_s": float(n)})
+            store.append("m", {**self.LINE, "late_s": float(n)})
 
-        files = [tmp_path / SCHEDULE_LOG, tmp_path / f"{SCHEDULE_LOG}.1"]
+        files = [tmp_path / "m" / SCHEDULE_LOG, tmp_path / "m" / f"{SCHEDULE_LOG}.1"]
         assert all(f.is_file() for f in files)
         assert sum(f.stat().st_size for f in files) < 2 * 1024 * 1024
         assert all(f.stat().st_size <= 1024 * 1024 for f in files)
-        lines = store.lines(tmp_path)
+        lines = store.lines("m")
         assert lines[-1]["late_s"] == 9999.0, "the newest kept, in order"
         assert [line["late_s"] for line in lines] == sorted(line["late_s"] for line in lines)
 
@@ -459,26 +471,26 @@ class TestTheLogIsBounded:
         """Round-4 review M1: a line past the cap rotated an empty log to make room, and again,
         for ever. A log is rotated only when it holds something; a line too long for any log
         is written alone into a fresh one."""
-        store = ScheduleFiles(max_bytes=64)
-        store.append(tmp_path, {"n": 1})
+        store = ScheduleFiles(tmp_path, max_bytes=64)
+        store.append("m", {"n": 1})
         done = threading.Event()
 
         def append() -> None:
-            store.append(tmp_path, {**self.LINE, "n": 2})
+            store.append("m", {**self.LINE, "n": 2})
             done.set()
 
         threading.Thread(target=append, daemon=True).start()
         assert done.wait(5), "the append returned"
-        assert [line.get("n") for line in store.lines(tmp_path)] == [1, 2]
-        assert (tmp_path / SCHEDULE_LOG).stat().st_size > 64, "the long line, alone"
+        assert [line.get("n") for line in store.lines("m")] == [1, 2]
+        assert (tmp_path / "m" / SCHEDULE_LOG).stat().st_size > 64, "the long line, alone"
 
     def test_the_check_fails_a_log_with_no_cap(self, tmp_path: Path) -> None:
         """Check the checker: the same ticks, uncapped, pass 2 MiB."""
-        store = ScheduleFiles(max_bytes=1 << 40)
+        store = ScheduleFiles(tmp_path, max_bytes=1 << 40)
         for n in range(10_000):
-            store.append(tmp_path, {**self.LINE, "late_s": float(n)})
+            store.append("m", {**self.LINE, "late_s": float(n)})
 
-        assert (tmp_path / SCHEDULE_LOG).stat().st_size > 2 * 1024 * 1024
+        assert (tmp_path / "m" / SCHEDULE_LOG).stat().st_size > 2 * 1024 * 1024
 
 
 class TestStatus:
@@ -488,10 +500,14 @@ class TestStatus:
         _mission(tmp_path)
         clock = FixedClock(SLOT)
         digest = _installed(tmp_path, host, clock)
-        _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest)
+        _root(tmp_path, host, clock).observation.schedule_tick("m", config_sha256=digest)
         clock.advance(EVERY + 90)  # the next tick is 90 s late and has not run
 
-        [status] = _root(tmp_path, host, clock).schedule_status("m", platform="launchd").schedules
+        [status] = (
+            _root(tmp_path, host, clock)
+            .observation.schedule_status("m", platform="launchd")
+            .schedules
+        )
 
         assert status.last_tick is not None and status.last_tick.kind == "ok"
         assert status.skips == 0

@@ -9,12 +9,14 @@ import pytest
 
 import recon
 from recon.adapters._out.capture_collector import CaptureCollector, body_format
-from recon.adapters._out.capture_files import FilesystemCaptureLog
+from recon.adapters._out.capture_files import FilesystemCaptureLog, MissionCaptureLogs
 from recon.adapters._out.system_clock import SystemClock
-from recon.application.captures import record_hook_payload
-from recon.domain.documents import Capture
-from recon.domain.errors import CollectionError, ConfigError, NoRecordsError
-from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
+from recon.core.application.captures import record_hook_payload
+from recon.core.domain.documents import Capture
+from recon.core.domain.errors import CollectionError, ConfigError, NoRecordsError
+from recon.core.domain.models import CollectorEntry, ReconConfig, SourceEntry
+from recon.testing import records
+from tests.recon_fakes import run_for
 from tests.recon_fakes import run_survey as run
 
 
@@ -29,8 +31,15 @@ def _external(log: FilesystemCaptureLog, tool: str, response: Any) -> Capture:
 
 
 def _collect(mission: Path, **entry: Any) -> list[dict[str, Any]]:
-    collector = CaptureCollector(mission)
-    return list(collector.collect(CollectorEntry(name="c", type="capture", **entry), None))
+    """The records recon makes of a capture collector's run over the mission's logs."""
+    return _against(mission, CollectorEntry(name="c", type="capture", **entry), None)
+
+
+def _against(
+    mission: Path, entry: CollectorEntry, source: SourceEntry | None
+) -> list[dict[str, Any]]:
+    collector = CaptureCollector(capture_logs=MissionCaptureLogs(mission))
+    return records(collector, run_for(entry, source))
 
 
 def test_reads_the_missions_external_log_by_default(tmp_path: Path) -> None:
@@ -161,10 +170,9 @@ def test_fan_out_keeps_each_sources_captures(tmp_path: Path) -> None:
     log = _log(tmp_path)
     _external(log, "mcp__exa__search", {"title": "exa"})
     _external(log, "mcp__github__issues", {"title": "gh"})
-    collector = CaptureCollector(tmp_path)
     entry = CollectorEntry(name="c", type="capture")
     source = SourceEntry(name="github", type="local", url=str(tmp_path))
-    assert [r["title"] for r in collector.collect(entry, source)] == ["gh"]
+    assert [r["title"] for r in _against(tmp_path, entry, source)] == ["gh"]
 
 
 def test_an_unpinned_collector_whose_source_no_capture_has_says_so(tmp_path: Path) -> None:
@@ -175,7 +183,7 @@ def test_an_unpinned_collector_whose_source_no_capture_has_says_so(tmp_path: Pat
     entry = CollectorEntry(name="c", type="capture")
     source = SourceEntry(name="papers", type="local", url=str(tmp_path))
     with pytest.raises(NoRecordsError) as excinfo:
-        list(CaptureCollector(tmp_path).collect(entry, source))
+        _against(tmp_path, entry, source)
     found = excinfo.value
     assert found.problem_kind == "captures_unmatched"
     assert "'papers'" in str(found) and "match" in (found.fix or "") and '"*"' in (found.fix or "")

@@ -92,7 +92,7 @@ EXIT_NEXT: dict[str, str] = {
 
 #: The repository tag of this release. matrix is not published to a package index: it is
 #: installed from the repository at this tag. The tests hold it to the package's version.
-RELEASE_TAG = "matrix-v0.8.0"
+RELEASE_TAG = "matrix-v0.10.0"
 
 #: Where this release is installed from, as a uv source.
 SOURCE = (
@@ -319,9 +319,9 @@ class ModelRuntimeError(_ClassifiedError):
     """A model runtime could not complete a call, with a classified ``reason``. Every model
     runtime raises this for an execution failure, whatever its backend.
 
-    ``call`` is what the runtime knew of the failed call, when it knew anything: for hardline,
-    every attempt made (``attempt_log``) and the usage they reported. The call's row in
-    ``matrix.v1.session`` is built from it."""
+    ``call`` is what the runtime knew of the failed call, when it knew anything: the usage it
+    reported, and the runtime's own record of its attempts in ``provenance``. The call's row
+    in ``matrix.v1.session`` is built from it."""
 
     def __init__(self, message: str, *, call: ModelCall | None = None, **kwargs: Any) -> None:
         super().__init__(message, **kwargs)

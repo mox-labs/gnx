@@ -1,23 +1,57 @@
 {
   "language": "python",
   "about": "ix's layers, checked by tests/test_layering.py on every test run with the shared checker (components/capabilities/_testing/layers.py), which reads a map as slick crafting-aces' layer-check.py does, so the same file runs under that script too. Adopted from the map an independent review drew at 1580c81 and fitted to ix as it now is: provenance in the domain and its adapter, the compose environment, matrix_calls. The inner layers' allowances copy test_layering.py's allowlists, so the two checks agree. 'why' keys are read by neither checker.",
-  "scan": ["src/ix/**/*.py"],
+  "scan": [
+    "src/ix/**/*.py"
+  ],
   "scan_why": "Every Python file in the package, so a new module that no layer claims fails the suite. Tests are out of scan: a test reaches adapters by design.",
   "layers": [
     {
       "name": "domain",
-      "files": ["src/ix/domain/__init__.py", "src/ix/domain/analysis.py",
-                "src/ix/domain/design.py", "src/ix/domain/errors.py",
-                "src/ix/domain/experiment.py", "src/ix/domain/genre.py",
-                "src/ix/domain/intervals.py", "src/ix/domain/kind.py", "src/ix/domain/plan.py",
-                "src/ix/domain/problem.py", "src/ix/domain/provenance.py",
-                "src/ix/domain/registration.py", "src/ix/domain/report.py",
-                "src/ix/domain/run.py", "src/ix/domain/schema.py",
-                "src/ix/domain/summaries.py", "src/ix/domain/validation.py"],
-      "allow": ["__future__", "collections", "contextlib", "dataclasses", "difflib", "hashlib",
-                "itertools", "json", "math", "re", "statistics", "string", "typing",
-                "pydantic", "pydantic_core", "ix.domain"],
-      "forbid": ["matrix", "opentelemetry", "open"],
+      "files": [
+        "src/ix/domain/__init__.py",
+        "src/ix/domain/analysis.py",
+        "src/ix/domain/design.py",
+        "src/ix/domain/errors.py",
+        "src/ix/domain/experiment.py",
+        "src/ix/domain/genre.py",
+        "src/ix/domain/intervals.py",
+        "src/ix/domain/kind.py",
+        "src/ix/domain/plan.py",
+        "src/ix/domain/problem.py",
+        "src/ix/domain/provenance.py",
+        "src/ix/domain/registration.py",
+        "src/ix/domain/report.py",
+        "src/ix/domain/run.py",
+        "src/ix/domain/schema.py",
+        "src/ix/domain/summaries.py",
+        "src/ix/domain/validation.py"
+      ],
+      "allow": [
+        "__future__",
+        "collections",
+        "contextlib",
+        "dataclasses",
+        "difflib",
+        "hashlib",
+        "itertools",
+        "json",
+        "math",
+        "re",
+        "statistics",
+        "string",
+        "typing",
+        "pydantic",
+        "pydantic_core",
+        "ix.domain"
+      ],
+      "forbid": [
+        "matrix",
+        "opentelemetry",
+        "open",
+        "hardline",
+        "matrix_hardline"
+      ],
       "why": {
         "stdlib": "pure computation only (test_layering's PURE_STDLIB): no clock, random source, filesystem or network",
         "pydantic, pydantic_core": "every record is a pydantic model, and PydanticCustomError is how a validator names the shape it refused",
@@ -28,9 +62,24 @@
     },
     {
       "name": "ports",
-      "files": ["src/ix/domain/ports.py"],
-      "allow": ["__future__", "collections", "contextlib", "dataclasses", "typing", "ix.domain"],
-      "forbid": ["matrix", "opentelemetry", "open"],
+      "files": [
+        "src/ix/domain/ports.py"
+      ],
+      "allow": [
+        "__future__",
+        "collections",
+        "contextlib",
+        "dataclasses",
+        "typing",
+        "ix.domain"
+      ],
+      "forbid": [
+        "matrix",
+        "opentelemetry",
+        "open",
+        "hardline",
+        "matrix_hardline"
+      ],
       "why": {
         "ix.domain": "a port is stated in the domain's types: Subject, Probe, Sensor, Environment, Scope and the optional Traced, Review, StandIn, Preflight and Liveness speak in experiments, runs and problems",
         "nothing else": "ix keeps its ports inside the domain package, so this layer is a file, not a folder"
@@ -38,19 +87,73 @@
     },
     {
       "name": "application",
-      "files": ["src/ix/application/*.py"],
-      "allow": ["__future__", "asyncio", "collections", "contextlib", "dataclasses", "difflib",
-                "hashlib", "itertools", "json", "math", "re", "statistics", "string", "typing",
-                "pydantic", "pydantic_core", "ix.domain", "ix.application"],
-      "forbid": ["matrix", "opentelemetry", "open"],
+      "files": [
+        "src/ix/application/*.py"
+      ],
+      "allow": [
+        "__future__",
+        "asyncio",
+        "collections",
+        "contextlib",
+        "dataclasses",
+        "difflib",
+        "hashlib",
+        "itertools",
+        "json",
+        "math",
+        "re",
+        "statistics",
+        "string",
+        "typing",
+        "pydantic",
+        "pydantic_core",
+        "ix.domain",
+        "ix.application"
+      ],
+      "forbid": [
+        "matrix",
+        "opentelemetry",
+        "open",
+        "hardline",
+        "matrix_hardline"
+      ],
       "why": {
         "asyncio": "carrying a trial out waits, times out and races a stop flag (test_layering's LAYER_STDLIB); the domain has none",
         "ix.domain, ix.application": "the use cases run over the ports, in the domain's types"
       }
     },
     {
+      "name": "extension",
+      "files": [
+        "src/ix/extension.py"
+      ],
+      "allow": [
+        "__future__",
+        "asyncio",
+        "collections",
+        "dataclasses",
+        "typing",
+        "matrix",
+        "ix.domain"
+      ],
+      "forbid": [
+        "opentelemetry",
+        "open",
+        "hardline",
+        "matrix_hardline"
+      ],
+      "why": {
+        "ix.domain": "the ports, records and errors an adapter speaks in are the domain's, published here under the one name an extension author imports",
+        "asyncio, matrix": "type-only: a Launcher starts an asyncio subprocess, and Runtimes answers with matrix's AgentCapabilities, which ix does not wrap",
+        "nothing else": "the contract declares; it implements nothing and wires nothing",
+        "dataclasses": "the records a mutant source returns (Mutation, Mutations, Unmade) are frozen dataclasses: the point is ix's, so its records are the contract's, not the domain's"
+      }
+    },
+    {
       "name": "builtin_data",
-      "files": ["src/ix/builtin/**/*.py"],
+      "files": [
+        "src/ix/builtin/**/*.py"
+      ],
       "allow": [],
       "why": {
         "nothing": "packages that hold the genre and kind YAML for the ix.genre and ix.kind entry points; importing one runs its __init__ (SECURITY.md), so it runs nothing"
@@ -58,28 +161,134 @@
     },
     {
       "name": "adapters_out",
-      "files": ["src/ix/adapters/__init__.py", "src/ix/adapters/_out/__init__.py",
-                "src/ix/adapters/_out/agent_sensors.py", "src/ix/adapters/_out/compose.py",
-                "src/ix/adapters/_out/environments.py", "src/ix/adapters/_out/evaluators.py",
-                "src/ix/adapters/_out/k6_load.py",
-                "src/ix/adapters/_out/processes.py", "src/ix/adapters/_out/provenance.py",
-                "src/ix/adapters/_out/python_checks.py",
-                "src/ix/adapters/_out/registration_file.py", "src/ix/adapters/_out/sensors.py",
-                "src/ix/adapters/_out/subjects.py"],
-      "allow": ["*", "ix.domain", "ix.adapters._out"],
-      "forbid": ["matrix", "opentelemetry"],
+      "files": [
+        "src/ix/adapters/__init__.py",
+        "src/ix/adapters/_out/__init__.py",
+        "src/ix/adapters/_out/agent_sensors.py",
+        "src/ix/adapters/_out/commands.py",
+        "src/ix/adapters/_out/compose.py",
+        "src/ix/adapters/_out/detached.py",
+        "src/ix/adapters/_out/environments.py",
+        "src/ix/adapters/_out/evaluators.py",
+        "src/ix/adapters/_out/k6_load.py",
+        "src/ix/adapters/_out/processes.py",
+        "src/ix/adapters/_out/provenance.py",
+        "src/ix/adapters/_out/python_checks.py",
+        "src/ix/adapters/_out/registration_file.py",
+        "src/ix/adapters/_out/sensors.py",
+        "src/ix/adapters/_out/subjects.py"
+      ],
+      "allow": [
+        "*",
+        "ix.domain",
+        "ix.extension",
+        "ix.adapters._out"
+      ],
+      "forbid": [
+        "matrix",
+        "opentelemetry",
+        "hardline",
+        "matrix_hardline"
+      ],
       "why": {
-        "*": "one technology each: k6, ps, httpx2, child Python, docker compose, git and file digests, the registration file, pydantic-evals",
+        "*": "one technology each: k6, ps, httpx2, child Python, docker compose, git and file digests, the registration file, pydantic-evals, a detached ix run",
         "ix.domain": "the ports they implement and the types they speak in",
+        "ix.extension": "what an adapter is handed (a Launcher, Runtimes, Sessions, JudgeModels) is the published contract a third party writes against too",
         "ix.adapters._out": "one adapter may build on another, a subject or the compose environment on the launcher's processes module; a deviation from the four places that test_layering allows on purpose",
         "forbid": "matrix and OpenTelemetry each have adapter files of their own"
       }
     },
     {
+      "name": "adapters_out_mutation",
+      "files": [
+        "src/ix/adapters/_out/mutation/*.py"
+      ],
+      "allow": [
+        "__future__",
+        "ast",
+        "asyncio",
+        "collections",
+        "contextlib",
+        "dataclasses",
+        "functools",
+        "hashlib",
+        "importlib",
+        "json",
+        "os",
+        "pathlib",
+        "random",
+        "shutil",
+        "subprocess",
+        "tempfile",
+        "time",
+        "typing",
+        "ix.extension",
+        "ix.adapters._out.mutation"
+      ],
+      "forbid": [
+        "matrix",
+        "opentelemetry",
+        "hardline",
+        "matrix_hardline",
+        "coverage",
+        "cosmic_ray"
+      ],
+      "why": {
+        "stdlib, ix.extension": "the mutation kit stays liftable (ruling R8): it imports the published extension contract, the standard library and itself, nothing else of ix, so it could be a package of its own with no edit but the package's name",
+        "subprocess, shutil, tempfile": "the copy of the tree each trial runs in, and the quick check that the suite's Python has coverage.py",
+        "random": "the seeded sample of the population",
+        "forbid coverage, cosmic_ray": "coverage.py runs in the suite's interpreter (scripts/read_coverage.py), never in ix's; a mutant source is a package of its own at the ix.mutant-source point"
+      }
+    },
+    {
+      "name": "mutation_suite_side",
+      "files": [
+        "src/ix/adapters/_out/mutation/plugin/*.py"
+      ],
+      "allow": [
+        "__future__",
+        "json",
+        "os",
+        "sys",
+        "pathlib",
+        "typing"
+      ],
+      "why": {
+        "stdlib only": "ix's pytest plugin is loaded into the suite's own interpreter (-p ix_mutation_trial), whatever environment it has: it imports nothing of ix and nothing outside the standard library"
+      }
+    },
+    {
+      "name": "mutation_coverage_reader",
+      "files": [
+        "src/ix/adapters/_out/mutation/scripts/*.py"
+      ],
+      "allow": [
+        "__future__",
+        "json",
+        "os",
+        "sys",
+        "coverage"
+      ],
+      "why": {
+        "coverage": "the one file that speaks coverage.py's data API; the suite's Python runs it by path (-I), where coverage is installed, so ix depends on no coverage (ruling R4)"
+      }
+    },
+    {
       "name": "adapters_out_matrix",
-      "files": ["src/ix/adapters/_out/matrix_*.py"],
-      "allow": ["*", "ix.domain", "ix.adapters._out"],
-      "forbid": ["opentelemetry"],
+      "files": [
+        "src/ix/adapters/_out/matrix_*.py"
+      ],
+      "allow": [
+        "*",
+        "ix.domain",
+        "ix.extension",
+        "ix.adapters._out"
+      ],
+      "forbid": [
+        "opentelemetry",
+        "hardline",
+        "matrix_hardline"
+      ],
       "why": {
         "*": "matrix is their technology: agent runtimes and sessions (matrix_agents, matrix_calls, matrix_judge), the loader (matrix_documents), errors (matrix_errors), process groups (matrix_process), the run store and executor (matrix_runs)",
         "ix.adapters._out": "matrix_judge builds on matrix_agents and matrix_calls; matrix_runs brings the compose environment down with the run"
@@ -87,18 +296,40 @@
     },
     {
       "name": "adapters_out_otel",
-      "files": ["src/ix/adapters/_out/otel_tracing.py"],
-      "allow": ["__future__", "collections", "contextlib", "typing", "opentelemetry"],
+      "files": [
+        "src/ix/adapters/_out/otel_tracing.py"
+      ],
+      "allow": [
+        "__future__",
+        "collections",
+        "contextlib",
+        "typing",
+        "opentelemetry"
+      ],
       "why": {
         "opentelemetry": "the one file that speaks the OpenTelemetry API; it implements the Traced and Span shapes structurally, so it needs nothing of ix"
       }
     },
     {
       "name": "adapters_in_matrix",
-      "files": ["src/ix/adapters/_in/__init__.py", "src/ix/adapters/_in/matrix_components.py"],
-      "allow": ["__future__", "collections", "contextlib", "typing", "matrix",
-                "ix.domain", "ix.application"],
-      "forbid": ["opentelemetry"],
+      "files": [
+        "src/ix/adapters/_in/__init__.py",
+        "src/ix/adapters/_in/matrix_components.py"
+      ],
+      "allow": [
+        "__future__",
+        "collections",
+        "contextlib",
+        "typing",
+        "matrix",
+        "ix.domain",
+        "ix.application"
+      ],
+      "forbid": [
+        "opentelemetry",
+        "hardline",
+        "matrix_hardline"
+      ],
       "why": {
         "matrix": "matrix drives ix's run path through these components, and hands them its Inputs and RunContext",
         "ix.domain, ix.application": "a driving adapter calls the use cases, in the domain's types"
@@ -106,40 +337,99 @@
     },
     {
       "name": "adapters_in_cli",
-      "files": ["src/ix/adapters/_in/cli.py"],
-      "allow": ["*", "ix"],
-      "forbid": ["matrix", "opentelemetry"],
+      "files": [
+        "src/ix/adapters/_in/cli.py",
+        "src/ix/__main__.py"
+      ],
+      "allow": [
+        "*",
+        "ix"
+      ],
+      "forbid": [
+        "matrix",
+        "opentelemetry",
+        "hardline",
+        "matrix_hardline"
+      ],
       "why": {
-        "*": "rich-click and rich",
+        "*": "rich-click and rich; __main__ is the command run as python -m ix, which a detached run starts",
         "ix": "the command reaches ix through 'import ix' alone. The entry admits every ix.* path, since an allowance is a prefix; test_layering holds the command to ix.__all__"
       }
     },
     {
       "name": "facade",
-      "files": ["src/ix/__init__.py", "src/ix/api.py"],
-      "allow": ["__future__", "collections", "importlib", "os", "typing",
-                "ix.api", "ix.domain", "ix.composition"],
-      "forbid": ["matrix", "opentelemetry"],
+      "files": [
+        "src/ix/__init__.py",
+        "src/ix/api.py",
+        "src/ix/mutants.py"
+      ],
+      "allow": [
+        "__future__",
+        "collections",
+        "importlib",
+        "os",
+        "typing",
+        "ix",
+        "ix.api",
+        "ix.domain",
+        "ix.composition"
+      ],
+      "forbid": [
+        "matrix",
+        "opentelemetry",
+        "hardline",
+        "matrix_hardline"
+      ],
       "why": {
         "ix.composition, ix.domain": "the library surface names the root and the domain, never an adapter or a use case: which adapters are bound is not its decision",
-        "importlib, os": "the version from the installed distribution; the run directory's environment default"
+        "importlib, os": "the version from the installed distribution; the run directory's environment default",
+        "ix, mutants.py": "ix.mutants is mutation testing's provisional surface, a module of the facade (ruling R2): it reaches the root as api.py does, and __init__ binds it as ix.mutants"
       }
     },
     {
       "name": "composition",
-      "files": ["src/ix/composition/*.py"],
-      "allow": ["*", "ix"],
+      "files": [
+        "src/ix/composition/*.py"
+      ],
+      "allow": [
+        "*",
+        "ix"
+      ],
+      "forbid": [
+        "hardline",
+        "matrix_hardline"
+      ],
       "why": {
-        "*, ix": "the root chooses adapters through matrix's registry, wires ports and holds settings: the one layer that reaches everything"
+        "*, ix": "the root chooses adapters through matrix's registry, wires ports and holds settings: the one layer that reaches everything",
+        "forbid hardline, matrix_hardline": "ix names no model runtime, in any layer (owner ruling HO1, review I-3): an experiment names one by type URL, matrix's registry builds it, and its versions are recorded from what each runtime declares it drives"
       }
     }
   ],
   "single_importer": [
-    {"name": "opentelemetry", "only": "src/ix/adapters/_out/otel_tracing.py"},
-    {"name": "httpx2", "only": "src/ix/adapters/_out/processes.py"},
-    {"name": "rich_click", "only": "src/ix/adapters/_in/cli.py"},
-    {"name": "pydantic_evals", "only": "src/ix/adapters/_out/evaluators.py"},
-    {"name": "pydantic_ai", "only": "src/ix/adapters/_out/evaluators.py"}
+    {
+      "name": "opentelemetry",
+      "only": "src/ix/adapters/_out/otel_tracing.py"
+    },
+    {
+      "name": "httpx2",
+      "only": "src/ix/adapters/_out/processes.py"
+    },
+    {
+      "name": "rich_click",
+      "only": "src/ix/adapters/_in/cli.py"
+    },
+    {
+      "name": "pydantic_evals",
+      "only": "src/ix/adapters/_out/evaluators.py"
+    },
+    {
+      "name": "pydantic_ai",
+      "only": "src/ix/adapters/_out/evaluators.py"
+    },
+    {
+      "name": "coverage",
+      "only": "src/ix/adapters/_out/mutation/scripts/read_coverage.py"
+    }
   ],
   "single_importer_why": "one file per technology: the OpenTelemetry API (the command installs a provider through matrix), the readiness probe's HTTP client, the command line, pydantic-evals' evaluators and the pydantic-ai model a dry-run judge evaluator stands in on (both imported inside the adapter's functions, so ix starts without them). docker and the launcher cannot be held here: docker is a program named in a string, and the launcher's technology is reached as 'from matrix import process', which an import check reads as 'matrix'. test_layering holds both"
 }

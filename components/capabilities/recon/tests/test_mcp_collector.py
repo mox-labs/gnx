@@ -32,8 +32,11 @@ from tests.recon_fakes import FixedClock, building, run_survey
 
 SERVER = str(Path(__file__).parent / "mcp_server.py")
 
-#: The fixture as a catalog source recon starts over stdio.
-STDIO = {"name": "fixture", "type": "mcp", "command": sys.executable, "args": [SERVER]}
+#: The fixture as a catalog source recon starts over stdio, given a rate of its own: these tests
+#: are of the calls, which the default of a source whose limits are unknown (1 a second) would
+#: only slow.
+STDIO = {"name": "fixture", "type": "mcp", "command": sys.executable, "args": [SERVER],
+         "rate_limit": {"rps": 100, "burst": 10}}  # fmt: skip
 
 
 def _survey(project: Path, collectors: list[dict[str, Any]], **kwargs: Any) -> Any:
@@ -69,7 +72,7 @@ def _alive(pid: int) -> bool:
 
 
 def _problems(catalog: list[dict[str, Any]], collectors: list[dict[str, Any]]) -> Any:
-    from recon.application.plan import build_plan
+    from recon.core.application.plan import build_plan
 
     plan = build_plan({"catalog": catalog, "collectors": collectors}, load_plugins(), {})
     return {p.path: p for p in plan.problems}, plan.warnings
@@ -248,7 +251,7 @@ def test_one_stdio_server_serves_every_table_and_is_stopped_once(tmp_path: Path)
             super().close()
 
     plugins = load_plugins()
-    plugins.collector_types["mcp"] = replace(plugins.collector_types["mcp"], create=Counted)
+    plugins.collector_types["mcp"] = replace(plugins.collector_types["mcp"], build=Counted)
     archive, tables = _survey(
         tmp_path, [_call("one", "whoami"), _call("two", "whoami")], plugins=plugins
     )
@@ -353,15 +356,41 @@ def test_fastmcps_own_spans_which_carry_a_tools_error_text_are_not_made(
 # --- the dry run ---------------------------------------------------------------------------------
 
 
-def _plan(project: Path, collectors: list[dict[str, Any]], **kwargs: Any) -> Any:
+def _plan(
+    project: Path, collectors: list[dict[str, Any]], *, check: bool = True, **kwargs: Any
+) -> Any:
+    """The plan of mission ``m``, checked (``--check``) unless told otherwise."""
     mission = project / ".recon" / "m"
     mission.mkdir(parents=True)
     config = {"catalog": [kwargs.pop("source", STDIO)], "collectors": collectors}
     (mission / "config.yaml").write_text(yaml.safe_dump(config))
-    return root({}, project=project, **kwargs).plan("m")
+    return root({}, project=project, **kwargs).observation.plan("m", check=check)
 
 
-def test_the_dry_run_starts_the_server_and_checks_each_call_against_its_listing(
+def test_a_plan_starts_no_server_unless_it_is_asked_to_check(tmp_path: Path) -> None:
+    """Ruling R11: a plan is pure. An mcp run's server is started (or reached) only by a plan
+    asked to check (``--dry-run --check``); one not asked says so in its provenance, and
+    whether the runs are runnable is unknown, not yes."""
+    built: list[str] = []
+    plugins = load_plugins()
+    plugins.collector_types["mcp"] = replace(
+        plugins.collector_types["mcp"], build=building(built, "mcp")
+    )
+    plan = _plan(tmp_path, [_call("a", "whoami")], check=False, plugins=plugins)
+
+    assert built == [], "no collector was built, so no server was started"
+    assert plan.valid and plan.requirements == [] and plan.preflight == []
+    assert plan.runnable is None
+    [said] = [v for v in plan.provenance if v.path == "preflight"]
+    assert (said.value, said.origin) == (False, "recon") and "--check" in said.note
+
+
+def test_a_plan_of_no_type_with_a_preflight_says_nothing_of_one(tmp_path: Path) -> None:
+    plan = _plan(tmp_path, [{"name": "c", "type": "capture"}], check=False)
+    assert not [v for v in plan.provenance if v.path == "preflight"]
+
+
+def test_a_checked_dry_run_starts_the_server_and_checks_each_call_against_its_listing(
     tmp_path: Path,
 ) -> None:
     plan = _plan(
@@ -388,6 +417,8 @@ def test_the_dry_run_starts_the_server_and_checks_each_call_against_its_listing(
     ]
     assert schema.why == "arguments.query: 3 is not of type 'string'"
     assert ("the server of source 'fixture' offers the resource 'fixture://other'", False) in found
+    [said] = [v for v in plan.provenance if v.path == "preflight"]
+    assert (said.value, said.origin) == (True, "command")
 
 
 @pytest.mark.parametrize(
@@ -438,7 +469,9 @@ def test_a_tool_whose_input_schema_is_not_valid_json_schema_is_a_requirement_not
     assert "example.invalid" not in looked_up
 
 
-def test_a_dry_run_whose_server_cannot_start_says_so_and_stays_valid(tmp_path: Path) -> None:
+def test_a_checked_dry_run_whose_server_cannot_start_says_so_and_stays_valid(
+    tmp_path: Path,
+) -> None:
     source = {**STDIO, "command": str(tmp_path / "no-such-server")}
     plan = _plan(tmp_path, [_call("a", "whoami")], source=source)
     [required] = plan.requirements
@@ -447,13 +480,15 @@ def test_a_dry_run_whose_server_cannot_start_says_so_and_stays_valid(tmp_path: P
     assert plan.valid and not plan.runnable
 
 
-def test_a_dry_run_builds_no_collector_whose_type_has_no_preflight(tmp_path: Path) -> None:
+def test_a_checked_dry_run_builds_no_collector_whose_type_has_no_preflight(
+    tmp_path: Path,
+) -> None:
     built: list[str] = []
     plugins = load_plugins()
 
     for name, ct in list(plugins.collector_types.items()):
         if name != "mcp":
-            plugins.collector_types[name] = replace(ct, create=building(built, name))
+            plugins.collector_types[name] = replace(ct, build=building(built, name))
     plan = _plan(
         tmp_path,
         [_call("good", "whoami"), {"name": "c", "type": "capture"}],
@@ -565,13 +600,13 @@ def _captured(archive: Path) -> tuple[str, dict[str, Any]]:
 def _replayed(project: Path, archive: Path, extract: str) -> list[dict[str, Any]]:
     """The records a ``capture`` collector reads back from the survey's capture log."""
     from recon.adapters._out.capture_collector import CaptureCollector
-    from recon.domain.models import CollectorEntry
+    from recon.adapters._out.capture_files import MissionCaptureLogs
+    from recon.testing import records
+    from tests.recon_fakes import run_for
 
     log = str(archive / "captures.jsonl")
-    entry = CollectorEntry.model_validate(
-        {"name": "again", "type": "capture", "path": log, "extract": extract}
-    )
-    return list(CaptureCollector(project).collect(entry, None))
+    entry = {"name": "again", "type": "capture", "path": log, "extract": extract}
+    return records(CaptureCollector(capture_logs=MissionCaptureLogs(project)), run_for(entry))
 
 
 def test_a_long_credential_a_server_echoes_is_never_in_the_capture(
@@ -676,7 +711,8 @@ def _mock(answer: Any) -> Any:
 
     plugins = load_plugins()
     plugins.collector_types["mcp"] = replace(
-        plugins.collector_types["mcp"], create=lambda ctx: McpCollector(ctx, http_client=client)
+        plugins.collector_types["mcp"],
+        build=lambda **needs: McpCollector(**needs, http_client=client),
     )
     return plugins
 

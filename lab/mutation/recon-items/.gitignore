@@ -1,0 +1,4 @@
+# This machine's: the selection map holds its test durations, and a registration is a
+# person's (lab/README.md).
+mutation/*.map.json
+experiment.registration.json

@@ -10,11 +10,11 @@ import pytest
 from rich.console import Console
 
 from matrix import (
+    Context,
     Event,
     Executor,
     Inputs,
     MatrixConfig,
-    RunContext,
     RunError,
     compose,
     default_registry,
@@ -38,7 +38,7 @@ class Step:
         self.provides = frozenset([provides] if provides else [])
         self._body = body
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> Any:
+    async def run(self, inputs: Inputs, ctx: Context) -> Any:
         row = await self._body(ctx)
         return {kind: row for kind in self.provides}
 

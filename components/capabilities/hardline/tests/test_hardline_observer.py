@@ -77,7 +77,7 @@ async def test_a_fallback_is_observed_and_is_no_longer_only_a_log_line(
     failed, fell_back, answered = seen.events
     assert isinstance(failed, AttemptFailed) and failed.retry_in_s is None
     assert fell_back == FellBack(requested="a", name="a", to="b", reason="unavailable")
-    assert isinstance(answered, Answered) and answered.completion.fallback_from == "a"
+    assert isinstance(answered, Answered) and answered.completion.record.fallback_from == "a"
     assert c.name == "b"
     assert not [r for r in caplog.records if r.name == "hardline"]
 
@@ -99,7 +99,7 @@ async def test_an_extract_is_answered_once_after_its_repairs() -> None:
     s = await rt.extract("a", "?", Verdict)
     (answered,) = seen.events
     assert isinstance(answered, Answered) and answered.completion == s.completion
-    assert answered.completion.attempts == 2
+    assert answered.completion.record.attempts == 2
 
 
 async def test_an_observer_that_raises_does_not_fail_the_call(

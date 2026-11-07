@@ -1,9 +1,16 @@
 """Resolution: an experiment, its genre and the kinds it names become one design.
 
 The experiment says what its author chose; the genre supplies the rest; the kinds say which
-sensor provides each metric. The design holds every value a run would use and, in
-``provenance``, where each came from: the ``experiment``, the ``genre`` or ``ix`` (a rule of
-the core, the same under every genre). It is what a registration freezes.
+sensor provides each metric, and what each option an entry leaves out is carried out with.
+The design holds every value a run would use and, in ``provenance``, where each came from:
+the ``experiment``, the ``genre``, ``ix`` (a rule of the core, the same under every genre),
+the ``kind`` (an option's declared default), or the ``runtime`` (an option whose value, left
+out, is the runtime's own, which ix cannot know). It is what a registration freezes.
+
+**An entry is addressed one way.** The design's ``defaults`` and the plan's provenance name
+an entry by its key (:func:`subject_entry`, :func:`probe_entry`, :func:`sensor_entry`,
+:data:`ENVIRONMENT`): ``subjects.<name>``, ``probes.<id>``, ``sensors.<kind>``, unique where
+the place validation names it is not (``sensors`` for every sensor ix chose).
 
 **Metrics are provided, not asserted.** For each metric the experiment names, exactly one
 sensor must provide it. A sensor the author lists under ``sensors:`` wins; otherwise ix
@@ -13,7 +20,7 @@ probes meet. None is ``metric_unprovided``; two are ``metric_ambiguous``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import Field
@@ -29,12 +36,12 @@ from ix.domain.experiment import (
     default_estimator,
 )
 from ix.domain.genre import CONTROL, AnalysisRef, Calibration, Order, VerdictForm
-from ix.domain.kind import Confusion, Metric, check_options
+from ix.domain.kind import Confusion, Filled, Metric, check_options, merged
 from ix.domain.problem import InvalidExperimentError, Problem, problem
 from ix.domain.schema import Record
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from ix.domain.experiment import (
         EnvironmentConfig,
@@ -45,10 +52,29 @@ if TYPE_CHECKING:
         SubjectConfig,
     )
     from ix.domain.genre import Genre
-    from ix.domain.kind import Kind, Kinds
+    from ix.domain.kind import Kind, Kinds, SensorKind
+    from ix.domain.run import Trial
 
 #: Where a resolved value came from.
-Origin = Literal["experiment", "genre", "ix"]
+Origin = Literal["experiment", "genre", "ix", "kind", "runtime"]
+
+#: The key of an experiment's environment.
+ENVIRONMENT = "environment"
+
+
+def subject_entry(name: str) -> str:
+    """The key of the subject named ``name``."""
+    return f"subjects.{name}"
+
+
+def probe_entry(probe: str) -> str:
+    """The key of the probe whose id is ``probe``."""
+    return f"probes.{probe}"
+
+
+def sensor_entry(kind: str) -> str:
+    """The key of the sensor of ``kind`` (a type URL): a run uses one entry of each."""
+    return f"sensors.{schema.short(kind)}"
 
 
 class SourcedValue(Record):
@@ -112,10 +138,22 @@ class Design(Record):
     analysis: AnalysisRef
     verdict_form: VerdictForm
     report: tuple[str, ...]
+    #: The default of each option an entry leaves out, as its kind declares it, by the
+    #: entry's key (``probes.ask``: ``{timeout: 600s}``), and inside a mapping it writes that
+    #: its kind declares further (``environment``: ``{services: {api: {startup_timeout:
+    #: 30s}}}``): what a run carries the entry out with besides what is written, and what a
+    #: registration freezes.
+    defaults: dict[str, Filled] = {}
     provenance: tuple[SourcedValue, ...] = ()
 
     def metric(self, name: str) -> Metric | None:
         return next((metric for metric in self.metrics if metric.name == name), None)
+
+    def options(self, entry: str, written: Mapping[str, Any]) -> dict[str, Any]:
+        """The options of the entry keyed ``entry`` as a run carries it out: ``written``,
+        with each default its kind declares for what ``written`` leaves out, mapping by
+        mapping."""
+        return merged(self.defaults.get(entry, {}), written)
 
 
 # --- roles -------------------------------------------------------------------------------
@@ -220,7 +258,7 @@ def named_metrics(experiment: Experiment) -> list[tuple[str, str]]:
     return named
 
 
-type _Choice = tuple[Kind, Origin, dict[str, Any]]
+type _Choice = tuple[SensorKind, Origin, dict[str, Any]]
 
 
 def _offered(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None) -> set[str] | None:
@@ -237,20 +275,20 @@ def _offered(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None) -> s
     return offered | {facet for kind in probe_kinds if kind for facet in kind.offers}
 
 
-def _fits(sensor: Kind, offered: set[str] | None) -> bool:
+def _fits(sensor: SensorKind, offered: set[str] | None) -> bool:
     return offered is None or set(sensor.needs) <= offered
 
 
-def _provides(sensor: Kind, metric: str) -> bool:
+def _provides(sensor: SensorKind, metric: str) -> bool:
     return any(declared.name == metric for declared in sensor.metrics)
 
 
 def _listed(
     experiment: Experiment, kinds: Kinds, offered: set[str] | None
-) -> tuple[list[tuple[int, Kind]], list[Problem]]:
+) -> tuple[list[tuple[int, SensorKind]], list[Problem]]:
     """The sensors the experiment lists under ``sensors:``, by position, and each that the
     subjects and probes cannot feed."""
-    listed: list[tuple[int, Kind]] = []
+    listed: list[tuple[int, SensorKind]] = []
     problems: list[Problem] = []
     for index, selection in enumerate(experiment.sensors):
         sensor = kinds.get("sensor", selection.kind)
@@ -325,7 +363,7 @@ def _chosen_by_ix(
 
 
 def _unprovided(
-    path: str, metric: str, kinds: Kinds, installed: list[Kind], offered: set[str] | None
+    path: str, metric: str, kinds: Kinds, installed: list[SensorKind], offered: set[str] | None
 ) -> Problem:
     available = sorted(
         {declared.name for sensor in kinds.of("sensor") if _fits(sensor, offered)
@@ -356,7 +394,7 @@ def _choose(
     metric: str,
     experiment: Experiment,
     kinds: Kinds,
-    listed: list[tuple[int, Kind]],
+    listed: list[tuple[int, SensorKind]],
     offered: set[str] | None,
 ) -> tuple[_Choice | None, list[Problem]]:
     """The sensor that provides ``metric``: the one listed under ``sensors:`` that does,
@@ -380,7 +418,7 @@ def _choose(
     return _chosen_by_ix(path, metric, kinds, offered)
 
 
-def _declared(sensor: Kind, metric: str) -> Metric:
+def _declared(sensor: SensorKind, metric: str) -> Metric:
     return next(declared for declared in sensor.metrics if declared.name == metric)
 
 
@@ -412,7 +450,7 @@ def _mismatches(experiment: Experiment, chosen: dict[str, _Choice]) -> list[Prob
 
 
 def _selected(
-    experiment: Experiment, listed: list[tuple[int, Kind]], chosen: dict[str, _Choice]
+    experiment: Experiment, listed: list[tuple[int, SensorKind]], chosen: dict[str, _Choice]
 ) -> tuple[SelectedSensor, ...]:
     """Each sensor a run would use: every listed one, even when no decision reads it, and
     every one chosen for a metric; each reading every metric it declares a flag for."""
@@ -542,41 +580,113 @@ def kinds_in_use(
     return tuple((where, kind) for kind, where in first.items())
 
 
-def entries_in_use(
-    experiment: Experiment, design: Design, probes: ProbeSet
-) -> tuple[tuple[str, str, Mapping[str, Any]], ...]:
-    """Every entry a run of the experiment carries out, as (where it is written, its kind's
-    type URL, its options): the environment, each subject, each probe (``probes.<index>``
-    when written inline, ``probes.<id>`` when read from a file) and each sensor the design
-    uses (``sensors.<index>`` when listed, ``sensors`` when the genre chose it)."""
-    found: list[tuple[str, str, Mapping[str, Any]]] = [
-        (
-            "environment",
+@dataclass(frozen=True)
+class Entry:
+    """One entry a run carries out: its key (see the module docstring), where it is written
+    as validation names it (``probes.0`` for a probe written inline, ``sensors`` for one ix
+    chose), its kind's type URL, and its options."""
+
+    key: str
+    where: str
+    kind: str
+    options: Mapping[str, Any]
+
+
+def entries(
+    experiment: Experiment, probes: ProbeSet | None, sensors: Sequence[SelectedSensor]
+) -> tuple[Entry, ...]:
+    """Every entry a run of the experiment carries out, with its options as written: the
+    environment, each subject, each probe (none while ``probes`` is unknown) and each of
+    ``sensors``, the ones the design uses."""
+    found = [
+        Entry(
+            ENVIRONMENT,
+            ENVIRONMENT,
             schema.url("environment", experiment.environment.kind),
             experiment.environment.options,
         )
     ]
     found += [
-        (f"subjects.{name}", schema.url("subject", subject.kind), subject.options)
-        for name, subject in experiment.subjects.items()
+        Entry(subject_entry(name), f"subjects.{name}", schema.url("subject", s.kind), s.options)
+        for name, s in experiment.subjects.items()
     ]
     inline = bool(experiment.probes)
     found += [
-        (f"probes.{index if inline else probe.id}", schema.url("probe", probe.kind), probe.options)
-        for index, probe in enumerate(probes.probes)
+        Entry(
+            probe_entry(probe.id),
+            f"probes.{index if inline else probe.id}",
+            schema.url("probe", probe.kind),
+            probe.options,
+        )
+        for index, probe in enumerate(probes.probes if probes is not None else ())
     ]
     listed = {
         schema.url("sensor", entry.kind): index for index, entry in enumerate(experiment.sensors)
     }
     found += [
-        (
+        Entry(
+            sensor_entry(sensor.kind),
             "sensors" if sensor.kind not in listed else f"sensors.{listed[sensor.kind]}",
             sensor.kind,
             sensor.options,
         )
-        for sensor in design.sensors
+        for sensor in sensors
     ]
     return tuple(found)
+
+
+def entries_in_use(experiment: Experiment, design: Design, probes: ProbeSet) -> tuple[Entry, ...]:
+    """Every entry a run of the experiment carries out (:func:`entries`), with its options as
+    the run carries them out (:meth:`Design.options`)."""
+    return tuple(
+        replace(entry, options=design.options(entry.key, entry.options))
+        for entry in entries(experiment, probes, design.sensors)
+    )
+
+
+def trial_entries(trial: Trial, design: Design) -> frozenset[str]:
+    """The keys of the entries one trial carries out: its subject, its probe, and every
+    sensor the design uses (each reads every trial carried out)."""
+    return frozenset(
+        {
+            subject_entry(trial.subject),
+            probe_entry(trial.probe),
+            *(sensor_entry(sensor.kind) for sensor in design.sensors),
+        }
+    )
+
+
+def carried_out(
+    experiment: Experiment, design: Design, probes: Sequence[ProbeConfig]
+) -> tuple[Experiment, Design, tuple[ProbeConfig, ...]]:
+    """The experiment, its design and ``probes`` with every entry's options as a run carries
+    them out (:meth:`Design.options`): its environment and subjects, the design's sensors, and
+    each probe."""
+    subjects = {
+        name: subject.model_copy(
+            update={"options": design.options(subject_entry(name), subject.options)}
+        )
+        for name, subject in experiment.subjects.items()
+    }
+    environment = experiment.environment.model_copy(
+        update={"options": design.options(ENVIRONMENT, experiment.environment.options)}
+    )
+    sensors = tuple(
+        sensor.model_copy(
+            update={"options": design.options(sensor_entry(sensor.kind), sensor.options)}
+        )
+        for sensor in design.sensors
+    )
+    return (
+        experiment.model_copy(update={"subjects": subjects, "environment": environment}),
+        design.model_copy(update={"sensors": sensors}),
+        tuple(
+            probe.model_copy(
+                update={"options": design.options(probe_entry(probe.id), probe.options)}
+            )
+            for probe in probes
+        ),
+    )
 
 
 def missing_adapters(
@@ -687,6 +797,55 @@ def _from(origin: Origin, *, path: str, value: Level | None, note: str = "") -> 
     return SourcedValue(path=path, value=value, origin=origin, note=note)
 
 
+def _leaves(filled: Filled, prefix: str) -> list[tuple[str, Level]]:
+    """Each default of ``filled`` with its dotted path under ``prefix``."""
+    found: list[tuple[str, Level]] = []
+    for name, value in filled.items():
+        if isinstance(value, dict):
+            found += _leaves(value, f"{prefix}.{name}")
+        else:
+            found.append((f"{prefix}.{name}", value))
+    return found
+
+
+def _kind_defaults(
+    experiment: Experiment, kinds: Kinds, probes: ProbeSet | None, sensors: Sequence[SelectedSensor]
+) -> tuple[dict[str, Filled], list[SourcedValue]]:
+    """What each entry's kind supplies for what it leaves out: the defaults, by the entry's
+    key, and where each value came from, its kind's ``default`` (at its dotted path, inside
+    a mapping too) or its runtime (a subject's, for a probe or a sensor); and each option
+    whose absence its kind declares a meaning for (``left_out``), from the kind, with no
+    value and the meaning as its note."""
+    defaults: dict[str, Filled] = {}
+    sourced: list[SourcedValue] = []
+    subjects = [subject.options for subject in experiment.subjects.values()]
+    for entry in entries(experiment, probes, sensors):
+        kind = kinds.kinds.get(entry.kind)
+        if kind is None:
+            continue  # an unknown kind is reported where it is named
+        filled = kind.defaults(entry.options)
+        if filled:
+            defaults[entry.key] = filled
+        sourced += [
+            _from("kind", path=path, value=value, note=kind.name)
+            for path, value in _leaves(filled, entry.key)
+        ]
+        sourced += [
+            _from(
+                "runtime",
+                path=f"{entry.key}.{name}",
+                value=None,
+                note=f"left out, so {runtime or 'its runtime'} decides; ix does not know the value",
+            )
+            for name, runtime in kind.left_to_runtime(entry.options, subjects).items()
+        ]
+        sourced += [
+            _from("kind", path=f"{entry.key}.{name}", value=None, note=f"{meaning} (default)")
+            for name, meaning in kind.left_out(entry.options).items()
+        ]
+    return defaults, sourced
+
+
 @dataclass(frozen=True)
 class _Settings:
     """The run's settings the experiment may leave to the genre or to ix."""
@@ -767,6 +926,7 @@ def resolve(
     instruments = instruments or select_sensors(experiment, kinds, probes)
     settings = _settings(experiment, genre, control)
     provenance = list(settings.sourced)
+    defaults, supplied = _kind_defaults(experiment, kinds, probes, instruments.sensors)
 
     if experiment.margin is not None:
         # The genres supply no margin: it is always the author's, and the plan says so.
@@ -794,6 +954,7 @@ def resolve(
         guardrails.append(
             guardrail.model_copy(update={"statistic": statistic, "estimator": estimator})
         )
+    provenance += supplied
 
     design = Design(
         experiment=experiment.name,
@@ -815,6 +976,7 @@ def resolve(
         analysis=genre.analysis,
         verdict_form=genre.verdict_form,
         report=genre.report,
+        defaults=defaults,
         provenance=tuple(provenance),
     )
     return design.model_copy(update={"hypotheses": _hypotheses(experiment, genre, design)})

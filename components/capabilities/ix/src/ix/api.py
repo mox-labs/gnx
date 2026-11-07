@@ -13,7 +13,7 @@ import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Iterator, Mapping
     from typing import Any
 
     from ix.composition import Root, Telemetry
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from ix.domain.plan import Plan
     from ix.domain.problem import Validation
     from ix.domain.registration import Deviations, Registered
-    from ix.domain.report import Report, Runs
+    from ix.domain.report import Report, Runs, Status
 
 type PathLike = str | os.PathLike[str]
 type Source = PathLike | Experiment
@@ -125,6 +125,7 @@ def run(
     trials_in_flight: int | None = None,
     base: PathLike | None = None,
     registration: PathLike | None = None,
+    run_id: str | None = None,
     on_event: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> Report:
     """Run the experiment and return its report.
@@ -157,7 +158,9 @@ def run(
     refused where the experiment's kinds, deciding metrics or genre forbid overlap
     (:class:`InvalidExperimentError`, problem ``trials_in_flight_refused``).
     ``Report.best_case`` says when the run is too small for even every trial passing to
-    show a pass rate's threshold.
+    show a pass rate's threshold. ``run_id`` names the run (letters, digits, ``.``, ``_``
+    and ``-``); left out it is ``<experiment>-<UTC time>-<4 hex digits>``. An id a run is
+    kept under already is refused (:class:`UsageError`): a run's record is never reopened.
 
     Once started, a run that is stopped (Ctrl-C, SIGTERM) or that fails still returns its
     report: ``Report.status`` says how it ended and ``Report.exit_code`` what a command
@@ -175,8 +178,69 @@ def run(
         trials_in_flight=trials_in_flight,
         base=base,
         registration=registration,
+        run_id=run_id,
         on_event=on_event,
     )
+
+
+def start(
+    path: PathLike,
+    *,
+    exploratory: bool = False,
+    dry_run: bool = False,
+    repeats: int | None = None,
+    trials_in_flight: int | None = None,
+    run_id: str | None = None,
+) -> Status:
+    """Start the run of the experiment at ``path`` in a process of its own and return its
+    :class:`Status` as soon as it has opened its record, without waiting for it to end: a
+    long run outlasts the call that started it.
+
+    It is refused before anything starts as :func:`run` refuses it, with the same errors,
+    and ``path`` must be a file or a directory (not ``-``). The process is an ``ix run`` of
+    the same experiment under ``Status.run``, in a session of its own: it records, stops and
+    reports as a run in the foreground does, and what it writes to standard error is kept in
+    ``Status.log``. One that has not opened its record within two minutes is stopped and
+    :class:`ConfigError` raised. Follow it with :func:`status` or :func:`events`, stop it
+    with :func:`stop`, and read its verdict with :func:`report` once it has ended.
+    """
+    return _root().start(
+        path,
+        exploratory=exploratory,
+        dry_run=dry_run,
+        repeats=repeats,
+        trials_in_flight=trials_in_flight,
+        run_id=run_id,
+    )
+
+
+def status(run: PathLike) -> Status:
+    """Where a run stands: running, or completed, interrupted or failed; how many of its
+    trials were carried out of those planned; the process writing it while it runs here.
+    ``run`` is a run's directory, or an experiment, meaning its latest run. Read from the
+    record alone, so it gives no verdict (:func:`report` does). A run whose process died is
+    read as interrupted. Raises :class:`NotFoundError` when there is none."""
+    return _root().status(run)
+
+
+def events(run: PathLike, *, follow: bool = False) -> Iterator[dict[str, Any]]:
+    """A run's events, oldest first, each a ``matrix.v1.event`` document (``name``, ``time``,
+    ``component``, ``fields``, ...). They are telemetry and may be dropped: read results
+    from the report. With ``follow`` it yields each event as it is written, and ends once
+    the run has ended, however it ended (its process killed included); ``follow`` on a
+    run still written on another host raises :class:`UsageError` at once, since its end
+    cannot be seen from here. ``run`` is as :func:`status` takes it."""
+    return _root().events(run, follow=follow)
+
+
+def stop(run: PathLike) -> Status:
+    """Ask a running run to stop, as Ctrl-C does: the trial in flight is stopped and kept as
+    the harness's, everything the run started is released, and the record says
+    ``interrupted``. Returns the run's status once it has ended, or after 30 seconds while
+    it is still releasing what it started (``status`` still ``running``: ask again). A run
+    that has ended is left as it is. Raises :class:`UsageError` for a run written on another
+    host. ``run`` is as :func:`status` takes it."""
+    return _root().stop(run)
 
 
 def report(run: PathLike) -> Report:

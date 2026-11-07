@@ -21,11 +21,11 @@ import pytest
 from matrix import (
     ComponentLimits,
     ConfigError,
+    Context,
     Executor,
     Inputs,
     Limits,
     RunCancelled,
-    RunContext,
     RunError,
     wire,
 )
@@ -45,7 +45,7 @@ class Step:
         self.provides = frozenset([provides] if provides else [])
         self._body = body
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> Any:
+    async def run(self, inputs: Inputs, ctx: Context) -> Any:
         row = await self._body(ctx)
         return {kind: row for kind in self.provides}
 
@@ -366,6 +366,7 @@ async def test_each_component_has_its_own_deadline() -> None:
     limits = Limits(
         concurrency=2,  # the third component starts only once `hangs` has timed out
         on_failure="isolate",
+        deadline_s=None,  # no deadline but the one `hangs` has (unset, each has an hour)
         grace_s=0,
         components={"hangs": ComponentLimits(deadline_s=0.01)},
     )
@@ -455,11 +456,14 @@ async def test_a_release_deferred_after_the_component_ended_is_ignored(
 
 
 _SIGNALLED = """
-    import asyncio, sys
+    import asyncio, signal, sys
     from pathlib import Path
     from matrix import Executor, Limits, RunCancelled, cancel_on_signals, wire
 
     marker = Path(sys.argv[1])
+    # A foreground process's SIGINT: a test run started as a background job inherits SIGINT
+    # ignored, and matrix rightly leaves an ignored signal ignored.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
 
     class Holds:
         requires = ()
@@ -503,7 +507,12 @@ def test_a_signalled_run_stops_its_components_and_releases(
         assert proc.stdout is not None
         assert proc.stdout.readline().strip() == "ready"  # the component holds its resource
         proc.send_signal(sig)
-        out, err = proc.communicate(timeout=60)
+        try:
+            out, err = proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()  # else leaving the with-block waits for it with no bound
+            proc.communicate()
+            pytest.fail(f"the run did not stop within 60 s of {sig.name}")
     assert out.strip() == "cancelled cancelled", err
     assert marker.read_text() == "released"
     assert proc.returncode == 42, err

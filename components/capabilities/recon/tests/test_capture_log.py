@@ -15,9 +15,14 @@ import pytest
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog, read_captures
 from recon.adapters._out.system_clock import SystemClock
-from recon.application.captures import record_hook_payload
-from recon.domain.capture import REDACTED, credential_values, redact_credentials, redact_headers
-from recon.domain.errors import CollectionError, ConfigError
+from recon.core.application.captures import record_hook_payload
+from recon.core.domain.capture import (
+    REDACTED,
+    credential_values,
+    redact_credentials,
+    redact_headers,
+)
+from recon.core.domain.errors import CollectionError, ConfigError
 
 
 def _record(log: FilesystemCaptureLog, body: bytes = b"{}", **overrides: Any) -> dict[str, Any]:
@@ -179,14 +184,14 @@ def test_append_only_across_log_instances(tmp_path: Path) -> None:
 
 def test_a_stream_is_hashed_and_moved_on_finalize(tmp_path: Path) -> None:
     log = FilesystemCaptureLog(tmp_path, SystemClock())
-    path = log.stream_path("cmd")
-    path.write_text("line 1\nline 2\n")
+    log.tee("cmd", b"line 1\n")
+    log.tee("cmd", b"line 2\n")
     line = log.finalize_stream(
         "cmd", source=None, kind="cli", request={}, status=0, content_type="text/plain"
     )
 
     assert line is not None
-    assert not path.exists(), "the temp stream file is moved under its hash"
+    assert not list((tmp_path / "raw").glob(".stream-*")), "the body teed is moved under its hash"
     assert (tmp_path / line.body).read_text() == "line 1\nline 2\n"
     assert (
         log.finalize_stream(

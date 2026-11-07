@@ -1,5 +1,7 @@
 """Tests for CliCollector — subprocess → streaming records."""
 
+from __future__ import annotations
+
 import os
 import subprocess
 import sys
@@ -9,15 +11,37 @@ import time
 import uuid
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from recon.adapters._out.cli_collector import STDERR_TAIL_BYTES, CliCollector, PopenRunner
 from recon.adapters._out.parsing import parse_line as _parse_line
-from recon.domain.errors import CollectionError
-from recon.domain.models import SourceEntry
-from tests.recon_fakes import collector_entry
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.models import SourceEntry
+from recon.testing import each_record
+from tests.recon_fakes import collector_entry, run_for
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from recon.core.domain.models import CollectorEntry
+    from recon.core.domain.shell import ShellRunner
+
+
+def _collect(
+    entry: CollectorEntry, source: SourceEntry | None = None, shell: ShellRunner | None = None
+) -> list[dict[str, Any]]:
+    """The records recon makes of the run, as an act does."""
+    return list(_lazily(entry, source, shell))
+
+
+def _lazily(
+    entry: CollectorEntry, source: SourceEntry | None = None, shell: ShellRunner | None = None
+) -> Iterator[dict[str, Any]]:
+    """The run's records, each as recon makes it from the command's stdout."""
+    collector = CliCollector(shell=shell or PopenRunner())
+    return each_record(collector, run_for(entry, source))
 
 
 class TestParseLine:
@@ -43,7 +67,7 @@ class TestCliCollector:
             type="cli",
             run='printf \'{"x": 1}\\n{"x": 2}\\n\'',
         )
-        records = list(CliCollector().collect(entry, None))
+        records = _collect(entry, None)
         assert len(records) == 2
         assert records[0]["x"] == 1
 
@@ -53,7 +77,7 @@ class TestCliCollector:
             type="cli",
             run="echo 'hello world'",
         )
-        records = list(CliCollector().collect(entry, None))
+        records = _collect(entry, None)
         assert len(records) == 1
         assert "line" in records[0]
 
@@ -64,7 +88,7 @@ class TestCliCollector:
             run="echo '{pattern}'",
             patterns=["alpha", "beta"],
         )
-        records = list(CliCollector().collect(entry, None))
+        records = _collect(entry, None)
         assert len(records) == 2
         assert records[0]["_pattern"] == "alpha"
         assert records[1]["_pattern"] == "beta"
@@ -76,7 +100,7 @@ class TestCliCollector:
             run="echo '{url}'",
         )
         source = SourceEntry(name="test", url="https://example.com")
-        records = list(CliCollector().collect(entry, source))
+        records = _collect(entry, source)
         assert "https://example.com" in records[0]["line"]
 
     def test_source_as_cwd(self) -> None:
@@ -90,7 +114,7 @@ class TestCliCollector:
                 run="cat marker.txt",
             )
             source = SourceEntry(name="repo", type="local", url=tmp)
-            records = list(CliCollector().collect(entry, source))
+            records = _collect(entry, source)
             assert "found" in records[0]["line"]
 
     def test_a_local_source_that_is_not_a_directory_runs_nothing(
@@ -101,7 +125,7 @@ class TestCliCollector:
         entry = collector_entry(name="cwd-test", type="cli", run="touch ran-here")
         source = SourceEntry(name="repo", type="local", url=str(tmp_path / "missing"))
         with pytest.raises(CollectionError) as excinfo:
-            list(CliCollector().collect(entry, source))
+            _collect(entry, source)
         assert excinfo.value.kind == "config"
         assert str(tmp_path / "missing") in str(excinfo.value)
         assert not (tmp_path / "ran-here").exists()
@@ -119,7 +143,7 @@ class TestCliCollector:
                 return 0
 
         entry = collector_entry(name="c", type="cli", run="true")
-        list(CliCollector(Shell()).collect(entry, None))
+        _collect(entry, None, Shell())
         assert given == [300.0]
 
     def test_url_with_no_source_to_fill_it_runs_nothing(
@@ -129,7 +153,7 @@ class TestCliCollector:
         monkeypatch.chdir(tmp_path)
         entry = collector_entry(name="u", type="cli", run="touch ran {url}")
         with pytest.raises(CollectionError) as excinfo:
-            list(CliCollector().collect(entry, None))
+            _collect(entry, None)
         assert excinfo.value.kind == "config" and "{url}" in str(excinfo.value)
         assert not (tmp_path / "ran").exists()
 
@@ -140,7 +164,7 @@ class TestCliCollector:
             run='printf \'{"nested": {"val": 42}}\\n\'',
             normalize={"value": "nested.val"},
         )
-        records = list(CliCollector().collect(entry, None))
+        records = _collect(entry, None)
         assert records[0]["value"] == 42
 
     def test_failed_command_raises(self) -> None:
@@ -151,7 +175,7 @@ class TestCliCollector:
             run="exit 2",
         )
         with pytest.raises(CollectionError, match="exit 2"):
-            list(CliCollector().collect(entry, None))
+            _collect(entry, None)
 
     def test_empty_output(self) -> None:
         """Command with no stdout yields nothing (dispatch loop adds sentinel)."""
@@ -160,7 +184,7 @@ class TestCliCollector:
             type="cli",
             run="true",
         )
-        records = list(CliCollector().collect(entry, None))
+        records = _collect(entry, None)
         assert records == []
 
     def test_streaming_yields_lazily(self) -> None:
@@ -170,7 +194,7 @@ class TestCliCollector:
             type="cli",
             run='printf \'{"i": 1}\\n{"i": 2}\\n{"i": 3}\\n\'',
         )
-        gen = CliCollector().collect(entry, None)
+        gen = _lazily(entry, None)
         # next() without list() proves it's a generator
         first = next(gen)
         assert first["i"] == 1
@@ -186,7 +210,7 @@ class TestCliCollector:
             type="cli",
             run=f"sleep 10 & echo $$ $! > {pids}; printf '{{\"a\": 1}}\\n'; wait",
         )
-        gen = CliCollector().collect(entry, None)
+        gen = _lazily(entry, None)
         assert isinstance(gen, Generator)
         assert next(gen) == {"a": 1}
         shell, sleeper = map(int, pids.read_text().split())
@@ -285,10 +309,13 @@ class TestPopenRunnerFailures:
         reads stdin when it is not a tty) hung until its timeout. The survey runs in a child
         whose stdin is a pipe this test holds open."""
         survey = (
-            "from recon.adapters._out.cli_collector import CliCollector\n"
-            "from recon.domain.models import CollectorEntry\n"
+            "from recon.adapters._out.cli_collector import CliCollector, CliSettings, PopenRunner\n"
+            "from recon.core.domain.collector import Run\n"
+            "from recon.core.domain.models import CollectorEntry\n"
+            "from recon.testing import records\n"
             "entry = CollectorEntry(name='c', type='cli', run='cat')\n"
-            "print(list(CliCollector().collect(entry, None)))\n"
+            "run = Run(entry, None, CliSettings(run='cat'))\n"
+            "print(records(CliCollector(shell=PopenRunner()), run))\n"
         )
         child = subprocess.Popen(
             [sys.executable, "-c", survey],

@@ -5,8 +5,9 @@ which tool applies a stimulus (:class:`Probe`), how a measurement is taken
 (:class:`Sensor`), and what is brought up around the subjects (:class:`Environment`).
 :class:`Scope` is all ix assumes of whatever runs its work. The rest are optional, so an
 adapter need not answer what it cannot tell: a subject or a sensor may also be a
-:class:`Review` and a :class:`StandIn`, any adapter a :class:`Preflight`, an environment a
-:class:`Liveness`, and a scope :class:`Traced` and :class:`Recorded`. Without one there is
+:class:`Review` and a :class:`StandIn`, any adapter a :class:`Preflight` and a
+:class:`ModelCalls`, an environment a :class:`Liveness`, and a scope :class:`Traced` and
+:class:`Recorded`. Without one there is
 nothing to check, to stand in, to trace or to name, and the run proceeds. A sensor may also be
 a :class:`SpanReader`, so a run keeps the spans it reads. A kind's options,
 facets and metrics are data (:mod:`ix.domain.kind`), not part of these ports.
@@ -154,7 +155,8 @@ class Subject(Protocol):
     ) -> AbstractAsyncContextManager[Target]:
         """Bring the subject up and yield how to address it; release it on exit.
 
-        ``subject`` has its options filled in for the trial's cell.
+        ``subject`` has its options as carried out, each default its kind declares for one
+        left out among them, filled in for the trial's cell.
         """
         ...
 
@@ -182,9 +184,26 @@ class Preflight(Protocol):
     def requirements(self, options: Mapping[str, Any], *, base: str) -> Sequence[Requirement]:
         """What carrying out an entry whose options are ``options`` needs of this host, each
         checked now. ``base`` is the directory the experiment's relative paths resolve
-        against. It is asked once for each cell's options, a factor's ``{name}`` filled in;
+        against. It is asked once for each cell's options, as carried out (each default
+        its kind declares for one left out among them), a factor's ``{name}`` filled in;
         a requirement that depends on a placeholder only a trial fills (an environment's
         binding, ``{db.url}``) is left out: it is told when the trial starts."""
+        ...
+
+
+@runtime_checkable
+class ModelCalls(Protocol):
+    """Optional for any adapter: how many model calls it starts in one trial of an entry, so
+    that ``ix plan`` can say how much work a run asks of model providers, never what it costs.
+    An adapter that may call a model (one that needs ``runtimes`` or ``judge_models``) and is
+    not a ``ModelCalls`` is listed as not counted."""
+
+    def model_calls(self, options: Mapping[str, Any]) -> int:
+        """The most model calls one trial of an entry whose options are ``options`` starts:
+        each agent session, model call or judge's agent run once, however many model
+        requests it makes inside; 0 on a stand-in, which calls no model. ``options`` are as a
+        preflight's are, for one cell. Asks nothing of the host; raises for options it cannot
+        count, which leaves the entry not counted."""
         ...
 
 
@@ -210,9 +229,10 @@ class Review(Protocol):
     with the experiment, and ``validate`` reports it."""
 
     def review(self, options: Mapping[str, Any], around: Surroundings) -> Sequence[Problem]:
-        """Every problem with the entry whose options are ``options``, each ``path`` dotted
-        from the experiment's root; none when its options are of the wrong shape, which the
-        kind's declaration reports."""
+        """Every problem with the entry whose options are ``options`` (as carried out, each
+        default its kind declares filled in), each ``path`` dotted from the experiment's
+        root; none when its options are of the wrong shape, which the kind's declaration
+        reports."""
         ...
 
 
@@ -247,11 +267,13 @@ class Probe(Protocol):
         self, options: Mapping[str, Any], target: Target, *, seed: int
     ) -> Mapping[str, Mapping[str, Any]]:
         """Apply the stimulus and return what it left behind, by the facet the probe kind
-        offers. ``options`` are the probe's, with every placeholder filled in for this
-        trial. ``seed`` is the trial's own, drawn from the registered seed: a probe kind that
-        makes a random choice (a sampled payload, a jittered arrival) draws it from ``seed``,
-        so a rerun of the plan applies the same stimulus. One that chooses nothing ignores
-        it."""
+        offers. ``options`` are the probe's as carried out (each default its kind declares
+        for one left out among them), with every placeholder filled in for this trial, and
+        each option its kind declares a ``path``, and each directory a ``command`` is
+        ``within``, resolved against the experiment's directory. ``seed`` is the trial's own,
+        drawn from the registered seed: a probe kind that makes a random choice (a sampled
+        payload, a jittered arrival) draws it from ``seed``, so a rerun of the plan applies
+        the same stimulus. One that chooses nothing ignores it."""
         ...
 
 
@@ -272,7 +294,8 @@ class Sensor(Protocol):
     ) -> Mapping[str, Measured] | Sensed:
         """This sensor's metrics for one interaction, by metric name, or a :class:`Sensed`
         that holds them with what more it has to say. A metric it cannot give is left out;
-        raising gives every metric a ``sensor`` failure. ``options`` are the sensor's, each
+        raising gives every metric a ``sensor`` failure. ``options`` are the sensor's as
+        carried out (each default its kind declares for one left out among them), each
         option its kind declares a ``path`` already resolved against the experiment's
         directory."""
         ...

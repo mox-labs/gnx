@@ -25,6 +25,7 @@ from matrix import (
     load_each,
 )
 from matrix.adapters._out.documents.files import FileSource
+from matrix.testing import DocumentSourceConformance
 
 
 def _write(folder: Path, name: str, text: str) -> Path:
@@ -414,6 +415,19 @@ def test_any_source_that_meets_the_port_can_stand_behind_the_loader() -> None:
     config = load_config(sources=["team"], loader=Loader(source))
     assert config.matrix.definitions == ("/opt/team-agents",)
     assert config.sources == ("inline:team",)
+
+
+class TestTheInlineSource(DocumentSourceConformance):
+    """The source that is not files keeps the port the loader reads through."""
+
+    def source(self) -> DocumentSource:
+        return _Inline({"team": {"matrix": {"definitions": ["/opt/team-agents"]}}})
+
+    def present(self) -> Any:
+        return "team"
+
+    def absent(self) -> Any:
+        return "nobody"
 
 
 def test_problem_records_are_the_shared_envelope_shape() -> None:

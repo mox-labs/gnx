@@ -16,12 +16,13 @@ import yaml
 from click.testing import CliRunner
 
 from recon.adapters._in.cli import main
+from recon.adapters._out.mission_layout import STATE
 from recon.adapters._out.subscription_files import SubscriptionFiles
-from recon.application.plan import build_plan
-from recon.application.subscriptions import Position
 from recon.composition import load_plugins
-from recon.domain.errors import NotFoundError, ReconError, UsageError
-from recon.domain.subscriptions import matches
+from recon.core.application.plan import build_plan
+from recon.core.domain.errors import NotFoundError, ReconError, UsageError
+from recon.observe.application.subscriptions import Position
+from recon.observe.domain.delivery import matches
 from tests.test_changes import Surveys
 
 if TYPE_CHECKING:
@@ -162,10 +163,10 @@ class TestMatch:
         surveys = Surveys(tmp_path)
         surveys.survey(A, B)
         surveys.survey(A, C)
-        billing = surveys.recon.subscribe("m", "billing")
+        billing = surveys.recon.observation.subscribe("m", "billing")
         assert [row.key for row in billing.rows] == [{"id": "b"}]
         assert billing.subscription == "billing" and billing.count == 1
-        gone = surveys.recon.subscribe("m", "gone")
+        gone = surveys.recon.observation.subscribe("m", "gone")
         assert [(row.op, row.key) for row in gone.rows] == [("delete", {"id": "b"})]
 
 
@@ -180,28 +181,30 @@ class TestAcks:
         """A consumer that read and crashed before it acked reads the same rows again, with the
         same ids, and what is kept is unchanged."""
         surveys = self._surveyed(tmp_path)
-        first = surveys.recon.subscribe("m", "all")
-        kept = SubscriptionFiles().state(tmp_path / ".recon" / "m", "all")
+        first = surveys.recon.observation.subscribe("m", "all")
+        kept = SubscriptionFiles(tmp_path / STATE).state("m", "all")
         assert kept is None, "a read keeps nothing"
-        again = surveys.recon.subscribe("m", "all")
+        again = surveys.recon.observation.subscribe("m", "all")
         assert [row.id for row in again.rows] == [row.id for row in first.rows] != []
-        acked = surveys.recon.ack("m", "all", first.cursor)
+        acked = surveys.recon.observation.ack("m", "all", first.cursor)
         assert acked.outcome == "acked" and acked.cursor == first.cursor and acked.acked_at
-        assert surveys.recon.subscribe("m", "all").rows == []
+        assert surveys.recon.observation.subscribe("m", "all").rows == []
         surveys.survey(A, B, C)
-        assert [row.key for row in surveys.recon.subscribe("m", "all").rows] == [{"id": "c"}]
+        assert [row.key for row in surveys.recon.observation.subscribe("m", "all").rows] == [
+            {"id": "c"}
+        ]
 
     def test_an_ack_is_monotone(self, tmp_path: Path) -> None:
         surveys = self._surveyed(tmp_path)
-        start = surveys.recon.subscribe("m", "all", max_bytes=1).cursor  # one row read
-        later = surveys.recon.subscribe("m", "all").cursor
-        assert surveys.recon.ack("m", "all", later).outcome == "acked"
+        start = surveys.recon.observation.subscribe("m", "all", max_bytes=1).cursor  # one row read
+        later = surveys.recon.observation.subscribe("m", "all").cursor
+        assert surveys.recon.observation.ack("m", "all", later).outcome == "acked"
         with pytest.raises(UsageError) as refused:
-            surveys.recon.ack("m", "all", start)
+            surveys.recon.observation.ack("m", "all", start)
         assert refused.value.details["acked"]["row"] > refused.value.details["got"]["row"]
         assert refused.value.fix
-        assert surveys.recon.ack("m", "all", later).outcome == "unchanged"
-        kept = SubscriptionFiles().state(tmp_path / ".recon" / "m", "all")
+        assert surveys.recon.observation.ack("m", "all", later).outcome == "unchanged"
+        kept = SubscriptionFiles(tmp_path / STATE).state("m", "all")
         assert kept is not None and kept.cursor == later
 
     def test_an_ack_of_an_earlier_archive_after_a_later_one_is_refused(
@@ -210,50 +213,52 @@ class TestAcks:
         """Ixian S4: monotone across archives, not only within one: a cursor in the first
         archive, acked after one in the second, is older, and refused."""
         surveys = self._surveyed(tmp_path)  # one archive: a, b
-        early = surveys.recon.subscribe("m", "all", max_records=1).cursor
+        early = surveys.recon.observation.subscribe("m", "all", max_records=1).cursor
         surveys.survey(A, B, C)
-        late = surveys.recon.subscribe("m", "all").cursor
-        assert surveys.recon.ack("m", "all", late).outcome == "acked"
+        late = surveys.recon.observation.subscribe("m", "all").cursor
+        assert surveys.recon.observation.ack("m", "all", late).outcome == "acked"
         with pytest.raises(UsageError) as refused:
-            surveys.recon.ack("m", "all", early)
+            surveys.recon.observation.ack("m", "all", early)
         assert refused.value.details["acked"]["archive"] != refused.value.details["got"]["archive"]
 
     def test_an_ack_of_a_cursor_of_another_output_or_mission_is_refused(
         self, tmp_path: Path
     ) -> None:
         surveys = self._surveyed(tmp_path)
-        records = surveys.recon.read_since("m").cursor
+        records = surveys.recon.observation.read_since("m").cursor
         with pytest.raises(UsageError):
-            surveys.recon.ack("m", "all", records)
+            surveys.recon.observation.ack("m", "all", records)
         body = {"mission": "other", "output": "inbox", "archive": None, "row": 0, "at": None,
                 "done": False}  # fmt: skip
         with pytest.raises(UsageError):
-            surveys.recon.ack("m", "all", "c1" + json.dumps(body).encode().hex())
-        reader = surveys.recon._change_reader("m", "inbox")  # noqa: SLF001 - a signed cursor
+            surveys.recon.observation.ack("m", "all", "c1" + json.dumps(body).encode().hex())
+        prepared = surveys.recon.collection.prepare("m")
+        follow = surveys.recon.observation._follow  # noqa: SLF001 - a cursor signed by its key
+        reader = follow.change_reader("m", "inbox", prepared)
         never = reader.encode(Position(archive="2001-01-01-000000-000000"))
         with pytest.raises(UsageError) as refused:
-            surveys.recon.ack("m", "all", never)
+            surveys.recon.observation.ack("m", "all", never)
         assert "neither has nor retired" in str(refused.value)
-        assert SubscriptionFiles().state(tmp_path / ".recon" / "m", "all") is None
+        assert SubscriptionFiles(tmp_path / STATE).state("m", "all") is None
 
     def test_one_consumer_a_name_a_second_is_busy(self, tmp_path: Path) -> None:
         surveys = self._surveyed(tmp_path)
-        cursor = surveys.recon.subscribe("m", "all").cursor
+        cursor = surveys.recon.observation.subscribe("m", "all").cursor
         mission = tmp_path / ".recon" / "m"
         holder = textwrap.dedent(f"""
             import sys, time
             from pathlib import Path
             from recon.adapters._out.subscription_files import SubscriptionFiles
-            SubscriptionFiles().hold(Path({str(mission)!r}), "all")
+            SubscriptionFiles(Path({str(mission.parent)!r})).hold("m", "all")
             print("held", flush=True)
             time.sleep(60)
         """)
         child = subprocess.Popen([sys.executable, "-c", holder], stdout=subprocess.PIPE, text=True)
         try:
             assert child.stdout is not None and child.stdout.readline().strip() == "held"
-            for consume in (lambda: surveys.recon.subscribe("m", "all"),
-                            lambda: surveys.recon.ack("m", "all", cursor),
-                            lambda: surveys.recon.unsubscribe("m", "all")):  # fmt: skip
+            for consume in (lambda: surveys.recon.observation.subscribe("m", "all"),
+                            lambda: surveys.recon.observation.ack("m", "all", cursor),
+                            lambda: surveys.recon.observation.unsubscribe("m", "all")):  # fmt: skip
                 with pytest.raises(ReconError) as busy:
                     consume()
                 assert busy.value.kind == "busy" and busy.value.details["pid"] == child.pid
@@ -261,45 +266,51 @@ class TestAcks:
         finally:
             child.kill()
             child.wait()
-        assert surveys.recon.subscribe("m", "all").count == 2, "free once its holder died"
-        assert SubscriptionFiles().state(mission, "all") is None, "nothing was acked meanwhile"
+        assert surveys.recon.observation.subscribe("m", "all").count == 2, (
+            "free once its holder died"
+        )
+        assert SubscriptionFiles(tmp_path / STATE).state("m", "all") is None, (
+            "nothing was acked meanwhile"
+        )
 
     def test_one_process_s_second_consumer_is_busy_too(self, tmp_path: Path) -> None:
         self._surveyed(tmp_path)
-        store = SubscriptionFiles()
-        mission = tmp_path / ".recon" / "m"
-        store.hold(mission, "all")
+        store = SubscriptionFiles(tmp_path / STATE)
+        tmp_path / ".recon" / "m"
+        store.hold("m", "all")
         try:
             with pytest.raises(ReconError) as busy:
-                store.hold(mission, "all")
+                store.hold("m", "all")
             assert busy.value.kind == "busy"
             with pytest.raises(ReconError):
-                SubscriptionFiles().hold(mission, "all")
+                SubscriptionFiles(tmp_path / STATE).hold("m", "all")
         finally:
-            store.release(mission, "all")
-        store.hold(mission, "all")
-        store.release(mission, "all")
+            store.release("m", "all")
+        store.hold("m", "all")
+        store.release("m", "all")
 
     def test_a_subscription_the_config_does_not_declare_is_not_found(self, tmp_path: Path) -> None:
         surveys = self._surveyed(tmp_path)
         with pytest.raises(NotFoundError) as missing:
-            surveys.recon.subscribe("m", "nope")
+            surveys.recon.observation.subscribe("m", "nope")
         assert missing.value.details["allowed"] == ["all"]
 
     def test_a_subscription_redeclared_for_another_output_says_how_to_start_again(
         self, tmp_path: Path
     ) -> None:
         surveys = self._surveyed(tmp_path)
-        surveys.recon.ack("m", "all", surveys.recon.subscribe("m", "all").cursor)
+        surveys.recon.observation.ack(
+            "m", "all", surveys.recon.observation.subscribe("m", "all").cursor
+        )
         mission = yaml.safe_load((tmp_path / ".recon" / "m" / "config.yaml").read_text())
         mission["collectors"].append({**_inbox(), "name": "outbox"})
         mission["subscriptions"] = [{"name": "all", "output": "outbox"}]
         (tmp_path / ".recon" / "m" / "config.yaml").write_text(yaml.safe_dump(mission))
         with pytest.raises(UsageError) as refused:
-            surveys.recon.subscribe("m", "all")
+            surveys.recon.observation.subscribe("m", "all")
         assert "unsubscribe" in (refused.value.fix or "")
-        assert surveys.recon.unsubscribe("m", "all").outcome == "removed"
-        assert surveys.recon.subscribe("m", "all").output == "outbox"
+        assert surveys.recon.observation.unsubscribe("m", "all").outcome == "removed"
+        assert surveys.recon.observation.subscribe("m", "all").output == "outbox"
 
 
 class TestStatusAndRemoval:
@@ -308,17 +319,19 @@ class TestStatusAndRemoval:
         _mission(tmp_path, [{"name": "all", "output": "inbox"}, new])
         surveys = Surveys(tmp_path)
         surveys.survey(A)
-        surveys.recon.ack("m", "new", surveys.recon.subscribe("m", "new").cursor)
-        listed = surveys.recon.status("m").missions[0].subscriptions
+        surveys.recon.observation.ack(
+            "m", "new", surveys.recon.observation.subscribe("m", "new").cursor
+        )
+        listed = surveys.recon.observation.status("m").missions[0].subscriptions
         assert [(s.name, s.output, s.declared, s.cursor is not None) for s in listed] == [
             ("all", "inbox", True, False), ("new", "inbox", True, True),
         ]  # fmt: skip
         _mission(tmp_path, [])
-        [kept] = surveys.recon.status("m").missions[0].subscriptions
+        [kept] = surveys.recon.observation.status("m").missions[0].subscriptions
         assert (kept.name, kept.declared, kept.output) == ("new", False, "inbox")
-        assert surveys.recon.unsubscribe("m", "new").outcome == "removed"
-        assert surveys.recon.status("m").missions[0].subscriptions == []
-        assert surveys.recon.unsubscribe("m", "new").outcome == "absent"
+        assert surveys.recon.observation.unsubscribe("m", "new").outcome == "removed"
+        assert surveys.recon.observation.status("m").missions[0].subscriptions == []
+        assert surveys.recon.observation.unsubscribe("m", "new").outcome == "absent"
 
     def test_a_removed_subscription_reads_from_the_first_archive_again(
         self, tmp_path: Path
@@ -326,10 +339,12 @@ class TestStatusAndRemoval:
         _mission(tmp_path, [{"name": "all", "output": "inbox"}])
         surveys = Surveys(tmp_path)
         surveys.survey(A)
-        surveys.recon.ack("m", "all", surveys.recon.subscribe("m", "all").cursor)
-        assert surveys.recon.subscribe("m", "all").rows == []
-        surveys.recon.unsubscribe("m", "all")
-        assert surveys.recon.subscribe("m", "all").count == 1
+        surveys.recon.observation.ack(
+            "m", "all", surveys.recon.observation.subscribe("m", "all").cursor
+        )
+        assert surveys.recon.observation.subscribe("m", "all").rows == []
+        surveys.recon.observation.unsubscribe("m", "all")
+        assert surveys.recon.observation.subscribe("m", "all").count == 1
 
 
 class TestTheCommandLine:
@@ -356,8 +371,10 @@ class TestTheCommandLine:
         _mission(tmp_path, [{"name": "all", "output": "inbox"}])
         surveys = Surveys(tmp_path)
         surveys.survey(A, B)
-        first = surveys.recon.subscribe("m", "all", max_bytes=1).cursor
-        surveys.recon.ack("m", "all", surveys.recon.subscribe("m", "all").cursor)
+        first = surveys.recon.observation.subscribe("m", "all", max_bytes=1).cursor
+        surveys.recon.observation.ack(
+            "m", "all", surveys.recon.observation.subscribe("m", "all").cursor
+        )
         refused = self._run(surveys.recon, "ack", "m", "all", first, "--json")
         assert refused.exit_code == 2
         envelope = json.loads(refused.stderr)

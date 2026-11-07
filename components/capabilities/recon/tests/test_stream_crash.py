@@ -32,22 +32,24 @@ import yaml
 
 import recon
 from recon.adapters._in.cli import _stopping
-from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.cli_collector import CliCollector, PopenRunner
+from recon.adapters._out.mission_layout import STATE
 from recon.adapters._out.system_clock import SystemClock
-from recon.application.stream import Stream, StreamStop
 from recon.composition import root
-from recon.domain.errors import CollectionError
-from recon.domain.models import CollectorEntry, SourceEntry
-from recon.domain.stream import BufferSpec, WindowSpec
-from tests.recon_fakes import StalledArchives, VirtualClock
-from tests.test_streams import Script, _plan, _run, _seq, _telemetry
+from recon.core.application.stream import Stream, StreamStop
+from recon.core.domain.archives import ArchiveRef
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.models import CollectorEntry, SourceEntry
+from recon.core.domain.stream import BufferSpec, WindowSpec
+from recon.testing import records
+from tests.recon_fakes import StalledArchives, VirtualClock, files_of, run_for, window_kept
+from tests.test_streams import Script, _events, _plan, _run, _seq, _telemetry
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
     from contextlib import AbstractContextManager
 
-    from recon.domain.documents import WindowOutcome
+    from recon.core.domain.documents import WindowOutcome
 
 CLI = "import sys; from recon.adapters._in.cli import main; sys.exit(main())"
 K = 7  # records a window
@@ -60,6 +62,21 @@ def _project(tmp_path: Path, collector: dict[str, Any], catalog: list[dict[str, 
     config = {"catalog": catalog, "collectors": [collector]}
     (mission / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
     return mission / "streams" / str(collector["name"])
+
+
+def _paths(project: Path, stream: str) -> list[Path]:
+    """Where the file adapter keeps each window of mission m's ``stream``, oldest first."""
+    home = project / STATE / "m" / "streams" / stream
+    return [home / ref.id for ref in files_of(project).archives("m", stream=stream)]
+
+
+def _ref(window: Path) -> ArchiveRef:
+    return ArchiveRef("m", window.name, window.parent.name)
+
+
+def _state(window: Path) -> str:
+    """The window's state, as the file adapter reads it (the project is its fifth parent)."""
+    return files_of(window.parents[4]).state(_ref(window))
 
 
 def _rows(window: Path, table: str) -> list[dict[str, Any]]:
@@ -154,11 +171,10 @@ class TestKilledThenResumed:
 
         _killed_at(stream, "log", kill_at, command, tmp_path)
 
-        store = ArchiveFiles(SystemClock())
-        windows = store.archives(tmp_path / ".recon" / "m", stream="log")
+        windows = _paths(tmp_path, "log")
         *sealed, dead = windows
-        assert all(store.state(w) == "complete" for w in sealed)
-        assert store.state(dead) == "incomplete", "the window being written when killed"
+        assert all(_state(w) == "complete" for w in sealed)
+        assert _state(dead) == "incomplete", "the window being written when killed"
         before = {w.name: _digest(w) for w in sealed}
         # A write the kill cut short leaves a torn last line; make one, as the OS may.
         with open(dead / "log.jsonl.tmp", "ab") as f:
@@ -172,11 +188,11 @@ class TestKilledThenResumed:
             f.write('"}\n' + "".join(json.dumps({"seq": n}) + "\n"
                                      for n in range(kill_at + 1, total)))  # fmt: skip
 
-        document = root({}, project=tmp_path).stream("m", "log", windows=2)
+        document = root({}, project=tmp_path).observation.stream("m", "log", windows=2)
 
-        after = store.archives(tmp_path / ".recon" / "m", stream="log")
+        after = _paths(tmp_path, "log")
         assert {w.name: _digest(w) for w in after if w.name in before} == before
-        assert store.state(dead) == "incomplete", "a dead window is never changed"
+        assert _state(dead) == "incomplete", "a dead window is never changed"
         assert (dead / "log.jsonl.tmp.torn").read_bytes() == b'{"seq": 9'
         seqs = [row["seq"] for w in after for row in _rows(w, "log")]
         assert seqs == list(range(total)), "every line once, in order"
@@ -212,10 +228,9 @@ class TestKilledThenResumed:
         finally:
             whole = appender.stop()  # the source ends mid-line after the kill
 
-        store = ArchiveFiles(SystemClock())
-        windows = store.archives(tmp_path / ".recon" / "m", stream="log")
-        assert all(store.state(w) == "complete" for w in windows[:-1])
-        before = {w.name: _digest(w) for w in windows if store.state(w) == "complete"}
+        windows = _paths(tmp_path, "log")
+        assert all(_state(w) == "complete" for w in windows[:-1])
+        before = {w.name: _digest(w) for w in windows if _state(w) == "complete"}
         kept = sum(len(_rows(w, "log")) for w in windows)
         assert kill_at <= kept <= whole, "the windows hold whole lines the source had"
         # Finish the line the source was cut in, and write on to a whole number of windows'
@@ -226,9 +241,9 @@ class TestKilledThenResumed:
             f.write('"}\n' + "".join(json.dumps({"seq": n}) + "\n"
                                      for n in range(whole + 1, total)))  # fmt: skip
 
-        root({}, project=tmp_path).stream("m", "log", windows=resumed)
+        root({}, project=tmp_path).observation.stream("m", "log", windows=resumed)
 
-        after = store.archives(tmp_path / ".recon" / "m", stream="log")
+        after = _paths(tmp_path, "log")
         assert {w.name: _digest(w) for w in after if w.name in before} == before
         seqs = [row["seq"] for w in after for row in _rows(w, "log")]
         assert seqs == list(range(total)), "every line once, in order"
@@ -252,19 +267,20 @@ class TestKilledThenResumed:
         kill_at = random.Random(20261025).randint(2 * K, 5 * K)
 
         killed = _killed_at(stream, "count", kill_at, command, tmp_path)
-        store = ArchiveFiles(SystemClock())
-        last = store.archives(tmp_path / ".recon" / "m", stream="count")[-1]
-        sealed = store.read_meta(last).get("stream")
-        document = root({}, project=tmp_path).stream("m", "count", windows=1)
+        store = files_of(tmp_path)
+        last = store.archives("m", stream="count")[-1]
+        sealed = store.meta(last).get("stream")
+        document = root({}, project=tmp_path).observation.stream("m", "count", windows=1)
 
         assert document.last_window is not None
-        meta = yaml.safe_load((Path(document.last_window.path) / "meta.yaml").read_text())
+        window = window_kept(tmp_path, "m", document.last_window)
+        meta = yaml.safe_load((window / "meta.yaml").read_text())
         [gap] = meta["stream"]["sources"][0]["gaps"]
         assert gap["resumed"] is False, "the source could not go on from where it was"
         # Since when is known when the last window was sealed (the kill came between two
         # windows), and not when its writer died in it.
         assert gap["from"] == (sealed["closed_at"] if sealed else None)
-        assert meta["stream"]["previous"] == last.name
+        assert meta["stream"]["previous"] == last.id
         # Until when is the resumed run's start: after the kill, at its own window's open.
         to, opened = _instant(gap["to"]), _instant(meta["stream"]["opened_at"])
         assert to <= opened
@@ -309,7 +325,8 @@ def test_a_signal_seals_the_window_with_every_record_it_had(
     assert (document["windows"], document["records"], document["dropped"]) == (1, lines, 0)
     assert document["last_window"]["closed_by"] == "stopped"
     assert document["state"] == "complete"
-    meta = yaml.safe_load((Path(document["last_window"]["path"]) / "meta.yaml").read_text())
+    window = stream / document["last_window"]["id"]
+    meta = yaml.safe_load((window / "meta.yaml").read_text())
     assert (meta["stream"]["closed_by"], meta["ended"]) == ("stopped", "stopped")
     [listed] = recon.status("m", root=tmp_path).missions[0].streams
     assert listed.latest is not None and listed.latest.ended == "stopped", (
@@ -329,7 +346,7 @@ class TestTheCommandsHandlerAsksItNeverRaises:
         self, tmp_path: Path, handler: Callable[[StreamStop], AbstractContextManager[None]]
     ) -> tuple[StreamStop, list[WindowOutcome]]:
         clock = VirtualClock()
-        store = StalledArchives(clock)
+        store = StalledArchives(tmp_path / STATE, clock)
         source = Script(clock, _seq(10), then="quiet", quiet_to=10.0)
         stop = recon.StreamStop()
         signalled = threading.Event()
@@ -398,10 +415,10 @@ def test_a_stream_of_a_quiet_command_leaves_no_process_behind(tmp_path: Path) ->
         [{"name": "here", "type": "local", "url": ".", "timeout": 3600}],
     )  # fmt: skip
 
-    document = root({}, project=tmp_path).stream("m", "quiet", windows=1)
+    document = root({}, project=tmp_path).observation.stream("m", "quiet", windows=1)
 
     assert document.last_window is not None
-    [row] = _rows(Path(document.last_window.path), "quiet")
+    [row] = _rows(window_kept(tmp_path, "m", document.last_window), "quiet")
     started = time.monotonic()
     while _running(row["pid"]):
         assert time.monotonic() - started < 5, "the command outlived the stream"
@@ -448,7 +465,7 @@ class TestACommandStoppedBeforeItStarts:
                 collector.close()
                 return super().run_lines(*args, **kwargs)
 
-        collector = CliCollector(ClosedMeanwhile())
+        collector = CliCollector(shell=ClosedMeanwhile())
         entry = CollectorEntry.model_validate(
             {"name": "quiet", "type": "cli", "source": "here",
              "run": self.COMMAND.format(pid=pid)}
@@ -459,7 +476,7 @@ class TestACommandStoppedBeforeItStarts:
 
         started = time.monotonic()
         with contextlib.suppress(CollectionError):
-            assert list(collector.collect(entry, source)) == []
+            assert records(collector, run_for(entry, source)) == []
 
         assert time.monotonic() - started < 5
         _not_left_running(pid)
@@ -476,7 +493,7 @@ class TestACommandStoppedBeforeItStarts:
         stop.ask()
 
         started = time.monotonic()
-        root({}, project=tmp_path).stream("m", "quiet", windows=1, stop=stop)
+        root({}, project=tmp_path).observation.stream("m", "quiet", windows=1, stop=stop)
 
         assert time.monotonic() - started < 10
         _not_left_running(pid)
@@ -507,15 +524,16 @@ def test_a_stream_that_ends_leaves_no_ticker_waiting_out_its_window(tmp_path: Pa
     stream that ended early left it asleep for up to a window, an hour here, in a host that
     lives on. It sleeps in slices of at most a second, on the clock still, and looks between."""
     clock = SystemClock()
-    store = ArchiveFiles(clock)
+    store = files_of(tmp_path, clock)
     events: list[dict[str, Any]] = []
-    stream = Stream(store, clock, "test", telemetry=_telemetry(store, events))
+    stream = Stream(store, store, clock, "test", telemetry=_telemetry(events))
 
     def ends_soon(after: Any) -> Iterator[dict[str, Any]]:
         yield {"seq": 0}
         time.sleep(0.3)  # the ticker is asleep on the hour by now
 
-    run = stream.run(tmp_path, _plan(WindowSpec(seconds=3600)), ends_soon, dict, close=lambda: None)
+    run = stream.run("m", _plan(WindowSpec(seconds=3600)), lambda after: _events(ends_soon(after)),
+                     lambda record, scope: dict(record), close=lambda: None)  # fmt: skip
 
     assert run.last is not None and run.last.closed_by == "eof"
     started = time.monotonic()
@@ -546,13 +564,15 @@ def test_memory_stays_flat_over_a_long_stream(tmp_path: Path) -> None:
 
     tracemalloc.start()
     try:
-        store = ArchiveFiles(clock)
+        store = files_of(tmp_path, clock)
         plan = _plan(WindowSpec(records=500), buffer=BufferSpec(records=64))
         events: list[dict[str, Any]] = []
-        stream = Stream(store, clock, "test", telemetry=_telemetry(store, events))
+        stream = Stream(store, store, clock, "test", telemetry=_telemetry(events))
         source = Long(clock, [])
         run = stream.run(
-            tmp_path, plan, source.records, dict, close=source.close, on_window=measure,
+            "m", plan, lambda after: _events(source.records(after)),
+            lambda record, scope: dict(record), close=source.close,
+            sealed=lambda hold, outcome: measure(outcome),
             preserve_raw=True,
         )  # fmt: skip
     finally:
@@ -567,5 +587,4 @@ def test_memory_stays_flat_over_a_long_stream(tmp_path: Path) -> None:
 
 
 def _windows(project: Path) -> list[Path]:
-    home = project / "streams" / "s"
-    return [w for w in sorted(home.iterdir()) if w.is_dir() and not w.name.startswith(".")]
+    return _paths(project, "s")

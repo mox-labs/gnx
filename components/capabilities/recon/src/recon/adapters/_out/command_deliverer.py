@@ -22,7 +22,7 @@ import subprocess
 import tempfile
 from typing import TYPE_CHECKING
 
-from recon.domain.subscriptions import Delivered
+from recon.observe.domain.delivery import Delivered
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence

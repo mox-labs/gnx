@@ -36,6 +36,7 @@ from matrix import (
     load_config,
 )
 from matrix.adapters._out.stores.jsonl import JsonlStoreConfig
+from matrix.testing import ConstructStoreConformance, ObserverConformance
 
 import ix
 from ix.adapters._in.matrix_components import (
@@ -52,16 +53,19 @@ from ix.adapters._out.matrix_runs import Runs as RunRecords
 from ix.adapters._out.subjects import ProcessSubject
 from ix.application import running
 from ix.composition import RUNS_DIRECTORY, Root
-from ix.composition.extension import POINTS, register_run_path
+from ix.composition.entry_point import register_run_path
 from ix.composition.settings import IxSettings
 from ix.domain import schema
 from ix.domain.kind import Metric
 from ix.domain.ports import Liveness, Preflight, Sensed
 from ix.domain.report import report as build_report
 from ix.domain.run import CALIBRATION, Failure, HarnessError, Interaction, Reading, Target
+from ix.extension import POINTS
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
+
+    from matrix import ConstructStore, Observer
 
     from ix.domain.experiment import Shape
     from ix.domain.ports import Requirement, Surroundings
@@ -380,7 +384,7 @@ class TestWhereEachSettingCameFrom:
         assert report.provenance.settings == {
             "ix.runs": str(yours),
             "matrix.observers": str(project),
-            "matrix.models": "default",
+            "matrix.model_runtimes": "default",
         }
 
     def test_settings_given_in_code_say_so(self, write_experiment: Write) -> None:
@@ -1318,13 +1322,14 @@ class TestWhatCannotRun:
 
     def test_what_ix_can_run_is_listed_with_the_kinds(self) -> None:
         """Changed requirement: ``compose`` has an adapter, and so does
-        ``evaluator``, pydantic-evals' evaluators."""
+        ``evaluator``, pydantic-evals' evaluators, and mutation testing's three kinds."""
         kinds = ix.kinds()
         runnable = {schema.short(name) for name in kinds.runnable}
         assert runnable == {
             "process", "http", "http-load", "timing", "memory", "none", "agent-session",
             "model-call", "prompt", "activation", "tool-usage", "function-test", "outcome",
-            "text-match", "usage", "judge", "compose", "evaluator",
+            "text-match", "usage", "judge", "compose", "evaluator", "command", "exit-status",
+            "test-suite", "mutant", "mutant-kill",
         }  # fmt: skip
         assert set(kinds.kinds) - set(kinds.runnable) == {"ix.v1.probe.inspect-task"}
         assert set(kinds.runnable) < set(kinds.kinds)
@@ -1669,3 +1674,22 @@ def test_an_adapter_without_the_optional_checks_runs_with_nothing_to_check(
     report = Root(registry=registry).run(write_experiment(experiment()), exploratory=True)
     assert report.status == "completed" and report.trials.carried_out == 15
     assert report.trials.harness_failures == report.trials.subject_failures == 0
+
+
+class TestTheStandInStores(ConstructStoreConformance):
+    """matrix's JSONL store under the other names this module registers keeps the port."""
+
+    @pytest.fixture(autouse=True, params=[_RecordingStore, _CountingStore])
+    def _made(self, request: pytest.FixtureRequest, tmp_path: Path) -> None:
+        self.made: type[JsonlConstructStore] = request.param
+        self.root = tmp_path / "runs"
+
+    def store(self) -> ConstructStore:
+        return self.made.from_config(JsonlStoreConfig(root=str(self.root)))
+
+
+class TestTheRelayOfIxsEvents(ObserverConformance):
+    """The observer ix attaches to each run to hand its ``ix.*`` events on."""
+
+    def observer(self) -> Observer:
+        return matrix_runs._Relay(lambda name, fields: None)

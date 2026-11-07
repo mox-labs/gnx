@@ -10,12 +10,12 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from recon.application.plan import Plan, build_plan
 from recon.composition import load_plugins
-from recon.domain.schedule import EVERY_ALLOWED
+from recon.core.application.plan import Plan, build_plan
+from recon.core.domain.schedule import EVERY_ALLOWED
 
 if TYPE_CHECKING:
-    from recon.domain.collector import Plugins
+    from recon.core.domain.collector import Plugins
 
 
 @pytest.fixture(scope="module")
@@ -43,7 +43,11 @@ class TestTheDefaults:
         assert plan.valid and plan.config is not None
         assert plan.config.schedule is None
         assert plan.config.deadline is None, "an unscheduled mission keeps no deadline by default"
-        assert not any(path.startswith(("schedule", "deadline")) for path in _values(plan))
+        assert not any(path.startswith("schedule") for path in _values(plan))
+        # Changed requirement (step M4, ruling G2): a default is never hidden, so the plan
+        # reports the deadline an unscheduled mission keeps: none, said as no bound.
+        value, origin, note = _values(plan)["deadline"]
+        assert (value, origin) == (None, "recon") and note.startswith("none: no bound")
 
     def test_every_alone_misses_once_and_bounds_each_tick_at_0_8_of_every(
         self, plugins: Plugins
@@ -192,7 +196,7 @@ class TestATickSeesNoShellVariable:
     def test_an_mcp_source_s_token_and_server_variables_are_warned_each(
         self, plugins: Plugins
     ) -> None:
-        """A kind's own references (``CollectorType.source_env``) are warned as ``auth.token``
+        """A kind's own references (its ``SourceKind.env``) are warned as ``auth.token``
         is, so a third party's source kind is held to it through the same entry point."""
         sources: list[dict[str, Any]] = [
             {"name": "s", "type": "mcp", "command": "/usr/local/bin/srv",
@@ -222,7 +226,7 @@ class TestATickSeesNoShellVariable:
         assert _unscheduled(plan) == {}
 
     def test_the_kind_is_a_warning_kind_recon_publishes(self) -> None:
-        from recon.domain.errors import PROBLEM_KINDS
+        from recon.core.domain.errors import PROBLEM_KINDS
 
         assert "env_unscheduled" in PROBLEM_KINDS
 
@@ -396,6 +400,6 @@ class TestATickRunsTheCodeItWasInstalledWith:
         }
 
     def test_the_kind_is_a_warning_kind_recon_publishes(self) -> None:
-        from recon.domain.errors import PROBLEM_KINDS
+        from recon.core.domain.errors import PROBLEM_KINDS
 
         assert "package_unpinned" in PROBLEM_KINDS

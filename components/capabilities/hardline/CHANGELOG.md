@@ -1,5 +1,45 @@
 # Changelog — hardline
 
+## 0.3.1 — 2026-11-06
+
+### Fixed
+
+- **A failed tool's result is no longer sent as a success on `openai-compat`.** The chat-completions `tool` role has no error flag, and `Message.is_error` was dropped there, so a model was told a tool that failed had answered. The result's content is now marked, `[tool error] <content>`, the one encoding `CONTRACT.md` declares (ruling HO7: what a backend cannot carry is never dropped silently). `anthropic` already sent the Messages API's own `is_error`.
+
+## 0.3.0 — 2026-11-06
+
+A call's reply and hardline's record of it are two documents; what a backend can do beyond the
+port is a declared protocol; every default of a row is in the row and its record. Each entry
+compares with 0.2.0. matrix 0.9.0, which reads the 0.2 `Completion`, does not yet work with this
+release: its hardline adapter moves to a bridge distribution next.
+
+### Removed (breaking)
+
+- **`Completion.raw` and `RawCompletion.raw` are gone.** Each held a provider's reply minus its content, in that provider's own shape, with no schema, inside a versioned contract; nothing read it, and the CLI left it out. A backend that passes `raw=` now fails validation.
+- **`hardline.NAMESPACE` is gone.** It said every hardline type URL is `hardline.v1`, which the reply's no longer is. `COMPLETION_TYPE_URL` and `CALL_TYPE_URL` remain, each the whole type URL.
+- **`build_runtime(schema_retries=...)` and `ModelRuntime(schema_retries=...)` are gone.** The repair count is the row's `schema_retries` (below).
+- **`TracedBackend` declares no member but the port's two.** It defined `check`, `aclose`, `supports_tools` and `default_base_url` on every instance and forwarded each by name, so every composed backend satisfied every optional protocol. It takes `(inner, telemetry)`, without the backend's name, which it read only for the provider.
+
+### Changed (breaking)
+
+- **`Completion` is the reply, `hardline.v2.completion`, and hardline's record of the call is `Completion.record`, a `CallRecord`, `hardline.v1.call`.** The reply keeps what any model runtime can state: `name`, `family`, `model`, `provider` (new), `local`, `text`, `tool_calls`, `finish_reason`, `native_finish_reason`, `refusal`, `usage`, `request_id`, `latency_ms`. The record holds what only hardline knows: `backend`, `attempts`, `retries`, `fallback_from`, `params`, `attempt_log`, `turns_digest`, `row`. Read `c.record.fallback_from` where it was `c.fallback_from`, and so on. Every reply key is now required, `type_url` aside. The record's major is its own: what hardline records grows there, and the reply's major need not move with it.
+- **Type URLs are dotted**, `<package>.v<major>.<resource>`, as matrix, ix and recon spell theirs and hardline its error envelope (`hardline.v1.error`). `hardline.v1/completion` claimed to follow "the matrix convention" with a slash that no other package used. A `type_url` is checked: a reply or record with another one is refused.
+- **`complete --json` prints the new shape**: the reply's keys, `answered`, and `record`. README "Output contract" and the skill say so.
+- **`RowRecord.rungs` names every field of the row but its name**, `default` for each that no tier set, where it named only the fields a tier set and left the rest to be inferred.
+- **`RequestParams.temperature` is `provider_default` when none was sent**, where it was `null`, which a reader could take for zero or for unrecorded (ruling HO6). It is `float | "provider_default"`.
+- **Every row's digest changes**: a row's spec now holds `schema_retries`, and the digest is over the whole spec, defaults included. A digest from 0.2 does not match the same row under 0.3.
+- **The parts of the record ignore keys they do not know**: `CallRecord`, `RequestParams`, `Attempt` and `RowRecord` are `extra="ignore"`, where they refused them. A record a newer 0.x wrote reads in an older one (MRC:c35); the reply itself still refuses an unknown key, so a reader of stored replies upgrades first.
+- **`backend_problems` reads the optional members through their protocols**: a backend that declares `default_base_url = None` is now told it is not an http(s) URL, where `None` passed as "not declared".
+
+### Added
+
+- **`Completion.provider`**: who served the reply, the answering row's `provider`, else its backend's entry-point name, the rule hardline's telemetry already used for `gen_ai.provider.name`. A caller no longer asks the registry again to name it. `Endpoint.provider_name` holds the rule, once.
+- **`answered` is in the JSON** (ruling HO8), a computed field: `complete --json` and `model_dump` carry it, so an agent reads it instead of recomputing it. JSON whose `answered` contradicts the reply's own keys is refused.
+- **Optional backend capabilities are declared protocols**, each `runtime_checkable` and exported: `CheckedBackend`, `ClosableBackend`, `ToolCallingBackend` (`supports_tools: Literal[True]`) and `LocatedBackend` (`default_base_url: str`). The runtime reads each with `isinstance`, once, from the backend as loaded, before the composition root wraps it for telemetry; the composition root reads `LocatedBackend` the same way. No member is read by name with `getattr`. A built-in or third-party backend that already set these members needs no edit. New exports: the four protocols, `CallRecord`, `CALL_TYPE_URL`.
+- **`schema_retries` is a row key**, default 1, at most 10: the repairs `extract` makes on the row, which the row asked for sets, whichever row of its chain answers, as for `limits`. It is in the row's digest, `models --json`, `worst_case` and the record's rungs.
+- **`check --json` shows each row's `rungs`**: where each of its values came from, before any call.
+- **`CONTRACT.md`**: what each published surface hides, its members, defaults, failure behaviour and stability; `tests/test_hardline_contract.py` pins the reply, the record, the registry row, the backend port and `hardline.__all__`.
+
 ## 0.2.0 — 2026-10-22
 
 The first release with a changelog: each entry compares with 0.1.0.

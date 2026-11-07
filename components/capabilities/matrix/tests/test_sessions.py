@@ -11,10 +11,10 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from matrix import (
     AGENT_RESPONSE,
@@ -29,13 +29,20 @@ from matrix import (
     AgentRuntimeError,
     BoundAgent,
     CompilationError,
+    Context,
+    ContractError,
     Executor,
     Limits,
     MatrixConfig,
+    ModelCall,
     ModelRequest,
+    ModelRuntimeError,
+    ModelStep,
+    ModelStepConfig,
     RunContext,
     RunError,
     Session,
+    TokenUsage,
     call_sent,
     compose,
     default_registry,
@@ -43,7 +50,16 @@ from matrix import (
     record_session,
     wire,
 )
-from matrix.adapters._out.runtime.mock import MockAgentRuntime, MockAgentRuntimeConfig
+from matrix.adapters._out.runtime.mock import (
+    MockAgentRuntime,
+    MockAgentRuntimeConfig,
+    MockModelRuntime,
+    MockModelRuntimeConfig,
+)
+from matrix.testing import AgentRuntimeConformance
+
+if TYPE_CHECKING:
+    from matrix import AgentRuntime
 
 DATA_MODEL = Path(__file__).parents[1] / "docs" / "explanation" / "data-model.md"
 RATING = "acme.v1.rating"
@@ -74,20 +90,48 @@ async def test_a_model_call_is_a_session_row_its_reply_points_at_and_its_rows_na
     (session,) = run.rows(SESSION)
     assert isinstance(session, Session)
     assert (session.port, session.runtime) == ("model-runtime", "matrix.v1.model-runtime.mock")
-    assert (session.family, session.backend, session.finish_reason) == ("mock", "mock", "stop")
-    assert (session.attempts, session.retries, session.turns) == (1, 0, None)
+    assert (session.family, session.finish_reason, session.turns) == ("mock", "stop", None)
+    assert session.provenance == {}  # the mock knows nothing beyond the reply
     assert (session.status, session.reason, session.error) == ("completed", None, None)
+    turn: dict[str, Any] = {"tool_calls": [], "tool_call_id": None, "is_error": False}
     assert session.sent == digest(
-        {"prompt": "rate it", "system": "Be fair.", "model": None, "output": None}
+        {
+            "turns": [
+                {"role": "system", "content": "Be fair.", **turn},
+                {"role": "user", "content": "rate it", **turn},
+            ],
+            "tools": [],
+            "model": None,
+            "output": None,
+            "max_tokens": None,
+            "temperature": None,
+        }
     )
-    assert session.sent == call_sent(ModelRequest(prompt="rate it", system="Be fair."))
+    assert session.sent == call_sent(ModelRequest.from_prompt("rate it", system="Be fair."))
     assert (session.trace_id, session.span_id) == (None, None)  # no OTel span was current
     (reply,) = run.rows(MODEL_CALL)
     assert (reply.session, reply.text, reply.finish_reason) == (0, '{"score": 4}', "stop")
     # What the session row holds is not repeated on the reply.
-    assert (reply.usage, reply.attempts, reply.latency_ms, reply.backend) == (None,) * 4
+    assert (reply.usage, reply.latency_ms, reply.name, reply.provenance) == (None, None, None, {})
     behind = {e.kind: e.sessions for e in run.construct.ledger if e.kind != SESSION}
     assert behind == {PROMPT: (), MODEL_CALL: (0,), RATING: (0,)}
+
+
+async def test_a_model_step_s_row_names_the_type_and_the_distributions_of_its_runtime() -> None:
+    """A model step's session row says which model runtime answered: the type URL the
+    config's name was built from, and the distributions that registry entry drives, for a
+    runtime another package registers as for matrix's own."""
+    url = "acme.v1.model-runtime.echo"
+    registry = default_registry(discover=False).register(
+        "model-runtime", url, MockModelRuntime, config=MockModelRuntimeConfig, drives=("acme",)
+    )
+    box = compose(
+        MatrixConfig.model_validate({"model_runtimes": {"m": {"type": url, "default": "ok"}}}),
+        registry=registry,
+    )
+    run = await box.executor().run(box.wire(_model_step(), inputs=[PROMPT]), {PROMPT: "hi"})
+    (session,) = run.rows(SESSION)
+    assert (session.port, session.runtime, session.drives) == ("model-runtime", url, ("acme",))
 
 
 async def test_an_agent_session_is_a_session_row_its_response_points_at() -> None:
@@ -163,31 +207,26 @@ async def test_a_row_names_the_sessions_its_component_ran_since_its_last_hand_ov
     assert {e.component for e in run.construct.provenance(SESSION)} == {"two"}
 
 
-async def test_a_component_can_ask_which_sessions_its_next_row_will_name() -> None:
-    """``ctx.sessions()`` is what the ledger entry of the component's next row will name, so
-    a component can put the sessions behind a row in the row itself."""
+async def test_a_row_can_carry_the_sessions_behind_it_in_itself() -> None:
+    """A component that puts the sessions behind a row in the row itself takes them from a
+    scope around the work, and names the same ones in its ledger entry."""
     runtime = MockAgentRuntime(MockAgentRuntimeConfig(default="ok"))
     agent = BoundAgent(AgentDefinition(name="a"), runtime)
-    seen: list[tuple[int, ...]] = []
 
-    class _Asks:
+    class _Carries:
         requires = frozenset({TASK})
         provides = frozenset({"acme.v1.out"})
 
-        async def run(self, inputs: Any, ctx: Any) -> None:
-            await agent.run("one")
-            await agent.run("two")
-            seen.append(ctx.sessions())
-            ctx.provide("acme.v1.out", "first")
-            seen.append(ctx.sessions())
-            await agent.run("three")
-            seen.append(ctx.sessions())
-            ctx.provide("acme.v1.out", "second")
+        async def run(self, inputs: Any, ctx: Context) -> None:
+            for task in (("one", "two"), ("three",)):
+                async with ctx.attributed() as behind:
+                    for each in task:
+                        await agent.run(each)
+                ctx.provide("acme.v1.out", list(behind.sessions()), sessions=behind.sessions())
 
-    run = await Executor().run(wire({"asks": _Asks()}, inputs=[TASK]), {TASK: "go"})
-    assert seen == [(0, 1), (), (2,)]
+    run = await Executor().run(wire({"carries": _Carries()}, inputs=[TASK]), {TASK: "go"})
+    assert run.rows("acme.v1.out") == ([0, 1], [2])
     assert [e.sessions for e in run.construct.provenance("acme.v1.out")] == [(0, 1), (2,)]
-    assert RunContext("r", "alone").sessions() == ()  # outside a run, none
 
 
 OUT = "acme.v1.out"
@@ -207,13 +246,12 @@ async def test_concurrent_tasks_under_one_component_each_see_exactly_their_own_s
     opens (``ctx.attributed()``) names exactly the sessions made in its own task, and so does
     the ledger entry of the row each hands over with them. Neither claims the other's."""
     seen: dict[str, tuple[int, ...]] = {}
-    left: list[tuple[int, ...]] = []
 
     class _Trials:
         requires = frozenset({TASK})
         provides = frozenset({OUT})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             turn = {"a": asyncio.Event(), "b": asyncio.Event()}
 
             async def trial(me: str, other: str) -> None:
@@ -230,14 +268,14 @@ async def test_concurrent_tasks_under_one_component_each_see_exactly_their_own_s
             async with asyncio.TaskGroup() as group:
                 group.create_task(trial("a", "b"))
                 group.create_task(trial("b", "a"))
-            left.append(ctx.sessions())
+            ctx.provide(OUT, "after")
 
     run = await Executor().run(wire({"trials": _Trials()}, inputs=[TASK]), {TASK: "go"})
     assert _labels(run, tuple(range(6))) == ["a0", "b0", "a1", "b1", "a2", "b2"]
     assert seen == {"a": (0, 2, 4), "b": (1, 3, 5)}
     named = {run.rows(OUT)[e.row]: e.sessions for e in run.construct.provenance(OUT)}
-    assert named == seen
-    assert left == [()]  # every session was named by the row of its own trial
+    # Every session was named by the row of its own trial: none is left for a plain row.
+    assert named == {**seen, "after": ()}
 
 
 async def test_a_scope_holds_its_task_s_sessions_and_its_child_tasks_and_nests() -> None:
@@ -250,7 +288,7 @@ async def test_a_scope_holds_its_task_s_sessions_and_its_child_tasks_and_nests()
         requires = frozenset({TASK})
         provides = frozenset({OUT})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             go, late = asyncio.Event(), asyncio.Event()
 
             async def sibling() -> None:
@@ -293,26 +331,22 @@ async def test_a_scope_holds_its_task_s_sessions_and_its_child_tasks_and_nests()
 
 async def test_a_row_handed_over_with_its_sessions_leaves_the_rest_to_the_next_row() -> None:
     """``provide(kind, row, sessions=...)`` names exactly those sessions. The ones it did
-    not name are still the component's unnamed sessions (``ctx.sessions()``), and its next
-    plain hand-over names them, as it would have without a scope."""
-    seen: list[tuple[int, ...]] = []
+    not name are still the component's unnamed sessions, and its next plain hand-over names
+    them, as it would have without a scope."""
 
     class _Mixed:
         requires = frozenset({TASK})
         provides = frozenset({OUT})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             _fake("loose")
             async with ctx.attributed() as trial:
                 _fake("trial")
-            seen.append(ctx.sessions())
             ctx.provide(OUT, "trial", sessions=trial.sessions())
-            seen.append(ctx.sessions())
             ctx.provide(OUT, "rest")
             ctx.provide(OUT, "none", sessions=())
 
     run = await Executor().run(wire({"mixed": _Mixed()}, inputs=[TASK]), {TASK: "go"})
-    assert seen == [(0, 1), (0,)]
     assert [e.sessions for e in run.construct.provenance(OUT)] == [(1,), (0,), ()]
 
 
@@ -325,7 +359,7 @@ async def test_a_row_may_name_only_sessions_its_own_component_ran() -> None:
         requires = frozenset({TASK})
         provides = frozenset({"acme.v1.first"})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> Any:
+        async def run(self, inputs: Any, ctx: Context) -> Any:
             _fake("theirs")
             return {"acme.v1.first": "done"}
 
@@ -336,7 +370,7 @@ async def test_a_row_may_name_only_sessions_its_own_component_ran() -> None:
         def __init__(self, claimed: tuple[int, ...]) -> None:
             self._claimed = claimed
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             _fake("mine")
             ctx.provide(OUT, "claimed", sessions=self._claimed)
 
@@ -358,7 +392,7 @@ async def test_a_scope_does_not_take_the_sessions_of_a_run_started_inside_it() -
         requires = frozenset({TASK})
         provides = frozenset({OUT})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             _fake("inner")
 
     seen: list[tuple[int, ...]] = []
@@ -367,7 +401,7 @@ async def test_a_scope_does_not_take_the_sessions_of_a_run_started_inside_it() -
         requires = frozenset({TASK})
         provides = frozenset({"acme.v1.first"})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             async with ctx.attributed() as scope:
                 await Executor().run(wire({"inner": _Inner()}, inputs=[TASK]), {TASK: "x"})
                 _fake("outer")
@@ -384,7 +418,7 @@ async def test_a_trial_cancelled_mid_session_names_its_own_sessions_the_cancelle
     started, after = asyncio.Event(), asyncio.Event()
 
     class _Holds:
-        def check(self, _: Any) -> None:
+        def check(self, _: Any, *, uses: frozenset[str] = frozenset()) -> None:
             return None
 
         async def run(self, definition: Any, task: str) -> Any:
@@ -398,7 +432,7 @@ async def test_a_trial_cancelled_mid_session_names_its_own_sessions_the_cancelle
         requires = frozenset({TASK})
         provides = frozenset({OUT})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             async def held() -> None:
                 async with ctx.attributed() as scopes["held"]:
                     _fake("held0")
@@ -438,7 +472,7 @@ async def test_a_scope_left_by_an_exception_is_final_and_names_only_its_own() ->
         requires = frozenset({TASK})
         provides = frozenset({OUT})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             _fake("before")
             try:
                 async with ctx.attributed() as trial:
@@ -478,32 +512,36 @@ class _Rating(BaseModel):
     score: int
 
 
-async def test_a_failed_model_call_is_still_a_session_row_with_what_it_cost() -> None:
-    """A call that failed (here: its repair was rate limited, with no retries left) spent
-    tokens and made attempts. Its row says it failed, why, and what each attempt cost."""
-    hardline = pytest.importorskip("hardline")
-    from hardline.adapters._out.mock import MockBackend
+class _Spent:
+    """A model runtime whose call fails having spent tokens, saying so in its error, with its
+    own record of the attempts under a type URL of its own."""
 
-    from matrix import ModelStep, ModelStepConfig
-    from matrix.adapters._out.runtime.model import HardlineModelRuntime
+    def __init__(self, record: dict[str, Any]) -> None:
+        self._record = record
 
-    row = {
-        "backend": "mock",
-        "model": "q-1",
-        "family": "q",
-        "retries": 0,
-        "options": {"script": ["not a rating", {"error": "rate_limit"}]},
-    }
-    runtime = HardlineModelRuntime(
-        hardline.build_runtime(
-            config={"default": "q", "models": {"q": row}}, backends={"mock": MockBackend()}
+    def check(self, _: Any, *, uses: frozenset[str] = frozenset()) -> None:
+        pass
+
+    async def call(self, request: ModelRequest) -> ModelCall:
+        spent = ModelCall(
+            usage=TokenUsage(input_tokens=7, output_tokens=2),
+            provenance={"acme.v1.attempts": self._record},
         )
-    )
-    step = ModelStep(
-        ModelStepConfig(runtime="m", output=RATING),
-        model_runtimes={"m": runtime},
-        schemas={RATING: _Rating},
-    )
+        raise ModelRuntimeError("rate_limit: slow down", reason="rate_limited", call=spent)
+
+
+class _Attempts(BaseModel):
+    """What ``_Spent`` records of its attempts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tries: int
+
+
+async def test_a_failed_model_call_is_still_a_session_row_with_what_it_cost() -> None:
+    """A call that failed spent tokens and made attempts. Its row says it failed, why, and
+    what its runtime's error carried: the usage, and the runtime's own record of the call."""
+    step = ModelStep(ModelStepConfig(runtime="m"), model_runtimes={"m": _Spent({"tries": 2})})
     with pytest.raises(RunError) as e:
         await Executor().run(wire({"rate": step}, inputs=[PROMPT]), {PROMPT: "rate it"})
     run = e.value.run
@@ -514,16 +552,34 @@ async def test_a_failed_model_call_is_still_a_session_row_with_what_it_cost() ->
         "rate_limited",
     )
     assert session.error is not None and "rate_limit" in session.error
-    assert session.attempt_log is not None
-    assert [(a.name, a.reason) for a in session.attempt_log] == [("q", None), ("q", "rate_limit")]
-    assert session.usage is not None and session.usage == session.attempt_log[0].usage
-    assert session.usage.input_tokens > 0
-    assert session.sent == digest(
-        {"prompt": "rate it", "system": None, "model": None, "output": _Rating.model_json_schema()}
-    )
+    assert session.usage == TokenUsage(input_tokens=7, output_tokens=2)
+    assert session.provenance == {"acme.v1.attempts": {"tries": 2}}
     # Linkage is unchanged: the row is the failed component's, and no entry names it.
     assert run.construct.provenance(SESSION)[0].component == "rate"
     assert all(entry.sessions == () for entry in run.construct.ledger)
+
+
+async def test_a_session_s_provenance_is_held_to_the_schema_registered_for_its_type_url() -> None:
+    """A runtime's own record of a call is typed: a document under a type URL whose schema its
+    package registered is validated when the row is recorded, and one the schema refuses is a
+    ContractError, the row not recorded."""
+    schemas = {"acme.v1.attempts": _Attempts}
+    cases: list[tuple[dict[str, Any], bool]] = [
+        ({"tries": 2}, True),
+        ({"tries": "many", "odd": 1}, False),
+    ]
+    for record, kept in cases:
+        step = ModelStep(ModelStepConfig(runtime="m"), model_runtimes={"m": _Spent(record)})
+        wiring = wire({"rate": step}, inputs=[PROMPT], schemas=schemas)
+        with pytest.raises(RunError) as e:
+            await Executor().run(wiring, {PROMPT: "rate it"})
+        recorded = e.value.run.rows(SESSION)
+        if kept:
+            assert [row.provenance for row in recorded] == [{"acme.v1.attempts": record}]
+        else:
+            assert recorded == ()
+            assert isinstance(e.value.__cause__, ContractError)
+            assert "acme.v1.attempts" in str(e.value.__cause__)
 
 
 class _Failing:
@@ -537,6 +593,14 @@ class _Failing:
 
     async def run(self, definition: AgentDefinition, task: str) -> Any:
         raise self._error
+
+
+class TestAStandInWhoseSessionsFailTyped(AgentRuntimeConformance):
+    """The stand-in, failing as the port says a session fails. Failing with anything else
+    breaks the port on purpose, to show the record keeps such a session too."""
+
+    def runtime(self) -> AgentRuntime:
+        return _Failing(AgentRuntimeError("the provider is down", reason="unavailable"))
 
 
 @pytest.mark.parametrize(
@@ -591,7 +655,7 @@ async def test_a_failed_agent_session_is_still_a_session_row(
 class _Hangs:
     """An agent runtime and a model runtime whose session or call never returns."""
 
-    def check(self, _: Any) -> None:
+    def check(self, _: Any, *, uses: frozenset[str] = frozenset()) -> None:
         return None
 
     async def run(self, definition: Any, task: str) -> Any:
@@ -664,13 +728,13 @@ async def test_a_cancelled_model_call_is_a_session_row_that_says_so() -> None:
         "cancelled",
         "cancelled",
     )
-    assert session.sent == call_sent(ModelRequest(prompt="rate it"))
+    assert session.sent == call_sent(ModelRequest.from_prompt("rate it"))
 
 
 class _Down:
     """A model runtime whose calls fail, classified."""
 
-    def check(self, _: Any) -> None:
+    def check(self, _: Any, *, uses: frozenset[str] = frozenset()) -> None:
         return None
 
     async def call(self, request: Any) -> Any:
@@ -826,7 +890,9 @@ async def test_the_documented_duckdb_join_reads_a_reply_s_sessions_without_matri
     await box.run({PROMPT: "rate it"}, run_id="r1")
     sql = _documented_sql().replace("RUN", str(tmp_path / "r1")).replace("KIND", RATING)
     rows = duckdb.sql(sql).fetchall()
-    assert rows == [(0, '{"score": 4}', "matrix.v1.model-runtime.mock", "mock", "stop", 1)]
+    assert rows == [
+        (0, '{"score": 4}', "matrix.v1.model-runtime.mock", "mock", "stop", "completed")
+    ]
 
 
 async def test_every_run_has_a_session_table_as_it_has_a_ledger() -> None:

@@ -12,12 +12,16 @@ and runs what a config declares from the command line: `matrix plan`, then `matr
   running, and the row is on disk before that call returns. A run that is killed leaves
   everything it had recorded, readable, with a status.
 - An **agent** is a definition (prompt, tools, model) bound to an agent runtime: a session
-  with a loop and tools (the Claude Agent SDK; pydantic-ai, whose model calls hardline makes;
-  or a mock). The binding is checked when it is
+  with a loop and tools (the Claude Agent SDK; pydantic-ai, whose model calls are made on a
+  model runtime; or a mock). The binding is checked when it is
   made, and `matrix.v1.agent-step` runs an agent as an ordinary component.
-- A **model call** is one request to one model, with no loop and no tools, on a model runtime
-  (hardline, or a mock). `matrix.v1.model-step` makes one an ordinary component, and records
-  the model that answered, its usage and its request id.
+- A **model call** is one request to one model (its turns, the tools offered, an output type;
+  no loop), on a model runtime. `matrix.v1.model-step` makes one an ordinary component, and
+  records the model that answered, its usage, its request id and the runtime's own record of
+  the call. matrix ships no model runtime that calls a model, and depends on none: one is an
+  extension, as [matrix-hardline](../matrix-hardline/README.md) is (hardline, any model
+  family it has a row for). `matrix.pydantic_ai_model` makes any model runtime a pydantic-ai
+  `Model`.
 - One **registry** holds every extension: agent and model runtimes, components, payload
   types, observers, stores. matrix's built-ins arrive through the same `matrix.extensions` entry point as
   anyone else's.
@@ -26,15 +30,23 @@ and runs what a config declares from the command line: `matrix plan`, then `matr
 
 ```bash
 # the library, in a project
-uv add "matrix @ git+https://github.com/mox-labs/gnx@matrix-v0.8.0#subdirectory=components/capabilities/matrix"
+uv add "matrix @ git+https://github.com/mox-labs/gnx@matrix-v0.10.0#subdirectory=components/capabilities/matrix"
 # the matrix command
-uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.8.0#subdirectory=components/capabilities/matrix"
+uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.10.0#subdirectory=components/capabilities/matrix"
 ```
 
 matrix is installed from its repository at the release's tag; it is not on a package index,
 and `pip install matrix` installs an unrelated project. Every runtime and telemetry comes
-with it: the Claude Agent SDK, hardline, pydantic-ai, and the OpenTelemetry SDK with its OTLP
-exporters, each imported only when what uses it is built. There are no extras.
+with it: the Claude Agent SDK, pydantic-ai, and the OpenTelemetry SDK with its OTLP
+exporters, each imported only when what uses it is built. There are no extras. A model
+runtime that calls a model is installed with the package that registers it:
+
+```bash
+uv add "matrix-hardline @ git+https://github.com/mox-labs/gnx@matrix-hardline-v0.1.0#subdirectory=components/capabilities/matrix-hardline"
+```
+
+Without one, a config that names `matrix-hardline.v1.model-runtime` is refused when it is
+composed (`matrix check`, `matrix plan`), and the fix says what to install.
 
 ## Components, wired by kind
 
@@ -93,7 +105,7 @@ supplies when the run starts are declared as `inputs`. A wiring runs any number 
 ```python
 import asyncio
 
-from matrix import Executor, JsonlConstructStore, wire
+from matrix import Executor, JsonlConstructStore, Limits, wire
 
 TRIAL = "demo.v1.trial"
 
@@ -116,7 +128,10 @@ class Trials:
 
 
 store = JsonlConstructStore("runs")
-run = asyncio.run(Executor().run(wire({"trials": Trials()}), store=store, run_id="soak-1"))
+soak = Limits(deadline_s=None)  # a soak run: no deadline (unset, each component has an hour)
+run = asyncio.run(
+    Executor().run(wire({"trials": Trials()}), store=store, run_id="soak-1", limits=soak)
+)
 ```
 
 `ctx.provide(kind, row)` hands over one row while the component is still running. When it
@@ -174,12 +189,16 @@ class Load:
 
 
 limits = Limits(
-    deadline_s=60,  # each component, from when it starts
+    deadline_s=60,  # each component, from when it starts; unset, an hour; None, no deadline
     on_failure="fast",  # or "isolate": only dependents are skipped
     retry=Retry(attempts=3, errors=("transient",)),  # rate limits, timeouts, outages
-    components={"soak": ComponentLimits(deadline_s=4 * 3600)},
+    components={"soak": ComponentLimits(deadline_s=4 * 3600)},  # None: this one has none
 )
 ```
+
+A component past its deadline is stopped through the stop path and fails, and its failure
+names the key that set the deadline (`matrix.limits.deadline_s`, or the component's own
+`matrix.limits.components.<name>.deadline_s`) to raise, or to set to null.
 
 A retry runs a failed component again when its error is transient (or the reason the policy
 names), after a backoff or the `Retry-After` the backend reported, capped. A component that
@@ -285,18 +304,19 @@ comes from `./matrix.yaml` (or the `matrix:` section of any tool's config), read
 ```yaml
 matrix:
   definitions: [agents/]                 # *.md agent files, Claude Code format
-  models:                                # a hardline registry, for `type: hardline` runtimes
-    default: qwen3-8b
-    models:
-      qwen3-8b: {backend: openai-compat, base_url: "http://127.0.0.1:8080/v1",
-                 model: mlx-community/Qwen3-8B-4bit, family: qwen, local: true}
+  model_runtimes:                        # one model call each; matrix-hardline installed
+    local:
+      type: matrix-hardline.v1.model-runtime
+      models:                            # its own registry; unset, hardline's own tiers
+        default: qwen3-8b
+        models:
+          qwen3-8b: {backend: openai-compat, base_url: "http://127.0.0.1:8080/v1",
+                     model: mlx-community/Qwen3-8B-4bit, family: qwen, local: true}
   agent_runtimes:                        # sessions, with a loop and tools
     sdk:     {type: claude-sdk, permission_mode: default, setting_sources: []}
-    loop:    {type: pydantic-ai, default_model: qwen3-8b,   # its calls go through hardline
+    loop:    {type: pydantic-ai, model_runtime: local,      # its calls are made on `local`
               tools: {lookup: acme.tools:lookup}}           # module:function
     offline: {type: mock}
-  model_runtimes:                        # one model call each
-    local:   {type: hardline}
   observers:                             # optional
     - console
     - {type: jsonl, path: runs/events.jsonl}
@@ -321,27 +341,29 @@ default (`matrix.v1.agent-response`, `matrix.v1.model-call`) serves one step. An
 with `output` needs the reply to be one JSON document, so say so in the agent's prompt or the
 task; a model step asks its runtime for the kind's registered schema when there is one. An
 agent's `model` is its runtime's to read: on `claude-sdk` an alias (`haiku`, `sonnet`,
-`opus`) or a full model id, on `pydantic-ai` a hardline registry name, and the reply records
+`opus`) or a full model id, on `pydantic-ai` a name its model runtime resolves, and the reply records
 the model that answered, which may not be the one asked for. An agent's reply is its session's final result; what it wrote along the
-way is the reply's `transcript`. A model step's `model` is a hardline registry name, checked when
-the step is built. A model step never provides a reply that is not a whole answer: one cut at
+way is the reply's `transcript`. A model step's `model` is a name its model runtime resolves,
+checked when the step is built. A model step never provides a reply that is not a whole answer: one cut at
 `max_tokens`, refused, withheld or empty fails the step, naming its `finish_reason`. The `mock` runtimes are stand-ins (`stand_in` in the catalog and the
 plan); the agent one replies by the whole task as sent (`responses`), then by agent name
 (`by_agent`), then `default` (`matrix --skill -r agents` has the detail).
 
 Each runtime refuses what it cannot play before anything runs (`matrix check` and `matrix
 plan` say so), with the fix: an agent bound
-to a model runtime (a call has no loop and no tools), a model name hardline cannot resolve, a
+to a model runtime (a call has no loop), a model name its model runtime cannot resolve, a
 `claude-sdk` agent whose tools leave out `Skill` when the runtime gives it skills, an option
 the installed SDK lacks, a `pydantic-ai` agent that names a tool its runtime does not have or
-is given tools on a hardline row whose backend cannot call them. Nothing is quietly
-downgraded.
+is given tools on a model its model runtime cannot offer them to, a pydantic-ai setting a
+model call cannot carry. Nothing is quietly downgraded or dropped.
 
 ### The `pydantic-ai` agent runtime
 
-A session is pydantic-ai's agent loop, and every model call in it is a hardline call: the
-session runs on hardline's registry rows, with their retries, fallbacks, call limits, record
-and telemetry, in any model family hardline has a row for. The runtime's `tools` are Python
+A session is pydantic-ai's agent loop, and every model call in it is one call on the model
+runtime its `model_runtime` names, through matrix's `ModelRuntime` port: the session runs on
+whatever that runtime resolves a name to, with its retries, fallbacks, record and telemetry.
+The port carries `max_tokens` and `temperature`; any other pydantic-ai setting is refused,
+never dropped. The runtime's `tools` are Python
 functions named `module:function`: each module is found when the runtime is built, without
 running it, and imported when a session first offers the tool. A module whose import fails
 fails that session and every later one that offers the tool, without being imported again.
@@ -350,18 +372,22 @@ ruling 2026-10-22; [SECURITY.md](SECURITY.md)). A function's typed parameters an
 (unset: all of them; `[]`: none), and `max_turns` bounds its model calls: a session that
 reaches it ends with `stop: max_turns`. Its reply is the run's output; its session row names
 the model that answered last, its finish reason, the usage summed over every call and
-pydantic-ai's run id. Its tokens are counted once, by hardline, which counts every call it
-makes. pydantic-ai's own instrumentation is switched off on every agent, so it records no
+pydantic-ai's run id. Its tokens are counted once, by its model runtime, which counts every
+call it makes; composition knows (the runtime needs `model_runtimes`), and matrix counts none
+of them. pydantic-ai's own instrumentation is switched off on every agent, so it records no
 prompt or reply (`docs/design/2026-10-19-record.md` §18).
 
 ## Extending
 
-An extension is a package with an entry point in the `matrix.extensions` group whose value is
-`register(registry) -> None`:
+An extension is a package with entry points in the `matrix.extensions` group: each entry
+point's name is a point its extension registers at, and its value the extension's
+`register(registry) -> None`. A session loads only the extensions that declare a point it
+reads, so a package that registers only collectors is never imported to plan a run:
 
 ```toml
 [project.entry-points."matrix.extensions"]
-acme = "acme.matrix_ext:register"
+component = "acme.matrix_ext:register"
+payload-type = "acme.matrix_ext:register"
 ```
 
 ```python
@@ -379,10 +405,27 @@ def register(registry):
 
 The [API reference](docs/reference/api.md#the-registry) has the complete extension, with
 `Scorer`, its config and the `Review` payload. An extension that fails to import or register
-is quarantined: its entries are dropped, the failure is recorded, and the others load. A
+is quarantined: its entries are dropped, the failure is recorded, and the others load. So is
+one that registers at a point its entry points do not name, the message saying which line to
+add. A
 package owns the type URLs under its own name (`acme`
 owns `acme.*`): when two extensions register the same type URL, the owner keeps it and the
 other is quarantined, so nothing can replace a built-in by loading first.
+
+A runtime, store or observer is held to its point's port when it is registered and when it
+is built. What only some implementations do is a protocol of its own (`SupportsWarnings`,
+`SupportsAclose`, `SupportsLocation`, `SupportsAround`, ...), which matrix checks with
+`isinstance`, so nothing is found by its name. `matrix.testing` has a conformance suite for
+each port; run the one for yours:
+
+```python
+from matrix.testing import ConstructStoreConformance
+
+
+class TestMyStore(ConstructStoreConformance):
+    def store(self):
+        return MyStore()
+```
 
 ## Running a config
 
@@ -403,7 +446,11 @@ matrix run live.yaml --only --input acme.v1.diff=diffs.jsonl  # recorded in its 
 file that set it, and how many agent sessions and model calls a run makes
 (`agent_calls_min`, `agent_calls_max`, `model_calls_min`, `model_calls_max`; a maximum is
 null when a component other than an agent or a model step needs `agents` or
-`model_runtimes`, and so may make sessions of its own). matrix states no cost and keeps no spending ceiling: a run's cost is not
+`model_runtimes`, and so may make sessions of its own). Its `settings` are the effective
+value of every key the run is made from, each with who set it: a config file (named), an
+agent definition, an extension's own default, or matrix's. A default is listed as one, so a
+plan of a config that sets no `deadline_s` shows matrix's hour for each component, and one
+that writes `deadline_s: null` says the run has no deadline. matrix states no cost and keeps no spending ceiling: a run's cost is not
 something it can measure, so it does not pretend to. The per-call token cap stays (owner ruling
 2026-10-22): `max_tokens` bounds each reply, not a run's cost. `run` prints the run id, where the record is, and its
 files: `run.json`, one `<kind>.jsonl` per kind (an agent step's reply row carries the task as
@@ -466,30 +513,32 @@ shares its runtimes, agents and definitions; `--only` keeps it to itself. Exit c
 `matrix --help` lists each with what to do next. Under `--json` a failure is one
 `matrix.v1.error` envelope on stderr, its problems structured.
 
-## The stable public API
+## What is promised
 
-Before 1.0 a minor release may break anything; from this release, what a minor release
-changes only by addition, with a changelog entry, is:
+One surface is stable: **the component-author contract**, what a component and its
+registration are written against.
 
-- **Components and runs**: `Component`, `Inputs`, `RunContext`, `wire`, `Wiring`, `Executor`,
-  `Limits`, `ComponentLimits`, `Retry`, `Run`, `ComponentEnding`, `ComponentFailure`,
-  `ReleaseOutcome`, `Construct`, `LedgerEntry`, `LEDGER`, `Ref`, `REF`, `process`.
-- **Agents**: `AgentDefinition`, `AgentResponse`, `AgentRuntime`, `Agent`, `BoundAgent`,
-  `AGENT_STEP`, `AGENT_RESPONSE`, `TASK`.
-- **Config and composition**: `load_config`, `discover_sources`, `MatrixConfig`, `Config`,
-  `compose`, `Container`, `default_registry`, `Registry`.
-- **Loading**: `load`, `load_each`, `Problem`.
-- **Errors**: `MatrixError` and its subclasses, `RunCancelled`, `EXIT_CODES`.
-- **On the wire**: the `matrix.v1.*` document schemas, the `matrix.extensions` entry-point
-  group, the type-URL grammar, the config tiers and keys, the run directory layout.
+- `Component`, `Context` and `Inputs`, as their protocols and `Inputs` declare them;
+  `Attribution`, which `Context.attributed()` gives.
+- The kind grammar (`<namespace>.v<N>.<name>`, checked by `check_type_url`) and the rule that
+  each kind has one provider.
+- `Registry.register` and `Registry.register_payload`, with their options.
+- The `matrix.extensions` entry-point group, whose entries are `register(registry) -> None`.
+- `NEEDS`: the needs marked `stable`, their names and types.
+- The stop protocol: `ctx.stopping`, then `grace_s`, then cancellation; `ctx.defer`, called
+  once at the end of every run, last first.
+- `ContractError`, what breaking that contract raises.
 
-Every other exported name is public but may still change in a minor release, said in the
-changelog: the extension-author surface (`Entry`, `Extension`, `Failure`, `Loader`,
-`DocumentSource`, `Document`, `BesideFile`, `Accumulate`, `ConstructStore`, `RunWriter`,
-the stores, `Reuse`, the observers' types), the session table (`Session`, `SESSION`,
-`digest`, `agent_session`, `call_sent`, `call_session`, `record_session`, `Attribution`), the
-model step's call path (`call_model`), the command's document records (`Catalog`, `Plan`,
-...) and telemetry (`configure_telemetry`, `Telemetry`). Names under
+It changes only by addition. A break needs a major release, or, before 1.0, a minor release
+whose changelog says so and that carries the migration of every consumer in this repository.
+`tests/test_contract.py` pins each of these, so a change to one is deliberate.
+[CONTRACT.md](CONTRACT.md) states each.
+
+Everything else exported from `matrix` is public and may change in a minor release, said in
+the changelog, when matrix and its consumers in this repository change together: the
+executor and its records, the ports, their optional protocols and their stores, runtimes
+and observers, the conformance suites (`matrix.testing`), the session table, composition and
+config, the loader, the documents the command prints, and telemetry. Names under
 `matrix.domain`, `matrix.adapters` and `matrix.composition` are internal.
 
 ## Documentation

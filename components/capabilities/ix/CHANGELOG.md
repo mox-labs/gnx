@@ -1,9 +1,313 @@
 # Changelog — ix
 
-## Unreleased
+## 0.9.0 — 2026-11-07
+
+On matrix 0.10, which depends on no model runtime; ix depends on the `matrix-hardline` bridge so
+it works as installed. `docs/design/2026-10-19-record.md` §30 has the reasons. It adds mutation
+testing (§32): whether a test suite fails when the code is wrong, estimated over sampled
+mutants. Each entry compares with 0.8.0.
+
+### Changed (breaking)
+
+- **`ix.v1.analysis.compare` compares two booleans paired** (ruling R1). The interval of the
+  difference of two booleans' rates is now Tango's score interval of the paired table of
+  blocks, which only the blocks where the two sides disagree move. It replaces Newcombe's
+  method 10, which ignored the pairing.
+  - **The verdict of an existing `compare` or `regress` on a boolean primary can change, and
+    no digest moves.** A run analysed again under 0.9 may decide differently from the one 0.8
+    reported.
+  - Where the two sides agree block by block, the interval is narrower. Two suites that kill
+    the same 100 mutants bound a loss near 3.7 points, where the unpaired interval reached
+    about 11, so non-inferiority at 5pp holds where it could not.
+  - Where they disagree as independent sides would, it is about as wide as before. It is
+    wider only where they disagree more often than that, the two sides negatively
+    correlated.
+  - A decision's `method` reads `tango (paired)` where it read `newcombe`. A count's difference
+    keeps `newcombe (clustered wilson)`: its units do not pair.
+  - Calibrated by simulation through `analyze()` (§32): a false `holds` at most 2.2% where
+    2.5% is stated, and 95% intervals covering 94.8% to 97%. The named weakness: where only
+    one side ever loses, a false `fails` reaches 4% (2.5% stated).
+
+- **hardline is named by the bridge's type URL**: `runtime: matrix-hardline.v1.model-runtime`
+  (a `model-call` subject), `model_runtime: matrix-hardline.v1.model-runtime` (a judge, a judge
+  evaluator), where `hardline` was the short name. The kinds' `choices` say so. ix's code names
+  no model runtime: its layer map forbids `hardline` and `matrix_hardline` in every layer.
+- **`matrix.models` is no setting ix reads.** A model runtime's registry is its own config: a
+  subject's or a judge's `runtime_options.models` for hardline, or hardline's own tiers.
+  `provenance.settings` records `matrix.model_runtimes` in its place.
+- **A `pydantic-ai` session names its model runtime**: `runtime_options.model_runtime`, one of
+  `matrix.model_runtimes`, built afresh for each trial; its `models` option is gone. Its
+  sessions' rows drive `pydantic-ai-slim` alone.
+- **The versions a run records** are ix's, matrix's and each distribution an installed runtime
+  declares it drives, where they were ix's, matrix's and hardline's.
+- **A `model-call` subject's usage facet** keeps the neutral reply's facts: `backend`,
+  `attempts`, `retries` and `fallback_from` are gone from it (they are the model runtime's own
+  record, the session row's `provenance`).
+- **`ix.Kind` is the union of four records, one per family** (review D5, ruling Q7):
+  `SubjectKind`, `ProbeKind` (adds `duration`), `SensorKind` (adds `metrics`, at least one,
+  `truth` and `confusion`) and `EnvironmentKind` (adds `service_keys`), each exported from
+  `ix.domain`; which one a declaration is comes from the family segment of its `name`. **Kind
+  files are unchanged.** Code that built `ix.Kind(...)` names its family's record; code that
+  called `ix.Kind.model_validate(data)` calls `pydantic.TypeAdapter(ix.Kind).validate_python`.
+  `ix kinds --json` shows each kind with its own family's keys alone: a subject kind has no
+  `metrics`, `truth`, `duration`, `confusion` or `service_keys`. A kind file that holds a key
+  of another family's is refused `kind_invalid` at that key, naming the family that declares
+  it; a sensor kind file with no `metrics` is `missing_key` at `metrics`, where it was
+  `kind_invalid`.
+
+### Added
+
+- **Mutation testing** (ruling Q-MUT, its design and rulings Q-MUT-R and Q-MUT-G). The
+  `mutation-score` and `mutation-regress` genres are data only, over existing analyses: an
+  estimate of the share of sampled mutants a suite kills, and paired non-inferiority of a
+  changed suite on the same mutants. The kinds:
+  - **`test-suite`**: the subject, a fresh copy of the tree per trial, imported ahead of an
+    editable install, with where each scope module came from checked on every run;
+  - **`mutant`**: the probe, one mutant spliced into the copy and the tests that ran its
+    statement run (not only its line: a test that short-circuits a multi-line condition
+    before the mutated line is still run against it). A kill counts only when the failing
+    test fails again alone on the mutant and passes alone without it; each run of the suite
+    has a temporary directory of its own;
+  - **`mutant-kill`**: the sensor, the boolean `killed`.
+
+  Timeouts are relative to the baseline and read as unread, never killed. A probe marked
+  `equivalent` runs nothing. `ix --skill -r mutation` teaches all of it.
+- **`ix mutants sample|map|read`** and **`ix.mutants`** (`sample`, `map`, `read`), provisional
+  (ruling R2):
+  - `sample` draws the mutants and pins them as `probes/m-<id>.yaml`, and makes each suite's
+    selection map from coverage.py's per-test contexts in the suite's own environment, with
+    coverage's tracer core: sys.monitoring's (Python 3.14's default) records a line once,
+    so a second test that ran it would never be selected;
+  - `map` makes the maps alone, for probe files another tool wrote;
+  - `read` lists the survivors (an assertion gap, or a coverage gap) and the pruning candidates
+    a greedy keep set leaves, for confirmation on a fresh, disjoint sample.
+
+  ix depends on neither coverage.py nor pytest-cov: a suite without them is refused, and
+  told to install pytest-cov.
+- **A mutant source is an extension point of its own**, `ix.mutant-source` (`MUTANT_SOURCE`).
+  It is held to `MutantSource` (`mutations(text) -> Mutations`, each a `Mutation`: key,
+  operator, span, replacement; and `Unmade`). The installed sources are handed to an adapter
+  as `MutantSources` (the `mutant_sources` need). All are in `ix.extension`, provisional until
+  a second source registers.
+  - ix ships no source: `ix-cosmic-ray`, installed beside ix, adds cosmic-ray's operators. With none
+    installed, sampling and validation say so.
+  - A probe file of kind `mutant` from any tool runs without a source.
+ (owner ruling, panel 10-09 §6, reaffirmed as Q5):
+  `ix run <path> --detach` starts the run in a process of its own and returns once it has
+  opened its record, with its status; `ix status <run>` says where a run stands (running or
+  how it ended, trials carried out of those planned, the process writing it); `ix events
+  <run> --follow` prints its events until it ends, however it ends; `ix stop <run>` stops it
+  as Ctrl-C does. Each prints `ix.v1.status` and exits as it says: 13 while the run runs, 0
+  once it completed (no verdict: `ix report` gives that), 12 stopped or its process gone, 8
+  failed. No new exit code. In the library: `ix.start`, `ix.status`, `ix.events`, `ix.stop`
+  and `ix.Status`. `CONTRACT.md` has what each promises. `--follow` and `stop` refuse a run
+  still written on another host (`usage`), whose end this host cannot see, so a follower
+  always ends.
+- **`ix run --run-id ID`** (`ix.run(run_id=)`) names the run; an id a run is kept under
+  already, or one that is no safe directory name, is refused (`usage`).
+- `python -m ix` runs the command line.
+
+### Removed (breaking)
+
+- **A model runtime that "gives no pydantic-ai Model" is no longer `Runnable: no` for a judge
+  evaluator**: every model runtime can judge, through `matrix.pydantic_ai_model`.
+
+### Changed
+
+- The judge's model is built by matrix (`pydantic_ai_model`), and closed through
+  `matrix.SupportsAclose`; an error's `fix` and the tracer provider's span processing are read
+  through declared types, not by name.
+- ix depends on `matrix>=0.10,<0.11` and `matrix-hardline>=0.1,<0.2`.
+- `ix --skill -r kinds` says which keys every kind declares and which each family adds, read
+  from the records.
+- **The skill no longer hand-lists a runtime's config keys** (review D8): `runtime_options`
+  points to `matrix describe <the runtime's type URL>`, which lists them from the runtime's
+  own declaration. The lists for `claude-sdk` and hardline's model runtime had already
+  drifted from it. `ix --skill -r running` has a **Long runs** section: `--detach`,
+  `status`, `events --follow` and `stop`, with their exit codes.
+- **The probe screen is skipped when no probe was read more than once by any subject** (design
+  C2): one reading has no spread, and a floor or a ceiling restated it, so every survivor of a
+  mutation run was labelled `floor`, to be fixed.
+- **ix's `matrix.extensions` entry points name its points** (`ix.subject`, `ix.probe`,
+  `ix.sensor`, `ix.environment`, `ix.mutant-source`, `component`, `payload-type`), as matrix
+  0.10 reads them, so a
+  session that reads none of them (a recon survey) does not import ix. ix's root asks for
+  matrix's points and its own. A third party's adapter declares its family's point the same way
+  (`"ix.sensor" = "acme.ix_ext:register"`).
+- **The plan shows an agent session's `tools` left out** (ruling Q2): `subjects.<name>.tools`,
+  every tool the runtime offers (default), from the kind, where it was not listed at all. What
+  it means is unchanged. A kind declares such a meaning on an option whose absence is a
+  behaviour rather than a value, `Option.left_out`, which the skill and `ix kinds` show too.
+- ix's experiment runs keep no matrix deadline, as before: matrix 0.10 gives each component an
+  hour unless told otherwise, and ix now says `deadline_s=None` for the one matrix run an
+  experiment run is.
+
+## 0.8.0 — 2026-11-06
+
+`docs/design/2026-10-19-record.md` has the reasons for this release's changes, in §28 and §29, and
+`CONTRACT.md` what each surface it changed now promises. **Amend every registration once**
+(`ix register <path> --amend --reason "ix 0.8: kind defaults and the registered form"`): the
+plan digest of every experiment moves, with the kind defaults and the registered design's new
+form below.
+
+### Changed (breaking)
+
+- **The extension contract is one public module, `ix.extension`** (the name is provisional
+  until the owner picks one). It holds everything an adapter author writes against: the
+  extension points (`POINTS`) and the port each holds to (`PORTS`); the four needs
+  (`LAUNCHER`, `RUNTIMES`, `SESSIONS`, `JUDGE_MODELS`) with the Protocol of what each is
+  given (`Launcher`, `Runtimes`, `Sessions` with the `Respondent` it holds, `JudgeModels`)
+  and matrix's runtime points (`AGENT_RUNTIME`, `MODEL_RUNTIME`, `Point`); the family
+  ports and every optional role (`Preflight`, `Review`, `StandIn`, `SpanReader`,
+  `Liveness`, and for a scope `Traced`, `Recorded` with its `Attribution`); the records and
+  errors an adapter speaks in (`Target`, `Interaction`, `Sensed`, `Requirement`,
+  `Surroundings`, `StoodIn`, `SubjectError`, `HarnessError`, ...); and the option helpers
+  (`seconds`, `arrivals`, `placeholders`, `problem`). The need Protocols were private
+  (`Launcher` in `ix.adapters._out.processes`, `Runtimes`, `Respondent` and the sessions
+  table in `matrix_agents`, `JudgeModels` in `evaluators`), and `SpanReader`, `Recorded`
+  and `Attribution` were exported nowhere; ix's own adapters now import them from
+  `ix.extension` as a third party's do. `JudgeModels` and `SpanReader` are provisional.
+  Import the ports from `ix.extension`: `ix.domain` no longer exports them, nor `Target`,
+  `Bindings`, `SubjectError`, `HarnessError` or `TrialError`. `ix.domain` holds what ix
+  returns; `ix.extension` what an extension implements and is handed.
+- **A kind option's default is declared data.** `ix.v1.kind`'s `Option` gains `default`
+  (the value an entry that leaves the option out is carried out with) and `default_from`
+  (the options that name the runtime whose own value it is then, which ix cannot know). A
+  default must fit its option's type and allowed values, hold no placeholder, and stand on
+  an option that is not required; `default_from` names other options of the kind. Every
+  "N when absent" moved from a built-in kind's prose into its declaration (`prompt`'s
+  `timeout` 600s; `http-load`'s `timeout` 60s, `warmup` 0s, `method` GET; `process`'s
+  `startup_timeout` 30s and `cwd` `.`; `compose`'s `wait_timeout` 120s and `build` false;
+  `memory`'s `interval` 200ms; `function-test`'s `timeout` 30s and `pass_at` 1; `outcome`'s
+  `timeout` 30s and `pass_above` 0.5; `text-match`'s `ignore_case` false and `strip` true;
+  `judge`'s `repeats` 1 and `pass_at` 0.5), and the adapter constants that duplicated them
+  are gone. An agent session's `model` and `max_turns`, a model call's `model`, a judge's and
+  an evaluator's `model` declare `default_from`. An agent session's `tools` is unchanged:
+  what it means left out awaits a ruling.
+- **A mapping option is declared key by key, and a default may follow another option.**
+  `Option` gains `fields` (a mapping's fixed keys, each declared as an option is) and
+  `entries` (what each value is, where the author names the keys), and `default_by` (a
+  default that follows the value of an option beside it: `{option, values}`). A placeholder
+  in a default is allowed only where an option enclosing it `binds` it; `default_from` may
+  name `subject.<option>` for a probe or a sensor. Defaults fill inside a written mapping,
+  the plan shows each at its dotted path (`environment.services.<name>.startup_timeout`), a
+  registration freezes them, an adapter is given them merged deeply with what is written,
+  and validation holds a written mapping to its declaration key by key. With them:
+  an agent session's `loop` declares `strategy` (required), `rounds` 3, `until`
+  `SOLUTION_VERIFIED`, `test_timeout` 30s and a `prompt` that follows the strategy (each
+  strategy's wording, until now the adapter's text, is the declaration's); a `process`
+  environment's `services` declares each service's `command` (required), `url`, `ready`,
+  `cwd` `.`, `env` and `startup_timeout` 30s; `http-load`'s `concurrency` follows
+  `load_model` (`closed`: 1, `open`: 100); `activation`'s `tool`, left out, is said to be its
+  subjects' runtime's. New options: an agent session's `setup_timeout` (300s), and the
+  prompt probe's `collect_limit` (1,000,000 bytes). **An open model's clients were 10 seconds
+  of arrivals and at least 100; they are 100 unless written**, so above 10 arrivals a second
+  a subject that answers slower than 100 / rate seconds has arrivals dropped, each an error:
+  write `concurrency` to hold more. A default that follows an option a cell fills must be
+  written (`option_missing`). The digests of experiments that leave any of these out move.
+- **The design holds every default it carries an entry out with** (`Design.defaults`, by
+  entry: `environment`, `subjects.<name>`, `probes.<id>`, `sensors.<kind>`), and its
+  provenance lists each, from `kind` with the kind's type URL, and each value left to the
+  runtime, from `runtime`, naming it: `SourcedValue.origin` takes `kind` and `runtime`. The
+  plan shows them; `ix plan` prints a runtime's as `(unknown to ix)`. A registration freezes
+  the defaults, so a default that moves is a deviation (`design.defaults.probes.<id>.timeout`)
+  and never a silent change of a registered run. **Every plan digest of an experiment whose
+  kinds default an option it leaves out moves once: amend each registration**
+  (`ix register <path> --amend --reason "kind defaults frozen"`).
+- **An adapter is given every default with what is written.** A run hands each entry's
+  options as carried out (as written, each default filled in) to its adapter, and so do a
+  preflight and a review; a stand-in, whose answer is written in the entry's place, sees the
+  entry as written. An adapter that read an
+  option with a fallback of its own reads it as given. `python_checks`' `run_cases` and
+  `run_grader` take their `timeout_s` from the caller, always.
+- **The plan digest is over a declared, versioned form, and the registration freezes the
+  same form.** A registration's `design` is `ix.v1.registered-design` (`design_form`),
+  built key by key from the design rather than dumped from its fields, and the plan digest
+  is the digest of that form with the experiment's operative digest, the probe set's, the
+  trial count and the schedule's. An internal rename moves no digest and leaves no value
+  uncompared; a key added later is left out when absent. The hypothesis sentences and the
+  provenance are not in the form (they were never compared), so a registration holds
+  neither. Every plan digest moves once with this release, with the defaults above: amend
+  each registration once. The example plans' digests, and the `--skill` examples' of each
+  built-in genre, are pinned by `tests/test_plan_digest.py`: a change that moves one
+  updates the literal and says here which registrations to amend.
+- **A judge asked to read each response fewer than once is refused** at validate
+  (`option_invalid` at `sensors.<n>.repeats`); it was quietly read once.
+- **ix's `matrix.extensions` entry point is `ix.composition.entry_point:register`**, renamed
+  from `ix.composition.extension` so that it is not mistaken for the public contract. It
+  registers ix's run path and its adapters, and declares nothing a third party uses.
+
+### Added
+
+- **`CONTRACT.md`**: for each published surface this release changed, the decision it hides,
+  its members, its defaults, how it fails and how far it is promised.
+- **`check`, a genre for a predicate observed on every trial**, with an analysis of its own
+  (`ix.v1.analysis.check`). One subject, a boolean primary, `repeats` 1 by default and at
+  least 1, factors allowed. Three-way, with no interval: `holds` when the primary read true
+  on every trial, `fails` when it read false on one or the subject failed one,
+  `inconclusive` only when a trial could not be read (a harness failure, a reading that
+  could not be taken), never because the subject failed. Its warrant says it is an
+  observation, not an estimate, that it gates reliably only a subject that gives the same
+  result on the same input, and, for one whose result varies, the 95% Wilson interval the
+  share it saw leaves (1 of 1 leaves about [0.21, 1]). The plan's sensitivity says a check
+  detects no effect. `--skill -r genres` has its example, and the question it answers.
+- **Two problem kinds**: `decision_inapplicable` (a threshold, a margin or a guardrail that
+  `check` never reads) and `metric_shape` (a primary `check` cannot decide on: not a
+  boolean).
+- **The `command` probe**: a command run once against the subject, as a check of it, in
+  `cwd` (`.` when left out) with `env` added, its placeholders filled as a probe's are
+  (`{url}`). It leaves `output` (`exit_code`, `stdout`, `stderr`, each the last 64 KiB, and
+  `truncated`); a command that cannot start or runs past its `timeout` (60s) is the
+  harness's failure. It needs nothing of the subject. The program, and each file an argument
+  names, relative to `cwd`, are digested as what was tested, as a subject's are: a probe's
+  `command` is now among the files a registration freezes.
+- **The `exit-status` sensor**: `exited_ok`, the command exited with `code` (0).
+- **A probe's `path` options and a command's directory are resolved against the
+  experiment's** before the probe is applied, as a sensor's `path` options were.
+- **The plan counts the model calls a run starts, as work, never as a price** (`Plan.work`,
+  `Model calls` in `ix plan`). Each adapter that starts model calls says how many one trial
+  of its entry starts, through a new optional role, `ModelCalls` (`model_calls(options)`,
+  in `ix.extension`): an agent session one a round of its `loop` (one without), a model
+  call one, a judge its `repeats`, a judge evaluator one, and each none on a stand-in. The
+  plan adds them over every trial of the schedule, cell by cell (a factor on a loop's
+  `rounds` counts each level), with each entry's share (`ModelCallCount`). An agent session
+  or a judge's agent run counts once however many requests it makes. An entry whose
+  adapter may call a model (it needs `runtimes` or `judge_models`) and does not say, or
+  raises counting, is named under `uncounted`. The count is not in the digest: it is what
+  the adapters installed here say.
+
+### Changed
+
+- **Built against matrix 0.9** (`matrix>=0.9,<0.10`). ix's three run-path components take
+  matrix's `Context`, the protocol, rather than its `RunContext` class. A runtime's warnings
+  and its `aclose()` are read through matrix's `SupportsWarnings` and `SupportsAclose`, not
+  by name. The observer that relays a run's `ix.*` events, the stores and the agent runtimes
+  ix's tests stand in with each pass matrix's conformance suite for its port; the agent
+  runtimes among those stand-ins now say how their sessions end (`stop`), as the port asks.
 
 ### Fixed
 
+- **A `characterize` refuses a threshold, a margin or a guardrail** it never reads
+  (`decision_inapplicable` at its key, saying the genre gives no verdict); it accepted and
+  ignored them. Any genre that gives no verdict does the same.
+- **A collected file too large to keep is no reading, not a failing one.** A file over the
+  probe's limit was left out, and `function-test` then read it as not written, a failure of
+  the agent; it is listed as `files_too_large`, and a sensor reading it fails to read.
+- **A deviation under a key that holds a dot names its values.** Deviations were found by a
+  path split again on its dots, so one under a probe id like `a.b` (or an entry's key) was
+  reported with `registered` and `current` both empty; paths are compared as keys now.
+- **README lists all four needs**, `judge_models` among them, in a table with the Protocol
+  each gives; it listed three, and the fourth was documented only in a private module.
+
+- **An override on a run that gives a verdict is refused in one place, in one wording.**
+  `--repeats` and `--trials-in-flight` on a run that is neither `--exploratory` nor
+  `--dry-run` were refused twice, by the command's root and again by the run path, with two
+  messages that could drift. The run path holds the rule alone now: it is given each
+  override as `(flag, key, value, note)` and refuses with `usage` (exit 2), its
+  `details.path` the first flag, its fix the pilot to run instead. Given both flags, it
+  names both. The refusal comes before the changed experiment is judged, so a gated run
+  given `--repeats 3` under a genre whose minimum is 5 is told about the flag, not about
+  the repeats.
 - **`examples/delay-server` accepts every connection that arrives at once** (up to 128).
   Its listen queue held 5, so the trials-in-flight control's four runs, opening sixteen
   connections together, could have some dropped. The client retries a second later, and

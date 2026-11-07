@@ -1,0 +1,40 @@
+# mutation-regress: does a changed test suite still detect what the baseline suite detects?
+schema: ix.v1.genre
+name: ix.v1.genre.mutation-regress
+question: Does the changed suite still detect the seeded faults the baseline suite detects, within the margin?
+roles:
+  - {name: control, min: 1, max: 1}
+  - {name: variant, min: 1, max: 1}
+factors: allowed
+must_set: [primary, comparison, margin]
+comparisons:
+  non-inferiority: "{variant} is at most {margin} worse than {control} on {metric}"
+default_comparison: non-inferiority
+design:
+  repeats: {default: 1, min: 1}
+  order: interleaved
+  calibration: none
+  estimator: mean
+  note: "paired: both suites meet the same mutants, block by block, and the difference of kill rates by Tango's paired score interval, which only the mutants the two suites disagree on move (ix design record, 2026-10-19, §32)"
+analysis: {id: ix.v1.analysis.compare}
+verdict_form: three-way
+report: [question, design, estimates, failures, warrant, raw]
+guidance: |
+  Use mutation-regress to gate a change to a test suite (tests pruned, tests refactored):
+  is the changed suite no worse than the baseline at detecting seeded faults, on the same
+  mutants, within a margin? Two subjects, each a suite over the same tree and scope: the
+  control is the suite as it is, the variant the suite as changed (the same command less
+  the node ids in its deselect, for a pruning). The primary is killed; the margin is the
+  person's to set, in points (5pp), before the run. Draw the mutants with
+  `ix mutants sample <experiment>`.
+  Both suites meet every mutant in the same block, so the difference is paired: only the
+  mutants on which the two disagree move it. With no disagreement, n mutants bound a loss
+  near 3.84 / (n + 3.84): about 3.7 points at 100 mutants, 1.9 at 200, 1 at 400. A margin
+  below what n can show is inconclusive, never a pass; choose n for the margin.
+  A pruning candidate set from `ix mutants read` is confirmed here on a fresh sample, disjoint
+  from the one that chose it (`ix mutants sample <new experiment> --seed <other> --exclude
+  <first experiment>`): confirming on the same sample can only pass. Only holds supports the
+  pruning, and ix removes no test: that is the person's commit, after the gate.
+  A change to the code is not a change to the suite: its mutants are not the old code's.
+  For a refactor of the code, run mutation-score on each tree, each with its own sample, and
+  compare the two intervals.

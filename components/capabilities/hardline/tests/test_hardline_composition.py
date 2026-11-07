@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 import yaml
 
-from hardline import BackendError, ConfigError, SecretError, build_runtime
+from hardline import BackendError, Completion, ConfigError, SecretError, build_runtime
 from hardline.adapters._in.cli import error_payload, main
 from hardline.adapters._out.secrets import EnvFileSecretResolver
 from hardline.adapters._out.yaml_source import MappingConfigSource, YamlConfigSource
@@ -319,9 +319,17 @@ def test_cli_check(cli_config: Path, capsys: pytest.CaptureFixture[str]) -> None
 
 
 def test_cli_complete_json(cli_config: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # HL-5: `complete --json` is the Completion in 0.3's shape, as README "Output contract" says:
+    # the reply, whether it is a whole answer, and hardline's record under its own type URL.
     assert main(["complete", "", "hello", "--json"]) == 0
-    out = capsys.readouterr().out
-    assert '"family": "qwen"' in out and '"raw"' not in out
+    out = json.loads(capsys.readouterr().out)
+    assert set(out) == set(Completion.model_fields) | {"answered"}
+    assert (out["type_url"], out["record"]["type_url"]) == (
+        "hardline.v2.completion",
+        "hardline.v1.call",
+    )
+    assert (out["family"], out["provider"], out["answered"]) == ("qwen", "mock", True)
+    assert Completion.model_validate(out).text == out["text"]  # it reads back as a Completion
 
 
 def test_cli_error_exit_code(cli_config: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -512,7 +520,12 @@ def test_cli_check_json_ok(cli_config: Path, capsys: pytest.CaptureFixture[str])
     report = json.loads(capsys.readouterr().out)
     assert report["ok"] is True
     assert set(report["tiers"][0]) == {"source", "present"}
-    assert set(report["models"][0]) == {"name", "backend", "family", "ok", "problem", "worst_case"}
+    # `rungs` is new in 0.3 (HO5, G2): each row's effective values are in `models --json`, and
+    # where each came from is shown here before any call, `default` for a field no tier set.
+    row = report["models"][0]
+    assert set(row) == {"name", "backend", "family", "ok", "problem", "worst_case", "rungs"}
+    assert row["rungs"]["family"] == f"cwd {cli_config}"
+    assert row["rungs"]["schema_retries"] == "default"
 
 
 def test_cli_check_shows_each_rows_worst_case(

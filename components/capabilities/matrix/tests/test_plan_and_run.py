@@ -116,7 +116,7 @@ def test_the_call_counts_are_open_only_for_a_component_handed_the_runtimes(
     the plan leaves the most calls open; one handed neither cannot reach a runtime."""
     from matrix.composition import container
 
-    def registry(*, discover: bool = True) -> matrix.Registry:
+    def registry(*, discover: bool = True, points: object = None) -> matrix.Registry:
         found = matrix.default_registry(discover=False)
         found.register("component", "acme.v1.tally", lambda **_: _Tally(), needs=set(needs))
         return found
@@ -177,6 +177,221 @@ def test_limits_naming_a_component_that_is_not_configured(
     (found,) = json.loads(err)["error"]["problems"]
     assert code == 3 and found["path"] == "matrix.limits.components.reveiw"
     assert found["allowed"] == ["review"]
+
+
+def _settings(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {setting["path"]: setting for setting in plan["settings"]}
+
+
+def test_the_plan_shows_every_limit_and_marks_each_default_as_one(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A plan of a config that sets no limits still shows what bounds the run: the deadline
+    (changed requirement, ruling M-O7: an hour, where it was none), no concurrency cap (said
+    so), the grace and cleanup periods, the failure policy and the retry policy, each as
+    matrix's own default; and each component's, the run's."""
+    code, plan, _ = _cli(capsys, "plan", "--json")
+    assert code == 0 and "limits" not in plan
+    found = _settings(plan)
+    expected = {
+        "matrix.limits.deadline_s": 3600.0,
+        "matrix.limits.concurrency": None,
+        "matrix.limits.grace_s": 5.0,
+        "matrix.limits.cleanup_s": 30.0,
+        "matrix.limits.on_failure": "fast",
+        "matrix.limits.retry.attempts": 1,
+        "matrix.limits.retry.errors": ["transient"],
+    }
+    for path, value in expected.items():
+        assert (found[path]["value"], found[path]["origin"], found[path]["file"]) == (
+            value,
+            "matrix",
+            None,
+        ), path
+    assert "null is no deadline" in found["matrix.limits.deadline_s"]["note"]
+    assert "no cap" in found["matrix.limits.concurrency"]["note"]
+    own = found["matrix.limits.components.review.deadline_s"]
+    assert (own["value"], own["origin"]) == (3600.0, "matrix")
+    assert own["note"].startswith("the run's matrix.limits.deadline_s: each component's")
+    store = (found["matrix.store.type"], found["matrix.store.root"], found["matrix.store.fsync"])
+    assert [(s["value"], s["origin"]) for s in store] == [
+        ("jsonl", "matrix"),
+        (".matrix/runs", "extension"),
+        (False, "extension"),
+    ]
+
+
+@pytest.mark.parametrize("at", ["run", "component"])
+def test_a_deadline_written_as_null_is_no_deadline_and_the_plan_says_so(
+    project: Path, capsys: pytest.CaptureFixture[str], at: str
+) -> None:
+    """Ruling M-O7: ``deadline_s: null`` written is no deadline (a soak run), told apart from
+    a deadline left unset, which is the default; on a component, it is that component's alone,
+    and the run's others keep the run's."""
+    limits = (
+        "  limits: {deadline_s: null}\n"
+        if at == "run"
+        else "  limits: {deadline_s: 60, components: {review: {deadline_s: null}}}\n"
+    )
+    (project / "matrix.yaml").write_text(CONFIG + limits)
+    code, plan, _ = _cli(capsys, "plan", "--json")
+    assert code == 0, plan
+    own = _settings(plan)["matrix.limits.components.review.deadline_s"]
+    assert own["value"] is None and "no deadline" in own["note"]
+    assert matrix.compose(matrix.load_config()).limits.of("review")[0] is None
+    assert matrix.compose(matrix.load_config()).limits.of("other")[0] == (
+        None if at == "run" else 60.0
+    )
+
+
+def test_a_value_a_file_sets_names_the_file(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The file that set a value is named, when two configs are read one above the other; a
+    component's own limit is its own, and what it leaves is the run's."""
+    (project / "live.yaml").write_text(
+        "matrix:\n  limits:\n    deadline_s: 600\n"
+        "    components: {review: {grace_s: 1, retry: {attempts: 3}}}\n"
+    )
+    code, plan, _ = _cli(capsys, "plan", "live.yaml", "--json")
+    assert code == 0, plan
+    found = _settings(plan)
+    # Each file as the plan's sources name it.
+    live = next(source for source in plan["sources"] if source.endswith("live.yaml"))
+    project_file = str(project / "matrix.yaml")
+    assert project_file in plan["sources"]
+    run = found["matrix.limits.deadline_s"]
+    assert (run["value"], run["origin"], run["file"], run["note"]) == (600.0, "config", live, "")
+    inherited = found["matrix.limits.components.review.deadline_s"]
+    assert (inherited["value"], inherited["file"]) == (600.0, live)
+    assert inherited["note"] == "the run's matrix.limits.deadline_s"
+    own = found["matrix.limits.components.review.grace_s"]
+    assert (own["value"], own["origin"], own["file"], own["note"]) == (1.0, "config", live, "")
+    attempts = found["matrix.limits.components.review.retry.attempts"]
+    assert (attempts["value"], attempts["origin"]) == (3, "config")
+    backoff = found["matrix.limits.components.review.retry.backoff_s"]
+    assert (backoff["value"], backoff["origin"]) == (1.0, "matrix")  # a retry given whole
+    runtime = found["matrix.agent_runtimes.offline.default"]
+    assert (runtime["origin"], runtime["file"]) == ("config", project_file)
+    family = found["matrix.agent_runtimes.offline.family"]
+    assert (family["value"], family["origin"]) == ("mock", "extension")
+
+
+#: A config whose model step and pydantic-ai runtime name no model runtime: one is composed.
+UNNAMED = """\
+matrix:
+  model_runtimes:
+    fast: {type: mock, default: ok}
+  agent_runtimes:
+    loop: {type: pydantic-ai}
+  inputs: [matrix.v1.prompt]
+  components:
+    - {name: ask, type: matrix.v1.model-step, config: {}}
+"""
+
+
+def test_a_model_runtime_left_unnamed_is_the_only_one_composed_and_the_plan_says_so(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ruling M-RT: a model step's ``runtime`` and the pydantic-ai runtime's
+    ``model_runtime`` default to the one model runtime the config composes. The plan names it,
+    as matrix's default, and says why."""
+    (project / "matrix.yaml").write_text(UNNAMED)
+    code, plan, _ = _cli(capsys, "plan", "--json")
+    assert code == 0, plan
+    (ask,) = plan["components"]
+    assert ask["runtime"] == "fast"
+    assert [runtime["name"] for runtime in plan["model_runtimes"]] == ["fast"]
+    found = _settings(plan)
+    keys = ("matrix.components.ask.config.runtime", "matrix.agent_runtimes.loop.model_runtime")
+    for path in keys:
+        setting = found[path]
+        assert (setting["value"], setting["origin"], setting["file"]) == ("fast", "matrix", None)
+        assert setting["note"] == "the only model runtime composed"
+
+
+@pytest.mark.parametrize(
+    ("runtimes", "allowed"),
+    [("{}", []), ("{a: {type: mock}, b: {type: mock}}", ["a", "b"])],
+    ids=["none", "several"],
+)
+def test_a_model_runtime_left_unnamed_with_none_or_several_composed_is_refused(
+    project: Path, capsys: pytest.CaptureFixture[str], runtimes: str, allowed: list[str]
+) -> None:
+    """With no model runtime composed, or several, there is no default: each key left unset
+    is a config problem at its path, listing the runtimes there are, before anything runs."""
+    config = UNNAMED.replace("    fast: {type: mock, default: ok}\n", "").replace(
+        "  model_runtimes:\n", f"  model_runtimes: {runtimes}\n"
+    )
+    (project / "matrix.yaml").write_text(config)
+    code, _, err = _cli(capsys, "plan", "--json")
+    assert code == 3
+    found = {p["path"]: p for p in json.loads(err)["error"]["problems"]}
+    assert set(found) >= {"matrix.agent_runtimes.loop.model_runtime"}
+    for problem in found.values():
+        assert (problem["kind"], problem["allowed"]) == ("missing_key", allowed), problem
+
+
+def test_the_plans_limits_are_the_ones_the_run_keeps(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Falsifier of the plan: each component's limits, rebuilt from what the plan says, are
+    the ones the executor runs it under."""
+    (project / "matrix.yaml").write_text(
+        CONFIG + "  limits: {cleanup_s: 9, retry: {attempts: 2, errors: [timeout]},"
+        " components: {review: {deadline_s: 30}}}\n"
+    )
+    code, plan, _ = _cli(capsys, "plan", "--json")
+    assert code == 0, plan
+    found = _settings(plan)
+    limits = matrix.compose(matrix.load_config()).limits
+    at = "matrix.limits.components.review"
+    planned = tuple(found[f"{at}.{key}"]["value"] for key in ("deadline_s", "grace_s", "cleanup_s"))
+    assert planned == limits.of("review")
+    retry = {key: found[f"{at}.retry.{key}"]["value"] for key in matrix.Retry.model_fields}
+    assert matrix.Retry.model_validate(retry) == limits.retry_of("review")
+
+
+def test_each_agents_model_tools_and_turns_say_where_they_came_from(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An agent's model given inline is the config's; one its definition file gives is the
+    definition's; one neither gives is left to its runtime, and the plan says so."""
+    agents = project / "agents"
+    agents.mkdir()
+    (agents / "writer.md").write_text(
+        "---\nname: writer\nmodel: sonnet\nmax_turns: 4\n---\nWrite.\n"
+    )
+    (project / "matrix.yaml").write_text(
+        CONFIG.replace(
+            "  agents:\n",
+            "  definitions: [agents]\n  agents:\n    writer: {runtime: offline}\n",
+        )
+    )
+    code, plan, _ = _cli(capsys, "plan", "--json")
+    assert code == 0, plan
+    found = _settings(plan)
+    inline, written = found["matrix.agents.reviewer.model"], found["matrix.agents.writer.model"]
+    assert (inline["value"], inline["origin"]) == ("m1", "config")
+    assert (written["value"], written["origin"]) == ("sonnet", "definition")
+    assert written["note"] == "from the definition 'writer'"
+    assert (
+        found["matrix.agents.writer.max_turns"]["value"],
+        found["matrix.agents.writer.max_turns"]["origin"],
+    ) == (4, "definition")
+    unset = found["matrix.agents.reviewer.tools"]
+    assert (unset["value"], unset["origin"]) == (None, "extension")
+    assert unset["note"] == "unset: the agent runtime's own default"
+
+
+def test_the_human_plan_lists_each_setting_and_who_set_it(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, text, _ = _cli(capsys, "plan")
+    assert code == 0
+    assert "settings (each effective value, and who set it):" in text
+    assert "  matrix.limits.deadline_s = 3600.0  (matrix; each component's, from when" in text
+    assert f'  matrix.agents.reviewer.model = "m1"  (config {project / "matrix.yaml"})' in text
 
 
 def test_a_named_config_sits_above_the_tiers_and_can_be_standard_input(
@@ -242,14 +457,14 @@ def test_describe_says_which_models_each_runtime_takes(
         for url in (
             "agent-runtime.claude-sdk",
             "agent-runtime.mock",
-            "model-runtime.hardline",
+            "agent-runtime.pydantic-ai",
             "model-runtime.mock",
         )
     }
     claude = described["agent-runtime.claude-sdk"]
     assert all(alias in claude["description"] for alias in ("`haiku`", "`sonnet`", "`opus`"))
     assert "max_budget_usd" in claude["properties"]
-    assert "hardline registry" in described["model-runtime.hardline"]["description"]
+    assert "model_runtime" in described["agent-runtime.pydantic-ai"]["properties"]
     assert "by_agent" in described["agent-runtime.mock"]["properties"]
     assert "by_model" in described["model-runtime.mock"]["properties"]
     assert "`sonnet`" in matrix.skill() and "`sonnet`" in matrix.skill("agents")
@@ -434,7 +649,7 @@ class Slow:
         print("started", file=sys.stderr, flush=True)
         await asyncio.sleep(60)
 
-def registry(*, discover=True):
+def registry(*, discover=True, points=None):
     found = matrix.default_registry(discover=False)
     found.register("component", "acme.v1.slow", Slow)
     return found

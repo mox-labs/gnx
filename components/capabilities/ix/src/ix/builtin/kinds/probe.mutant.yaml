@@ -1,0 +1,16 @@
+schema: ix.v1.kind
+name: ix.v1.probe.mutant
+summary: One mutant spliced into the trial's copy, then the tests that ran its statement run, a kill counted only when a test fails again alone on it and passes alone without it; what failed, and why, is what it leaves.
+overlap: allowed
+options:
+  file: {type: string, required: true, description: "the file, relative to the subject's root"}
+  start: {type: list, required: true, description: "[line, column] where the original text starts: line from 1, column in characters from 0"}
+  end: {type: list, required: true, description: "[line, column] where it ends"}
+  original: {type: string, required: true, description: "the exact text from start to end; a tree that differs makes the trial the harness's (mutant_inapplicable)"}
+  replacement: {type: string, required: true, description: "the text put in its place"}
+  operator: {type: string, required: true, description: "what changed, in the generator's own words (core/ReplaceComparisonOperator_Lt_LtE)"}
+  mutant: {type: string, description: "the mutant's id, <file>:<the generator's key>, which ix mutants sample --exclude matches"}
+  file_digest: {type: string, description: "the digest of file as the mutant was made of it (sha256:...); a trial on a file that changed says so (drifted)"}
+  equivalent: {type: string, description: "why this mutant behaves as the original; when given, nothing runs and the trial is unread (equivalent). Moves the probe set's digest: amend the registration"}
+  budget: {type: duration, default: 30m, description: "the longest the whole trial may take, its runs and the reruns a kill takes to attribute"}
+offers: [outcome]

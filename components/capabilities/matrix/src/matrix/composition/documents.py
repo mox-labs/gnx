@@ -24,9 +24,11 @@ from matrix.composition.builtins import (
 )
 from matrix.composition.config import discover_sources, load_config
 from matrix.composition.container import build_store, compose, default_registry
+from matrix.composition.effective import SourcedValue, settings
 from matrix.domain.agent_step import AGENT_STEP
 from matrix.domain.errors import ConfigError, NotFoundError, UsageError, invalid
 from matrix.domain.model_step import MODEL_STEP
+from matrix.domain.needs import described, model_runtime_named
 from matrix.domain.ports._out.construct_store import damaged_of, location_of
 from matrix.domain.problems import Problem, problem, sourced
 
@@ -77,13 +79,24 @@ class Catalog(_Document):
     failures: list[CatalogFailure]
 
 
+class NeedDescription(_Document):
+    """One need an extension declares, from matrix's table or the host's own."""
+
+    name: str
+    #: The type of what is handed over; None for a need of the host's own.
+    type: str | None
+    summary: str
+    #: ``stable`` or ``beta``; None for a need of the host's own.
+    stability: str | None
+
+
 class ExtensionDescription(_Document):
     point: str
     type_url: str
     summary: str
     stability: str
     origin: str
-    needs: list[str]
+    needs: list[NeedDescription]
     stand_in: bool = False
     drives: list[str] = []
     #: The JSON schema its config must meet; None when it takes none.
@@ -239,7 +252,10 @@ class Plan(_Document):
     model_calls_min: int
     model_calls_max: int | None
     store: StorePlan
-    limits: dict[str, Any]
+    #: The effective value of every key the run is made from, and where each came from: the
+    #: limits, each component's own limits and config, the store, every runtime, agent and
+    #: observer. A default is listed as one.
+    settings: list[SourcedValue]
     warnings: list[Problem] = []
 
 
@@ -302,7 +318,7 @@ def describe_extension(type_url: str, *, registry: Registry | None = None) -> Ex
                 summary=e.summary,
                 stability=e.stability,
                 origin=e.origin,
-                needs=sorted(e.needs),
+                needs=[NeedDescription.model_validate(need) for need in described(e.needs)],
                 stand_in=e.stand_in,
                 drives=list(e.drives),
                 config=None if e.config is None else e.config.model_json_schema(),
@@ -431,8 +447,9 @@ def plan_config(
     only: bool = False,
 ) -> Plan:
     """What a run of ``tool``'s configured components would do: the order of work, the
-    agents and runtimes it uses, how many agent and model calls it
-    makes, where it would be recorded. Composes and wires; runs nothing and calls nothing.
+    agents and runtimes it uses, how many agent and model calls it makes, where it would be
+    recorded, and the effective value of every key it is made from, with where each came
+    from. Composes and wires; runs nothing and calls nothing.
 
     Raises ConfigError with every problem found (``complete`` False when one kept a check
     from being made).
@@ -473,7 +490,7 @@ def list_runs(
     """
     loaded = _load(tool, config, only)
     try:
-        store = build_store(loaded.matrix, default_registry())
+        store = build_store(loaded.matrix, default_registry(points=("store",)))
     except ConfigError as e:
         raise invalid("the store cannot be built", sourced(e.problems, loaded.origins)) from None
     if store is None:  # the default registry always holds matrix's own stores
@@ -518,7 +535,9 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
             used[agent] = runtime
             agent_min, agent_max = agent_min + 1, agent_max + attempts
         elif entry.type == MODEL_STEP:
-            runtime = str(entry.config.get("runtime"))
+            runtime = model_runtime_named(
+                entry.config.get("runtime"), container.model_runtimes, key="runtime"
+            )
             model = entry.config.get("model")
             models_used.add(runtime)
             model_min, model_max = model_min + 1, model_max + attempts
@@ -568,7 +587,7 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
             type=store_type_url(matrix.store.type),
             location=location_of(container.store, "RUN_ID"),
         ),
-        limits=container.limits.model_dump(mode="json", exclude_defaults=True),
+        settings=settings(loaded, container, wiring),
         warnings=list(container.warnings),
     )
 

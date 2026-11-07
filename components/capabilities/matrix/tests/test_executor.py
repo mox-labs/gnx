@@ -10,7 +10,9 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 from matrix import (
     ComponentError,
+    ComponentLimits,
     ConfigError,
+    Context,
     ContractError,
     Executor,
     Inputs,
@@ -36,19 +38,19 @@ class Step:
         self._body = body
         self.seen: list[Inputs] = []
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> Any:
+    async def run(self, inputs: Inputs, ctx: Context) -> Any:
         self.seen.append(inputs)
         return await self._body(inputs, ctx)
 
 
 def emits(kind: str, value: Any) -> Step:
-    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+    async def body(inputs: Inputs, ctx: Context) -> Any:
         return {kind: value}
 
     return Step(body, provides=[kind])
 
 
-async def upper(inputs: Inputs, ctx: RunContext) -> Any:
+async def upper(inputs: Inputs, ctx: Context) -> Any:
     return {UPPER: [text.upper() for text in inputs[TEXT]]}
 
 
@@ -93,24 +95,24 @@ async def test_a_component_starts_when_what_it_requires_is_ready_not_before() ->
     gate = asyncio.Event()
     independent_ran = asyncio.Event()
 
-    async def slow(inputs: Inputs, ctx: RunContext) -> Any:
+    async def slow(inputs: Inputs, ctx: Context) -> Any:
         order.append("slow starts")
         await independent_ran.wait()  # it can only finish once its neighbour has run
         await gate.wait()
         order.append("slow ends")
         return {TEXT: "from slow"}
 
-    async def independent(inputs: Inputs, ctx: RunContext) -> Any:
+    async def independent(inputs: Inputs, ctx: Context) -> Any:
         order.append("independent runs")
         independent_ran.set()
         return {OTHER: "x"}
 
-    async def after_independent(inputs: Inputs, ctx: RunContext) -> Any:
+    async def after_independent(inputs: Inputs, ctx: Context) -> Any:
         order.append("its dependent runs")
         gate.set()  # which is what lets the slow one finish
         return None
 
-    async def after_slow(inputs: Inputs, ctx: RunContext) -> Any:
+    async def after_slow(inputs: Inputs, ctx: Context) -> Any:
         order.append(f"reader sees {inputs.one(TEXT)}")
         return None
 
@@ -140,7 +142,7 @@ async def test_concurrency_caps_how_many_run_at_once() -> None:
     running = 0
     most = 0
 
-    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+    async def body(inputs: Inputs, ctx: Context) -> Any:
         nonlocal running, most
         running += 1
         most = max(most, running)
@@ -182,7 +184,7 @@ async def test_inputs_must_match_the_declaration(
 
 
 async def test_a_row_of_a_kind_it_does_not_provide_breaks_the_contract() -> None:
-    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+    async def body(inputs: Inputs, ctx: Context) -> Any:
         return {TEXT: "x", OTHER: "y"}
 
     with pytest.raises(RunError) as e:
@@ -193,7 +195,7 @@ async def test_a_row_of_a_kind_it_does_not_provide_breaks_the_contract() -> None
 
 
 async def test_returning_something_that_is_not_a_mapping_breaks_the_contract() -> None:
-    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+    async def body(inputs: Inputs, ctx: Context) -> Any:
         return "x"
 
     with pytest.raises(RunError, match="returned str"):
@@ -201,7 +203,7 @@ async def test_returning_something_that_is_not_a_mapping_breaks_the_contract() -
 
 
 async def test_a_component_may_return_nothing() -> None:
-    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+    async def body(inputs: Inputs, ctx: Context) -> Any:
         return None
 
     run = await Executor().run(wire({"quiet": Step(body, provides=[TEXT])}))
@@ -239,7 +241,7 @@ async def test_a_row_handed_over_that_its_schema_refuses_with_any_error_is_a_con
 
     raised: list[BaseException] = []
 
-    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+    async def body(inputs: Inputs, ctx: Context) -> Any:
         try:
             ctx.provide(SCORE, {"value": float("nan")})
         except Exception as e:
@@ -254,7 +256,7 @@ async def test_a_row_handed_over_that_its_schema_refuses_with_any_error_is_a_con
 
 
 async def test_a_failure_keeps_the_partial_run() -> None:
-    async def boom(inputs: Inputs, ctx: RunContext) -> Any:
+    async def boom(inputs: Inputs, ctx: Context) -> Any:
         raise RuntimeError("kaput")
 
     wiring = wire(
@@ -282,12 +284,51 @@ async def test_a_failure_keeps_the_partial_run() -> None:
 
 
 async def test_a_component_past_its_deadline_is_a_failure_naming_it() -> None:
-    async def hangs(inputs: Inputs, ctx: RunContext) -> Any:
+    async def hangs(inputs: Inputs, ctx: Context) -> Any:
         await asyncio.Event().wait()
 
     with pytest.raises(RunError, match="'slow' timed out after 0.01s") as e:
         await Executor().run(wire({"slow": Step(hangs)}), limits=Limits(deadline_s=0.01, grace_s=0))
     assert e.value.cause_kind == "component"
+
+
+@pytest.mark.parametrize(
+    ("limits", "key"),
+    [
+        (Limits(deadline_s=0.01, grace_s=0), "matrix.limits.deadline_s"),
+        (
+            Limits(grace_s=0, components={"slow": ComponentLimits(deadline_s=0.01)}),
+            "matrix.limits.components.slow.deadline_s",
+        ),
+    ],
+    ids=["the run's", "its own"],
+)
+async def test_a_component_past_its_deadline_says_which_setting_to_raise(
+    limits: Limits, key: str
+) -> None:
+    """Ruling M-O7: a run that reaches a deadline stops through the stop path, and the
+    failure the record keeps names the key that set it, and how to lift it."""
+
+    async def hangs(inputs: Inputs, ctx: Context) -> Any:
+        await asyncio.Event().wait()
+
+    with pytest.raises(RunError) as e:
+        await Executor().run(wire({"slow": Step(hangs)}), limits=limits)
+    (failure,) = e.value.run.failures
+    assert f"raise {key}, or set it to null for no deadline" in failure.message
+
+
+def test_the_deadline_is_an_hour_unless_set_and_null_written_is_none() -> None:
+    """Ruling M-O7: unset, each component's deadline is an hour; ``None`` written is no
+    deadline, at the run's level or a component's own, which a component left unset (or given
+    other keys only) does not inherit away."""
+    assert Limits().of("a")[0] == 3600.0
+    assert Limits(deadline_s=None).of("a")[0] is None
+    soak = Limits(
+        deadline_s=60,
+        components={"soak": ComponentLimits(deadline_s=None), "kept": ComponentLimits(grace_s=1)},
+    )
+    assert [soak.of(name)[0] for name in ("soak", "kept", "other")] == [None, 60.0, 60.0]
 
 
 def test_limits_are_checked_when_made() -> None:
@@ -324,16 +365,16 @@ async def test_observers_see_the_run_and_one_failing_observer_cannot_stop_it() -
 async def test_a_component_cannot_change_what_it_read_or_what_it_handed_over() -> None:
     handed: dict[str, int] = {"n": 1}
 
-    async def source(inputs: Inputs, ctx: RunContext) -> Any:
+    async def source(inputs: Inputs, ctx: Context) -> Any:
         ctx.provide(TEXT, handed)
         handed["n"] = 2  # after the hand-over: the record already has its own copy
         return None
 
-    async def mutator(inputs: Inputs, ctx: RunContext) -> Any:
+    async def mutator(inputs: Inputs, ctx: Context) -> Any:
         inputs.one(TEXT)["n"] = 999
         return None
 
-    async def reader(inputs: Inputs, ctx: RunContext) -> Any:
+    async def reader(inputs: Inputs, ctx: Context) -> Any:
         return {SCORE: inputs.one(TEXT)["n"]}
 
     wiring = wire(

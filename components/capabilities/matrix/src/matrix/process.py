@@ -34,7 +34,7 @@ _SWEPT: weakref.WeakSet[asyncio.subprocess.Process] = weakref.WeakSet()
 
 class Deferring(Protocol):
     """What :func:`spawn` asks of its first argument: somewhere to defer a release. A
-    :class:`~matrix.domain.component.RunContext` is one; so is anything else with ``defer``."""
+    :class:`~matrix.domain.component.Context` is one; so is anything else with ``defer``."""
 
     def defer(self, release: Callable[[], Awaitable[None] | None], /) -> None: ...
 

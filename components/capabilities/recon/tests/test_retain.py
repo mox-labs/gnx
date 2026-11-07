@@ -1,39 +1,56 @@
-"""``retain:`` (ruling B4): which sealed windows a stream keeps. ``all`` (the default) removes
-nothing; a rule removes the oldest sealed windows it does not keep, and leaves a tombstone for
-each, so a hole in the chain reads as retention, not loss. A window not sealed is never
-removed, and the newest is always kept."""
+"""``retain:`` (ruling B4): which sealed windows a stream keeps, applied by the observe layer
+as each window is sealed (step M3: the stream's writer tells it each one, under its hold).
+``all`` (the default) removes nothing; a rule removes the oldest sealed windows it does not
+keep, and leaves a tombstone for each, so a hole in the chain reads as retention, not loss. A
+window not sealed is never removed, and the newest is always kept."""
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from recon.adapters._out.archive_files import ArchiveFiles
-from recon.domain.stream import RetainSpec, WindowSpec, window_id
-from tests.recon_fakes import VirtualClock
+from recon.adapters._out.mission_layout import STATE
+from recon.core.domain.stream import RetainSpec, WindowSpec, window_id
+from recon.observe.application.retention import Retention
+from tests.recon_fakes import VirtualClock, files_of, landing, window_kept
 from tests.test_streams import Script, _plan, _run
 
 if TYPE_CHECKING:
-    from recon.domain.stream import Retain
+    from pathlib import Path
+
+    from recon.adapters._out.archive_files import ArchiveFiles
+    from recon.core.domain.archives import Hold
+    from recon.core.domain.documents import WindowOutcome
+    from recon.core.domain.stream import Retain
+
+
+def _retaining(store: ArchiveFiles, clock: VirtualClock, rule: Retain) -> Any:
+    """What a stream's run tells each window sealed, as the observe layer has it: retention
+    applied under the stream's hold."""
+    retention, sizes = Retention(store, clock), dict[str, int]()
+
+    def sealed(hold: Hold, window: WindowOutcome) -> None:
+        retention.window(hold, "m", "s", rule, window, sizes)
+
+    return sealed
 
 
 def _stream(
     tmp_path: Path, retain: Retain, *, count: int = 50, every: float = 1.0
 ) -> tuple[ArchiveFiles, list[Any]]:
     clock = VirtualClock()
-    store = ArchiveFiles(clock)
+    store = files_of(tmp_path, clock)
     plan = _plan(WindowSpec(seconds=10))
-    plan = type(plan)(**{**plan.__dict__, "retain": retain})
     timeline = [(i * every, {"seq": i}) for i in range(count)]
-    _, outcomes, _ = _run(tmp_path, clock, plan, Script(clock, timeline), store=store)
+    _, outcomes, _ = _run(tmp_path, clock, plan, Script(clock, timeline), store=store,
+                          sealed=_retaining(store, clock, retain))  # fmt: skip
     return store, outcomes
 
 
 def _kept(store: ArchiveFiles, project: Path) -> list[int]:
-    return [int(w.name[:8]) for w in store.archives(project, stream="s")]
+    return [int(w.id[:8]) for w in store.archives("m", stream="s")]
 
 
 class TestRules:
@@ -41,14 +58,14 @@ class TestRules:
         store, outcomes = _stream(tmp_path, "all")
 
         assert _kept(store, tmp_path) == [o.index for o in outcomes]
-        assert store.retired(tmp_path, "s") == []
+        assert store.retired("m", stream="s") == []
 
     def test_windows_keeps_the_newest_n_and_tombstones_the_rest(self, tmp_path: Path) -> None:
         store, outcomes = _stream(tmp_path, RetainSpec(archives=2))
 
         assert len(outcomes) == 5
         assert _kept(store, tmp_path) == [3, 4]
-        tombstones = store.retired(tmp_path, "s")
+        tombstones = store.retired("m", stream="s")
         assert [t["index"] for t in tombstones] == [0, 1, 2]
         first = tombstones[0]
         assert first["id"] == outcomes[0].id
@@ -69,19 +86,20 @@ class TestRules:
 
     def test_a_window_not_sealed_is_never_removed(self, tmp_path: Path) -> None:
         clock = VirtualClock()
-        store = ArchiveFiles(clock)
-        store.hold_stream(tmp_path, "s")
-        dead = store.create(tmp_path, window_id(0, clock.now()), stream="s")
-        (dead / "s.jsonl.tmp").write_text('{"seq": 0}\n')
-        store.release(dead)
-        store.release_stream(tmp_path, "s")
+        store = files_of(tmp_path, clock)
+        with landing(tmp_path, store=store, archive_id=window_id(0, clock.now()), stream="s") as (
+            made,
+            where,
+        ):
+            (where / "s.jsonl.tmp").write_text('{"seq": 0}\n')
+        dead = made.ref
 
         plan = _plan(WindowSpec(seconds=10))
-        plan = type(plan)(**{**plan.__dict__, "retain": RetainSpec(archives=1)})
         timeline = [(i * 1.0, {"seq": i}) for i in range(30)]
-        _run(tmp_path, clock, plan, Script(clock, timeline), store=store)
+        _run(tmp_path, clock, plan, Script(clock, timeline), store=store,
+             sealed=_retaining(store, clock, RetainSpec(archives=1)))  # fmt: skip
 
-        kept = store.archives(tmp_path, stream="s")
+        kept = store.archives("m", stream="s")
         assert dead in kept, "a window its writer never sealed is kept, as evidence"
         assert len(kept) == 2
 
@@ -92,15 +110,15 @@ class TestTombstones:
         windows costs the windows kept, and counting the retired costs no parsing."""
         store, outcomes = _stream(tmp_path, RetainSpec(archives=1))
 
-        stream = tmp_path / "streams" / "s"
+        stream = tmp_path / STATE / "m" / "streams" / "s"
         lines = (stream / "retired.jsonl").read_text().splitlines()
         assert [json.loads(line)["id"] for line in lines] == [o.id for o in outcomes[:-1]]
         assert sorted(p.name for p in stream.iterdir()) == sorted(
             ["retired.jsonl", "writer.lock", outcomes[-1].id]
         ), "no file per retired window"
-        assert store.retired_count(tmp_path, "s") == len(outcomes) - 1
+        assert store.retired_count("m", "s") == len(outcomes) - 1
         assert not (stream / outcomes[0].id).exists()
-        newest = yaml_of(Path(outcomes[-1].path))
+        newest = yaml_of(window_kept(tmp_path, "m", outcomes[-1]))
         assert newest["stream"]["previous"] == outcomes[-2].id, "the chain still names it"
 
 
@@ -108,7 +126,7 @@ class TestTombstones:
 def test_every_window_is_kept_or_has_a_tombstone(tmp_path: Path, retain: RetainSpec) -> None:
     store, outcomes = _stream(tmp_path, retain)
 
-    retired = [t["index"] for t in store.retired(tmp_path, "s")]
+    retired = [t["index"] for t in store.retired("m", stream="s")]
     assert sorted(retired + _kept(store, tmp_path)) == [o.index for o in outcomes]
 
 

@@ -15,23 +15,24 @@ about what it does not need (unknown fields are ignored).
 from __future__ import annotations
 
 import contextlib
+import glob
 import hashlib
 import json
 import os
 import re
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from recon.adapters._out.private_files import make_dirs, open_file, write_file
-from recon.domain.capture import CAPTURE_LOG_NAME, CAPTURE_SCHEMA, CaptureKind, redact_headers
-from recon.domain.documents import Capture
-from recon.domain.errors import CollectionError
+from recon.core.domain.capture import CAPTURE_LOG_NAME, CAPTURE_SCHEMA, CaptureKind, redact_headers
+from recon.core.domain.documents import Capture
+from recon.core.domain.errors import CollectionError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from pathlib import Path
 
-    from recon.domain.clock import Clock
+    from recon.core.domain.clock import Clock
 
 _BODY_PATH = re.compile(r"^raw/[0-9a-f]{64}$")
 _SCHEMA = re.compile(r"^recon\.v([0-9]+)\.capture$")
@@ -88,7 +89,8 @@ class FilesystemCaptureLog:
             size=len(body),
         )
 
-    def stream_path(self, collector: str) -> Path:
+    def _stream_file(self, collector: str) -> Path:
+        """Where the body streaming for ``collector`` waits until it is logged."""
         path = self._streams.get(collector)
         if path is None:
             path = self._raw_dir() / f".stream-{uuid.uuid4().hex}.tmp"
@@ -98,7 +100,7 @@ class FilesystemCaptureLog:
     def tee(self, collector: str, data: bytes) -> None:
         tee = self._tees.get(collector)
         if tee is None:
-            descriptor = open_file(self.stream_path(collector), os.O_WRONLY | os.O_APPEND)
+            descriptor = open_file(self._stream_file(collector), os.O_WRONLY | os.O_APPEND)
             tee = self._tees[collector] = os.fdopen(descriptor, "ab")
         tee.write(data)
 
@@ -246,3 +248,28 @@ def read_captures(log_path: Path) -> Iterator[tuple[dict[str, Any], bytes]]:
                 msg = f"{where}: body {body_ref} does not match its sha256"
                 raise CollectionError(msg, fix=fix)
             yield line, body
+
+
+class MissionCaptureLogs:
+    """The ``CaptureLogs`` of one mission (``recon.core.domain.capture``): a glob relative to
+    the mission's directory, or absolute, names the logs; each is read by
+    :func:`read_captures`, so no second parser of the format exists. The mission's directory
+    is this adapter's, never a collector type's."""
+
+    def __init__(self, mission_dir: Path) -> None:
+        self._mission_dir = mission_dir
+
+    def logs(self, pattern: str) -> list[str]:
+        full = Path(pattern) if Path(pattern).is_absolute() else self._mission_dir / pattern
+        found = sorted(p for p in map(Path, glob.glob(str(full), recursive=True)) if p.is_file())
+        if not found:
+            raise CollectionError(
+                f"no capture log matches {pattern!r} (relative to {self._mission_dir}). "
+                "Captures are written by `recon capture` and by surveys with preserve_raw: true",
+                kind="config",
+                fix="point path: at an existing captures.jsonl, or capture first",
+            )
+        return [str(path) for path in found]
+
+    def read(self, log: str) -> Iterator[tuple[dict[str, Any], bytes]]:
+        return read_captures(Path(log))

@@ -39,9 +39,9 @@ arguments and never from pydantic-evals' default (``openai:gpt-5.2``), which wou
 provider from the environment: validate refuses a judge evaluator that names no runtime, and
 one whose arguments name a model. A runtime that is a stand-in (``mock``) gives pydantic-ai's
 ``TestModel``, which calls no model; any other is asked of the root's :class:`JudgeModels`,
-which gives the pydantic-ai ``Model`` that runtime offers (``hardline``'s makes each request a
-hardline call). The connections its calls opened are closed when the reading ends, in the
-loop that opened them. Its calls are hardline's ``chat`` spans and counters, made while the
+which gives pydantic-ai's ``Model`` over that runtime (each request one call on it). The
+connections its calls opened are closed when the reading ends, in the loop that opened
+them. Its calls are the model runtime's own spans and counters, made while the
 sensor reads, after the trial's spans were kept: they never join the tree an evaluator reads.
 Each is also a row of the run's session table, which the runtime's ``Model`` records, so the
 reading names the calls behind it (``sessions``), as a judge sensor's does.
@@ -60,12 +60,13 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from functools import cache
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
-from ix.adapters._out.matrix_agents import MODEL_RUNTIME, STAND_IN, runtime_requirement
+from ix.adapters._out.matrix_agents import STAND_IN, released, runtime_requirement
 from ix.domain.kind import placeholders
 from ix.domain.ports import Requirement, Sensed, StoodIn
 from ix.domain.problem import Problem, problem
+from ix.extension import MODEL_RUNTIME
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator, Sequence
@@ -74,9 +75,9 @@ if TYPE_CHECKING:
     from pydantic_evals.evaluators import Evaluator
     from pydantic_evals.otel import SpanTree, SpanTreeRecordingError
 
-    from ix.adapters._out.matrix_agents import Runtimes
     from ix.domain.ports import Surroundings
     from ix.domain.run import Interaction, Target
+    from ix.extension import JudgeModels, Runtimes
 
 #: The kind this sensor carries out, and the key its watch is kept under in an interaction.
 KIND = "ix.v1.sensor.evaluator"
@@ -103,17 +104,6 @@ READS_NO_SPANS = frozenset(
 
 #: Why a trial's spans are not there, when the watch kept none and said nothing.
 UNWATCHED = "no spans were kept for this trial: the evaluator sensor did not watch it"
-
-
-class JudgeModels(Protocol):
-    """Where a judge evaluator's model comes from, as the composition root hands it over:
-    a pydantic-ai ``Model`` that makes its calls through a matrix model runtime."""
-
-    def model(self, runtime: str, model: str | None, config: Mapping[str, Any]) -> Any:
-        """The pydantic-ai ``Model`` for ``model`` on the model runtime named ``runtime``,
-        built with ``config``. Raises ``IxError`` (with a ``fix``), ``matrix.MatrixError`` or
-        ``ValueError`` when there is none to give."""
-        ...
 
 
 class NoSpansError(ValueError):
@@ -322,7 +312,8 @@ class EvaluatorSensor:
     Options: ``evaluator`` (required), ``arguments``, ``result``; for an evaluator that
     calls a model, ``model_runtime`` (required), ``model`` and ``runtime_options``. A
     :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight` (a judge
-    evaluator's model can be had) and a :class:`~ix.domain.ports.StandIn`."""
+    evaluator's model can be had), a :class:`~ix.domain.ports.StandIn` and
+    :class:`~ix.domain.ports.ModelCalls`."""
 
     def __init__(self, runtimes: Runtimes, judge_models: JudgeModels) -> None:
         self._runtimes = runtimes
@@ -373,8 +364,9 @@ class EvaluatorSensor:
                     kind="option_missing",
                     message=f"{name} calls a model, and names no model runtime: there is no "
                     "default, and pydantic-evals' own default model is never used",
-                    fix="add model_runtime: a matrix model runtime (hardline: calls a model "
-                    "provider; mock: calls no model), and model",
+                    fix="add model_runtime: a matrix model runtime "
+                    "(matrix-hardline.v1.model-runtime: calls a model provider; mock: calls no "
+                    "model), and model",
                 )
             )
         if not judge:
@@ -429,6 +421,14 @@ class EvaluatorSensor:
                 lambda: self._judge_model(options),
             )
         ]
+
+    def model_calls(self, options: Mapping[str, Any]) -> int:
+        """One judge's agent run a reading for an evaluator that calls a model, on a model
+        runtime that is not a stand-in; none otherwise. Raises for an evaluator
+        pydantic-evals does not have, and for a runtime nothing registered."""
+        if not _calls_a_model(_evaluator_class(options)) or not options.get("model_runtime"):
+            return 0
+        return 0 if self._runtimes.stand_in(MODEL_RUNTIME, str(options["model_runtime"])) else 1
 
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn:
         """A judge evaluator on the stand-in model runtime, whose model is pydantic-ai's
@@ -511,9 +511,7 @@ class EvaluatorSensor:
         try:
             return await self._read(cls(**arguments), interaction, truth, options, judged=judge)
         finally:
-            close = getattr(model, "aclose", None)
-            if callable(close):  # the connections its calls opened, in this loop
-                await close()
+            await released(model)  # its calls' connections, in this loop
 
     async def _read(
         self,

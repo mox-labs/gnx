@@ -13,6 +13,11 @@ the same kind.
 
 from __future__ import annotations
 
+import json
+import os
+import signal
+import socket
+import time
 from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -24,13 +29,14 @@ from matrix import (
     RunError,
     compose,
 )
+from matrix import ConfigError as MatrixConfigError
 from matrix import NotFoundError as MatrixNotFoundError
 from pydantic import ValidationError
 
 from ix.adapters._out.compose import DOWN_TIMEOUT_S
 from ix.adapters._out.matrix_errors import carried_over
 from ix.domain import schema
-from ix.domain.errors import ConfigError, IxError, NotFoundError
+from ix.domain.errors import ConfigError, IxError, NotFoundError, UsageError
 from ix.domain.report import RunSummary
 from ix.domain.run import Interaction, Reading, RunManifest, RunRecord, RunStatus, Trial
 
@@ -49,9 +55,22 @@ EVENTS = "matrix.v1.event"
 #: for a load tool and a subject to be stopped politely.
 GRACE_S = 15.0
 
+# A run's components get no matrix deadline (``deadline_s=None``, matrix's "no deadline"):
+# one experiment run is one matrix run, so its trials component lasts as long as all of the
+# experiment's trials, and matrix's default of an hour would cut a long experiment mid-way.
+# What bounds a trial is ix's: each probe's ``budget_s``, where its kind declares one.
+
 #: How long the environment's releases have when the run ends: a compose stack's ``down``
 #: stops each container and removes its volumes, which outlasts matrix's default.
 ENVIRONMENT_CLEANUP_S = DOWN_TIMEOUT_S + 30.0
+
+#: How often a follower reads a running run's record and events again.
+POLL_S = 0.25
+
+#: The suffix of the file beside a run's directory that holds what the process of a run
+#: started detached wrote to its standard error: ``<root>/<run id>.log``. matrix's store
+#: lists directories that hold a ``run.json``, so it is no run to it.
+LOG_SUFFIX = ".log"
 
 _STATUS: dict[str, RunStatus] = {
     "running": "running",
@@ -111,6 +130,7 @@ async def execute(
                 store=store,
                 run_id=manifest.run,
                 limits=Limits(
+                    deadline_s=None,
                     grace_s=GRACE_S,
                     components={"environment": ComponentLimits(cleanup_s=ENVIRONMENT_CLEANUP_S)},
                 ),
@@ -159,6 +179,129 @@ class Runs:
         except MatrixError as error:
             raise carried_over(f"{path} cannot be read", error) from error
         return runs, directory.name
+
+    def taken(self, run: str) -> bool:
+        """Whether a run of id ``run`` is recorded here, or its directory exists. Raises
+        :class:`UsageError` when ``run`` is no id the store can keep a run under."""
+        try:
+            self.store.describe(run)
+        except MatrixNotFoundError:
+            return Path(self.root, run).exists()
+        except MatrixConfigError as error:
+            raise UsageError(
+                f"{run!r} cannot be a run's id: {error.message}",
+                fix="give --run-id letters, digits, '.', '_' and '-' only",
+                details={"value": run},
+            ) from error
+        except MatrixError:
+            return True  # a record there, damaged: the id is taken all the same
+        return True
+
+    def recorded(self, run: str) -> bool:
+        """Whether the record of ``run`` has been opened here."""
+        try:
+            self.store.describe(run)
+        except MatrixNotFoundError:
+            return False
+        except MatrixError as error:
+            raise carried_over(f"run {run!r} in {self.root} cannot be read", error) from error
+        return True
+
+    def log(self, run: str) -> Path:
+        """Where the process of ``run``, started detached, writes its standard error."""
+        return Path(self.root, run + LOG_SUFFIX)
+
+    def writer(self, run: str) -> tuple[str, int | None]:
+        """The host ``run`` is written on, and the id of the process writing it while it runs
+        on this host: None once it has ended, or when another host writes it. Reading it
+        finishes the record of a run whose writer on this host is gone, as ``interrupted``
+        (matrix's reader does)."""
+        described = self._described(run)
+        writer = described.get("writer") or {}
+        host, pid = str(writer.get("host") or ""), writer.get("pid")
+        if described.get("status") != "running" or host != socket.gethostname():
+            return host, None
+        return host, pid if isinstance(pid, int) else None
+
+    def running(self, run: str) -> bool:
+        """Whether ``run``'s record still says it is running (a writer gone from this host
+        has been read as having ended)."""
+        return self._described(run).get("status") == "running"
+
+    def events(self, run: str, *, follow: bool = False) -> Iterator[dict[str, Any]]:
+        """``run``'s events, oldest first, each the ``matrix.v1.event`` document as its line
+        holds it; a line not yet whole, or not JSON, is not one. With ``follow``, it goes on
+        yielding each event as it is written until the record says the run ended, and then
+        every event written before that: it ends however the run ended, its writer killed
+        included. Raises :class:`UsageError`, before yielding anything, for ``follow`` on a
+        run still written on another host: whether its writer there is alive cannot be read
+        from here, so following it might never end. Without ``follow`` such a run's events
+        are read as they stand."""
+        if follow:
+            host, pid = self.writer(run)
+            if pid is None and self.running(run):
+                raise UsageError(
+                    f"run {run!r} is written by a process on {host or 'another host'}, whose "
+                    "end this host cannot see, so following it might never end",
+                    fix="read its events as they stand without --follow, or ask `ix status` "
+                    "again later",
+                    details={"path": f"{self.root}/{run}"},
+                )
+        return self._events(run, follow=follow)
+
+    def _events(self, run: str, *, follow: bool) -> Iterator[dict[str, Any]]:
+        path = Path(self.root, run, EVENT_LOG)
+        position = 0
+        while True:
+            ended = not follow or not self.running(run)
+            position, found = _whole_lines(path, position)
+            yield from found
+            if ended:
+                return
+            time.sleep(POLL_S)
+
+    def stop(self, run: str, *, wait_s: float) -> None:
+        """Ask the process writing ``run`` to stop, as Ctrl-C or SIGTERM does: matrix stops
+        the trial in flight, calls every release and finishes the record. Returns once the
+        record says the run ended, or after ``wait_s`` while it is still releasing what it
+        started. Does nothing to a run that has ended. Raises :class:`UsageError` for a run
+        written on another host, and :class:`ConfigError` when its process may not be
+        signalled from here."""
+        host, pid = self.writer(run)
+        if pid is None:
+            if not self.running(run):
+                return  # it has ended: its record says how
+            raise UsageError(
+                f"run {run!r} is written by a process on {host or 'another host'}, which this "
+                "host cannot stop",
+                fix=f"run `ix stop` on {host}" if host else "run `ix stop` where it runs",
+                details={"path": f"{self.root}/{run}"},
+            )
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return  # it ended between the two reads: its record says how
+        except PermissionError as error:
+            raise ConfigError(
+                f"the process writing run {run!r} (pid {pid}) may not be signalled from here",
+                fix="stop it as the user it runs as",
+                details={"path": f"{self.root}/{run}", "value": pid},
+            ) from error
+        until = time.monotonic() + wait_s
+        while self.running(run) and time.monotonic() < until:
+            time.sleep(POLL_S)
+
+    def _described(self, run: str) -> dict[str, Any]:
+        try:
+            return self.store.describe(run)
+        except MatrixNotFoundError as error:
+            raise NotFoundError(
+                f"no run {run!r} in {self.root}",
+                fix="`ix runs <experiment>` lists the runs",
+                details={"path": self.root, "value": run},
+            ) from error
+        except MatrixError as error:
+            raise carried_over(f"run {run!r} in {self.root} cannot be read", error) from error
 
     def ids(self) -> list[str]:
         """Run ids, oldest first."""
@@ -253,3 +396,25 @@ class Runs:
             planned=len(record.trials),
             carried_out=len(record.interactions),
         )
+
+
+def _whole_lines(path: Path, position: int) -> tuple[int, list[dict[str, Any]]]:
+    """The JSON objects on the whole lines of ``path`` from byte ``position`` on, and the
+    position after the last whole line: a line still being written is read next time. A
+    file not there yet has none."""
+    try:
+        with path.open("rb") as stream:
+            stream.seek(position)
+            data = stream.read()
+    except FileNotFoundError:
+        return position, []
+    whole = data.rfind(b"\n") + 1
+    found: list[dict[str, Any]] = []
+    for line in data[:whole].splitlines():
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            found.append(parsed)
+    return position + whole, found

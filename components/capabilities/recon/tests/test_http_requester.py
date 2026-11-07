@@ -22,12 +22,12 @@ from pydantic import ValidationError
 
 from recon.adapters._out.http_requester import HttpRequester, classify_http_failure
 from recon.adapters._out.system_clock import SystemClock
-from recon.domain.clock import LONGEST_WAIT
-from recon.domain.deadline import Deadline
-from recon.domain.errors import CollectionError
-from recon.domain.http import HttpResponse
-from recon.domain.models import AuthConfig, RateLimitConfig, SourceEntry
-from recon.domain.ratelimit import RateLimiter
+from recon.core.domain.clock import LONGEST_WAIT
+from recon.core.domain.deadline import Deadline
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.http import HttpResponse
+from recon.core.domain.models import AuthConfig, RateLimitConfig, SourceEntry
+from recon.core.domain.ratelimit import RateLimiter
 from tests.recon_fakes import FixedClock, HurriedClock
 
 
@@ -131,7 +131,13 @@ def base_url() -> Iterator[str]:
     server.server_close()
 
 
+#: The test server's rate limit: these tests are of the requester, which the default of a
+#: source whose limits are unknown (1 request a second) would only slow.
+LOCAL_RATE = RateLimitConfig(rps=100.0, burst=10)
+
+
 def _get(base_url: str, path: str, **source_fields: Any) -> HttpResponse:
+    source_fields.setdefault("rate_limit", LOCAL_RATE)
     source = SourceEntry(name="local", url=base_url, timeout=10, **source_fields)
     clock = SystemClock()
     return HttpRequester(RateLimiter(clock), clock).get(source, f"{base_url}{path}")
@@ -325,8 +331,10 @@ def test_a_redirect_within_the_origin_keeps_the_credential(origin: str, location
 
 
 def _answered_by(answer: Callable[[httpx2.Request], httpx2.Response]) -> HttpRequester:
-    """A requester whose every request is answered by ``answer``, through a MockTransport."""
-    clock = SystemClock()
+    """A requester whose every request is answered by ``answer``, through a MockTransport, on
+    a clock that skips each wait: these tests are of what is sent and how it fails, and each
+    redirect of a loop draws a token from the source's rate limit."""
+    clock = HurriedClock()
     return HttpRequester(RateLimiter(clock), clock, transport=httpx2.MockTransport(answer))
 
 

@@ -14,17 +14,17 @@ from typing import TYPE_CHECKING, Any
 import pytest
 import yaml
 
-from recon.application.plan import build_plan
 from recon.composition import load_plugins, root
-from recon.domain.errors import CollectionError
-from recon.domain.http import HttpResponse
+from recon.core.application.plan import build_plan
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.http import HttpResponse
 from tests.recon_fakes import FixedClock
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from recon.domain.collector import Plugins
-    from recon.domain.models import SourceEntry
+    from recon.core.domain.collector import Plugins
+    from recon.core.domain.models import SourceEntry
 
 
 @pytest.fixture(scope="module")
@@ -73,7 +73,7 @@ class Surveys:
     def survey(self, times: int = 1) -> list[str]:
         for _ in range(times):
             self.clock.advance(60)
-            self.recon.survey("m")
+            self.recon.observation.survey("m")
         return self.kept()
 
     def kept(self) -> list[str]:

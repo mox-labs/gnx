@@ -36,7 +36,9 @@ class RuntimeConfig(_Typed):
     ``type`` is a matrix built-in's short name or the full type URL of a runtime another
     package registered. Under ``agent_runtimes`` the built-ins are ``claude-sdk``,
     ``pydantic-ai`` and ``mock`` (``acme.v1.agent-runtime.strands`` names another's); under
-    ``model_runtimes`` they are ``hardline`` and ``mock``. Options are validated by the
+    ``model_runtimes`` the one built-in is ``mock``: a real one is installed with the package
+    that registers it (``matrix-hardline.v1.model-runtime``, from ``matrix-hardline``). A
+    model runtime's models are its own config's, as it declares them. Options are validated by the
     runtime's own typed config, so an unknown option fails naming the runtime.
     """
 
@@ -116,12 +118,6 @@ class MatrixConfig(BaseModel):
     #: Bounds on a run: concurrency, deadlines, grace, cleanup, the failure policy, retries,
     #: and per-component overrides (:class:`~matrix.domain.executor.Limits`).
     limits: Limits = Limits()
-    #: A hardline registry section (``{default?, models: {...}}``) handed to every runtime
-    #: built on hardline (``type: hardline`` model runtimes, ``type: pydantic-ai`` agent
-    #: runtimes) that does not carry its own. ``None`` = hardline
-    #: discovers its own tiers (``~/.hardline/config.yaml``, ``./hardline.yaml``,
-    #: ``$HARDLINE_CONFIG``).
-    models: dict[str, Any] | None = None
 
 
 class Config(BaseModel, Generic[C]):  # noqa: UP046

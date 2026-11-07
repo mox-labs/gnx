@@ -9,14 +9,17 @@ records an author or an extension writes (``Experiment``, ``Genre``, ``Kind``), 
 errors. The command line calls these and nothing else. Every part of those records
 (``SubjectConfig``, ``Margin``, ``Decision``, ``Interval``, ...) and every port an extension
 implements (``Subject``, ``Probe``, ``Sensor``, ``Environment``) is exported from
-``ix.domain``; the modules inside it are not public.
+``ix.domain``; the modules inside it are not public. ``ix.mutants`` is mutation testing's
+surface (``sample``, ``read``), provisional.
 """
 
 from importlib.metadata import PackageNotFoundError, version
 
+from ix import mutants
 from ix.api import (
     configure_telemetry,
     deviations,
+    events,
     genres,
     kinds,
     load,
@@ -27,6 +30,9 @@ from ix.api import (
     run,
     runs,
     skill,
+    start,
+    status,
+    stop,
     validate,
 )
 from ix.domain.design import Design
@@ -53,7 +59,7 @@ from ix.domain.problem import (
     error_document,
 )
 from ix.domain.registration import Deviations, Registered, RegistrationConflictError
-from ix.domain.report import Report, Runs
+from ix.domain.report import Report, Runs, Status
 
 try:
     __version__ = version("ix")
@@ -83,6 +89,7 @@ __all__ = [
     "RegistrationConflictError",
     "Report",
     "Runs",
+    "Status",
     "UnregisteredError",
     "UsageError",
     "Validation",
@@ -90,9 +97,11 @@ __all__ = [
     "configure_telemetry",
     "deviations",
     "error_document",
+    "events",
     "genres",
     "kinds",
     "load",
+    "mutants",
     "plan",
     "register",
     "report",
@@ -100,5 +109,8 @@ __all__ = [
     "run",
     "runs",
     "skill",
+    "start",
+    "status",
+    "stop",
     "validate",
 ]

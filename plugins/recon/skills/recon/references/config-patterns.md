@@ -63,7 +63,7 @@ collectors:
     run: "rg --count-matches 'unsafe' --type rust ."   # text: <file>:<count> per line
 ```
 
-**Produces:** `scars-tokio.jsonl`, `scars-tower.jsonl`, `signatures-tokio.jsonl`, etc.
+**Produces:** tables `scars-tokio`, `scars-tower`, `signatures-tokio`, etc.
 
 **Query example:**
 ```sql
@@ -288,11 +288,9 @@ Each run adds one archive. To report what changed, compare the latest archive wi
 
 The config never changes — only the archives accumulate.
 
-**What is new since an earlier archive** (its id from `recon status arxiv-weekly`; run from the project root):
-```sql
-SELECT title, published FROM arxiv_new
-EXCEPT
-SELECT title, published FROM read_json_auto('.recon/arxiv-weekly/archive/<archive id>/arxiv-new.jsonl')
+**What is new since an earlier archive** (its id from `recon status arxiv-weekly`), named as the baseline:
+```
+recon query arxiv-weekly "SELECT title, published FROM arxiv_new EXCEPT SELECT title, published FROM baseline.arxiv_new" --baseline <archive id> --json
 ```
 
 ---
@@ -363,28 +361,30 @@ collectors:
 
 ## RSS / Blog Tracking
 
-Track a set of blogs or RSS feeds via the web collector. The web collector emits uniform records (`url`, `title`, `content`, `status_code`, `content_type`); feed items get parsed from the content field.
+Track a set of blogs or RSS feeds with an api collector that reads each answer as a document (`response_format: document`): one uniform record a page (`url`, `title`, `content`, `content_type`), its `content` the page as markdown.
 
 ```yaml
 catalog:
   - name: overreacted
-    type: web
+    type: api
     url: https://overreacted.io
     rate_limit: { rps: 1, burst: 1 }
 
   - name: simonwillison
-    type: web
+    type: api
     url: https://simonwillison.net
     rate_limit: { rps: 1, burst: 1 }
 
 collectors:
   # Fetch the index page for each blog
   - name: index
-    type: web
+    type: api
+    endpoint: /
+    response_format: document
     # no source: → fans out across both blogs
 ```
 
-**Produces:** `index-overreacted.jsonl`, `index-simonwillison.jsonl`, each with the markdown-converted homepage. Claude extracts post titles and dates from the `content` field by reading the JSONL.
+**Produces:** tables `index-overreacted`, `index-simonwillison`, each with the markdown-converted homepage. Claude extracts post titles and dates from the `content` field by querying them.
 
 For actual RSS/Atom feeds, treat them as `response_format: xml` API collectors and use `extract: "rss.channel.item"` or `extract: "feed.entry"`.
 
@@ -435,37 +435,40 @@ SELECT name, version, vulns FROM python_audit WHERE len(vulns) > 0
 
 ## Doc Site Survey
 
-Scrape a documentation site section by section via the web collector. Useful for building a structured index of a docs tree.
+Scrape a documentation site section by section, each page read as a document. Useful for building a structured index of a docs tree.
 
 ```yaml
 catalog:
   - name: svelte-docs
-    type: web
+    type: api
     url: https://svelte.dev
     rate_limit: { rps: 1, burst: 1 }
 
 collectors:
   - name: docs-intro
-    type: web
+    type: api
     source: svelte-docs
     endpoint: /docs/svelte/overview
+    response_format: document
 
   - name: docs-runes
-    type: web
+    type: api
     source: svelte-docs
     endpoint: /docs/svelte/what-are-runes
+    response_format: document
 
   - name: docs-state
-    type: web
+    type: api
     source: svelte-docs
     endpoint: /docs/svelte/$state
+    response_format: document
 
   # ...one collector per docs page to fetch
 ```
 
 Each collector produces one record per page with markdown content. Claude can then SQL-query for specific topics or diff across time to catch doc changes.
 
-For dozens of pages, generate the collectors from a sitemap with a script: each page is one `web` collector.
+For dozens of pages, generate the collectors from a sitemap with a script: each page is one collector.
 
 ---
 

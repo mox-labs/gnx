@@ -171,7 +171,6 @@ class AnthropicBackend:
                 )
                 for i, block in enumerate(b for b in reply.content if b.type == "tool_use")
             ),
-            raw={key: value for key, value in data.items() if key != "content"},
         )
 
 

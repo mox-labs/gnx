@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from contextlib import nullcontext
 from typing import Any
 
@@ -95,26 +94,43 @@ async def test_a_reply_without_json_breaks_the_declared_output() -> None:
     assert "a four" in str(e.value) and "register a schema" in (e.value.fix or "")
 
 
-def test_an_unknown_model_is_refused_when_the_step_is_built() -> None:
+class _Named:
+    """A model runtime that resolves the name ``q`` alone and gives no output structure."""
+
+    def check(self, model: str | None, *, uses: frozenset[str] = frozenset()) -> None:
+        if model != "q":
+            raise ConfigError(f"cannot resolve the model {model!r}", fix="name one of: q")
+        if "output" in uses:
+            raise ConfigError(f"model {model!r} gives no output structure", fix="drop output")
+
+    async def call(self, request: ModelRequest) -> ModelCall:
+        raise AssertionError("never called")
+
+
+def test_a_model_or_a_structure_the_runtime_refuses_is_refused_when_the_step_is_built() -> None:
     """Regression: with the model runtime, an unknown model name got through
     compose, `matrix check` and `matrix plan`, then failed at run time as ``component``
-    (exit 8). The step checks it with its runtime when it is built: ``config`` (exit 3)."""
-    pytest.importorskip("hardline")
+    (exit 8). The step checks it with its runtime when it is built: ``config`` (exit 3); and
+    with an ``output`` schema, that the runtime can give that structure on the model."""
+    registry = default_registry(discover=False)
+    registry.register("model-runtime", "acme.v1.model-runtime.named", _Named)
+    registry.register_payload(RATING, Rating)
     box = compose(
         MatrixConfig.model_validate(
-            {
-                "models": {"models": {"q": {"backend": "mock", "model": "q", "family": "qwen"}}},
-                "model_runtimes": {"fast": {"type": "hardline"}},
-            }
+            {"model_runtimes": {"fast": {"type": "acme.v1.model-runtime.named"}}}
         ),
-        registry=default_registry(discover=False),
+        registry=registry,
     )
-    step = [{"name": "rate", "type": MODEL_STEP, "config": {"runtime": "fast", "model": "no-such"}}]
-    with pytest.raises(CompilationError) as e:
-        box.wire(step, inputs=[PROMPT])
-    (found,) = e.value.problems
-    assert found.path == "components.rate.config" and "no-such" in found.message
-    assert e.value.exit_code == 3 and "q" in (found.fix or "")
+    for config, said in [
+        ({"model": "no-such"}, "no-such"),
+        ({"model": "q", "output": RATING}, "structure"),
+    ]:
+        step = [{"name": "rate", "type": MODEL_STEP, "config": {"runtime": "fast", **config}}]
+        with pytest.raises(CompilationError) as e:
+            box.wire(step, inputs=[PROMPT])
+        (found,) = e.value.problems
+        assert found.path == "components.rate.config" and said in found.message
+        assert e.value.exit_code == 3
     ok = [{"name": "rate", "type": MODEL_STEP, "config": {"runtime": "fast", "model": "q"}}]
     box.wire(ok, inputs=[PROMPT])
 
@@ -136,6 +152,39 @@ def test_a_prompt_template_is_checked_against_its_inputs_when_the_step_is_built(
 def test_an_unknown_model_runtime_names_the_composed_ones() -> None:
     with pytest.raises(NotFoundError, match="Composed: m"):
         ModelStep(ModelStepConfig(runtime="ghost"), model_runtimes={"m": MockModelRuntime()})
+
+
+async def test_a_step_that_names_no_runtime_runs_on_the_only_one_composed() -> None:
+    """Ruling M-RT: unset, ``runtime`` is the one model runtime the config composes, resolved
+    when the step is built; its session row names that runtime as a named one's would."""
+    box = container(reply="ok")
+    wiring = box.wire([{"name": "ask", "type": MODEL_STEP, "config": {}}], inputs=[PROMPT])
+    run = await box.executor().run(wiring, {PROMPT: "hello"})
+    (session,) = run.rows("matrix.v1.session")
+    assert (run.rows(MODEL_CALL)[0].text, session.runtime) == ("ok", "matrix.v1.model-runtime.mock")
+
+
+@pytest.mark.parametrize(("names", "said"), [((), "none is composed"), (("a", "b"), "2 are")])
+def test_a_step_that_names_no_runtime_is_refused_unless_exactly_one_is_composed(
+    names: tuple[str, ...], said: str
+) -> None:
+    """With none composed, or several, a step that names none is a config problem at its
+    ``runtime``, listing the ones there are: adding a second runtime never changes which one
+    answers."""
+    box = compose(
+        MatrixConfig.model_validate({"model_runtimes": {n: {"type": "mock"} for n in names}}),
+        registry=default_registry(discover=False),
+    )
+    with pytest.raises(CompilationError) as raised:
+        box.wire([{"name": "ask", "type": MODEL_STEP, "config": {}}], inputs=[PROMPT])
+    (found,) = raised.value.problems
+    assert (found.path, found.kind, found.allowed) == (
+        "components.ask.config.runtime", "missing_key", names,
+    )  # fmt: skip
+    assert said in found.message
+    # A runtime named explicitly is held to the composed ones, as it always was.
+    with pytest.raises(NotFoundError, match="no model runtime named 'm'"):
+        ModelStep(ModelStepConfig(runtime="m"), model_runtimes={})
 
 
 def test_several_inputs_need_a_prompt_template() -> None:
@@ -171,13 +220,13 @@ def test_two_model_steps_each_name_the_kind_of_their_reply() -> None:
     assert (clash.path, clash.got) == ("components.two.config.response", MODEL_CALL)
 
 
-def test_the_mock_model_runtime_is_a_stand_in_and_hardline_is_not() -> None:
+def test_the_mock_model_runtime_is_a_stand_in() -> None:
     """Changed requirement (owner ruling 2026-10-22): effects are removed. A stand-in is declared,
-    never read from a runtime's effects."""
+    never read from a runtime's effects. (That the bridge's hardline runtime is not one is the
+    bridge's test.)"""
     box = container()
     box.wire(_step({}), inputs=[PROMPT])
     assert box.registry.entry("model-runtime", "matrix.v1.model-runtime.mock").stand_in
-    assert not box.registry.entry("model-runtime", "matrix.v1.model-runtime.hardline").stand_in
 
 
 def test_a_model_step_s_fingerprint_follows_its_runtime_s_config() -> None:
@@ -187,46 +236,33 @@ def test_a_model_step_s_fingerprint_follows_its_runtime_s_config() -> None:
     assert one == container(reply="a").wire(_step({}), inputs=[PROMPT]).fingerprints["rate"]
 
 
-def test_a_model_step_closes_its_runtime_s_connections_in_the_loop_that_made_them(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Regression: hardline keeps a model client per event loop and can close it only
-    in that loop, while it runs. Nothing in matrix called hardline's ``aclose()``, so each
-    run left its clients open, and the next loop to use the runtime logged that the last one
-    had ended with them open. A model step now closes its runtime's connections when the run
-    that made the calls ends, in that run's loop."""
-    hardline = pytest.importorskip("hardline")
-    httpx2 = pytest.importorskip("httpx2")
-    from hardline.adapters._out.openai_compat import OpenAICompatBackend
-
+def test_a_model_step_closes_its_runtime_s_connections_in_the_loop_that_made_them() -> None:
+    """Regression: hardline keeps a model client per event loop and can close it only in
+    that loop, while it runs, and nothing in matrix closed it, so each run left its clients
+    open. A model step whose runtime holds connections (``SupportsAclose``) closes them when
+    the run that made the calls ends, in that run's loop, once per run."""
     from matrix import Executor, wire
-    from matrix.adapters._out.runtime.model import HardlineModelRuntime
 
-    def reply(request: Any) -> Any:
-        return httpx2.Response(
-            200,
-            json={
-                "id": "r-1",
-                "model": "q-1",
-                "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
-                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
-            },
-        )
+    class Closing(MockModelRuntime):
+        def __init__(self) -> None:
+            super().__init__(MockModelRuntimeConfig(default="ok"))
+            self.closed_in: list[asyncio.AbstractEventLoop] = []
+            self.called_in: list[asyncio.AbstractEventLoop] = []
 
-    row = {"backend": "openai-compat", "model": "q-1", "family": "q", "base_url": "http://q/v1"}
-    runtime = HardlineModelRuntime(
-        hardline.build_runtime(
-            config={"default": "q", "models": {"q": row}},
-            backends={"openai-compat": OpenAICompatBackend(transport=httpx2.MockTransport(reply))},
-        )
-    )
+        async def call(self, request: ModelRequest) -> ModelCall:
+            self.called_in.append(asyncio.get_running_loop())
+            return await super().call(request)
+
+        async def aclose(self) -> None:
+            self.closed_in.append(asyncio.get_running_loop())
+
+    runtime = Closing()
     step = ModelStep(ModelStepConfig(runtime="m"), model_runtimes={"m": runtime})
     wiring = wire({"rate": step}, inputs=[PROMPT])
-    caplog.set_level(logging.WARNING, logger="hardline")
     for _ in range(2):  # two event loops, as two `asyncio.run`s of a host make
         run = asyncio.run(Executor().run(wiring, {PROMPT: "rate it"}))
         assert run.rows(MODEL_CALL)[0].text == "ok"
-    assert not [r for r in caplog.records if "left open" in r.getMessage()]
+    assert runtime.closed_in == runtime.called_in and len(set(runtime.closed_in)) == 2
 
 
 class _Replies:
@@ -235,7 +271,7 @@ class _Replies:
     def __init__(self, call: ModelCall) -> None:
         self._call = call
 
-    def check(self, model: str | None) -> None:
+    def check(self, model: str | None, *, uses: frozenset[str] = frozenset()) -> None:
         pass
 
     async def call(self, request: Any) -> ModelCall:
@@ -306,7 +342,7 @@ async def test_a_call_made_outside_a_step_takes_the_step_s_own_path() -> None:
     works, and the session row whether the call replied or failed (none outside a run)."""
     observer = _Around()
     runtime = MockModelRuntime(MockModelRuntimeConfig(default="4"))
-    request = ModelRequest(prompt="2 + 2?", model="small")
+    request = ModelRequest.from_prompt("2 + 2?", model="small")
     call = await call_model(runtime, request, name="m", observers=[observer])
     assert call.text == "4" and call.session is None  # outside a run, no row
     start, end = observer.events
@@ -316,7 +352,7 @@ async def test_a_call_made_outside_a_step_takes_the_step_s_own_path() -> None:
     assert observer.entered == ["matrix.model.start"]
 
     class Refusing:
-        def check(self, model: str | None) -> None:
+        def check(self, model: str | None, *, uses: frozenset[str] = frozenset()) -> None:
             return None
 
         async def call(self, request: ModelRequest) -> ModelCall:

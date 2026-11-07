@@ -1,0 +1,7 @@
+schema: ix.v1.kind
+name: ix.v1.sensor.mutant-kill
+summary: Whether the suite failed because of the mutant, read from the mutant probe's outcome, which its detail keeps whole.
+overlap: allowed
+needs: [outcome]
+metrics:
+  - {name: killed, direction: higher, shape: boolean, description: "at least one test failed with the mutant and passed without it; a mutant no test ran, and one that survived, read false"}

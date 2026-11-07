@@ -18,13 +18,13 @@ from pydantic import ValidationError
 
 from recon.adapters._out.credentials import resolve_reference
 from recon.adapters._out.http_requester import HttpRequester
-from recon.application.plan import build_plan
 from recon.composition import load_plugins, root
-from recon.domain.capture import REDACTED
-from recon.domain.errors import CollectionError
-from recon.domain.models import AuthConfig, SourceEntry
-from recon.domain.ratelimit import RateLimiter
-from tests.recon_fakes import FixedClock
+from recon.core.application.plan import build_plan
+from recon.core.domain.capture import REDACTED
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.models import AuthConfig, SourceEntry
+from recon.core.domain.ratelimit import RateLimiter
+from tests.recon_fakes import FixedClock, kept
 from tests.test_paginated_survey import BASE, PagedApi
 
 
@@ -49,7 +49,7 @@ def _survey(
     (project / ".recon" / "m").mkdir(parents=True, exist_ok=True)
     (project / ".recon" / "m" / "config.yaml").write_text(yaml.safe_dump(mission))
     recon = root(env, project=project, requester=lambda telemetry, deadline, limiter: api)
-    return recon.survey("m")
+    return recon.observation.survey("m")
 
 
 class TestTheGrammar:
@@ -222,13 +222,28 @@ def test_a_helper_s_header_does_not_follow_a_redirect_off_its_origin() -> None:
 
 
 def test_an_mcp_token_file_is_held_to_the_same_rule(tmp_path: Path) -> None:
-    """The one grammar is one code: an mcp source's ``token: file:`` is refused the same."""
+    """The one grammar is one code: an mcp source's ``token: file:`` is refused the same. The
+    mcp type resolves a reference through the ``credentials`` need (contract v2), the one
+    resolver every kind's credential goes through, never a resolver of its own."""
     from recon.adapters._out import mcp_collector
+    from recon.adapters._out.credentials import Credentials
+    from recon.adapters._out.system_clock import SystemClock
+    from recon.core.domain.deadline import Deadline
+    from recon.core.domain.ratelimit import RateLimiter
+    from recon.core.domain.telemetry import Telemetry
 
-    assert vars(mcp_collector)["resolve_reference"] is resolve_reference
+    assert "resolve_reference" not in vars(mcp_collector)
     _secret(tmp_path / "t", "tok", 0o644)
     with pytest.raises(CollectionError):
         resolve_reference("file:t", {}, tmp_path, "token")
+    clock = SystemClock()
+    collector = mcp_collector.McpCollector(
+        telemetry=Telemetry([], clock), deadline=Deadline(clock), rate_limiter=RateLimiter(clock),
+        credentials=Credentials({}, tmp_path), user_agent="recon-test",
+    )  # fmt: skip
+    with pytest.raises(CollectionError) as refused:
+        collector._resolve("file:t", "token")
+    assert "chmod 600" in (refused.value.fix or "")
 
 
 class _Echoes(PagedApi):
@@ -282,7 +297,7 @@ def test_a_credential_a_server_echoes_is_in_no_archive_byte(
     assert (table.status == "error") is fails
     if fails:
         assert REDACTED in (table.error.message or "")
-    archive = Path(document.path)
+    archive = kept(tmp_path, document)
     for path in archive.rglob("*"):
         if path.is_file():
             data = path.read_bytes()
@@ -310,7 +325,7 @@ def test_an_echoed_credential_in_a_record_is_kept_and_security_md_says_so(
     auth = {"token": "file:key.txt", "header": "Authorization"}
     document = _survey(tmp_path, IntoRecords("cursor", 1, 1), auth, {}, preserve_raw=True)
 
-    archive = Path(document.path)
+    archive = kept(tmp_path, document)
     assert b"s3cretTokenZZ" in (archive / "items.jsonl").read_bytes(), "the source's data"
     assert all(b"s3cretTokenZZ" not in p.read_bytes() for p in (archive / "raw").iterdir())
     security = (Path(__file__).parents[1] / "SECURITY.md").read_text()
@@ -324,7 +339,7 @@ def test_no_secret_is_written_to_the_archive(tmp_path: Path) -> None:
     api = PagedApi("cursor", 2, 1)
     auth = {"token": "file:key.txt", "param": "api_key"}
     document = _survey(tmp_path, api, auth, {}, preserve_raw=True)
-    archive = Path(document.path)
+    archive = kept(tmp_path, document)
     assert (archive / "captures.jsonl").is_file()
     for path in archive.rglob("*"):
         if path.is_file():

@@ -9,10 +9,10 @@ opens a
 :class:`Session`: an agent definition and the runtime that will play it, nothing started yet.
 The target carries the session's handle (``respondent``) and its directory (``workdir``),
 never the session itself; the ``prompt`` probe looks it up by its handle in the
-:class:`Sessions` both were built with. Leaving the subject closes the session and removes
-the directory, however the trial ended. A ``model-call`` subject
+:class:`~ix.extension.Sessions` both were built with. Leaving the subject closes the
+session and removes the directory, however the trial ended. A ``model-call`` subject
 (:mod:`ix.adapters._out.matrix_calls`) opens a call under a handle the same way, and the
-probe asks either alike: each is a :class:`Respondent`.
+probe asks either alike: each is a :class:`~ix.extension.Respondent`.
 
 **What runs the agent is matrix's.** A session builds its runtime from the registry's
 ``agent-runtime`` point by name (``claude-sdk``, ``mock``, or any agent runtime installed).
@@ -29,10 +29,12 @@ are marked ``simulated`` and measure the harness, not the subject.
 
 **Rounds.** Without a ``loop`` a session is one round: the prompt, and what the agent said
 and did. A ``self-review`` loop asks again with the previous answer until the answer carries
-``until`` (``SOLUTION_VERIFIED``) or the rounds run out; a ``test-feedback`` loop runs the
-probe's ``feedback`` tests on the answer's code and asks again with what failed, until
-nothing does. Each round is a fresh session in the same working directory, so a file the
-agent wrote is there for the next; tokens, turns and cost are added up over the rounds.
+``until`` or the rounds run out; a ``test-feedback`` loop runs the probe's ``feedback``
+tests on the answer's code and asks again with what failed, until nothing does. The loop's
+rounds, its ``until``, its tests' time and each strategy's prompt are the kind's declared
+defaults, which the loop is given with what is written. Each round is a fresh session in
+the same working directory, so a file the agent wrote is there for the next; tokens, turns
+and cost are added up over the rounds.
 
 **What validation learns from it.** As a :class:`~ix.domain.ports.Review` the subject
 tells ``validate`` what only it knows: a runtime option the runtime does not declare,
@@ -67,7 +69,7 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from glob import glob
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal
 
 import matrix
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -75,38 +77,26 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from ix.adapters._out.processes import startable
 from ix.adapters._out.python_checks import code_in, run_cases
 from ix.domain.errors import IxError
-from ix.domain.kind import fill, placeholders, seconds
+from ix.domain.kind import duration_of, fill, placeholders, seconds
 from ix.domain.ports import Requirement, StoodIn
 from ix.domain.problem import Problem, problem
 from ix.domain.run import HarnessError, SubjectError, Target
+from ix.extension import AGENT_RUNTIME
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 
-    from ix.adapters._out.processes import Launcher
     from ix.domain.experiment import SubjectConfig
     from ix.domain.ports import Surroundings
-
-#: How long one session (every round of it) may take when the probe does not say.
-SESSION_TIMEOUT_S = 600.0
+    from ix.extension import Launcher, Respondent, Runtimes, Sessions
 
 #: How long past a session's own limit the run waits for the probe to give up, before it
 #: records a harness timeout: a session that does not stop when its time is up.
 BACKSTOP_S = 30.0
 
-#: How long a subject's ``setup`` command may take.
-SETUP_TIMEOUT_S = 300.0
-
-#: The largest file a probe collects from the working directory, in bytes.
-COLLECT_LIMIT = 1_000_000
 
 #: The runtime ports' reasons that say the agent or model never had a fair attempt.
 HARNESS_REASONS = frozenset({"unavailable", "rate_limited", "timeout", "auth", "incapable"})
-
-#: matrix's two runtime points: an agent session (a loop and tools) and one model call.
-type Point = Literal["agent-runtime", "model-runtime"]
-AGENT_RUNTIME: Final = "agent-runtime"
-MODEL_RUNTIME: Final = "model-runtime"
 
 #: The runtime a dry run puts a subject on, at its own point: matrix's ``mock``, canned
 #: replies, no model called.
@@ -130,93 +120,26 @@ RESPONDENT = "respondent"
 ACTIVATION = "ix.v1.sensor.activation"
 TOOL_USAGE = "ix.v1.sensor.tool-usage"
 
-#: What a self-review loop looks for in an answer that it should stop at.
-VERIFIED = "SOLUTION_VERIFIED"
-
 #: The names a round fills in a loop's prompt: the ``binds`` of the kind's ``loop`` option.
 ROUND = ("prompt", "response", "failures", "until")
 
-SELF_REVIEW = (
-    "Here is a task and your previous answer to it. Review the answer. If it is correct and "
-    "complete, repeat it and end with the line {until}. Otherwise give the corrected answer "
-    "in full.\n\nTask:\n{prompt}\n\nYour previous answer:\n{response}"
-)
-
-TEST_FEEDBACK = (
-    "Here is a task and your previous answer to it. Your answer's code failed these tests:"
-    "\n{failures}\n\nGive the corrected answer in full.\n\nTask:\n{prompt}\n\n"
-    "Your previous answer:\n{response}"
-)
-
-
-class Runtimes(Protocol):
-    """matrix's runtimes, at its two points, as the composition root hands them over. A
-    ``name`` is a runtime's short name at that point (``claude-sdk``) or its type URL."""
-
-    def build(
-        self, point: Point, name: str, config: Mapping[str, Any], *, cwd: str | None = None
-    ) -> Any:
-        """The runtime registered at ``point`` as ``name``, built with ``config``; ``cwd`` is
-        where an agent runtime runs its sessions. Raises ``matrix.MatrixError``, or ix's
-        ``NotFoundError`` for a name nothing registered there."""
-        ...
-
-    def stand_in(self, point: Point, name: str) -> bool:
-        """Whether the runtime declares itself a stand-in (``Entry.stand_in``): its replies
-        are canned, not a model's. Raises as :meth:`build` does for an unknown name."""
-        ...
-
-    def takes(self, point: Point, name: str) -> frozenset[str] | None:
-        """The keys the runtime's config declares; an empty set for one that takes no
-        config, None for a name nothing registered there."""
-        ...
-
-    def drives(self, point: Point, name: str) -> dict[str, str]:
-        """Each distribution the runtime drives (``claude-agent-sdk`` for ``claude-sdk``), as
-        its registration declares, with its installed version (``not installed`` for one
-        that is not); none for a runtime that declares none. Raises as :meth:`build` does
-        for an unknown name."""
-        ...
-
-    def capabilities(
-        self, point: Point, name: str, config: Mapping[str, Any]
-    ) -> matrix.AgentCapabilities | None:
-        """What sessions on the runtime do when it is built with ``config``, as the runtime
-        declares (whether they load skills, whether their tools can write): None for one that
-        declares nothing, a config it refuses, or a name nothing registered there. Asks
-        nothing of the host."""
-        ...
-
-
-class Respondent(Protocol):
-    """What a ``prompt`` probe puts its prompt to, by the handle a subject opened it under:
-    an agent :class:`Session`, or a model call."""
-
-    #: Whether a stand-in answers: canned replies, not a model's.
-    simulated: bool
-
-    async def answer(
-        self, prompt: str, options: Mapping[str, Any]
-    ) -> Mapping[str, Mapping[str, Any]]:
-        """Put ``prompt`` and return what was left behind, by facet: ``response`` and
-        ``usage``. ``options`` are the probe's. Raises the runtime's error as it stands."""
-        ...
-
 
 class Loop(BaseModel):
-    """A subject's ``loop``: the rounds after the first, and when they stop."""
+    """A subject's ``loop`` as it is carried out: the rounds after the first, and when they
+    stop. Every key is the kind's to declare and default; this reads them."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     strategy: Literal["self-review", "test-feedback"]
-    #: Every round, the first included: 1 is the first answer alone, so a sweep over the
-    #: rounds can start from no loop at all.
-    rounds: int = Field(default=3, ge=1)
+    #: Every round, the first included.
+    rounds: int = Field(ge=1)
     #: The next round's task: ``{prompt}``, ``{response}`` and, for test-feedback,
     #: ``{failures}`` are filled in.
-    prompt: str | None = None
+    prompt: str
     #: Self-review stops when an answer contains this.
-    until: str = VERIFIED
+    until: str
+    #: How long a test-feedback round's tests may take, as the option is written.
+    test_timeout: str | float
 
     @field_validator("until")
     @classmethod
@@ -245,6 +168,8 @@ class SessionOptions(BaseModel):
     skills: tuple[str, ...] = ()
     fixtures: tuple[str, ...] = ()
     setup: tuple[str, ...] = ()
+    #: How long ``setup`` may take, as the option is written.
+    setup_timeout: str | float
     loop: Loop | None = None
     #: The runtime's own config, passed through as written.
     runtime_options: dict[str, Any] = {}
@@ -318,7 +243,7 @@ def _cost(rounds: Sequence[Round]) -> float | None:
 @dataclass
 class Session:
     """One trial's agent: what it is, where it runs, and how it is asked. A
-    :class:`Respondent`."""
+    :class:`~ix.extension.Respondent`."""
 
     name: str
     runtime: str
@@ -354,7 +279,15 @@ class Session:
                 "no_feedback",
                 "a test-feedback loop needs the probe's feedback: {function_name, test_cases}",
             )
-        run = await run_cases(self.launcher, code_in(text), str(feedback["function_name"]), cases)
+        loop = self.options.loop
+        assert loop is not None  # asked only of a test-feedback loop
+        run = await run_cases(
+            self.launcher,
+            code_in(text),
+            str(feedback["function_name"]),
+            cases,
+            timeout_s=_duration(loop.test_timeout, "loop.test_timeout"),
+        )
         return [
             f"- {case.get('description') or f'case {index}'}: {result.message}"
             for index, (case, result) in enumerate(zip(cases, run.results, strict=True))
@@ -382,15 +315,13 @@ class Session:
             if loop.strategy == "self-review":
                 if loop.until in response.content:
                     break
-                task = fill(loop.prompt or SELF_REVIEW, values)
+                task = fill(loop.prompt, values)
             else:
                 failures = await self._failures(response.content, feedback or {})
                 if not failures:
                     break
                 rounds[-1].feedback = failures
-                task = fill(
-                    loop.prompt or TEST_FEEDBACK, {**values, "failures": "\n".join(failures)}
-                )
+                task = fill(loop.prompt, {**values, "failures": "\n".join(failures)})
         return rounds
 
     async def answer(
@@ -415,7 +346,7 @@ class Session:
             "stop": last.stop,
             "tool_calls": calls,
             "transcript": _trace(rounds),
-            "files": _collected(self.workdir, options.get("collect")),
+            **_collected(self.workdir, options.get("collect"), int(options["collect_limit"])),
             "skill_tool": None if self.does is None else self.does.skill_tool,
         }
         # A count a runtime did not report adds nothing, as ix has always summed it.
@@ -440,10 +371,10 @@ class Session:
         return {"response": response, "usage": usage}
 
 
-class Sessions:
-    """What is open now, by handle: the agent sessions and model calls subjects opened, so
-    that a subject and a probe built over the same table share a live one while a target
-    carries only its handle."""
+class SessionTable:
+    """:class:`~ix.extension.Sessions`, in this process: the agent sessions and model calls
+    subjects opened, so that a subject and a probe built over the same table share a live one
+    while a target carries only its handle."""
 
     def __init__(self) -> None:
         self._open: dict[str, Respondent] = {}
@@ -471,9 +402,8 @@ def runtime_requirement(need: str, attempt: Callable[[], object]) -> Requirement
     try:
         attempt()
     except (matrix.MatrixError, IxError, ValidationError, ValueError) as error:
-        return Requirement(
-            need=need, holds=False, why=str(error), fix=str(getattr(error, "fix", "") or "")
-        )
+        fix = error.fix if isinstance(error, matrix.MatrixError | IxError) else None
+        return Requirement(need=need, holds=False, why=str(error), fix=fix or "")
     return Requirement(need=need, holds=True)
 
 
@@ -520,9 +450,20 @@ def _options(subject: SubjectConfig) -> SessionOptions:
     return SessionOptions.model_validate(subject.options)
 
 
-async def _setup(launcher: Launcher, command: Sequence[str], workdir: Path) -> None:
-    """Run the subject's setup command in the working directory. Raises
-    :class:`HarnessError` when it cannot start, fails or overruns."""
+def _duration(value: str | float, name: str) -> float:
+    """``value``, a duration option (``name``) a cell may have filled, in seconds. Raises
+    :class:`HarnessError` (``option``) for one that is not a duration."""
+    found = seconds(value)
+    if found is None:
+        raise HarnessError("option", f"{name} {value!r} is not a duration")
+    return found
+
+
+async def _setup(
+    launcher: Launcher, command: Sequence[str], workdir: Path, timeout_s: float
+) -> None:
+    """Run the subject's setup command in the working directory, within ``timeout_s``.
+    Raises :class:`HarnessError` when it cannot start, fails or overruns."""
     try:
         process = await launcher.start(
             [str(part) for part in command],
@@ -535,11 +476,9 @@ async def _setup(launcher: Launcher, command: Sequence[str], workdir: Path) -> N
         message = f"setup {command[0]!r} could not start: {error}"
         raise HarnessError("setup_failed", message) from error
     try:
-        _, said = await asyncio.wait_for(process.communicate(), SETUP_TIMEOUT_S)
+        _, said = await asyncio.wait_for(process.communicate(), timeout_s)
     except TimeoutError:
-        raise HarnessError(
-            "setup_failed", f"setup {command[0]!r} overran {SETUP_TIMEOUT_S:g}s"
-        ) from None
+        raise HarnessError("setup_failed", f"setup {command[0]!r} overran {timeout_s:g}s") from None
     finally:
         await launcher.stop(process, grace_s=1.0)
     if process.returncode != 0:
@@ -739,8 +678,8 @@ def _unobservable(
 class AgentSessionSubject:
     """A fresh agent session per trial, in a working directory of its own: see the module
     docstring. Offers ``respondent`` (the session's handle) and ``workdir``. A
-    :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight` and a
-    :class:`~ix.domain.ports.StandIn`."""
+    :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight`, a
+    :class:`~ix.domain.ports.StandIn` and :class:`~ix.domain.ports.ModelCalls`."""
 
     def __init__(self, sessions: Sessions, runtimes: Runtimes, launcher: Launcher) -> None:
         self._sessions = sessions
@@ -766,6 +705,14 @@ class AgentSessionSubject:
             and not self._runtimes.stand_in(AGENT_RUNTIME, parsed.runtime)
         )
         return [*undeclared, *_unobservable(parsed, around, does, answers=answers)]
+
+    def model_calls(self, options: Mapping[str, Any]) -> int:
+        """One session a round: the ``loop``'s rounds, or one; none on a stand-in. Raises
+        for options that do not parse and for a runtime nothing registered."""
+        parsed = SessionOptions.model_validate(options)
+        if self._runtimes.stand_in(AGENT_RUNTIME, parsed.runtime):
+            return 0
+        return parsed.loop.rounds if parsed.loop is not None else 1
 
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn:
         """The session on ``mock``: what would be the real runtime's config (its
@@ -826,7 +773,8 @@ class AgentSessionSubject:
         try:
             _seed(workdir, options, base, None if does is None else does.skills_dir)
             if options.setup:
-                await _setup(self._launcher, options.setup, workdir)
+                limit = _duration(options.setup_timeout, "setup_timeout")
+                await _setup(self._launcher, options.setup, workdir, limit)
             session = Session(
                 name=name,
                 runtime=options.runtime,
@@ -852,18 +800,23 @@ class AgentSessionSubject:
             shutil.rmtree(workdir, ignore_errors=True)
 
 
-def _collected(workdir: Path, names: Sequence[str] | None) -> dict[str, str]:
-    """The files ``names`` the agent left in its working directory, as text. One that is not
-    there, is not a file, lies outside the directory or is too large is left out."""
+def _collected(workdir: Path, names: Sequence[str] | None, limit: int) -> dict[str, Any]:
+    """``files``: the files ``names`` the agent left in its working directory, as text; one
+    that is not there, is not a file or lies outside the directory is left out, as not
+    written. ``files_too_large``: each it wrote that is larger than ``limit`` bytes, which
+    is not kept, so that a sensor reading it says so rather than reading it as missing."""
     found: dict[str, str] = {}
+    large: list[str] = []
     root = workdir.resolve()
     for name in names or ():
         file = (workdir / str(name)).resolve()
         if not file.is_relative_to(root) or not file.is_file():
             continue
-        if file.stat().st_size <= COLLECT_LIMIT:
-            found[str(name)] = file.read_text(encoding="utf-8", errors="replace")
-    return found
+        if file.stat().st_size > limit:
+            large.append(str(name))
+            continue
+        found[str(name)] = file.read_text(encoding="utf-8", errors="replace")
+    return {"files": found, "files_too_large": large}
 
 
 def _trace(rounds: Sequence[Round]) -> list[dict[str, Any]]:
@@ -919,18 +872,22 @@ class PromptProbe:
 
 def _limit(options: Mapping[str, Any]) -> float:
     """How long one session (every round of it), or one call, may take: the probe's
-    ``timeout``."""
-    return seconds(options.get("timeout")) or SESSION_TIMEOUT_S
+    ``timeout``. Raises :class:`HarnessError` (``option``) for one a cell filled with what
+    is not a duration."""
+    try:
+        return duration_of(options, "timeout")
+    except ValueError as error:
+        raise HarnessError("option", str(error)) from error
 
 
 async def released(runtime: object) -> None:
-    """Close what ``runtime`` opened for its calls (hardline's clients), if it says how
-    (``aclose``). hardline keeps a client per event loop and can close it only in that loop,
-    while it runs, so whoever made the calls closes the runtime there, once they are done:
-    a runtime is built per round, per call and per reading, and is not used again."""
-    close = getattr(runtime, "aclose", None)
-    if callable(close):
-        await close()
+    """Close what ``runtime`` (or a judge's model over one) opened for its calls, if it says
+    how (``matrix.SupportsAclose``). A model runtime may keep a client per event loop and close
+    it only in that loop, while it runs (hardline's does), so whoever made the calls closes it
+    there, once they are done: a runtime is built per round, per call and per reading, and is
+    not used again."""
+    if isinstance(runtime, matrix.SupportsAclose):
+        await runtime.aclose()
 
 
 @contextmanager

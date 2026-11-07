@@ -202,6 +202,11 @@ def plan(config: tuple[str, ...], tool: str, only: bool, as_json: bool) -> None:
     ):
         lines.append(f"{what} calls: {low} to {'unknown' if high is None else high}")
     lines.append(f"record: {found.store.location}")
+    lines.append("settings (each effective value, and who set it):")
+    for setting in found.settings:
+        source = f"{setting.origin} {setting.file}" if setting.file else setting.origin
+        note = f"; {setting.note}" if setting.note else ""
+        lines.append(f"  {setting.path} = {json.dumps(setting.value)}  ({source}{note})")
     _warn(found.warnings, as_json)
     _emit(found.document(), as_json, "\n".join(lines))
 

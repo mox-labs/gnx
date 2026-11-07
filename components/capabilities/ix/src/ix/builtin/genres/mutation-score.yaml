@@ -1,0 +1,35 @@
+# mutation-score: how often does this test suite fail when the code is wrong?
+schema: ix.v1.genre
+name: ix.v1.genre.mutation-score
+question: What share of seeded faults in this code does the test suite detect?
+hypothesis_form: "{subject} is measured on {metric}"
+roles:
+  - {name: subject, min: 1, max: 1}
+factors: allowed
+must_set: [primary]
+design:
+  repeats: {default: 1, min: 1}
+  order: sequential
+  calibration: none
+  estimator: mean
+  note: "estimates only: a Wilson score interval for the share of the sampled mutants the suite killed, each applied once, a kill counted only when the killing tests fail again on it and pass without it (ix design record, 2026-10-19, §32)"
+analysis: {id: ix.v1.analysis.characterize}
+verdict_form: none
+report: [question, design, estimates, failures, raw]
+guidance: |
+  Use mutation-score to ask whether a test suite fails when the code is wrong: the share of
+  seeded faults (mutants) in one scope that it detects, with an interval. One subject is the
+  suite: the tree it runs over, the suite's own Python and pytest's arguments, and the scope
+  whose code is mutated; the primary is killed. Draw the mutants first, with
+  `ix mutants sample <experiment> --n 100 --seed 1`: they become the probes, pinned as files,
+  and each probe is applied once (repeats 1 is the design, not a shortcut: the unit sampled
+  is the mutant).
+  What the rate measures is the suite's power to show these faults, never that the code is
+  correct. A mutant no test runs counts against the suite: it is a fault the suite misses.
+  When the sample is every mutant of the scope (a census) the interval is still printed; it
+  then speaks of code like this, not of these mutants.
+  There is no verdict and no threshold: an absolute kill rate depends on the operators and
+  on mutants that cannot be told from the original, so it makes a fragile gate. To gate a
+  change to the tests, compare two suites on the same mutants with mutation-regress. After
+  a run, `ix mutants read <run>` lists the survivors (an assertion to strengthen, or a test
+  to write) and the tests it found no use for.

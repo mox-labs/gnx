@@ -1,13 +1,14 @@
-"""CliCollector: runs shell commands and yields records line by line.
+"""CliCollector: runs shell commands, each command's stdout a body recon converts line by line.
 
-stdout is read as it arrives, so a large output (``rg --json`` across a huge tree) is never
-held in memory whole. The command runs in its own session (POSIX), so a timeout, an
-abandoned read or an interrupt kills its whole process group, not just the shell. stderr is
+stdout is read as it arrives, and recon converts and captures it as it flows, so a large output
+(``rg --json`` across a huge tree) is never held in memory whole. The command runs in its own
+session (POSIX), so a timeout, an abandoned read or an interrupt kills its whole process group,
+not just the shell. stderr is
 drained as the command runs and its tail kept for the error message, so a command that
 writes a lot to it cannot block on a full pipe. stdin is empty: a command that reads it
 (``rg`` given no path) reads nothing, rather than waiting on recon's own stdin.
 
-Registered as the built-in collector type ``cli`` (entry-point group ``recon.collectors``).
+Registered as the built-in collector type ``cli``, with the source kind ``local``.
 """
 
 from __future__ import annotations
@@ -20,25 +21,21 @@ import subprocess
 import threading
 from collections.abc import Generator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
-from recon.adapters._out.parsing import parse_line
-from recon.adapters._out.private_files import make_dirs, open_file
-from recon.domain.collector import CollectorType
-from recon.domain.errors import CollectionError, Problem
-from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, bound
-from recon.domain.substitution import substitute
+from recon.core.domain.collector import Body, BodyEnd, PlainKind
+from recon.core.domain.errors import CollectionError, Problem
+from recon.core.domain.substitution import substitute
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping
+    from collections.abc import Callable, Iterator
 
-    from recon.domain.capture import CaptureLog
-    from recon.domain.collector import Transform
-    from recon.domain.deadline import Deadline
-    from recon.domain.models import CollectorEntry, SourceEntry
-    from recon.domain.shell import ShellRunner
+    from recon.core.domain.collector import Effect, Intent, Item, Position, RecordsKind, Run
+    from recon.core.domain.deadline import Deadline
+    from recon.core.domain.models import SourceEntry
+    from recon.core.domain.shell import ShellRunner
 
 #: The most of a command's stderr kept for its error message: the end, where the reason is.
 STDERR_TAIL_BYTES = 4096
@@ -56,8 +53,12 @@ class CliSettings(BaseModel):
     patterns: list[str] | None = None
 
 
-def _settings(entry: CollectorEntry) -> CliSettings:
-    return CliSettings.model_validate(entry.settings)
+@runtime_checkable
+class _Killable(Protocol):
+    """Lines a shell runner gave that can be killed from another thread (``_Command``'s); a
+    runner's that cannot (a test's) end when they are closed."""
+
+    def kill(self) -> None: ...
 
 
 class _Command(Generator[str, None, int]):
@@ -108,16 +109,16 @@ class PopenRunner:
         cwd: Path | None,
         timeout: float,
         *,
-        capture_path: Path | None = None,
+        tee: Callable[[bytes], object] | None = None,
     ) -> Generator[str, None, int]:
-        return _Command(lambda command: self._lines(cmd, cwd, timeout, capture_path, command))
+        return _Command(lambda command: self._lines(cmd, cwd, timeout, tee, command))
 
     def _lines(
         self,
         cmd: str,
         cwd: Path | None,
         timeout: float,
-        capture_path: Path | None,
+        tee: Callable[[bytes], object] | None,
         command: _Command,
     ) -> Generator[str, None, int]:
         # shell=True is intentional: configs are trusted local input.
@@ -142,10 +143,10 @@ class PopenRunner:
         timer.start()
         stderr = bytearray()
         try:
-            with _tee(capture_path) as tee:
-                for line in _stdout_lines(proc, stderr):
-                    tee(line)
-                    yield line.removesuffix("\n").removesuffix("\r")
+            for line in _stdout_lines(proc, stderr):
+                if tee is not None:
+                    tee(line.encode("utf-8"))
+                yield line.removesuffix("\n").removesuffix("\r")
             proc.wait()
         finally:
             timer.cancel()
@@ -203,131 +204,106 @@ def _kill_group(proc: subprocess.Popen[bytes]) -> None:
             os.killpg(proc.pid, signal.SIGKILL)
 
 
-@contextlib.contextmanager
-def _tee(path: Path | None) -> Iterator[Callable[[str], object]]:
-    """A function writing each line to ``path`` (appended: a pattern fan-out concatenates
-    into one body), or one that does nothing when there is no path."""
-    if path is None:
-        yield lambda line: None
-        return
-    make_dirs(path.parent)
-    with os.fdopen(open_file(path, os.O_WRONLY | os.O_APPEND), "a", encoding="utf-8") as f:
-        yield f.write
-
-
 class CliCollector:
-    """Runs shell commands, yields parsed stdout records as they stream."""
+    """Runs shell commands; each command's stdout is one body, read as it arrives."""
 
-    def __init__(
-        self,
-        runner: ShellRunner | None = None,
-        transforms: Mapping[str, Transform] = BUILTIN_TRANSFORMS,
-        deadline: Deadline | None = None,
-    ) -> None:
-        self._runner = runner if runner is not None else PopenRunner()
-        self._transforms = transforms
+    effects: frozenset[Effect] | None = frozenset({"subprocess"})
+    records: RecordsKind = "finite"
+    # A command runs in a local source's directory; any other source would leave it in
+    # recon's working directory.
+    accepts: frozenset[str] | None = frozenset({"local"})
+
+    def __init__(self, *, shell: ShellRunner, deadline: Deadline | None = None) -> None:
+        self._runner = shell
         self._deadline = deadline
         #: The command running now, and whether the collector was closed.
         self._running: Any = None
         self._closed = threading.Event()
 
+    def describe(self, run: Run) -> Intent:
+        # Effects are declared, not inspected: the command may do anything a shell can.
+        # The plan shows the exact commands so a reviewer can read them before they run, and
+        # where: a local source's directory, or None for recon's working directory.
+        source = run.source
+        return {
+            "commands": [cmd for _pattern, cmd in _commands(run)],
+            "cwd": source.url if source is not None and source.type == "local" else None,
+        }
+
+    def check(self, run: Run) -> list[Problem]:
+        return _check(run) + _check_run(run)
+
     def close(self) -> None:
         """Kill the command in flight, from any thread, and start no other: a stream's
         source that goes quiet (``tail -f``) ends so, its process group with it."""
         self._closed.set()
-        kill = getattr(self._running, "kill", None)
-        if kill is not None:
-            kill()
+        if isinstance(self._running, _Killable):
+            self._running.kill()
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-    ) -> Iterator[dict[str, Any]]:
-        for problem in _check_run(entry, source):  # the plan's check, for a direct caller
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+        """Each command's stdout as a body (``text/plain``, converted line by line), with
+        ``patterns:`` one command a pattern, each record of it carrying ``_pattern``."""
+        for problem in _check_run(run):  # the plan's check, for a direct caller
             raise CollectionError(
-                f"collector {entry.name!r}: {problem.message}; nothing was run",
+                f"collector {run.entry.name!r}: {problem.message}; nothing was run",
                 kind="config",
                 fix=problem.fix,
             )
-
+        source = run.source
         cwd = _cwd(source)
         timeout = source.timeout if source else 300.0
-        commands = _commands(entry, source)
+        for pattern, cmd in _commands(run):
+            if self._closed.is_set():
+                return
+            request = {"commands": [cmd], "cwd": str(cwd) if cwd else None}
+            yield Body(
+                media_type="text/plain; charset=utf-8",
+                data=self._stdout(cmd, cwd, timeout, request),
+                request=request,
+                kind="cli",
+                fields={"_pattern": pattern} if pattern is not None else {},
+            )
 
-        # Raw capture: tee every invocation's stdout into one body per collector entry
-        # (patterns concatenate). Path is None when the mission does not preserve raw.
-        capture_path = captures.stream_path(entry.name) if captures is not None else None
-        exit_codes: list[int] = []
-
-        # A path a command prints is relative to where it ran: a transform that reads one
-        # resolves it there.
-        transforms = bound(self._transforms, base=cwd) if cwd is not None else self._transforms
+    def _stdout(
+        self, cmd: str, cwd: Path | None, timeout: float, request: dict[str, Any]
+    ) -> Generator[bytes, None, BodyEnd]:
+        """One command's stdout as it flows, each line's bytes as the shell read them (or
+        the line again, from a shell that tees nothing); returns its exit code."""
+        # A deadline shorter than the command's timeout cuts it: the error says so.
+        limit = timeout
+        if self._deadline is not None:
+            self._deadline.check()
+            limit = self._deadline.limit(timeout)
+        teed: list[bytes] = []
+        lines = self._runner.run_lines(cmd, cwd, limit, tee=teed.append)
+        self._running = lines
+        if self._closed.is_set():  # closed meanwhile, before it saw these lines
+            lines.close()
+            return BodyEnd()
         try:
-            for pattern, cmd in commands:
-                if self._closed.is_set():
-                    return
-                # A deadline shorter than the command's timeout cuts it: the error says so.
-                limit = timeout
-                if self._deadline is not None:
-                    self._deadline.check()
-                    limit = self._deadline.limit(timeout)
-                lines = self._runner.run_lines(cmd, cwd, limit, capture_path=capture_path)
-                self._running = lines
-                if self._closed.is_set():  # closed meanwhile, before it saw these lines
-                    lines.close()
-                    return
-                try:
-                    exit_codes.append((yield from self._records(lines, entry, pattern, transforms)))
-                except CollectionError as exc:
-                    cut = self._deadline is not None and self._deadline.remaining() == 0
-                    if cut and limit < timeout and self._deadline is not None:
-                        raise self._deadline.exceeded() from exc
-                    raise
-        finally:
-            if captures is not None:
-                # Finalize even on mid-iteration abandonment: preserves partial captures
-                # for audit.
-                captures.finalize_stream(
-                    entry.name,
-                    source=source.name if source else None,
-                    kind="cli",
-                    request={
-                        "commands": [cmd for _pattern, cmd in commands],
-                        "cwd": str(cwd) if cwd else None,
-                        "exit_codes": exit_codes,
-                    },
-                    status=exit_codes[-1] if exit_codes else None,
-                    content_type="text/plain",
-                )
+            with contextlib.closing(lines):
+                while True:
+                    try:
+                        line = next(lines)
+                    except StopIteration as finished:
+                        code: int = finished.value
+                        yield from teed
+                        return BodyEnd(status=code, request={**request, "exit_codes": [code]})
+                    if teed:
+                        yield from teed
+                        teed.clear()
+                    else:
+                        yield f"{line}\n".encode()
+        except CollectionError as exc:
+            cut = self._deadline is not None and self._deadline.remaining() == 0
+            if cut and limit < timeout and self._deadline is not None:
+                raise self._deadline.exceeded() from exc
+            raise
 
-    def _records(
-        self,
-        lines: Generator[str, None, int],
-        entry: CollectorEntry,
-        pattern: str | None,
-        transforms: Mapping[str, Transform],
-    ) -> Generator[dict[str, Any], None, int]:
-        """The records of one command's lines; returns the command's exit code."""
-        with contextlib.closing(lines):
-            index = 0
-            while True:
-                try:
-                    line = next(lines)
-                except StopIteration as finished:
-                    exit_code: int = finished.value
-                    return exit_code
-                index += 1
-                record = parse_line(line, index)
-                if record is None:
-                    continue
-                if pattern is not None:
-                    record["_pattern"] = pattern
-                if entry.normalize:
-                    record = apply_normalize(record, entry.normalize, transforms)
-                yield record
+
+class LocalSource(PlainKind):
+    """The ``local`` source kind: a directory of this host (its ``url``, relative to the
+    project root), where a command runs."""
 
 
 def _cwd(source: SourceEntry | None) -> Path | None:
@@ -346,11 +322,12 @@ def _cwd(source: SourceEntry | None) -> Path | None:
     return path
 
 
-def _commands(entry: CollectorEntry, source: SourceEntry | None) -> list[tuple[str | None, str]]:
+def _commands(run: Run) -> list[tuple[str | None, str]]:
     """(pattern, substituted command) for each invocation the entry makes. recon fills
     ``{url}`` and ``{pattern}``; any other ``{...}`` is the command's own (cargo's
     ``--format '{p}'``, a jq object, docker's ``'{{.Name}}'``) and is passed as written."""
-    settings = _settings(entry)
+    settings = run.settings_as(CliSettings)
+    source = run.source
     if not settings.run:
         return []
     variables = {"url": source.url} if source else {}
@@ -365,10 +342,10 @@ def _commands(entry: CollectorEntry, source: SourceEntry | None) -> list[tuple[s
 # --- Registration ---
 
 
-def _check_run(entry: CollectorEntry, source: SourceEntry | None) -> list[Problem]:
+def _check_run(run: Run) -> list[Problem]:
     """``{url}`` is the source's url, so a run with no source cannot fill it."""
-    run = _settings(entry).run
-    if source is not None or not run or "{url}" not in run:
+    command = run.settings_as(CliSettings).run
+    if run.source is not None or not command or "{url}" not in command:
         return []
     return [
         Problem(
@@ -376,13 +353,13 @@ def _check_run(entry: CollectorEntry, source: SourceEntry | None) -> list[Proble
             "run: uses {url}, the source's url, and this run has no source",
             kind="unresolved",
             fix="pin a catalog source with source:, or take {url} out of run:",
-            got=run,
+            got=command,
         )
     ]
 
 
-def _check(entry: CollectorEntry) -> list[Problem]:
-    settings = _settings(entry)
+def _check(run: Run) -> list[Problem]:
+    settings = run.settings_as(CliSettings)
     if not settings.run:
         return [
             Problem(
@@ -404,27 +381,19 @@ def _check(entry: CollectorEntry) -> list[Problem]:
     return []
 
 
-def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, Any]:
-    # Effects are declared, not inspected: the command may do anything a shell can.
-    # The plan shows the exact commands so a reviewer can read them before they run, and
-    # where: a local source's directory, or None for recon's working directory.
-    return {
-        "commands": [cmd for _pattern, cmd in _commands(entry, source)],
-        "cwd": source.url if source is not None and source.type == "local" else None,
-    }
-
-
-collector_type = CollectorType(
-    create=lambda ctx: CliCollector(ctx.shell, ctx.transforms, ctx.deadline),
-    effects=frozenset({"subprocess"}),
-    summary="shell command → stdout lines (JSON objects or text) → records",
-    settings=CliSettings,
-    source_kinds=frozenset({"local"}),
-    # A command runs in a local source's directory; any other source would leave it in
-    # recon's working directory.
-    accepts_kinds=frozenset({"local"}),
-    normalizes=True,
-    check=_check,
-    check_run=_check_run,
-    describe=_describe,
-)
+def register(registry: Any) -> None:
+    """The ``cli`` collector type and the ``local`` source kind."""
+    registry.register(
+        "recon.collector",
+        "recon.v1.collector.cli",
+        CliCollector,
+        config=CliSettings,
+        needs={"shell", "deadline"},
+        summary="shell command → stdout lines (JSON objects or text) → records",
+    )
+    registry.register(
+        "recon.source",
+        "recon.v1.source.local",
+        LocalSource,
+        summary="a directory of this host, where a command runs",
+    )

@@ -1,15 +1,16 @@
 """matrix's own extensions, registered through the same entry point as anyone else's.
 
-``pyproject.toml`` declares ``[project.entry-points."matrix.extensions"] matrix = ...:register``,
-so :func:`~matrix.composition.container.load_extensions` finds the built-ins exactly as it
-finds a third party's: one discovery path, no special case. A runtime's or an observer's
+``pyproject.toml`` declares one ``[project.entry-points."matrix.extensions"]`` line per point
+it registers at, each naming :func:`register`, so
+:func:`~matrix.composition.container.load_extensions` finds the built-ins exactly as it finds a
+third party's: one discovery path, no special case. A runtime's or an observer's
 dependencies are imported only when an entry is built, so registering costs nothing, and an
 install that lacks one fails when it is used, saying how to repair it.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,7 +22,6 @@ from matrix.adapters._out.runtime.mock import (
     MockModelRuntime,
     MockModelRuntimeConfig,
 )
-from matrix.adapters._out.runtime.model import HardlineModelRuntimeConfig
 from matrix.adapters._out.runtime.pydantic_ai import PydanticAiRuntimeConfig
 from matrix.adapters._out.stores.jsonl import (
     JsonlConstructStore,
@@ -37,6 +37,7 @@ from matrix.domain.errors import missing_dependency
 from matrix.domain.ids import type_url
 from matrix.domain.model_call import ModelCall
 from matrix.domain.model_step import MODEL_CALL, MODEL_STEP, PROMPT, ModelStep, ModelStepConfig
+from matrix.domain.needs import model_runtime_named
 from matrix.domain.ref import REF, Ref
 
 if TYPE_CHECKING:
@@ -45,17 +46,17 @@ if TYPE_CHECKING:
     from matrix.adapters._out.observers.console import ConsoleObserver
     from matrix.adapters._out.observers.otel import OtelObserver
     from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntime
-    from matrix.adapters._out.runtime.model import HardlineModelRuntime
     from matrix.adapters._out.runtime.pydantic_ai import PydanticAiRuntime
+    from matrix.domain.needs import ModelRuntimes
     from matrix.domain.ports._out.agent_runtime import Agent
     from matrix.domain.ports._out.model_runtime import ModelRuntime
-    from matrix.domain.registry import Entry, Registry
+    from matrix.domain.registry import Registry
 
 #: The registry point of each kind of runtime.
 AGENT_RUNTIME = "agent-runtime"
 MODEL_RUNTIME = "model-runtime"
 
-#: Short names in config (``type: claude-sdk``, ``type: hardline``) resolve under these.
+#: Short names in config (``type: claude-sdk``, ``type: mock``) resolve under these.
 AGENT_RUNTIME_PREFIX = "matrix.v1.agent-runtime."
 MODEL_RUNTIME_PREFIX = "matrix.v1.model-runtime."
 
@@ -67,7 +68,7 @@ def agent_runtime_type_url(name: str) -> str:
 
 
 def model_runtime_type_url(name: str) -> str:
-    """``hardline`` → ``matrix.v1.model-runtime.hardline``; a full type URL passes through."""
+    """``mock`` → ``matrix.v1.model-runtime.mock``; a full type URL passes through."""
     return name if "." in name else type_url("matrix", 1, f"model-runtime.{name}")
 
 
@@ -85,30 +86,11 @@ def _claude_sdk(config: ClaudeSdkRuntimeConfig, *, cwd: str | None = None) -> Cl
 
 
 def _pydantic_ai(
-    config: PydanticAiRuntimeConfig, *, models: dict[str, Any] | None = None
+    config: PydanticAiRuntimeConfig, *, model_runtimes: Mapping[str, ModelRuntime]
 ) -> PydanticAiRuntime:
     from matrix.adapters._out.runtime.pydantic_ai import PydanticAiRuntime
 
-    if config.models is None and models is not None:
-        config = config.model_copy(update={"models": models})
-    return PydanticAiRuntime.from_config(config)
-
-
-def _hardline(
-    config: HardlineModelRuntimeConfig, *, models: dict[str, Any] | None = None
-) -> HardlineModelRuntime:
-    from matrix.adapters._out.runtime.model import HardlineModelRuntime
-
-    if config.models is None and models is not None:
-        config = config.model_copy(update={"models": models})
-    # The calls its pydantic-ai Model makes are session rows under its own registration.
-    return HardlineModelRuntime.from_config(
-        config, runtime_url=model_runtime_type_url("hardline"), drives=_HARDLINE_DRIVES
-    )
-
-
-#: What the ``hardline`` model runtime drives: its registration's, and its calls' rows'.
-_HARDLINE_DRIVES = ("hardline",)
+    return PydanticAiRuntime.from_config(config, model_runtimes=model_runtimes)
 
 
 def store_type_url(name: str) -> str:
@@ -156,17 +138,19 @@ def _agent_step(config: AgentStepConfig, *, agents: Mapping[str, Agent]) -> Agen
 def _model_step(
     config: ModelStepConfig,
     *,
-    model_runtimes: Mapping[str, ModelRuntime],
+    model_runtimes: ModelRuntimes,
     schemas: Mapping[str, type[BaseModel]],
-    model_runtime_entries: Mapping[str, Entry],
 ) -> ModelStep:
-    entry = model_runtime_entries.get(config.runtime)
+    # Its rows name what its runtime was built as. A name nothing built is ModelStep's to
+    # refuse, with the names that were.
+    name = model_runtime_named(config.runtime, model_runtimes, key="runtime")
+    built = name in model_runtimes
     return ModelStep(
-        config,
+        config.model_copy(update={"runtime": name}),
         model_runtimes=model_runtimes,
         schemas=schemas,
-        runtime_url=None if entry is None else entry.type_url,
-        drives=() if entry is None else entry.drives,
+        runtime_url=model_runtimes.type_url(name) if built else None,
+        drives=model_runtimes.drives(name) if built else (),
     )
 
 
@@ -177,6 +161,7 @@ def register(registry: Registry) -> None:
         agent_runtime_type_url("claude-sdk"),
         _claude_sdk,
         config=ClaudeSdkRuntimeConfig,
+        capabilities=ClaudeSdkRuntimeConfig.capabilities,
         needs={"cwd"},
         summary="Claude Agent SDK sessions: tools, multiple turns, plugins, skills, subagents",
         drives=("claude-agent-sdk",),
@@ -186,10 +171,11 @@ def register(registry: Registry) -> None:
         agent_runtime_type_url("pydantic-ai"),
         _pydantic_ai,
         config=PydanticAiRuntimeConfig,
-        needs={"models"},
-        summary="pydantic-ai agent sessions whose model calls go through hardline: tools, "
-        "multiple turns, any model family hardline has a row for",
-        drives=("pydantic-ai-slim", "hardline"),
+        capabilities=PydanticAiRuntimeConfig.capabilities,
+        needs={"model_runtimes"},
+        summary="pydantic-ai agent sessions whose model calls are made on a matrix model "
+        "runtime: tools, multiple turns, any model that runtime resolves",
+        drives=("pydantic-ai-slim",),
     )
     registry.register(
         AGENT_RUNTIME,
@@ -199,15 +185,6 @@ def register(registry: Registry) -> None:
         summary="A stand-in for any agent: deterministic replies from config; offline",
         stability="stable",
         stand_in=True,
-    )
-    registry.register(
-        MODEL_RUNTIME,
-        model_runtime_type_url("hardline"),
-        _hardline,
-        config=HardlineModelRuntimeConfig,
-        needs={"models"},
-        summary="One model call through hardline, in any model family it has a row for",
-        drives=_HARDLINE_DRIVES,
     )
     registry.register(
         MODEL_RUNTIME,
@@ -230,7 +207,7 @@ def register(registry: Registry) -> None:
         MODEL_STEP,
         _model_step,
         config=ModelStepConfig,
-        needs={"model_runtimes", "schemas", "model_runtime_entries"},
+        needs={"model_runtimes", "schemas"},
         summary="One model call as a component: the rows it requires rendered into its prompt",
     )
     registry.register_payload(AGENT_RESPONSE, AgentResponse)

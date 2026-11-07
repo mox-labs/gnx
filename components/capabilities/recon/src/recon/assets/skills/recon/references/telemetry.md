@@ -4,7 +4,7 @@ What a survey or a query tells about itself: an event log in every survey's arch
 
 ## The event log
 
-Every survey writes `telemetry.jsonl` into its archive, beside `meta.yaml`: one `recon.v1.event` line when a span starts, one when it ends, and, while a table is written, a `recon.collect.progress` line at most once a second carrying `recon.records`, the records written so far. Each line is `{schema, name, time, span, parent, kind, attributes, status, message, duration_ms}`, the times from recon's clock, so a survey against a fixed clock writes the same log twice. The file is open for the whole survey and each line reaches it as it happens, so it can be read while the survey runs. It is not a table: `query` does not read it.
+Every survey keeps its event log in its archive: one `recon.v1.event` line when a span starts, one when it ends, and, while a table is written, a `recon.collect.progress` line at most once a second carrying `recon.records`, the records written so far. Each line is `{schema, name, time, span, parent, kind, attributes, status, message, duration_ms}`, the times from recon's clock, so a survey against a fixed clock writes the same log twice. Each line is kept as it happens, for the whole survey. It is not a table: `query` does not read it; the same events reach OpenTelemetry, below.
 
 | Span | Attributes |
 |---|---|
@@ -14,11 +14,11 @@ Every survey writes `telemetry.jsonl` into its archive, beside `meta.yaml`: one 
 | `recon.mcp.call`, one per call to an MCP server, a listing included | `mcp.method.name` (`tools/call`, `tools/list`, `resources/read`, ...), `gen_ai.tool.name` for a tool call, `recon.source`; never the arguments or the result |
 | `recon.query` | `recon.mission`, `recon.archive`; at its end `recon.rows` |
 
-A span that ends with `status: error` says why in `error.type` (a recon error kind such as `transient` or `auth`, a status code such as `503`, an `httpx2.<class>`, or `body_too_large`) and in a `message` in recon's own words that quotes nothing of the error. A start with no end is where a killed survey stopped. No secret and no body is logged: `url.full` has its user information, the source's `auth.param` value and the signature parameters `REDACTED`, and no header or body is an attribute. A failed table's error, its command or URL included, is in the archive's `meta.yaml`.
+A span that ends with `status: error` says why in `error.type` (a recon error kind such as `transient` or `auth`, a status code such as `503`, an `httpx2.<class>`, or `body_too_large`) and in a `message` in recon's own words that quotes nothing of the error. A start with no end is where a killed survey stopped. No secret and no body is logged: `url.full` has its user information, the source's `auth.param` value and the signature parameters `REDACTED`, and no header or body is an attribute. A failed table's error, its command or URL included, is in the archive's meta, and `recon status <mission> --json` gives it.
 
 ## OpenTelemetry
 
-recon emits the same spans through the OpenTelemetry API (instrumentation scope `recon`, schema URL `https://opentelemetry.io/schemas/1.44.0`), and two counters from the table ends: `recon.collect.records` (by `recon.collector.type`) and `recon.collect.failures` (by `recon.collector.type` and `error.type`). Each exported span carries `recon.event.span`, its id in the event log, so a line of `telemetry.jsonl` is the span with that id in the trace whose `recon.survey` span carries the archive's `recon.archive`. While a span is open it is the current one, so a span another library opens inside recon's work nests under it, and each HTTP request sends its span as a `traceparent` header.
+recon emits the same spans through the OpenTelemetry API (instrumentation scope `recon`, schema URL `https://opentelemetry.io/schemas/1.44.0`), and two counters from the table ends: `recon.collect.records` (by `recon.collector.type`) and `recon.collect.failures` (by `recon.collector.type` and `error.type`). Each exported span carries `recon.event.span`, its id in the event log, so a line of the event log is the span with that id in the trace whose `recon.survey` span carries the archive's `recon.archive`. While a span is open it is the current one, so a span another library opens inside recon's work nests under it, and each HTTP request sends its span as a `traceparent` header.
 
 The `recon` command installs the OpenTelemetry SDK and its OTLP exporter, both installed with recon, when the standard variables ask for an export:
 

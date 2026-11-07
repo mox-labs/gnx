@@ -1,0 +1,14 @@
+# A mutant `ix mutants sample` drew (seed 1) from ix-cosmic-ray.v1.mutant-source.
+# A survivor that behaves as the original may be marked, under options:
+#   equivalent: "<why it cannot be told from the original>"
+# which moves the probe set's digest: amend the registration with the reason.
+kind: mutant
+options:
+  file: "recon/src/recon/core/application/items.py"
+  start: [216, 11]
+  end: [216, 51]
+  original: "isinstance(body.data, bytes | bytearray)"
+  replacement: "not isinstance(body.data, bytes | bytearray)"
+  operator: "core/AddNot"
+  mutant: "recon/src/recon/core/application/items.py:core/AddNot:12"
+  file_digest: "sha256:a01d09d5fdd9390b62f79606fc75d6db8a9189962507ceb51618616cb6768e22"

@@ -8,13 +8,26 @@ reading anything else into it.
 Everything, built-ins included, arrives as an :class:`Extension`. One that fails to load or
 register is **quarantined**: recorded in :attr:`Registry.failures`, and the rest load.
 
+**An extension declares its points.** One discovered from an entry point names, in its entry
+points, every point it registers at or declares (:attr:`Extension.points`), read without
+importing it, so a session loads only the extensions its points need. Registering at a point it
+did not name, or declaring one, quarantines it whole, so the declaration cannot drift from what
+it does. An extension given in code names none, and is trusted.
+
+**A registry may serve some points only** (:attr:`Registry.scope`): it keeps the entries at
+those points, and a registration at any other is ignored, so an extension that serves two
+owners' points loads in a session of either without the other.
+
 **A point may have a port.** What is registered at ``agent-runtime`` must keep the
 :class:`AgentRuntime` port, at ``model-runtime`` the :class:`ModelRuntime` port, at ``store``
 the :class:`ConstructStore` port and at ``observer`` the :class:`Observer` port: a class is
 held to it when it is registered, and whatever an entry builds when it is built, so an
 implementation that lacks a member is a ``ConfigError`` naming it, not an ``AttributeError``
-the first time a caller reaches for it. Only the members a port requires are held; its
-optional ones (an observer's ``around``, a store's ``events``) are read with ``getattr``.
+the first time a caller reaches for it. Only the members a port requires are held; an
+optional one is a protocol of its own, checked where it is read (:mod:`matrix.domain.optional`).
+
+**Facts about a type are declared when it registers** (``stand_in``, ``drives``, an agent
+runtime's ``capabilities``); facts about a built instance come from the instance.
 
 **Points have owners.** A point is owned by the distribution that declared it
 (:meth:`Registry.add_point`), and matrix owns its own (:attr:`Registry.owners`). Another
@@ -36,9 +49,9 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
-from matrix.domain.agent import AgentCapabilities
 from matrix.domain.errors import ConfigError, NotFoundError, invalid
 from matrix.domain.ids import parse_type_url
+from matrix.domain.needs import NEEDS, described
 from matrix.domain.observer import Observer
 from matrix.domain.ports._out.agent_runtime import AgentRuntime
 from matrix.domain.ports._out.construct_store import ConstructStore
@@ -47,6 +60,8 @@ from matrix.domain.problems import from_validation_error, problem, summary
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
+
+    from matrix.domain.agent import AgentCapabilities
 
 Stability = Literal["stable", "beta", "experimental"]
 
@@ -127,21 +142,21 @@ class Entry:
     #: The distributions it drives, by their installed names (``claude-agent-sdk``): what a
     #: record of the versions behind a run reads, rather than a table of runtime names.
     drives: tuple[str, ...] = ()
+    #: For an agent runtime: what its sessions do under a validated config, as it registered.
+    capabilities_of: Callable[[Any], AgentCapabilities] | None = None
 
     def capabilities(self, config: Mapping[str, Any]) -> AgentCapabilities | None:
-        """What sessions on this runtime do when it is built with ``config``, as its config
-        class declares (a method ``capabilities()`` returning :class:`AgentCapabilities`).
-        None when it declares nothing, or when ``config`` is not one it takes: building the
-        runtime says why."""
-        if self.config is None:
+        """What sessions on this agent runtime do when it is built with ``config``, as it
+        declared when it registered (``capabilities=``), computed from the config alone:
+        nothing is built. None when it declares nothing, or when ``config`` is not one it
+        takes: building the runtime says why."""
+        if self.capabilities_of is None or self.config is None:
             return None
         try:
             given = self.config.model_validate(dict(config))
         except ValidationError:
             return None
-        declare = getattr(given, "capabilities", None)
-        declared = declare() if callable(declare) else None
-        return declared if isinstance(declared, AgentCapabilities) else None
+        return self.capabilities_of(given)
 
     def describe(self) -> dict[str, Any]:
         """A JSON-ready description: what an agent reads to decide whether to use it."""
@@ -151,7 +166,7 @@ class Entry:
             "summary": self.summary,
             "stability": self.stability,
             "origin": self.origin,
-            "needs": sorted(self.needs),
+            "needs": described(self.needs),
             "stand_in": self.stand_in,
             "drives": list(self.drives),
             "config": None if self.config is None else self.config.model_json_schema(),
@@ -192,6 +207,9 @@ class Extension:
     name: str
     origin: str
     register: Callable[[Registry], None]
+    #: The points it registers at or declares, as its entry points name them; None for one
+    #: given in code, which declares none and is trusted.
+    points: frozenset[str] | None = None
 
 
 @dataclass
@@ -203,15 +221,21 @@ class Registry:
     #: composing the registry.
     owners: dict[str, str] = field(default_factory=lambda: dict.fromkeys(MATRIX_POINTS, "matrix"))
     failures: list[Failure] = field(default_factory=list)
+    #: The points the session it serves reads; None: every point. A registration at any other
+    #: is ignored.
+    scope: frozenset[str] | None = None
     _entries: dict[tuple[str, str], Entry] = field(default_factory=dict)
     _origin: str = _DIRECT
+    #: The points the extension loading now declared; None when nothing declared any.
+    _declared: frozenset[str] | None = None
     #: The entry point name of each distribution loaded so far.
     _extensions: dict[str, str] = field(default_factory=dict)
 
     def add_point(self, point: str, *, port: type | None = None) -> Registry:
         """Declare an extension point owned by the caller; with ``port``, a Protocol that
         whatever is registered there must keep. Raises ConfigError when another distribution
-        owns the point already."""
+        owns the point already, or when the extension loading did not declare it."""
+        self._held_to_declaration(point, "declares")
         owner = self.owners.get(point)
         if owner is not None and owner not in (_DIRECT, self._origin) and self._origin != _DIRECT:
             if _owns(self._origin, point) and not _owns(owner, point):
@@ -248,18 +272,34 @@ class Registry:
         stability: Stability = "beta",
         stand_in: bool = False,
         drives: tuple[str, ...] | list[str] = (),
+        capabilities: Callable[[Any], AgentCapabilities] | None = None,
     ) -> Registry:
         """Register ``build(config, **needs)`` (or ``build(**needs)`` when untyped).
 
+        ``capabilities``, for an agent runtime with a ``config``, is a pure function of the
+        validated config giving what its sessions do (:class:`AgentCapabilities`), which a
+        caller asks of the entry without building the runtime.
+
         Raises ConfigError for an unknown point, a type URL without a version segment, a
-        duplicate, or a class that does not keep its point's port.
+        duplicate, a class that does not keep its point's port, ``capabilities`` given at
+        another point or without a ``config``, or a point the extension loading did not
+        declare. Outside :attr:`scope`, it registers nothing.
         """
+        self._held_to_declaration(point, "registers at")
+        if self.scope is not None and point not in self.scope:
+            return self  # a point the session this registry serves does not read
         if point not in self.points:
             raise _UnknownPointError(
                 f"no extension point {point!r}. Points: {', '.join(sorted(self.points))}",
                 fix="register at an existing point, or have its owner declare it",
             )
         parse_type_url(type_url, where=f"{point} registration")
+        if capabilities is not None and (point != "agent-runtime" or config is None):
+            raise ConfigError(
+                f"{point} {type_url!r}: capabilities say what an agent runtime's sessions do "
+                "under its config, and are declared with the agent runtime's config",
+                fix="declare capabilities on an agent-runtime registration that has a config",
+            )
         port = self.ports.get(point)
         if port is not None and isinstance(build, type):
             lacking = _breaks(build, port)
@@ -297,8 +337,23 @@ class Registry:
             origin=self._origin,
             stand_in=stand_in,
             drives=tuple(drives),
+            capabilities_of=capabilities,
         )
         return self
+
+    def _held_to_declaration(self, point: str, does: str) -> None:
+        """Raise ConfigError when the extension loading did not declare ``point``."""
+        if self._declared is None or point in self._declared:
+            return
+        name = self._extensions.get(self._origin, self._origin)
+        line = f'"{point}" = "{name}"'
+        raise ConfigError(
+            f"{self._origin} {does} {point!r}, which its entry points do not declare "
+            f"(they declare {', '.join(sorted(self._declared)) or 'none'}): add {line} to its "
+            '[project.entry-points."matrix.extensions"]',
+            fix=f'add {line} to [project.entry-points."matrix.extensions"] in {self._origin}\'s '
+            "pyproject.toml: an entry point's name is a point its extension registers at",
+        )
 
     def _quarantine(self, origin: str, why: str) -> None:
         """Drop everything ``origin`` registered or declared, and record why."""
@@ -362,10 +417,12 @@ class Registry:
         available = dict(needs or {})
         missing = sorted(entry.needs - set(available))
         if missing:
+            hosts = ", ".join(need for need in missing if need not in NEEDS)
             raise ConfigError(
                 f"{where or type_url}: {type_url} needs {missing}, which composition did not "
                 "provide",
-                fix="compose it through matrix.compose, or pass the needs explicitly",
+                fix="compose it through matrix.compose, which supplies matrix's needs"
+                + (f"; the host hands over {hosts}, with compose(context=...)" if hosts else ""),
             )
         given = {n: available[n] for n in entry.needs}
         if entry.config is None:
@@ -447,6 +504,7 @@ class Registry:
         failures = len(self.failures)
         self._origin = extension.origin
         self._extensions[extension.origin] = extension.name
+        self._declared = extension.points
         try:
             extension.register(self)
         except Exception as e:
@@ -458,4 +516,5 @@ class Registry:
             return e
         finally:
             self._origin = _DIRECT
+            self._declared = None
         return None

@@ -21,39 +21,32 @@ from recon.adapters._in.cli import main
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.system_clock import SystemClock
 from recon.composition import root
-from recon.domain.errors import EXIT_CODES, EXIT_MEANINGS, ReconError
-from tests.recon_fakes import plugins_with
+from recon.core.domain.collector import Item, Position, Record, Run
+from recon.core.domain.errors import EXIT_CODES, EXIT_MEANINGS, ReconError
+from tests.recon_fakes import FakeCollector, plugins_with
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
     from recon.composition import Recon
-    from recon.domain.capture import CaptureLog
-    from recon.domain.models import CollectorEntry, SourceEntry
 
 
-def _store() -> ArchiveFiles:
-    return ArchiveFiles(SystemClock())
+def _store(project: Path) -> ArchiveFiles:
+    return ArchiveFiles(project / ".recon", SystemClock())
 
 
-class Slow:
+class Slow(FakeCollector):
     """A collector that gives one record once the test lets it go: a survey held mid-table."""
 
     def __init__(self) -> None:
         self.inside = threading.Event()
         self.go = threading.Event()
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-    ) -> Iterator[dict[str, Any]]:
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
         self.inside.set()
         assert self.go.wait(10), "the test never let the survey go on"
-        yield {"seq": 1}
+        yield Record({"seq": 1})
 
 
 def _mission(project: Path, name: str = "m") -> None:
@@ -69,25 +62,24 @@ def _root(project: Path, slow: Slow) -> Recon:
 
 class TestTheStoreHoldsAMission:
     def test_a_second_holder_is_refused_busy_until_the_first_lets_go(self, tmp_path: Path) -> None:
-        first = _store()
-        first.hold_mission(tmp_path)
-
-        with pytest.raises(ReconError, match="another recon is surveying mission") as raised:
-            _store().hold_mission(tmp_path)
+        with (
+            _store(tmp_path).hold("m"),
+            pytest.raises(ReconError, match="another recon is surveying mission") as raised,
+            _store(tmp_path).hold("m"),
+        ):
+            pass
         assert raised.value.kind == "busy"
         assert raised.value.exit_code == EXIT_CODES["busy"] == 11
-        assert raised.value.details["mission"] == tmp_path.name
-        first.release_mission(tmp_path)
-        _store().hold_mission(tmp_path)
+        assert raised.value.details["mission"] == "m"
+        with _store(tmp_path).hold("m"):
+            pass
 
     def test_one_store_holds_a_mission_once(self, tmp_path: Path) -> None:
-        """A stream's hold is the store's for as long as it writes; a survey's is one survey's:
-        two surveys on two threads of one process share one store, and are still two."""
-        store = _store()
-        store.hold_mission(tmp_path)
-
-        with pytest.raises(ReconError) as raised:
-            store.hold_mission(tmp_path)
+        """A hold is its writer's alone: two surveys on two threads of one process share one
+        store, and are still two."""
+        store = _store(tmp_path)
+        with store.hold("m"), pytest.raises(ReconError) as raised, store.hold("m"):
+            pass
         assert raised.value.kind == "busy"
         assert raised.value.fix and "kill" not in raised.value.fix
         assert "this process" in raised.value.fix
@@ -98,9 +90,9 @@ class TestTheStoreHoldsAMission:
             "from pathlib import Path\n"
             "from recon.adapters._out.archive_files import ArchiveFiles\n"
             "from recon.adapters._out.system_clock import SystemClock\n"
-            "ArchiveFiles(SystemClock()).hold_mission(Path(sys.argv[1]))\n"
-            "print('held', flush=True)\n"
-            "sys.stdin.read()\n"
+            "with ArchiveFiles(Path(sys.argv[1]) / '.recon', SystemClock()).hold('m'):\n"
+            "    print('held', flush=True)\n"
+            "    sys.stdin.read()\n"
         )
         holder = subprocess.Popen(
             [sys.executable, "-c", holds, str(tmp_path)],
@@ -108,24 +100,26 @@ class TestTheStoreHoldsAMission:
         )  # fmt: skip
         try:
             assert holder.stdout is not None and holder.stdout.readline() == "held\n"
-            with pytest.raises(ReconError) as raised:
-                _store().hold_mission(tmp_path)
+            with pytest.raises(ReconError) as raised, _store(tmp_path).hold("m"):
+                pass
         finally:
             holder.communicate("", timeout=10)
 
-        assert raised.value.details == {"mission": tmp_path.name, "pid": holder.pid}
+        assert raised.value.details == {"mission": "m", "pid": holder.pid}
         assert raised.value.fix and f"kill -TERM {holder.pid}" in raised.value.fix
-        _store().hold_mission(tmp_path)  # its holder died: the lock went with it
+        with _store(tmp_path).hold("m"):  # its holder died: the lock went with it
+            pass
 
     def test_the_lock_is_one_file_of_the_mission_and_a_reader_sees_no_archive_in_it(
         self, tmp_path: Path
     ) -> None:
-        store = _store()
-        store.hold_mission(tmp_path)
-        store.release_mission(tmp_path)
+        store = _store(tmp_path)
+        with store.hold("m"):
+            pass
 
-        assert (tmp_path / "writer.lock").read_text() == "", "no pid of a holder that let go"
-        assert store.archives(tmp_path) == []
+        lock = tmp_path / ".recon" / "m" / "writer.lock"
+        assert lock.read_text() == "", "no pid of a holder that let go"
+        assert store.archives("m") == []
 
 
 class TestOneSurveyAtATime:
@@ -133,12 +127,14 @@ class TestOneSurveyAtATime:
         _mission(tmp_path)
         slow = Slow()
         first: list[Any] = []
-        running = threading.Thread(target=lambda: first.append(_root(tmp_path, slow).survey("m")))
+        running = threading.Thread(
+            target=lambda: first.append(_root(tmp_path, slow).observation.survey("m"))
+        )
         running.start()
         try:
             assert slow.inside.wait(10)
             with pytest.raises(ReconError) as raised:
-                _root(tmp_path, Slow()).survey("m")
+                _root(tmp_path, Slow()).observation.survey("m")
         finally:
             slow.go.set()
             running.join(10)
@@ -147,7 +143,9 @@ class TestOneSurveyAtATime:
         assert raised.value.details["pid"] == os.getpid()
         [archive] = (tmp_path / ".recon" / "m" / "archive").iterdir()
         assert first[0].archive == archive.name and first[0].status == "complete"
-        assert _root(tmp_path, slow).survey("m").status == "complete", "free once it returned"
+        assert _root(tmp_path, slow).observation.survey("m").status == "complete", (
+            "free once it returned"
+        )
 
     def test_two_overlapping_surveys_with_changes_tell_each_change_once(
         self, tmp_path: Path
@@ -163,18 +161,20 @@ class TestOneSurveyAtATime:
         slow, second = Slow(), Slow()
         second.go.set()  # were it let in, it would run to its end at once
         first: list[Any] = []
-        running = threading.Thread(target=lambda: first.append(_root(tmp_path, slow).survey("m")))
+        running = threading.Thread(
+            target=lambda: first.append(_root(tmp_path, slow).observation.survey("m"))
+        )
         running.start()
         try:
             assert slow.inside.wait(10)
             with pytest.raises(ReconError) as raised:
-                _root(tmp_path, second).survey("m")
+                _root(tmp_path, second).observation.survey("m")
         finally:
             slow.go.set()
             running.join(10)
         later = Slow()
         later.go.set()
-        again = _root(tmp_path, later).survey("m")
+        again = _root(tmp_path, later).observation.survey("m")
 
         assert raised.value.kind == "busy" and not second.inside.is_set(), "refused before it ran"
         assert first[0].status == "complete" and again.status == "complete"
@@ -189,7 +189,7 @@ class TestOneSurveyAtATime:
     def test_the_command_line_exits_11_with_the_envelope(self, tmp_path: Path) -> None:
         _mission(tmp_path)
         slow = Slow()
-        running = threading.Thread(target=lambda: _root(tmp_path, slow).survey("m"))
+        running = threading.Thread(target=lambda: _root(tmp_path, slow).observation.survey("m"))
         running.start()
         try:
             assert slow.inside.wait(10)
@@ -210,11 +210,11 @@ class TestOneSurveyAtATime:
         """Planning writes nothing, so it holds nothing."""
         _mission(tmp_path)
         slow = Slow()
-        running = threading.Thread(target=lambda: _root(tmp_path, slow).survey("m"))
+        running = threading.Thread(target=lambda: _root(tmp_path, slow).observation.survey("m"))
         running.start()
         try:
             assert slow.inside.wait(10)
-            assert _root(tmp_path, Slow()).plan("m").valid
+            assert _root(tmp_path, Slow()).observation.plan("m").valid
         finally:
             slow.go.set()
             running.join(10)
@@ -222,11 +222,9 @@ class TestOneSurveyAtATime:
     def test_a_config_error_is_said_before_busy(self, tmp_path: Path) -> None:
         """What to fix in the mission is worth more than when to run it."""
         _mission(tmp_path)
-        store = _store()
-        store.hold_mission(tmp_path / ".recon" / "m")
         (tmp_path / ".recon" / "m" / "config.yaml").write_text("collectors: [{name: a}]\n")
 
-        with pytest.raises(ReconError) as raised:
-            _root(tmp_path, Slow()).survey("m")
+        with _store(tmp_path).hold("m"), pytest.raises(ReconError) as raised:
+            _root(tmp_path, Slow()).observation.survey("m")
 
         assert raised.value.kind == "config"

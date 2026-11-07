@@ -7,19 +7,19 @@ seconds on the clock port between two reads that found nothing new. A line that 
 object is that record; any other line is ``{"line": <its text>}``, and so is a JSON line that
 holds ``_position`` itself, so a record's position is always recon's.
 
-Each record carries its position as ``_position``: ``{"inode", "offset"}``, the file's inode
-and the byte offset just after the line. A stream resumed after a position goes on from that
-offset of that file, so each line is collected once. When the file at the path is a
-different one (rotated: renamed away, and a new one made in its place), the old one is read
-to its end and the new one from its start, so nothing is lost. When the file is shorter than
-what was read (truncated in place, as ``copytruncate`` does), or a resumed position is not in
-the file now there, it is read from its start, and the stretch whose lines may be lost is
-reported as a gap (``CollectorContext.gaps``). A line longer than the source's ``max_bytes``
-fails the stream, rather than being held in memory.
+Each record carries its position (``Record.position``, kept as ``_position``): ``{"inode",
+"offset"}``, the file's inode and the byte offset just after the line. A stream resumed after a
+position goes on from that offset of that file, so each line is collected once. When the file
+at the path is a different one (rotated: renamed away, and a new one made in its place), the
+old one is read to its end and the new one from its start, so nothing is lost. When the file is
+shorter than what was read (truncated in place, as ``copytruncate`` does), or a resumed
+position is not in the file now there, it is read from its start, and the stretch whose lines
+may be lost is given as a :class:`~recon.core.domain.stream.Gap`. A line longer than the
+source's ``max_bytes`` fails the stream, rather than being held in memory.
 
-Registered as the built-in collector type ``tail`` (entry-point group ``recon.collectors``):
-``unbounded`` (its records do not end) and ``paced_by: recon`` (it reads the next line when
-recon is ready, so a full buffer holds it back and loses nothing).
+The built-in collector type ``tail``, with the source kind ``file``: its records are
+``unbounded_recon_paced`` (they do not end, and it reads the next line when recon is ready, so
+a full buffer holds it back and loses nothing).
 """
 
 from __future__ import annotations
@@ -33,18 +33,17 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from recon.domain.clock import LONGEST_WAIT
-from recon.domain.collector import CollectorType
-from recon.domain.errors import CollectionError
-from recon.domain.stream import POSITION_FIELD, Gap
+from recon.core.domain.clock import LONGEST_WAIT
+from recon.core.domain.collector import PlainKind, Record, source_needed
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.stream import POSITION_FIELD, Gap
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from recon.domain.capture import CaptureLog
-    from recon.domain.clock import Clock
-    from recon.domain.models import CollectorEntry, SourceEntry
-    from recon.domain.stream import GapLog
+    from recon.core.domain.clock import Clock
+    from recon.core.domain.collector import Effect, Intent, Item, Position, RecordsKind, Run
+    from recon.core.domain.errors import Problem
 
 _READ = 65536
 
@@ -63,39 +62,44 @@ class TailSettings(BaseModel):
 class TailCollector:
     """Follows a file. ``close()``, from any thread, ends the following at its next wait."""
 
-    def __init__(self, clock: Clock | None, gaps: GapLog) -> None:
-        if clock is None:
-            raise CollectionError(
-                "a tail collector waits on the survey's clock, and none was given",
-                kind="config",
-                fix="build it through recon's root, which hands every type the clock",
-            )
+    effects: frozenset[Effect] | None = frozenset({"filesystem"})
+    records: RecordsKind = "unbounded_recon_paced"
+    accepts: frozenset[str] | None = frozenset({"file"})
+
+    def __init__(self, *, clock: Clock) -> None:
         self._clock = clock
-        self._gaps = gaps
         self._closed = threading.Event()
+
+    def describe(self, run: Run) -> Intent:
+        settings = run.settings_as(TailSettings)
+        return {
+            "path": run.source.url if run.source is not None else None,
+            "start": settings.start,
+            "interval": settings.interval,
+        }
+
+    def check(self, run: Run) -> list[Problem]:
+        return source_needed(run, "tail")
 
     def close(self) -> None:
         self._closed.set()
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-        after: Any = None,
-    ) -> Iterator[dict[str, Any]]:
-        assert source is not None  # the plan holds it: the type requires a source
-        settings = TailSettings.model_validate(entry.settings)
-        follow = _Follow(Path(source.url), source.max_bytes, self._clock, self._gaps)
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+        source = run.source
+        assert source is not None  # the plan holds it: check needs a source
+        settings = run.settings_as(TailSettings)
+        follow = _Follow(Path(source.url), source.max_bytes, self._clock)
         self._closed.clear()
         try:
-            follow.begin(after, settings.start)
+            follow.begin(None if resume is None else resume.value, settings.start)
+            yield from follow.taken()
             while not self._closed.is_set():
                 read = follow.lines()
+                yield from follow.taken()
                 if read:
                     yield from read
                 elif follow.moved():
+                    yield from follow.taken()
                     continue
                 else:
                     self._clock.sleep(settings.interval)
@@ -107,11 +111,12 @@ class _Follow:
     """The file being followed: its handle, its inode, the offset read to, and the part of a
     line read so far."""
 
-    def __init__(self, path: Path, max_bytes: int, clock: Clock, gaps: GapLog) -> None:
+    def __init__(self, path: Path, max_bytes: int, clock: Clock) -> None:
         self._path = path
         self._max_bytes = max_bytes
         self._clock = clock
-        self._gaps = gaps
+        #: The gaps found since the collector last took them.
+        self._found: list[Gap] = []
         self._file: BinaryIO | None = None
         self._inode = 0
         self._offset = 0
@@ -137,7 +142,12 @@ class _Follow:
         elif start == "end":
             self._seek(os.fstat(self._handle().fileno()).st_size)
 
-    def lines(self) -> list[dict[str, Any]]:
+    def taken(self) -> list[Gap]:
+        """The gaps found since last asked: a stretch whose lines may be lost."""
+        found, self._found = self._found, []
+        return found
+
+    def lines(self) -> list[Record]:
         """The records of the whole lines written since the last read; none at its end."""
         if self._file is None and not self._open():
             return []
@@ -160,8 +170,7 @@ class _Follow:
             self._offset += len(raw) + 1
             record = _record(raw)
             if record is not None:
-                record[POSITION_FIELD] = {"inode": self._inode, "offset": self._offset}
-                records.append(record)
+                records.append(Record(record, {"inode": self._inode, "offset": self._offset}))
         return records
 
     def moved(self) -> bool:
@@ -211,7 +220,7 @@ class _Follow:
         self._partial = b""
 
     def _gap(self, start: Any) -> None:
-        self._gaps.gap(Gap(start, self._clock.now(), resumed=False))
+        self._found.append(Gap(start, self._clock.now(), resumed=False))
 
 
 def _record(raw: bytes) -> dict[str, Any] | None:
@@ -228,24 +237,24 @@ def _record(raw: bytes) -> dict[str, Any] | None:
     return {"line": text}
 
 
-def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, Any]:
-    settings = TailSettings.model_validate(entry.settings)
-    return {
-        "path": source.url if source is not None else None,
-        "start": settings.start,
-        "interval": settings.interval,
-    }
+class FileSource(PlainKind):
+    """The ``file`` source kind: a file of this host (its ``url``, relative to the project
+    root), followed as it grows; ``max_bytes`` bounds one line."""
 
 
-collector_type = CollectorType(
-    create=lambda ctx: TailCollector(ctx.clock, ctx.gaps),
-    effects=frozenset({"filesystem"}),
-    summary="a file followed as it grows → each line a record, positioned by inode and offset",
-    settings=TailSettings,
-    source_kinds=frozenset({"file"}),
-    accepts_kinds=frozenset({"file"}),
-    requires_source=True,
-    describe=_describe,
-    unbounded=True,
-    paced_by="recon",
-)
+def register(registry: Any) -> None:
+    """The ``tail`` collector type and the ``file`` source kind."""
+    registry.register(
+        "recon.collector",
+        "recon.v1.collector.tail",
+        TailCollector,
+        config=TailSettings,
+        needs={"clock"},
+        summary="a file followed as it grows → each line a record, positioned by inode and offset",
+    )
+    registry.register(
+        "recon.source",
+        "recon.v1.source.file",
+        FileSource,
+        summary="a file of this host, followed as it grows",
+    )

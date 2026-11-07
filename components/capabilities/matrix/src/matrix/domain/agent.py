@@ -121,9 +121,14 @@ class AgentDefinition(BaseModel):
 class AgentCapabilities(BaseModel):
     """What sessions on an agent runtime do, as its config sets them: data the runtime
     declares about itself, so a caller asks it instead of reading its options by name. A
-    runtime's config class declares them, as a method ``capabilities()`` returning one of
-    these, and :meth:`~matrix.domain.registry.Entry.capabilities` asks it of a config. Each
-    answer is None where the runtime does not say: a caller then assumes nothing."""
+    runtime declares them when it registers, ``capabilities=`` a function of its validated
+    config, and :meth:`~matrix.domain.registry.Entry.capabilities` asks it of a config without
+    building the runtime. Each answer is None where the runtime does not say: a caller then
+    assumes nothing.
+
+    This is the agent-runtime point's own extension, and its skill fields are Claude Code's
+    mechanics (``skill_tool``, ``skills_dir``, the settings a session reads), which an
+    evaluator of skills needs; a runtime without skills answers ``False`` or None."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -239,6 +244,11 @@ class BoundAgent:
     with ``runtime_url`` (the runtime's type URL) and ``drives`` (its registry entry's) when
     the binder knows them, and the response it returns points at that row (``session``). A
     session that fails is recorded too, as failed, before its error is raised.
+
+    ``through_model_runtime`` says the runtime makes its sessions' model calls through a
+    matrix model runtime, which counts their tokens, as composition knows from the runtime's
+    declared need for ``model_runtimes``: the session's end event says so, and matrix's
+    counters count its tokens no second time. Its session row keeps them either way.
     """
 
     def __init__(
@@ -249,8 +259,10 @@ class BoundAgent:
         observers: Sequence[Observer] = (),
         runtime_url: str | None = None,
         drives: tuple[str, ...] = (),
+        through_model_runtime: bool = False,
     ) -> None:
         runtime.check(definition)  # refuse here, at binding, not mid-run
+        self._through_model_runtime = through_model_runtime
         self._definition = definition
         self._runtime = runtime
         self._observers = tuple(observers)
@@ -272,9 +284,9 @@ class BoundAgent:
     async def run(self, task: str) -> AgentResponse:
         """Run the definition on the runtime. Emits ``matrix.agent.start`` (with the task as
         sent) and ``.end``, and a ``matrix.tool.start``/``.end`` pair for each tool call the
-        runtime timed. ``.end`` carries ``usage_counted_by`` when the runtime declares who
-        counts its model calls' tokens. Inside a run, records the session (see the class
-        docstring)."""
+        runtime timed. ``.end`` carries ``through_model_runtime`` when the runtime's model
+        calls went through a model runtime, which counted their tokens. Inside a run, records
+        the session (see the class docstring)."""
         span = uuid.uuid4().hex
         name = self._definition.name
         scope = CURRENT_SPAN.get()
@@ -317,11 +329,10 @@ class BoundAgent:
                     provider=response.provider,
                     tool_calls=len(response.tool_calls),
                 )
-                counted_by = getattr(self._runtime, "usage_counted_by", None)
-                if isinstance(counted_by, str) and counted_by:
+                if self._through_model_runtime:
                     # The runtime's model calls are counted where they are made: an observer
                     # counts this session's tokens no second time.
-                    fields["usage_counted_by"] = counted_by
+                    fields["through_model_runtime"] = True
                 for call in response.tool_calls:
                     await self._tool(call, span, run_id, component)
                 row = self._record(task, response)

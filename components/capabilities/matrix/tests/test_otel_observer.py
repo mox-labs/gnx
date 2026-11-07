@@ -21,21 +21,24 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (  # noqa: E4
 )
 
 from matrix import (  # noqa: E402
+    Context,
     Event,
     EventPolicy,
     Executor,
     Inputs,
-    RunContext,
     RunError,
     wire,
 )
 from matrix.adapters._out.observers.otel import OtelObserver  # noqa: E402
+from matrix.testing import AgentRuntimeConformance  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from opentelemetry.sdk.trace import ReadableSpan
     from opentelemetry.util.types import AttributeValue
+
+    from matrix import AgentRuntime
 
 # Providers of the tests' own, handed to each observer: nothing here installs a global one, so
 # no test depends on which suite ran first in the process. A test that reads metrics gives its
@@ -55,7 +58,7 @@ class Emit:
     requires: tuple[str, ...] = ()
     provides = ("acme.v1.text",)
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         return {"acme.v1.text": "x"}
 
 
@@ -63,7 +66,7 @@ class Probe:
     requires: tuple[str, ...] = ()
     provides = ("acme.v1.text",)
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         async with ctx.span("acme.probe"):
             ctx.measure("acme.rss", 7.0, unit="By", host="a")
             ctx.measure("acme.requests", 3, kind="counter")
@@ -132,7 +135,7 @@ class _Traced:
         from matrix import AgentResponse
 
         with _LIBRARY.start_as_current_span("library.in-session"):
-            return AgentResponse(content="done")
+            return AgentResponse(content="done", stop="completed")
 
 
 class _UsesLibraries:
@@ -145,7 +148,7 @@ class _UsesLibraries:
     def __init__(self, agent: Any) -> None:
         self.agent = agent
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         with _LIBRARY.start_as_current_span("library.in-component"):
             pass
         async with ctx.span("acme.fetch"):
@@ -181,7 +184,7 @@ class _TracedModel:
     """A model runtime whose call opens a span of its own, as hardline's ``chat`` span per
     attempt does."""
 
-    def check(self, model: str | None) -> None:
+    def check(self, model: str | None, *, uses: frozenset[str] = frozenset()) -> None:
         return None
 
     async def call(self, request: Any) -> Any:
@@ -220,7 +223,7 @@ async def test_a_model_call_is_a_span_of_its_own_under_its_component() -> None:
 class _Counted:
     """A model runtime that reports usage, as hardline does for each call."""
 
-    def check(self, model: str | None) -> None:
+    def check(self, model: str | None, *, uses: frozenset[str] = frozenset()) -> None:
         return None
 
     async def call(self, request: Any) -> Any:
@@ -301,7 +304,7 @@ async def test_an_event_a_component_emits_opens_no_span_whatever_its_name() -> N
         requires: tuple[str, ...] = ()
         provides = ("acme.v1.text",)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+        async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
             ctx.emit("acme.trial.start", seq=1)
             ctx.emit("acme.trial.end", seq=1)
             return {"acme.v1.text": "x"}
@@ -342,7 +345,7 @@ async def test_an_observer_whose_around_fails_is_logged_and_the_run_goes_on(
         requires: tuple[str, ...] = ()
         provides = ("acme.v1.text",)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+        async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
             raise ValueError("the work's own")
 
     broken = [Broken("enter"), Broken("end"), Broken("exit")]
@@ -415,6 +418,7 @@ class _Session:
 
         return AgentResponse(
             content="done",
+            stop="completed",
             tokens_input=40,
             tokens_output=9,
             provider="anthropic",
@@ -450,7 +454,7 @@ class _Asks:
     def __init__(self, agent: Any) -> None:
         self.agent = agent
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         return {"acme.v1.text": (await self.agent.run("go")).content}
 
 
@@ -510,7 +514,11 @@ class _Cached:
         from matrix import AgentResponse
 
         return AgentResponse(
-            content="done", tokens_input=100, cache_read_tokens=60, cache_write_tokens=10
+            content="done",
+            stop="completed",
+            tokens_input=100,
+            cache_read_tokens=60,
+            cache_write_tokens=10,
         )
 
 
@@ -599,7 +607,7 @@ class _Leaky:
     def __init__(self, agent: Any, refuses: Any) -> None:
         self.agent, self.refuses = agent, refuses
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         from matrix import AgentRuntimeError
 
         def release() -> None:
@@ -678,7 +686,7 @@ async def test_a_failed_session_keeps_its_task_in_the_record_and_on_no_span_or_m
     )
 
     class Down:
-        def check(self, _: Any) -> None:
+        def check(self, _: Any, *, uses: frozenset[str] = frozenset()) -> None:
             return None
 
         async def call(self, request: Any) -> Any:
@@ -692,7 +700,7 @@ async def test_a_failed_session_keeps_its_task_in_the_record_and_on_no_span_or_m
         requires: tuple[str, ...] = ()
         provides = ("acme.v1.text",)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+        async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
             await refuses.run(f"{_SECRET} task")
             return {"acme.v1.text": "x"}
 
@@ -732,7 +740,7 @@ async def test_the_span_names_are_the_pinned_ones() -> None:
         requires: tuple[str, ...] = ()
         provides = ("acme.v1.text",)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+        async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
             ctx.defer(lambda: None)
             async with ctx.span("acme.probe"):
                 return {"acme.v1.text": (await agent.run("go")).content}
@@ -752,3 +760,14 @@ async def test_the_span_names_are_the_pinned_ones() -> None:
         "matrix.release",
         "acme.probe",
     }
+
+
+class TestTheStandInAgentRuntimes(AgentRuntimeConformance):
+    """Each agent runtime this module stands in with keeps the port it stands in for."""
+
+    @pytest.fixture(autouse=True, params=[_Traced, _Session, _Cached, _Fails, _Refuses])
+    def _made(self, request: pytest.FixtureRequest) -> None:
+        self.made: type[AgentRuntime] = request.param
+
+    def runtime(self) -> AgentRuntime:
+        return self.made()

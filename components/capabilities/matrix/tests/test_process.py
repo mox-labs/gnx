@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from matrix import Executor, Inputs, Limits, RunCancelled, RunContext, RunError, wire
+from matrix import Context, Executor, Inputs, Limits, RunCancelled, RunError, wire
 from matrix.process import kill_group, spawn, start
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
@@ -50,7 +50,7 @@ class Shell:
         self.pids: list[int] = []
         self.ready = asyncio.Event()
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         process = await spawn(
             ctx,
             [sys.executable, "-c", self._child],
@@ -140,7 +140,7 @@ class Repeats:
         self._times = times
         self.pids: list[int] = []
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         for _ in range(self._times):
             process = await start([sys.executable, "-c", _CHILD], stdout=asyncio.subprocess.PIPE)
             try:

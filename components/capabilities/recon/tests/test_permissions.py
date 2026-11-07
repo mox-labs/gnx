@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 from recon.composition import root
-from tests.recon_fakes import VirtualClock, plugins_with
+from tests.recon_fakes import VirtualClock, kept, plugins_with
 from tests.test_stream_use import Feed
 
 if TYPE_CHECKING:
@@ -55,10 +55,12 @@ def test_every_directory_is_0700_and_every_file_0600(tmp_path: Path, usual_umask
     clock = VirtualClock()
     recon = root({}, project=tmp_path, clock=clock, plugins=plugins_with(feed=Feed(clock, 1.0, 40)))
 
-    recon.init("m", config=given)
-    survey = recon.survey("m")
-    recon.stream("m", "events", windows=2)
-    recon.capture("m", {"tool_name": "mcp__x__y", "tool_input": {}, "tool_response": "ok"})
+    recon.collection.init("m", config=given)
+    survey = recon.observation.survey("m")
+    recon.observation.stream("m", "events", windows=2)
+    recon.collection.capture(
+        "m", {"tool_name": "mcp__x__y", "tool_input": {}, "tool_response": "ok"}
+    )
 
     assert survey.status == "incomplete", "a failed table leaves its archive's marker in place"
     modes = _modes(tmp_path / ".recon")
@@ -111,12 +113,12 @@ def test_a_crawl_s_page_log_and_change_detection_s_files_are_0600_too(
     api = PagedApi("cursor", 5, 2)
     recon = root({}, project=tmp_path, requester=lambda telemetry, deadline, limiter: api)
 
-    recon.init("m", config=given)
-    survey = recon.survey("m")
+    recon.collection.init("m", config=given)
+    survey = recon.observation.survey("m")
 
     assert survey.status == "complete"
     modes = _modes(tmp_path / ".recon")
-    archive = Path(survey.path).relative_to(tmp_path)
+    archive = kept(tmp_path, survey).relative_to(tmp_path)
     for name in ("items.pages.jsonl", "items.changes.jsonl", "items.keys.jsonl"):
         assert modes[str(archive / name)] == 0o600, f"{name}: {modes[str(archive / name)]:o}"
     assert modes[".recon/m/changes.key"] == 0o600
@@ -131,13 +133,13 @@ class TestAMissionMadeBeforeIsWarnedAbout:
         given = project / "mission.yaml"
         given.write_text(yaml.safe_dump({"collectors": [{"name": "a", "type": "cli",
                                                          "run": "echo 1"}]}))  # fmt: skip
-        root({}, project=project).init("m", config=given)
+        root({}, project=project).collection.init("m", config=given)
         return project / ".recon" / "m"
 
     def test_a_private_mission_is_not_warned_about(self, tmp_path: Path) -> None:
         self._mission(tmp_path)
 
-        status = root({}, project=tmp_path).status()
+        status = root({}, project=tmp_path).observation.status()
 
         assert [w for w in status.warnings if w["kind"] == "mission_exposed"] == []
 
@@ -151,7 +153,7 @@ class TestAMissionMadeBeforeIsWarnedAbout:
         exposed = mission / where if where else mission
         exposed.chmod(mode)
 
-        status = root({}, project=tmp_path).status("m")
+        status = root({}, project=tmp_path).observation.status("m")
 
         [warning] = [w for w in status.warnings if w["kind"] == "mission_exposed"]
         assert warning["got"] == str(exposed)
@@ -159,7 +161,7 @@ class TestAMissionMadeBeforeIsWarnedAbout:
         assert stat.S_IMODE(exposed.stat().st_mode) == mode, "status changes no mode"
 
     def test_the_kind_is_a_warning_kind_recon_publishes(self) -> None:
-        from recon.domain.errors import PROBLEM_KINDS
+        from recon.core.domain.errors import PROBLEM_KINDS
 
         assert "mission_exposed" in PROBLEM_KINDS
 

@@ -48,7 +48,7 @@ The command runs in a shell, as a `cli` collector's does; a failure, or output t
 
 The credential goes to the server's origin and nowhere else: a redirect to another host is not followed. A 401 or 403 fails the table as `auth` (exit 6).
 
-`timeout` bounds each call, the first one's start of the server included (`npx -y` downloads the package on first use: give it time). `rate_limit` holds for every call, a listing included.
+`timeout` bounds each call, the first one's start of the server included (`npx -y` downloads the package on first use: give it time). `rate_limit` holds for every call, a listing included: one call a second unless the source says more, recon's default for a source whose limits it does not know, so give a server of your own what it takes (`rate_limit: {rps: 20, burst: 5}`).
 
 ## 2. Name the calls
 
@@ -77,10 +77,10 @@ A tool's records come from its structured content when it declares an output sch
 ## 3. Plan
 
 ```
-recon survey files --dry-run
+recon survey files --dry-run --check
 ```
 
-The plan shows each run's call (`tools/call directory_tree`, its arguments, and the server). For an `mcp` run the dry run does more than read the file, and says so: it starts each stdio server (and connects to each remote one), lists its tools and resources, checks each run against them, and stops it. What it found is listed under the table, each with whether it holds; had `tree` left out `path`, it would read:
+The plan shows each run's call (`tools/call directory_tree`, its arguments, and the server). A dry run alone reads the file and starts nothing; with `--check` it does more, and says so: it starts each stdio server (and connects to each remote one), lists its tools and resources, checks each run against them, and stops it. What it found is listed under the table, each with whether it holds; had `tree` left out `path`, it would read:
 
 ```
 yes  the stdio server of source 'files' starts and answers (tree)
@@ -114,6 +114,6 @@ With `preserve_raw: true`, each answer is kept whole in the archive's capture lo
 
 ## Before you run someone else's mission
 
-A stdio source's `command` is a program recon runs, at the dry run as at the survey, with `npx -y` or `uvx` one it downloads first. Read it as you would a `cli` collector's `run:`. And a tool reads whatever its server can reach: its answers land in the archive. [SECURITY.md](../../SECURITY.md), boundary 8, says what recon does and does not hold.
+A stdio source's `command` is a program recon runs, at a checked dry run (`--check`) as at the survey, with `npx -y` or `uvx` one it downloads first. Read it as you would a `cli` collector's `run:`. And a tool reads whatever its server can reach: its answers land in the archive. [SECURITY.md](../../SECURITY.md), boundary 8, says what recon does and does not hold.
 
 `recon init <name> -t mcp-server` starts from a mission that reads a directory tree this way.

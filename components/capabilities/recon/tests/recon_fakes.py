@@ -7,31 +7,46 @@ ports a test stands in for.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from recon.adapters._out.archive_files import ArchiveFiles
+from recon.adapters._out.archive_files import FLUSH_BYTES, FLUSH_S, ArchiveFiles
+from recon.adapters._out.mission_layout import STATE, archive_dir
 from recon.composition import load_plugins, root
-from recon.domain.collector import CollectorType, Plugins
-from recon.domain.http import HttpResponse
-from recon.domain.models import CollectorEntry, ReconConfig
+from recon.core.domain.archives import ArchiveRef
+from recon.core.domain.collector import InstalledType, Plugins
+from recon.core.domain.http import HttpResponse
+from recon.core.domain.models import CollectorEntry, ReconConfig
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
+    from pathlib import Path
+
+    from pydantic import BaseModel
 
     from recon.composition import RequesterFactory
-    from recon.domain.capture import CaptureLog
-    from recon.domain.clock import Clock
-    from recon.domain.collector import Collector, CollectorContext
-    from recon.domain.converters import ConversionResult, DocumentConverter
-    from recon.domain.documents import TableOutcome
-    from recon.domain.models import SourceEntry
-    from recon.domain.shell import ShellRunner
+    from recon.core.domain.archives import Hold, Landed, Sidecar, TableEnds
+    from recon.core.domain.capture import CaptureLog
+    from recon.core.domain.clock import Clock
+    from recon.core.domain.collector import (
+        Collector,
+        Effect,
+        Intent,
+        Item,
+        Position,
+        RecordsKind,
+        Run,
+    )
+    from recon.core.domain.documents import SurveyDocument, TableOutcome, WindowOutcome
+    from recon.core.domain.errors import Problem
+    from recon.core.domain.models import SourceEntry
+    from recon.core.domain.shell import ShellRunner
+    from recon.core.domain.telemetry import EventSink
 
 
 class FixedClock:
@@ -114,30 +129,163 @@ class VirtualClock:
             self._cond.notify_all()
 
 
-class StalledArchives(ArchiveFiles):
-    """The archive store, but a table is not written until :attr:`go` is set: a store too
-    slow for its stream, so what arrives meanwhile waits in the buffer or is dropped."""
+class LandedThrough:
+    """A :class:`~recon.core.domain.archives.Landed` that does what ``inner`` does: a test's
+    subclass changes the one member it stands in for (a write that waits, a meta that cannot
+    be recorded), through the port alone."""
 
-    def __init__(self, clock: Clock) -> None:
-        super().__init__(clock)
-        self.go = threading.Event()
-        #: Set once a writer is inside a table's write, held there until :attr:`go`.
-        self.writing = threading.Event()
+    def __init__(self, inner: Landed) -> None:
+        self.inner = inner
 
-    def write_table(
+    @property
+    def ref(self) -> ArchiveRef:
+        return self.inner.ref
+
+    def write(
         self,
-        archive: Path,
         output: str,
         records: Generator[dict[str, Any], None, None],
         *,
         columns: Sequence[str] = (),
         keep_on_error: bool = False,
     ) -> int:
-        self.writing.set()
-        assert self.go.wait(10), "the test never let the store go"
-        return super().write_table(
-            archive, output, records, columns=columns, keep_on_error=keep_on_error
-        )
+        return self.inner.write(output, records, columns=columns, keep_on_error=keep_on_error)
+
+    def ends(self, output: str) -> TableEnds:
+        return self.inner.ends(output)
+
+    def keep(self, output: str, sidecar: Sidecar, lines: Iterable[dict[str, Any]]) -> None:
+        self.inner.keep(output, sidecar, lines)
+
+    def mark(self, output: str, sidecar: Sidecar, line: dict[str, Any]) -> None:
+        self.inner.mark(output, sidecar, line)
+
+    def captures(self) -> CaptureLog:
+        return self.inner.captures()
+
+    def events(self) -> EventSink:
+        return self.inner.events()
+
+    def record(self, meta: Mapping[str, Any]) -> None:
+        self.inner.record(meta)
+
+    def complete(self) -> None:
+        self.inner.complete()
+
+
+class WrappingArchives(ArchiveFiles):
+    """The archive adapter over ``root``, each archive it lands handed to ``wrap`` first: a
+    test's fault, given through the landing port."""
+
+    def __init__(self, root: Path, clock: Clock, wrap: Callable[[Landed], Landed]) -> None:
+        super().__init__(root, clock)
+        self._wrap = wrap
+
+    @contextlib.contextmanager
+    def hold(self, mission: str, *, stream: str | None = None) -> Iterator[Hold]:
+        with super().hold(mission, stream=stream) as held:
+            yield _HoldThrough(held, self._wrap)
+
+
+class _HoldThrough:
+    def __init__(self, inner: Hold, wrap: Callable[[Landed], Landed]) -> None:
+        self._inner = inner
+        self._wrap = wrap
+
+    @contextlib.contextmanager
+    def begin(self, archive_id: str) -> Iterator[Landed]:
+        with self._inner.begin(archive_id) as landed:
+            yield self._wrap(landed)
+
+    @contextlib.contextmanager
+    def derive(self, ref: ArchiveRef) -> Iterator[Landed]:
+        with self._inner.derive(ref) as landed:
+            yield self._wrap(landed)
+
+    def retire(self, ref: ArchiveRef, tombstone: Mapping[str, Any]) -> None:
+        self._inner.retire(ref, tombstone)
+
+
+class StalledArchives(WrappingArchives):
+    """The archive adapter, but a table is not written until :attr:`go` is set: a landing too
+    slow for its stream, so what arrives meanwhile waits in the buffer or is dropped."""
+
+    def __init__(self, root: Path, clock: Clock) -> None:
+        super().__init__(root, clock, lambda landed: _Stalled(landed, self))
+        self.go = threading.Event()
+        #: Set once a writer is inside a table's write, held there until :attr:`go`.
+        self.writing = threading.Event()
+
+
+class _Stalled(LandedThrough):
+    def __init__(self, inner: Landed, stall: StalledArchives) -> None:
+        super().__init__(inner)
+        self._stall = stall
+
+    def write(
+        self,
+        output: str,
+        records: Generator[dict[str, Any], None, None],
+        *,
+        columns: Sequence[str] = (),
+        keep_on_error: bool = False,
+    ) -> int:
+        self._stall.writing.set()
+        assert self._stall.go.wait(10), "the test never let the landing go"
+        return super().write(output, records, columns=columns, keep_on_error=keep_on_error)
+
+
+def archive_path(project: Path, ref: ArchiveRef) -> Path:
+    """Where the file adapter keeps ``ref`` under ``project``: for a test of what it wrote."""
+    return archive_dir(project / STATE, ref)
+
+
+def kept(project: Path, survey: SurveyDocument) -> Path:
+    """Where the file adapter keeps the archive ``survey`` landed."""
+    return archive_path(project, ArchiveRef(survey.mission, survey.archive))
+
+
+def window_kept(project: Path, mission: str, window: WindowOutcome) -> Path:
+    """Where the file adapter keeps the window ``window`` of the mission's stream."""
+    return archive_path(project, ArchiveRef(mission, window.id, window.stream))
+
+
+#: The id :func:`landing` gives the archive it lands, unless told another.
+ARCHIVE_ID = "2026-01-02-030405-000001"
+
+
+def files_of(
+    project: Path,
+    clock: Clock | None = None,
+    /,
+    *,
+    flush_bytes: int = FLUSH_BYTES,
+    flush_s: float = FLUSH_S,
+) -> ArchiveFiles:
+    """The file adapter over ``project``'s missions, on ``clock`` (the system's by default),
+    with ``flush_bytes`` and ``flush_s`` as given."""
+    from recon.adapters._out.system_clock import SystemClock
+
+    return ArchiveFiles(
+        project / STATE, clock or SystemClock(), flush_bytes=flush_bytes, flush_s=flush_s
+    )
+
+
+@contextlib.contextmanager
+def landing(
+    project: Path,
+    *,
+    store: ArchiveFiles | None = None,
+    mission: str = "m",
+    archive_id: str = ARCHIVE_ID,
+    stream: str | None = None,
+) -> Iterator[tuple[Landed, Path]]:
+    """One archive of ``mission`` (or a window of its ``stream``) landed through the file
+    adapter under ``project`` (``store``, or one on the system clock), held for the block,
+    and where the adapter keeps it."""
+    files = store if store is not None else files_of(project)
+    with files.hold(mission, stream=stream) as held, held.begin(archive_id) as landed:
+        yield landed, archive_path(project, landed.ref)
 
 
 class ScriptedRequester:
@@ -171,7 +319,8 @@ class ScriptedRequester:
 
 
 class ScriptedShell:
-    """The ShellRunner port printing a fixed list of lines for each command, which exits 0."""
+    """The ShellRunner port printing a fixed list of lines for each command, which exits 0;
+    each line's bytes given to ``tee`` as the port says."""
 
     def __init__(self, lines: Mapping[str, list[str]]) -> None:
         self._lines = lines
@@ -182,17 +331,13 @@ class ScriptedShell:
         cwd: Path | None,
         timeout: float,
         *,
-        capture_path: Path | None = None,
+        tee: Callable[[bytes], object] | None = None,
     ) -> Generator[str, None, int]:
-        yield from self._lines[cmd]
+        for line in self._lines[cmd]:
+            if tee is not None:
+                tee(f"{line}\n".encode())
+            yield line
         return 0
-
-
-class NoConverter:
-    """A DocumentConverter for a test that reaches none: converting a document is a failure."""
-
-    def convert(self, content: bytes, content_type: str, url: str) -> ConversionResult:
-        raise AssertionError("no test here converts a document")
 
 
 def collector_entry(**fields: Any) -> CollectorEntry:
@@ -201,45 +346,82 @@ def collector_entry(**fields: Any) -> CollectorEntry:
     return CollectorEntry(**fields)
 
 
+class FakeCollector:
+    """A collector (``recon.core.domain.collector.Collector``) for a test: it declares nothing
+    (effects unknown, finite records, any source), describes and checks nothing and holds
+    nothing to close; a subclass gives :meth:`collect` its items."""
+
+    effects: frozenset[Effect] | None = None
+    records: RecordsKind = "finite"
+    accepts: frozenset[str] | None = None
+
+    def describe(self, run: Run) -> Intent:
+        return {}
+
+    def check(self, run: Run) -> list[Problem]:
+        return []
+
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+        return iter(())
+
+    def close(self) -> None:
+        return None
+
+
+class EmptyCollector(FakeCollector):
+    """A Collector that finds no records: for a collector type that is registered, built and
+    never run."""
+
+
+def installed(
+    name: str,
+    build: Callable[..., Collector],
+    *,
+    settings: type[BaseModel] | None = None,
+    needs: Iterable[str] = (),
+    declared: Collector | None = None,
+    package: str = "test",
+) -> InstalledType:
+    """What recon reads of a collector type a test installs as ``name``: its ``build`` with
+    its ``needs``, and what it declares (``declared``, else what ``build`` makes with recon's
+    stand-ins)."""
+    from recon.adapters._out.system_clock import SystemClock
+    from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
+    from recon.core.application.collectors import stand_ins
+
+    wanted = frozenset(needs)
+    if declared is None:
+        given = stand_ins(SystemClock(), DEFAULT_USER_AGENT)
+        declared = build(**{need: given[need] for need in wanted})
+    return InstalledType(name, build, wanted, declared, settings, package=package)
+
+
 def plugins_with(**collectors: Collector) -> Plugins:
     """The installed plugins, and a collector type for each of ``collectors`` by name that
     builds that collector, declaring nothing else (no settings, no check)."""
     plugins = load_plugins()
     for name, collector in collectors.items():
-        plugins.collector_types[name] = CollectorType(create=_creating(collector), effects=None)
+        plugins.collector_types[name] = installed(name, _giving(collector))
     return plugins
 
 
-class EmptyCollector:
-    """A Collector that finds no records: for a collector type that is registered, built and
-    never run."""
+def building(built: list[str], name: str) -> Callable[..., Collector]:
+    """A collector type's build that records ``name`` in ``built`` and then fails: for a
+    test of a run that must build no collector, which then sees what was built. Install it
+    with a ``declared`` collector, so reading what it declares builds nothing."""
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-    ) -> Iterator[dict[str, Any]]:
-        return iter(())
-
-
-def building(built: list[str], name: str) -> Callable[[CollectorContext], Collector]:
-    """A collector type's ``create`` that records ``name`` in ``built`` and then fails: for a
-    test of a run that must build no collector, which then sees what was built."""
-
-    def create(ctx: CollectorContext) -> Collector:
+    def build(**needs: Any) -> Collector:
         built.append(name)
         raise AssertionError(f"a collector was built: {name!r}")
 
-    return create
+    return build
 
 
-def _creating(collector: Collector) -> Callable[[CollectorContext], Collector]:
-    def create(ctx: CollectorContext) -> Collector:
+def _giving(collector: Collector) -> Callable[..., Collector]:
+    def build(**needs: Any) -> Collector:
         return collector
 
-    return create
+    return build
 
 
 def run_survey(
@@ -250,14 +432,14 @@ def run_survey(
     plugins: Plugins | None = None,
     requester: RequesterFactory | None = None,
     shell: ShellRunner | None = None,
-    converter: DocumentConverter | None = None,
     clock: Clock | None = None,
     env: Mapping[str, str] | None = None,
     name: str = "m",
 ) -> tuple[Path, list[TableOutcome]]:
     """Survey ``config`` as the mission ``name`` of ``project`` through recon's own root,
     with a fake for each port given and the real adapter for the rest (no environment
-    unless ``env`` is given). Returns the archive and its tables."""
+    unless ``env`` is given). Returns where the file adapter kept the archive, and its
+    tables."""
     raw = (
         config.model_dump(mode="json", exclude_unset=True)
         if isinstance(config, ReconConfig)
@@ -273,7 +455,24 @@ def run_survey(
         plugins=plugins,
         requester=requester,
         shell=shell,
-        converter=converter,
     )
-    document = recon.survey(name, on_event=on_event)
-    return Path(document.path), document.tables
+    document = recon.observation.survey(name, on_event=on_event)
+    return archive_path(project, ArchiveRef(name, document.archive)), document.tables
+
+
+def run_for(
+    entry: CollectorEntry | Mapping[str, Any],
+    source: SourceEntry | Mapping[str, Any] | None = None,
+    *,
+    plugins: Plugins | None = None,
+) -> Run:
+    """The run of ``entry`` against ``source`` as recon makes it: its type's own keys
+    validated by the installed type's schema."""
+    from recon.core.application.survey import run_of
+    from recon.core.domain.models import SourceEntry as Source
+
+    given = entry if isinstance(entry, CollectorEntry) else CollectorEntry.model_validate(entry)
+    against = (
+        source if source is None or isinstance(source, Source) else Source.model_validate(source)
+    )
+    return run_of(plugins or load_plugins(), given, against)

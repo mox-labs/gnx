@@ -7,23 +7,23 @@ record's ``_position``, the page log beside the table, and every stop recorded i
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl, urlsplit
 
 import pytest
 import yaml
 
-from recon.application.plan import build_plan
 from recon.composition import load_plugins, root
-from recon.domain.http import HttpResponse
-from tests.recon_fakes import run_survey
+from recon.core.application.plan import build_plan
+from recon.core.domain.http import HttpResponse
+from tests.recon_fakes import files_of, kept, run_survey
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
-    from recon.domain.collector import Plugins
-    from recon.domain.models import SourceEntry
+    from recon.core.domain.collector import Plugins
+    from recon.core.domain.models import SourceEntry
 
 BASE = "https://api.test"
 
@@ -134,8 +134,8 @@ def _survey(tmp_path: Path, api: PagedApi, mission: dict[str, Any]) -> tuple[Pat
     recon = _root(tmp_path, api)
     (tmp_path / ".recon" / "m").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".recon" / "m" / "config.yaml").write_text(yaml.safe_dump(mission))
-    document = recon.survey("m")
-    return Path(document.path), document
+    document = recon.observation.survey("m")
+    return kept(tmp_path, document), document
 
 
 def _root(tmp_path: Path, api: PagedApi) -> Any:
@@ -198,7 +198,7 @@ class TestEveryPageOnceInOrder:
                      requester=lambda telemetry, deadline, limiter: api)  # fmt: skip
         (tmp_path / ".recon" / "m").mkdir(parents=True)
         (tmp_path / ".recon" / "m" / "config.yaml").write_text(yaml.safe_dump(mission))
-        archive = Path(recon.survey("m").path)
+        archive = kept(tmp_path, recon.observation.survey("m"))
 
         assert api.sent[1]["params"] == {"api_key": "s3cret"}, "the key goes with each page"
         assert api.sent[1]["url"] == f"{BASE}/items?page=1"
@@ -252,10 +252,8 @@ class TestEveryPageOnceInOrder:
 
 
 def _tables(project: Path) -> list[Any]:
-    from recon.adapters._out.archive_files import ArchiveFiles
-
-    store = ArchiveFiles(None)  # type: ignore[arg-type]
-    [archive] = store.archives(project / ".recon" / "m")
+    store = files_of(project)
+    [archive] = store.archives("m")
     return store.tables(archive)
 
 

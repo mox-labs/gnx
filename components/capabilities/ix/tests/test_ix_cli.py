@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import click
 import pytest
 import yaml
 from click import unstyle
@@ -255,10 +256,19 @@ class TestFixesNameRealCommands:
         assert mentioned <= set(main.commands), mentioned - set(main.commands)
 
     def test_the_commands_are_these(self) -> None:
+        # Changed requirement (ruling Q5): a long run is followed and stopped by status,
+        # events and stop. Changed requirement (ruling R2): mutation testing's provisional
+        # group, `ix mutants sample|map|read`.
         assert sorted(main.commands) == [
-            "deviations", "genres", "kinds", "plan", "register", "report", "run", "runs",
-            "validate",
+            "deviations", "events", "genres", "kinds", "mutants", "plan", "register", "report",
+            "run", "runs", "status", "stop", "validate",
         ]  # fmt: skip
+        group = main.commands["mutants"]
+        assert isinstance(group, click.Group) and sorted(group.commands) == [
+            "map",
+            "read",
+            "sample",
+        ]
         assert {command.split()[1] for command, _ in COMMANDS} == set(main.commands)
         result = _run("results", "x", "--json")
         assert result.exit_code == 2 and "No such command" in _error(result)["message"]
@@ -267,7 +277,14 @@ class TestFixesNameRealCommands:
         register = main.commands["register"]
         flags = {option for param in register.params for option in param.opts}
         assert {"--amend", "--reason", "--json"} <= flags
-        for command in main.commands.values():
+        # Changed requirement: a group's commands are its subcommands, each of which takes it.
+        leaves = [
+            leaf
+            for command in main.commands.values()
+            for leaf in (getattr(command, "commands", {}) or {command.name: command}).values()
+        ]
+        assert len(leaves) == len(main.commands) - 1 + 3
+        for command in leaves:
             assert "--json" in {o for p in command.params for o in p.opts}, command.name
 
 
@@ -364,6 +381,26 @@ class TestValidateCommand:
 
 
 class TestPlanCommand:
+    def test_an_agent_s_tools_left_out_are_shown_as_every_tool_the_runtime_offers(
+        self, evaluate_data: dict[str, Any], write_experiment: Write
+    ) -> None:
+        """Ruling Q2: an agent session's ``tools`` left out is every tool its runtime offers
+        (the semantics stay), and the plan says so, in the document and on the terminal, as
+        its kind's default; written, the subject's own value is shown instead."""
+        file: Path = write_experiment(evaluate_data)
+        document = _json(_run("plan", str(file), "--json"))
+        found = {value["path"]: value for value in document["provenance"]}
+        tools = found["subjects.catalog.tools"]
+        assert (tools["value"], tools["origin"], tools["note"]) == (
+            None, "kind", "every tool the runtime offers (default)",
+        )  # fmt: skip
+        wide = CliRunner(env={"COLUMNS": "200"}).invoke(main, ["plan", str(file)]).stdout
+        line = next(line for line in wide.splitlines() if "subjects.catalog.tools" in line)
+        assert "every tool the runtime offers (default)" in line and "kind" in line
+        evaluate_data["subjects"]["catalog"]["tools"] = ["Skill"]
+        written = _json(_run("plan", str(write_experiment(evaluate_data, "written")), "--json"))
+        assert "subjects.catalog.tools" not in {v["path"] for v in written["provenance"]}
+
     def test_the_document_shape(
         self, compare_data: dict[str, Any], write_experiment: Write
     ) -> None:
@@ -375,7 +412,7 @@ class TestPlanCommand:
             "schema", "digest", "experiment", "experiment_digest", "genre", "genre_url",
             "question", "decides", "comparison", "guardrails", "verdict_form", "subjects",
             "control", "factors", "probes", "calibration", "trials", "schedule_digest", "duration",
-            "order", "sensors", "requirements", "registration", "sensitivity",
+            "order", "sensors", "requirements", "registration", "sensitivity", "work",
             "provenance", "unimplemented", "notes", "overridden", "warnings", "runnable",
         ]  # fmt: skip
         assert re.fullmatch(r"[0-9a-f]{64}", document["schedule_digest"])
@@ -403,7 +440,9 @@ class TestPlanCommand:
         }
         for value in document["provenance"]:
             assert set(value) == {"path", "value", "origin", "note"}
-            assert value["origin"] in ("experiment", "genre", "ix")
+            # Changed requirement: an option's default comes from its kind, and a value
+            # left to the runtime is said to be the runtime's.
+            assert value["origin"] in ("experiment", "genre", "ix", "kind", "runtime")
         for required in document["requirements"]:
             assert set(required) == {"need", "holds", "why", "fix", "needed_by"}
 
@@ -693,16 +732,24 @@ class TestGenresAndKindsCommands:
         assert load["schema"] == "ix.v1.kind"
         assert load["options"]["duration"] == {
             "type": "duration", "required": True, "allowed": [], "required_when": {},
-            "choices": {}, "within": "", "binds": [], "text": False,
-            "description": "how long the measured load lasts",
+            "choices": {}, "within": "", "binds": [], "text": False, "default": None,
+            "default_by": None, "default_from": [], "left_out": "", "fields": {},
+            "entries": None, "description": "how long the measured load lasts",
         }  # fmt: skip
+        # Each default is the declaration's, in the document an agent reads.
+        assert load["options"]["timeout"]["default"] == "60s"
+        session = document["kinds"]["ix.v1.subject.agent-session"]["options"]
+        assert session["max_turns"]["default_from"] == ["runtime"]
         command = document["kinds"]["ix.v1.subject.process"]["options"]["command"]
         assert (command["type"], command["within"]) == ("command", "cwd")
         runtime = document["kinds"]["ix.v1.subject.agent-session"]["options"]["runtime"]
         assert runtime["required"]
         assert set(runtime["choices"]) == {"claude-sdk", "pydantic-ai", "mock"}
         runtime = document["kinds"]["ix.v1.subject.model-call"]["options"]["runtime"]
-        assert runtime["required"] and set(runtime["choices"]) == {"hardline", "mock"}
+        assert runtime["required"] and set(runtime["choices"]) == {
+            "matrix-hardline.v1.model-runtime",
+            "mock",
+        }
         assert load["options"]["rate"]["required_when"] == {"load_model": "open"}
         assert (load["needs"], load["offers"]) == (["url"], ["load"])
         judge = document["kinds"]["ix.v1.sensor.judge"]
@@ -710,9 +757,15 @@ class TestGenresAndKindsCommands:
         # Owner ruling 2026-10-22: an environment's keys are its service_keys; no binds.
         process = document["kinds"]["ix.v1.environment.process"]
         assert process["service_keys"] == ["host", "port", "url"] and "binds" not in process
-        for name, kind in ix.kinds().kinds.items():
+        # Review D5: a kind's document holds its own family's fields and no other's.
+        subject = document["kinds"]["ix.v1.subject.process"]
+        assert not {"metrics", "truth", "duration", "confusion", "service_keys"} & set(subject)
+        found = ix.kinds()
+        for name, kind in found.kinds.items():
             assert document["kinds"][name]["overlap"] == kind.overlap
-            for shown, metric in zip(document["kinds"][name]["metrics"], kind.metrics, strict=True):
+        for sensor in found.of("sensor"):
+            shown_metrics = document["kinds"][sensor.name]["metrics"]
+            for shown, metric in zip(shown_metrics, sensor.metrics, strict=True):
                 assert (shown["name"], shown["contended"]) == (metric.name, metric.contended)
 
     def test_kinds_shows_each_kinds_overlap_and_each_metrics_contended(self) -> None:
@@ -726,11 +779,13 @@ class TestGenresAndKindsCommands:
             assert header[-2:] == ["overlap", "runs"], header
         header, metrics = tables["Metrics"]
         assert header[-2:] == ["judged", "contended"]
-        for kind in ix.kinds().kinds.values():
+        found = ix.kinds()
+        for kind in found.kinds.values():
             _, rows = tables[f"{kind.family.capitalize()} kinds"]
             (row,) = [row for row in rows if row[0] == kind.label]
             assert row[-2] == kind.overlap, (kind.label, row)
-            for metric in kind.metrics:
+        for sensor in found.of("sensor"):
+            for metric in sensor.metrics:
                 (row,) = [row for row in metrics if row[0] == metric.name]
                 expected = ["yes" if metric.judged else "no", "yes" if metric.contended else "no"]
                 assert row[-2:] == expected, (metric.name, row)
@@ -748,7 +803,10 @@ class TestGenresAndKindsCommands:
         genres = _json(_run("genres", "--lab", lab, "--json"))
         assert [p["kind"] for p in genres["rejected"]["lab.v1.genre.loose"]] == ["genre_narrowing"]
         kinds = _json(_run("kinds", "--lab", lab, "--json"))
-        assert [p["kind"] for p in kinds["rejected"]["lab.v1.sensor.bad"]] == ["kind_invalid"]
+        # Changed requirement (review D5): a sensor kind's metrics are a key its record
+        # requires, so a file without them is refused as any missing key is.
+        refused = kinds["rejected"]["lab.v1.sensor.bad"]
+        assert [(p["kind"], p["path"]) for p in refused] == [("missing_key", "metrics")]
         assert "refused lab.v1.genre.loose" in " ".join(_run("genres", "--lab", lab).stdout.split())
 
     def test_a_kind_named_with_a_segment_the_registry_forbids_is_refused(

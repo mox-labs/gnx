@@ -14,10 +14,10 @@ the receiver is named in ``stuck``, and its ``close`` is not called, since the t
 still inside it. The thread is a daemon and stays until the receiver returns.
 
 A receiver that raises gets nothing more. A sink's error is raised to the survey at its next
-event, so :class:`~recon.domain.telemetry.Telemetry` drops it and names it, as it does a sink
+event, so :class:`~recon.core.domain.telemetry.Telemetry` drops it and names it, as it does a sink
 called inline; a callback's is kept in ``failed``. A sink's ``around`` and ``trace_headers``
 are answered at once, not through the queue: what they return is needed now, and they must
-not block (``recon.domain.telemetry``).
+not block (``recon.core.domain.telemetry``).
 
 Each receiver is called on the channel's one thread, in the order the events were sent.
 The names follow matrix's event channel (``EventPolicy.queue``, ``drain_s``, ``dropped``).
@@ -30,11 +30,13 @@ import queue
 import threading
 from typing import TYPE_CHECKING, Any
 
+from recon.core.domain.optional import SupportsAround, SupportsClose, SupportsTraceHeaders
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from contextlib import AbstractContextManager
 
-    from recon.domain.telemetry import Event, EventCallback, EventSink
+    from recon.core.domain.telemetry import Event, EventCallback, EventSink
 
 #: Events waiting for the receivers, at most; one more is dropped and counted.
 QUEUE = 4096
@@ -146,12 +148,12 @@ class _QueuedSink:
         self._channel.send(self._name, self._deliver, event)
 
     def around(self, event: Event) -> AbstractContextManager[Any] | None:
-        around = getattr(self._sink, "around", None)
-        return None if around is None else around(event)
+        return self._sink.around(event) if isinstance(self._sink, SupportsAround) else None
 
     def trace_headers(self, span_id: str) -> dict[str, str]:
-        given = getattr(self._sink, "trace_headers", None)
-        return {} if given is None else dict(given(span_id))
+        if not isinstance(self._sink, SupportsTraceHeaders):
+            return {}
+        return dict(self._sink.trace_headers(span_id))
 
     def close(self) -> None:
         """Close the sink, unless a delivery to it has not ended within the channel's wait:
@@ -161,9 +163,8 @@ class _QueuedSink:
             return
         try:
             self._closed = True
-            close = getattr(self._sink, "close", None)
-            if close is not None:
-                close()
+            if isinstance(self._sink, SupportsClose):
+                self._sink.close()
         finally:
             self._lock.release()
         self._raise_its_error()

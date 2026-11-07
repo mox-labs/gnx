@@ -13,52 +13,50 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from recon.adapters._out.tail_collector import TailCollector, collector_type
-from recon.domain.models import CollectorEntry, SourceEntry
-from tests.recon_fakes import VirtualClock
+from recon.adapters._out.tail_collector import TailCollector
+from recon.composition import load_plugins
+from recon.core.domain.collector import Dropped, Position, Record
+from recon.core.domain.stream import POSITION_FIELD, Gap
+from tests.recon_fakes import VirtualClock, run_for
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
-
-    from recon.domain.stream import Gap
 
 
 class Gaps:
     def __init__(self) -> None:
         self.said: list[Gap] = []
 
-    def gap(self, gap: Gap) -> None:
-        self.said.append(gap)
-
-    def drop(self) -> None:
-        raise AssertionError("a tail collector drops nothing")
-
 
 class Following:
     """A tail collector run on a thread of its own, as a stream's pump runs it, its records
-    gathered as they come."""
+    gathered as they come (each with its position as ``_position``, as the stream keeps it),
+    and the gaps it gave."""
 
-    def __init__(
-        self, path: Path, *, after: Any = None, start: str = "beginning", gaps: Gaps | None = None
-    ) -> None:
+    def __init__(self, path: Path, *, after: Any = None, start: str = "beginning") -> None:
         self.clock = VirtualClock()
-        self.gaps = gaps or Gaps()
-        self.collector = TailCollector(self.clock, self.gaps)
+        self.gaps = Gaps()
+        self.collector = TailCollector(clock=self.clock)
         self.records: list[dict[str, Any]] = []
         self.error: BaseException | None = None
-        entry = CollectorEntry.model_validate({"name": "log", "type": "tail", "start": start})
-        source = SourceEntry(name="app", type="file", url=str(path))
-        resume = {} if after is None else {"after": after}
-        records = self.collector.collect(entry, source, **resume)
+        run = run_for({"name": "log", "type": "tail", "start": start},
+                      {"name": "app", "type": "file", "url": str(path)})  # fmt: skip
+        items = self.collector.collect(run, None if after is None else Position(after))
 
-        def run() -> None:
+        def run_() -> None:
             try:
-                self.records.extend(records)
+                for item in items:
+                    if isinstance(item, Record):
+                        self.records.append({**item.data, POSITION_FIELD: item.position})
+                    elif isinstance(item, Gap):
+                        self.gaps.said.append(item)
+                    elif isinstance(item, Dropped):
+                        raise AssertionError("a tail collector drops nothing")
             except BaseException as exc:
                 self.error = exc
 
-        self.thread = threading.Thread(target=run, daemon=True)
+        self.thread = threading.Thread(target=run_, daemon=True)
         self.thread.start()
 
     def until(self, done: Callable[[list[dict[str, Any]]], bool]) -> list[dict[str, Any]]:
@@ -212,10 +210,11 @@ class TestResume:
 
 class TestTheType:
     def test_it_declares_a_stream_read_at_recon_s_pace(self) -> None:
-        assert collector_type.unbounded is True
-        assert collector_type.paced_by == "recon"
-        assert collector_type.source_kinds == frozenset({"file"})
-        assert collector_type.effects == frozenset({"filesystem"})
+        plugins = load_plugins()
+        declared = plugins.collector_types["tail"].declared
+        assert declared.records == "unbounded_recon_paced"
+        assert declared.accepts == frozenset({"file"}) and "file" in plugins.source_kinds
+        assert declared.effects == frozenset({"filesystem"})
 
     def test_a_record_of_a_text_line_is_json(self, tmp_path: Path) -> None:
         log = tmp_path / "app.log"

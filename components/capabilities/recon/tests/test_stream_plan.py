@@ -1,36 +1,49 @@
 """What a stream's entry declares, and what the plan makes of it (rulings B2 and B4): the keys an
 agent writes, the defaults recon fills in and says it filled, and every problem with a path and a
-fix. A collector type declares ``unbounded`` and ``paced_by`` through the same entry point a
-third party's does."""
+fix. A collector type declares its ``records`` (whether they end, and who paces them) through
+the same entry point a third party's does."""
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from recon.application.plan import Plan, build_plan
 from recon.composition import load_plugins
-from recon.domain.collector import Collector, CollectorContext, CollectorType, Plugins
+from recon.core.application.plan import Plan, build_plan
+from tests.recon_fakes import FakeCollector, installed
+
+if TYPE_CHECKING:
+    from recon.core.domain.collector import Collector, Plugins
 
 
-def _never_built(ctx: CollectorContext) -> Collector:
-    raise AssertionError("planning builds no collector")
+def _never_built(**needs: Any) -> Collector:
+    raise AssertionError("planning builds no collector for an act")
 
 
-#: A third party's types, registered as any plugin's: one that never ends and paces itself,
-#: one that never ends and is read at recon's pace, and one that ends.
-PUSH = CollectorType(create=_never_built, effects=frozenset({"network"}), unbounded=True,
-                     paced_by="source")  # fmt: skip
-PULL = CollectorType(create=_never_built, effects=frozenset({"filesystem"}), unbounded=True)
-BOUNDED = CollectorType(create=_never_built, effects=frozenset())
+class _Push(FakeCollector):
+    effects = frozenset({"network"})
+    records = "unbounded_source_paced"
+
+
+class _Pull(FakeCollector):
+    effects = frozenset({"filesystem"})
+    records = "unbounded_recon_paced"
+
+
+class _Once(FakeCollector):
+    effects = frozenset()
 
 
 @pytest.fixture(scope="module")
 def plugins() -> Plugins:
-    installed = load_plugins()
-    types = {**installed.collector_types, "push": PUSH, "pull": PULL, "once": BOUNDED}
-    return Plugins(types, installed.transforms, installed.broken)
+    """recon's types, and a third party's: one that never ends and paces itself, one that
+    never ends and is read at recon's pace, and one that ends."""
+    found = load_plugins()
+    made = {"push": _Push(), "pull": _Pull(), "once": _Once()}
+    ours = {name: installed(name, _never_built, declared=it) for name, it in made.items()}
+    return replace(found, collector_types={**found.collector_types, **ours})
 
 
 def _plan(entry: dict[str, Any], plugins: Plugins, **top: Any) -> Plan:
@@ -69,7 +82,8 @@ class TestTheDefaultsAreFilledAndSaid:
 
         [overflowing] = [v for v in plan.provenance if v.path.endswith("buffer.overflow")]
         assert (overflowing.value, overflowing.origin) == (overflow, "type")
-        assert "paced_by" in overflowing.note
+        # The type says who paces its records in its ``records`` (contract v2's one enum).
+        assert "records: unbounded_" in overflowing.note
 
     def test_what_the_mission_writes_is_its_own(self, plugins: Plugins) -> None:
         plan = _plan(
@@ -109,9 +123,14 @@ class TestTheDefaultsAreFilledAndSaid:
         plan = _plan({"type": "once"}, plugins)
 
         assert plan.valid
-        assert [(v.path, v.value, v.origin) for v in plan.provenance] == [
-            ("collectors.0.retain", "all", "recon")
-        ], "a snapshot keeps its archives as a stream its windows (round-4 review S1)"
+        assert _values(plan)["collectors.0.retain"] == ("all", "recon"), (
+            "a snapshot keeps its archives as a stream its windows (round-4 review S1)"
+        )
+        # Changed requirement (step M4): the plan reports every effective value, so a
+        # snapshot's provenance holds its other keys too, but none of a stream's.
+        stream_keys = ("window", "buffer", "overflow")
+        assert not [v.path for v in plan.provenance
+                    if v.path.split(".")[2:3] and v.path.split(".")[2] in stream_keys]  # fmt: skip
         assert "stream" not in plan.runs[0].document()
 
     def test_window_on_a_type_that_ends_makes_it_a_stream(self, plugins: Plugins) -> None:

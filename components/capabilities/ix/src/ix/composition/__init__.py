@@ -25,6 +25,7 @@ import asyncio
 import logging
 import os
 import secrets
+import sys
 import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
@@ -50,7 +51,8 @@ from matrix import (
 )
 
 from ix.adapters._in.matrix_components import COMPOSITION, NEED
-from ix.adapters._out.matrix_agents import AGENT_RUNTIME, MODEL_RUNTIME, Point, Sessions
+from ix.adapters._out import detached
+from ix.adapters._out.matrix_agents import SessionTable
 from ix.adapters._out.matrix_documents import (
     STDIN_SOURCE,
     GenreFiles,
@@ -60,8 +62,14 @@ from ix.adapters._out.matrix_documents import (
 )
 from ix.adapters._out.matrix_errors import carried_over, converted
 from ix.adapters._out.matrix_process import MatrixLauncher
+from ix.adapters._out.matrix_runs import EVENT_LOG, execute
 from ix.adapters._out.matrix_runs import Runs as RunRecords
-from ix.adapters._out.matrix_runs import execute
+from ix.adapters._out.mutation import reading as mutant_reading
+from ix.adapters._out.mutation import sample as mutant_sample
+from ix.adapters._out.mutation.runner import suite_of
+from ix.adapters._out.mutation.selection import MapUnreadableError, read_map
+from ix.adapters._out.mutation.suite import SOURCE_INSTALL
+from ix.adapters._out.mutation.suite import SUBJECT_KIND as TEST_SUITE
 from ix.adapters._out.otel_tracing import OtelTracer, keep_spans
 from ix.adapters._out.provenance import checkout, contents, installed
 from ix.adapters._out.registration_file import RegistrationFile
@@ -70,21 +78,34 @@ from ix.application import running
 from ix.application import skill as skill_document
 from ix.application.experiments import Examined, FolderProbes, Vocabulary
 from ix.application.running import Kit
-from ix.composition.extension import JUDGE_MODELS, LAUNCHER, POINTS, RUNTIMES, SESSIONS
 from ix.composition.settings import IxSettings
 from ix.domain import schema
-from ix.domain.design import entries_in_use
+from ix.domain.design import entries_in_use, sensor_entry
 from ix.domain.errors import ConfigError, IxError, NotFoundError, UsageError
-from ix.domain.experiment import Experiment
+from ix.domain.experiment import Experiment, cells
 from ix.domain.genre import Genres, genres
-from ix.domain.kind import KIND_FAMILIES, Kinds, kinds, per_cell
-from ix.domain.plan import required
-from ix.domain.ports import Preflight, Requirement, SpanReader, Traced
+from ix.domain.kind import KIND_FAMILIES, Kinds, fill, kinds, merged, per_cell
+from ix.domain.plan import Work, required, work
+from ix.domain.ports import ModelCalls, Preflight, Requirement, SpanReader, Traced
 from ix.domain.problem import InvalidExperimentError
 from ix.domain.provenance import Provenance, RuntimeOrigin, named_files
-from ix.domain.report import Report, Runs
+from ix.domain.report import Report, Runs, Status
 from ix.domain.report import report as build_report
 from ix.domain.report import summary as summarize
+from ix.domain.run import cell_key, schedule
+from ix.extension import (
+    AGENT_RUNTIME,
+    JUDGE_MODELS,
+    LAUNCHER,
+    MODEL_RUNTIME,
+    MUTANT_SOURCE,
+    MUTANT_SOURCES,
+    POINTS,
+    RUNTIMES,
+    SESSIONS,
+    MutantSource,
+    Point,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
@@ -98,7 +119,7 @@ if TYPE_CHECKING:
     from ix.domain.problem import Problem, Validation
     from ix.domain.registration import Deviations, Registered, Registration
     from ix.domain.report import RunSummary
-    from ix.domain.run import Reading, RunRecord
+    from ix.domain.run import Reading, RunManifest, RunRecord
 
 try:
     VERSION = _installed_version("ix")
@@ -115,12 +136,13 @@ RUNS_DIRECTORY = ".ix/runs"
 #: directory>`` and ``ix runs`` read.
 RUN_STORE = store_type_url("jsonl")
 
-#: The distributions whose installed versions each run records.
-RECORDED_VERSIONS = ("ix", "matrix", "hardline")
+#: The distributions whose installed versions each run records, besides those each installed
+#: runtime declares it drives (its registry entry's ``drives``): ix names no runtime here.
+RECORDED_VERSIONS = ("ix", "matrix")
 
 #: The settings a run reads, whose rungs it records: where runs are kept, the observers of a
-#: run, and the models a model runtime is handed.
-READ_SETTINGS = ("ix.runs", "matrix.observers", "matrix.models")
+#: run, and the named model runtimes an agent runtime that needs them is handed.
+READ_SETTINGS = ("ix.runs", "matrix.observers", "matrix.model_runtimes")
 
 
 def type_url_problem(name: str) -> str | None:
@@ -192,8 +214,9 @@ _RUNTIME_NOUNS = {AGENT_RUNTIME: "agent runtime", MODEL_RUNTIME: "model runtime"
 class _Runtimes:
     """matrix's runtimes, built from the registry by name at its two points: an agent
     runtime is what a session and an agent judge run on, a model runtime what a model call
-    and a model judge make their call on. Each is handed the ``models`` of matrix's config
-    and the ``cwd`` it runs in, as it declares it needs them.
+    and a model judge make their call on. Each is handed the ``cwd`` it runs in and, when it
+    declares it needs them (``pydantic-ai`` does), the model runtimes matrix's config names
+    under ``matrix.model_runtimes``, each built the first time one is asked for.
 
     ix says a runtime's ``warnings`` itself, once, in the plan and the report: while
     :meth:`listening`, those of each runtime built are kept. What a runtime logs on
@@ -201,10 +224,10 @@ class _Runtimes:
     twenty sessions does not log the same warning twenty times, and ``--json`` keeps stderr
     to the error envelope."""
 
-    def __init__(self, registry: Registry, models: Callable[[], dict[str, Any] | None]) -> None:
+    def __init__(self, registry: Registry, settings: Callable[[], MatrixConfig]) -> None:
         self._registry = registry
-        self._models = models
         self._heard: list[matrix.Problem] | None = None
+        self._named = _NamedModelRuntimes(self, settings)
 
     @contextmanager
     def listening(self) -> Iterator[list[matrix.Problem]]:
@@ -230,12 +253,12 @@ class _Runtimes:
         quiet.addFilter(_unsaid)
         try:
             runtime = self._registry.create(
-                point, url, config, needs={"cwd": cwd, "models": self._models()}
+                point, url, config, needs={"cwd": cwd, "model_runtimes": self._named}
             )
         finally:
             quiet.removeFilter(_unsaid)
-        if self._heard is not None:
-            for found in getattr(runtime, "warnings", ()) or ():
+        if self._heard is not None and isinstance(runtime, matrix.SupportsWarnings):
+            for found in runtime.warnings:
                 if found not in self._heard:
                     self._heard.append(found)
         return runtime
@@ -263,30 +286,91 @@ class _Runtimes:
         return entry.capabilities(config)
 
 
+class _NamedModelRuntimes(matrix.ModelRuntimes):
+    """The model runtimes matrix's config names (``matrix.model_runtimes``), by name: the
+    ``model_runtimes`` need, as composition hands it, each with the type URL and the
+    distributions of the registry entry it is built from. Each is built through the registry
+    when it is asked for, afresh each time, as every runtime ix builds is built per trial and
+    not used again: an agent runtime built for one trial shares no model runtime with
+    another's. Reading the names, or what one is built as, builds none."""
+
+    def __init__(self, runtimes: _Runtimes, settings: Callable[[], MatrixConfig]) -> None:
+        self._runtimes = runtimes
+        self._settings = settings
+
+    def __getitem__(self, name: str) -> Any:
+        spec = self._settings().model_runtimes[name]  # KeyError: no such name
+        return self._runtimes.build(MODEL_RUNTIME, spec.type, spec.options())
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._settings().model_runtimes)
+
+    def __len__(self) -> int:
+        return len(self._settings().model_runtimes)
+
+    def type_url(self, name: str) -> str:
+        return self._entry(name).type_url
+
+    def drives(self, name: str) -> tuple[str, ...]:
+        return self._entry(name).drives
+
+    def _entry(self, name: str) -> Entry:
+        spec = self._settings().model_runtimes[name]  # KeyError: no such name
+        return self._runtimes._entry(MODEL_RUNTIME, spec.type)
+
+
+class _MutantSources:
+    """The mutant sources installed at ix's ``ix.mutant-source`` point, through matrix's
+    registry: what the ``test-suite`` subject and ``ix mutants sample`` are handed."""
+
+    def __init__(self, registry: Registry) -> None:
+        self._registry = registry
+
+    def names(self) -> tuple[str, ...]:
+        return tuple(entry.type_url for entry in self._registry.entries(MUTANT_SOURCE))
+
+    def source(self, name: str) -> MutantSource:
+        if (MUTANT_SOURCE, name) not in self._registry:
+            raise NotFoundError(
+                f"no mutant source {name!r} is installed; installed: "
+                f"{', '.join(self.names()) or 'none'}",
+                fix="install the package that provides it, or name an installed one",
+                details={"path": "--source", "value": name},
+            )
+        try:
+            built: MutantSource = self._registry.create(MUTANT_SOURCE, name)
+        except MatrixError as error:
+            raise ConfigError(
+                f"the mutant source {name} cannot be built: {error.message}",
+                fix="fix or uninstall the package that registered it",
+                details={"value": name},
+            ) from error
+        return built
+
+    def drives(self, name: str) -> dict[str, str]:
+        entry = self._registry.entry(MUTANT_SOURCE, name)
+        return {distribution: installed(distribution) for distribution in entry.drives}
+
+
 class _JudgeModels:
-    """Where a pydantic-evals judge evaluator's model comes from: the pydantic-ai ``Model``
-    the matrix model runtime the experiment names gives (its optional
-    ``pydantic_ai_model``), built from the experiment's ``runtime_options`` and matrix's
-    ``models``, so the judge's calls go where every other model call of ix goes, under the
-    same config, and never to pydantic-evals' default model. A runtime that gives none cannot
-    judge: the plan says so, and nothing is called. A stand-in runtime (``mock``) needs none
-    of this: the sensor judges on pydantic-ai's ``TestModel``."""
+    """Where a pydantic-evals judge evaluator's model comes from: pydantic-ai's ``Model`` over
+    the matrix model runtime the experiment names (``matrix.pydantic_ai_model``), built from
+    the experiment's ``runtime_options``, so the judge's calls go where every other model call
+    of ix goes, under the same config, and never to pydantic-evals' default model; each is a
+    row of the run's session table. Any model runtime serves. A stand-in runtime (``mock``)
+    needs none of this: the sensor judges on pydantic-ai's ``TestModel``."""
 
     def __init__(self, runtimes: _Runtimes) -> None:
         self._runtimes = runtimes
 
     def model(self, runtime: str, model: str | None, config: Mapping[str, Any]) -> Any:
         built = self._runtimes.build(MODEL_RUNTIME, runtime, config)
-        give = getattr(built, "pydantic_ai_model", None)
-        if not callable(give):
-            raise ConfigError(
-                f"model runtime {runtime!r} gives no pydantic-ai Model, which a pydantic-evals "
-                "judge calls its model through",
-                fix="name a model runtime that gives one (hardline; a third party's that "
-                "defines pydantic_ai_model), or score the reply with the judge sensor "
-                f"(kind: judge, model_runtime: {runtime})",
-            )
-        return give(model)
+        url = model_runtime_type_url(runtime)
+        drives = tuple(self._runtimes.drives(MODEL_RUNTIME, runtime))
+        try:
+            return matrix.pydantic_ai_model(built, model, runtime_url=url, drives=drives)
+        except MatrixError as error:
+            raise carried_over(f"model runtime {runtime!r} cannot judge", error) from error
 
 
 @dataclass(frozen=True)
@@ -325,9 +409,26 @@ class _Opened:
     base: str
 
 
+@dataclass(frozen=True)
+class _Ready:
+    """A run as it is about to start: where it is recorded, its prepared design and trials,
+    the adapters that carry it out, and its manifest."""
+
+    records: RunRecords
+    prepared: running.Prepared
+    kit: Kit
+    manifest: RunManifest
+
+
+#: How long ``ix stop`` waits for the run to end before it says the run is still stopping:
+#: a trial in flight has ``GRACE_S`` to end, and most runs release what they started at once.
+STOP_WAIT_S = 30.0
+
+
 class Root:
     """The wired experiment model. Build one over another registry to bind other adapters;
-    :func:`root` is the default, over every installed ``matrix.extensions`` entry point.
+    :func:`root` is the default, over every installed ``matrix.extensions`` extension that
+    declares one of matrix's points or ix's.
     ``settings`` replaces what matrix's config tiers hold. ``run_store`` is the type URL of
     the store runs are kept in, built at matrix's ``store`` point: one whose config takes
     ``root``, the directory a run's directory is made in. ``tracer`` makes the spans of ix's
@@ -348,20 +449,27 @@ class Root:
     ) -> None:
         self._genre_files = genre_files or GenreFiles()
         self._kind_files = kind_files or KindFiles()
-        self._registry = default_registry() if registry is None else registry
+        self._registry = (
+            default_registry(points={*matrix.MATRIX_POINTS, *POINTS.values(), MUTANT_SOURCE})
+            if registry is None
+            else registry
+        )
         self._config = settings
         self._version = version
         self._clock = clock
         self._run_id = run_id
         self._run_store = run_store
         self._tracer: Traced = OtelTracer(version) if tracer is None else tracer
-        self._runtimes = _Runtimes(self._registry, lambda: self._settings().matrix.models)
-        self._supplies = {
-            LAUNCHER: MatrixLauncher(),
-            SESSIONS: Sessions(),
+        self._runtimes = _Runtimes(self._registry, lambda: self._settings().matrix)
+        self._launcher = MatrixLauncher()
+        self._supplies: dict[str, object] = {
+            LAUNCHER: self._launcher,
+            SESSIONS: SessionTable(),
             RUNTIMES: self._runtimes,
             JUDGE_MODELS: _JudgeModels(self._runtimes),
         }
+        self._mutant_sources = _MutantSources(self._registry)
+        self._supplies[MUTANT_SOURCES] = self._mutant_sources
 
     def _settings(self) -> Config[IxSettings]:
         if self._config is None:
@@ -538,38 +646,34 @@ class Root:
         absolute = str(Path(base).resolve())
         return use_cases.reviewed(examined, vocabulary, self._built, base=absolute)
 
-    def _widened(
-        self, opened: _Opened, examined: Examined, trials_in_flight: int, verb: str
-    ) -> tuple[Examined, str]:
-        """``examined`` at ``trials_in_flight`` in place of its own width, judged again, so a
-        width that overlap would confound is refused as it would be written in the file; and
-        the change, worded as the run's ``overridden`` notes it."""
-        checked = use_cases.valid(examined, verb)
-        written = checked.design.trials_in_flight
+    def _widened(self, opened: _Opened, trials_in_flight: int) -> tuple[Examined, str]:
+        """The experiment as written at ``trials_in_flight`` in place of its own width, judged
+        again, so a width that overlap would confound is refused as it would be written in
+        the file; and the change, worded as the run's ``overridden`` notes it."""
+        checked = use_cases.valid(opened.examined, "planned")
         widened = self._examine(
             checked.experiment.model_copy(update={"trials_in_flight": trials_in_flight}),
             opened.vocabulary,
             base=opened.base,
-            source=examined.source,
+            source=opened.examined.source,
         )
-        use_cases.require_valid(widened, f"{verb} with --trials-in-flight {trials_in_flight}")
-        return widened, (
-            f"trials_in_flight: {trials_in_flight} in place of {written} (--trials-in-flight)"
-        )
+        use_cases.require_valid(widened, f"planned with --trials-in-flight {trials_in_flight}")
+        return widened, _width_change(trials_in_flight, checked.design.trials_in_flight)
 
     def _digested(self, examined: Examined, vocabulary: Vocabulary, base: str) -> Examined:
         """``examined`` with what each file and folder its subjects and sensors name holds:
         what registration freezes and a run is held to."""
         if examined.experiment is None:
             return examined
-        named = named_files(examined.experiment, vocabulary.kinds)
+        probes = examined.probes.probes if examined.probes is not None else ()
+        named = named_files(examined.experiment, vocabulary.kinds, probes)
         return replace(examined, contents=contents(named, str(Path(base).resolve())))
 
     def _provenance(self, directory: str) -> Provenance:
-        """Where a run in ``directory`` runs from: the commit, the installed versions of
-        matrix, ix and hardline, every runtime installed at matrix's two runtime points
-        with the distribution that registered it and those it drives, and the rung of each
-        setting the run read."""
+        """Where a run in ``directory`` runs from: the commit, the installed versions of ix,
+        matrix and every distribution an installed runtime drives, every runtime installed at
+        matrix's two runtime points with the distribution that registered it and those it
+        drives, and the rung of each setting the run read."""
         runtimes = tuple(
             RuntimeOrigin(
                 type_url=entry.type_url,
@@ -582,7 +686,12 @@ class Root:
         )
         return checkout(directory).model_copy(
             update={
-                "versions": {name: installed(name) for name in RECORDED_VERSIONS},
+                "versions": {
+                    name: installed(name)
+                    for name in sorted(
+                        {*RECORDED_VERSIONS, *(d for r in runtimes for d in r.drives)}
+                    )
+                },
                 "runtimes": runtimes,
                 "settings": _rungs(self._settings()),
             }
@@ -630,7 +739,7 @@ class Root:
             # thing to say, whatever state its registration is in.
             examined, overridden = opened.examined, tuple[str, ...]()
             if trials_in_flight is not None:
-                examined, change = self._widened(opened, examined, trials_in_flight, "planned")
+                examined, change = self._widened(opened, trials_in_flight)
                 overridden = (change,)
             checked = use_cases.valid(examined, "planned")
             requirements, cautions = self._preflight(
@@ -646,6 +755,7 @@ class Root:
                 self._stored(opened),
                 location=opened.registration.location if opened.registration else "",
                 requirements=requirements,
+                work=self._work(checked.experiment, checked.design, checked.probes),
                 earlier=self._earlier(opened.base, checked.experiment.name),
             )
             made = made.model_copy(
@@ -730,30 +840,74 @@ class Root:
         checked now; and what the runtimes they build warn of (a permissive
         ``permission_mode``), each at ``<entry>.runtime_options.<option>``: an entry's
         runtime options are its runtime's config. Each cell's options are asked as its
-        trials will have them, so a factor on one option hides nothing, and its prompt text as
-        text (``declared``: the kinds, which say which options are). An adapter that cannot
-        be built has nothing to check: that is told as a kind with no adapter."""
+        trials will have them (each default its kind declares filled in), so a factor on one
+        option hides nothing, and its prompt text as text (``declared``: the kinds, which say
+        which options are). An adapter that cannot be built has nothing to check: that is
+        told as a kind with no adapter."""
         adapters: dict[str, object] = {}
         found: list[tuple[str, Requirement]] = []
         cautions: list[Problem] = []
-        for where, kind, written in entries_in_use(experiment, design, probes):
-            if kind not in adapters:
-                adapters[kind] = self._built(kind)
-            adapter = adapters[kind]
+        for entry in entries_in_use(experiment, design, probes):
+            if entry.kind not in adapters:
+                adapters[entry.kind] = self._built(entry.kind)
+            adapter = adapters[entry.kind]
             if not isinstance(adapter, Preflight):
                 continue
-            entry = declared.kinds.get(kind)
-            text = entry.text_options if entry else ()
-            for options in per_cell(written, experiment.factors, text=text):
+            kind = declared.kinds.get(entry.kind)
+            text = kind.text_options if kind else ()
+            for options in per_cell(entry.options, experiment.factors, text=text):
                 with self._runtimes.listening() as heard:
-                    found += [(where, needed) for needed in _required(adapter, kind, options, base)]
+                    found += [
+                        (entry.where, needed)
+                        for needed in _required(adapter, entry.kind, options, base)
+                    ]
                 for caution in converted(heard):
                     moved = caution.model_copy(
-                        update={"path": f"{where}.runtime_options.{caution.path}"}
+                        update={"path": f"{entry.where}.runtime_options.{caution.path}"}
                     )
                     if moved not in cautions:
                         cautions.append(moved)
         return required(found), tuple(cautions)
+
+    def _work(self, experiment: Experiment, design: Design, probes: ProbeSet) -> Work:
+        """The model calls a run would start, from every adapter in use that is a
+        :class:`~ix.domain.ports.ModelCalls`, asked each cell's options as its trials will
+        have them. An entry whose adapter may call a model (it needs matrix's runtimes or a
+        judge's models) and is not one, or that raises counting, is not counted, and the work
+        says so: counting runs an extension's own code."""
+        counted: dict[str, tuple[str, dict[str, int]]] = {}
+        uncounted: list[str] = []
+        for entry in entries_in_use(experiment, design, probes):
+            adapter = self._built(entry.kind)
+            if adapter is None:
+                continue  # a kind with no adapter here: the plan says so
+            if not isinstance(adapter, ModelCalls):
+                if self._needs(entry.kind) & {RUNTIMES, JUDGE_MODELS}:
+                    uncounted.append(f"{entry.where} (it does not say how many)")
+                continue
+            # Only a subject's and a probe's options are filled with a cell's levels.
+            filled = schema.family_of(entry.kind) in ("subject", "probe")
+            try:
+                by_cell = {
+                    cell_key(cell): adapter.model_calls(
+                        fill(entry.options, cell, escaped=True) if filled else entry.options
+                    )
+                    for cell in cells(experiment.factors)
+                }
+            except Exception as error:
+                uncounted.append(f"{entry.where} (its adapter raised {type(error).__name__})")
+                continue
+            counted[entry.key] = (entry.where, by_cell)
+        return work(schedule(experiment, design, probes), design, counted, uncounted)
+
+    def _needs(self, kind: str) -> frozenset[str]:
+        """What the adapter registered for ``kind`` (a type URL) is built with; nothing for a
+        kind nothing registered."""
+        point = POINTS.get(schema.family_of(kind) or "")
+        try:
+            return frozenset(self._registry.entry(point, kind).needs) if point else frozenset()
+        except MatrixError:
+            return frozenset()
 
     def _store(self, directory: str) -> ConstructStore:
         """The run store, built at matrix's ``store`` point to keep runs under
@@ -788,6 +942,7 @@ class Root:
         trials_in_flight: int | None = None,
         base: PathLike | None = None,
         registration: PathLike | None = None,
+        run_id: str | None = None,
         on_event: Callable[[str, Mapping[str, Any]], None] | None = None,
     ) -> Report:
         """Run the experiment and report what it found.
@@ -795,49 +950,137 @@ class Root:
         Refuses before anything starts when the experiment is invalid, names a kind with no
         adapter, or is unregistered and the run is neither ``exploratory`` nor a
         ``dry_run``; and ``repeats`` or ``trials_in_flight`` on a run that is neither
-        (:class:`UsageError`), since a gated run is held to the design its registration
-        froze. ``trials_in_flight`` is refused too where the experiment's kinds, metrics or
-        genre refuse overlap (its validation problem). Once it has started, whatever happens
-        is in the record: a run that was stopped or that failed still returns its report,
-        which says so.
+        (:class:`UsageError`, from :func:`~ix.application.running.prepare`, which holds that
+        rule), since a gated run is held to the design its registration froze.
+        ``trials_in_flight`` is refused too where the experiment's kinds, metrics or genre
+        refuse overlap (its validation problem); ``run_id`` where a run of that id is kept
+        already. Once it has started, whatever happens is in the record: a run that was
+        stopped or that failed still returns its report, which says so.
         """
-        if not (exploratory or dry_run):
-            for flag, key, value in (
-                ("--repeats", "repeats", repeats),
-                ("--trials-in-flight", "trials_in_flight", trials_in_flight),
-            ):
-                if value is not None:
-                    raise UsageError(
-                        f"{flag} {value} changes the design, and a run that gives a verdict "
-                        "is held to the design its registration froze",
-                        fix=f"pilot with --exploratory {flag} N (or --dry-run {flag} N); to "
-                        f"change the {key} a verdict rests on, edit the file and "
-                        '`ix register <path> --amend --reason "<why>"`',
-                        details={"path": flag, "value": value},
-                    )
+        ready = self._ready(
+            source,
+            exploratory=exploratory,
+            dry_run=dry_run,
+            repeats=repeats,
+            trials_in_flight=trials_in_flight,
+            base=base,
+            registration=registration,
+            run_id=run_id,
+        )
+        observers = self._settings().matrix.observers
+        if _reads_spans(ready.prepared.design, ready.kit):
+            observers = _with_otel(observers)
+            keep_spans()
+        # A stop request (Ctrl-C, SIGTERM) arrives here as the cancellation it is, after
+        # matrix stopped the trial in flight, released what was started and finished the
+        # record. The report then says how far the run got.
+        with suppress(KeyboardInterrupt, asyncio.CancelledError):
+            asyncio.run(
+                execute(
+                    store=ready.records.store,
+                    registry=self._registry,
+                    config=MatrixConfig.model_validate({**COMPOSITION, "observers": observers}),
+                    needs={NEED: ready.kit},
+                    manifest=ready.manifest,
+                    trials=ready.prepared.trials,
+                    on_event=on_event,
+                    tracer=self._tracer,
+                )
+            )
+        return self._report(ready.records.record(ready.manifest.run))
+
+    def start(
+        self,
+        path: PathLike,
+        *,
+        exploratory: bool = False,
+        dry_run: bool = False,
+        repeats: int | None = None,
+        trials_in_flight: int | None = None,
+        run_id: str | None = None,
+    ) -> Status:
+        """Start the run of the experiment at ``path`` as a process of its own and return
+        its status once it has opened its record, without waiting for it to end. It is
+        refused before anything starts exactly as :meth:`run` refuses it, and the child is
+        an ``ix run`` of the same experiment under the same id, so it records, stops and
+        reports as one in the foreground does."""
+        if os.fspath(path) == "-":
+            raise UsageError(
+                "a detached run cannot read its experiment from standard input",
+                fix="write the experiment to a file and start that",
+                details={"path": "-"},
+            )
+        ready = self._ready(
+            path,
+            exploratory=exploratory,
+            dry_run=dry_run,
+            repeats=repeats,
+            trials_in_flight=trials_in_flight,
+            run_id=run_id,
+        )
+        run = ready.manifest.run
+        flags = [
+            *(["--exploratory"] if exploratory else []),
+            *(["--dry-run"] if dry_run else []),
+            *(["--repeats", str(repeats)] if repeats is not None else []),
+            *(["--trials-in-flight", str(trials_in_flight)] if trials_in_flight else []),
+        ]
+        argv = [sys.executable, "-m", "ix", "run", str(Path(os.fspath(path)).resolve())]
+        detached.start(
+            [*argv, *flags, "--run-id", run, "--json"],
+            log=ready.records.log(run),
+            opened=lambda: ready.records.recorded(run),
+        )
+        return self._status(ready.records, run)
+
+    def _ready(
+        self,
+        source: Source,
+        *,
+        exploratory: bool,
+        dry_run: bool,
+        repeats: int | None,
+        trials_in_flight: int | None,
+        base: PathLike | None = None,
+        registration: PathLike | None = None,
+        run_id: str | None = None,
+    ) -> _Ready:
+        """Everything a run checks and computes before it starts: every refusal it makes,
+        the design it carries out, the adapters it carries it out with, and its manifest."""
         _require_width(trials_in_flight)
         opened = self._open(source, base=base, registration=registration)
         use_cases.require_valid(opened.examined, "run")
         directory = str(Path(opened.base).resolve())
         records = self._records(directory)
-        examined, stored, notes = opened.examined, self._stored(opened), None
-        overridden: tuple[str, ...] = ()
-        if repeats is not None:
-            checked = use_cases.valid(examined, "run")
-            written = checked.design.repeats
-            examined = self._examine(
-                checked.experiment.model_copy(update={"repeats": repeats}),
-                opened.vocabulary,
-                base=opened.base,
-                source=examined.source,
+        if run_id is not None and records.taken(run_id):
+            raise UsageError(
+                f"a run {run_id!r} is kept already, in {records.root}; a run's record is never "
+                "reopened",
+                fix="give another --run-id, or leave it out for a new one",
+                details={"path": records.root, "value": run_id},
             )
-            use_cases.require_valid(examined, f"run with --repeats {repeats}")
-            overridden = (f"repeats: {repeats} in place of {written} (--repeats: a pilot)",)
+        stored, notes = self._stored(opened), None
+        # The changes are computed here and judged by `prepare`, which holds the rule that a
+        # run giving a verdict refuses them.
+        written = use_cases.valid(opened.examined, "run")
+        changed, overridden = written.experiment, list[running.Override]()
+        if repeats is not None:
+            changed = changed.model_copy(update={"repeats": repeats})
+            note = f"repeats: {repeats} in place of {written.design.repeats} (--repeats: a pilot)"
+            overridden.append(running.Override("--repeats", "repeats", repeats, note))
         if trials_in_flight is not None:
-            examined, change = self._widened(opened, examined, trials_in_flight, "run")
-            overridden += (change,)
+            changed = changed.model_copy(update={"trials_in_flight": trials_in_flight})
+            note = _width_change(trials_in_flight, written.design.trials_in_flight)
+            overridden.append(
+                running.Override("--trials-in-flight", "trials_in_flight", trials_in_flight, note)
+            )
+        examined = opened.examined
+        if overridden:
+            examined = self._examine(
+                changed, opened.vocabulary, base=opened.base, source=examined.source
+            )
         if dry_run:
-            checked = use_cases.valid(examined, "dry run")
+            checked = use_cases.valid(examined, "dry run" + running.given(overridden))
             stood, notes = running.stand_in(checked.experiment, checked.probes, self._built)
             examined = self._examine(
                 stood, opened.vocabulary, base=opened.base, source=examined.source
@@ -847,19 +1090,15 @@ class Root:
             self._digested(examined, opened.vocabulary, directory),
             opened.vocabulary,
             stored,
-            run=self._run_id(examined.name),
+            run=run_id or self._run_id(examined.name),
             base=directory,
             now=self._clock(),
             version=self._version,
             exploratory=exploratory,
             dry_run=notes,
-            overridden=overridden,
+            overridden=tuple(overridden),
         )
         kit = self._kit(prepared.kinds, opened.vocabulary.kinds)
-        observers = self._settings().matrix.observers
-        if _reads_spans(prepared.design, kit):
-            observers = _with_otel(observers)
-            keep_spans()
         requirements, cautions = self._preflight(
             prepared.experiment,
             prepared.design,
@@ -872,23 +1111,7 @@ class Root:
         manifest = prepared.manifest.model_copy(
             update={"warnings": warned, "provenance": self._provenance(directory)}
         )
-        # A stop request (Ctrl-C, SIGTERM) arrives here as the cancellation it is, after
-        # matrix stopped the trial in flight, released what was started and finished the
-        # record. The report then says how far the run got.
-        with suppress(KeyboardInterrupt, asyncio.CancelledError):
-            asyncio.run(
-                execute(
-                    store=records.store,
-                    registry=self._registry,
-                    config=MatrixConfig.model_validate({**COMPOSITION, "observers": observers}),
-                    needs={NEED: kit},
-                    manifest=manifest,
-                    trials=prepared.trials,
-                    on_event=on_event,
-                    tracer=self._tracer,
-                )
-            )
-        return self._report(records.record(manifest.run))
+        return _Ready(records=records, prepared=prepared, kit=kit, manifest=manifest)
 
     def _report(self, record: RunRecord) -> Report:
         readings, unread = self._derived_readings(record)
@@ -899,7 +1122,7 @@ class Root:
         process, said in words: matrix's runtimes or a judge's models (it may call a model),
         or a launcher (it starts processes: the experiment's graders, the agent's code).
         Empty when none is: those are the sensors a report may run."""
-        needs = {sensor: self._registry.entry(POINTS["sensor"], sensor).needs for sensor in sensors}
+        needs = {sensor: self._needs(sensor) for sensor in sensors}
 
         def named(given: set[str]) -> str:
             return ", ".join(schema.short(s) for s in sorted(needs) if needs[s] & given)
@@ -956,16 +1179,220 @@ class Root:
     def report(self, target: PathLike) -> Report:
         """The report of a run: ``target`` is a run's directory, or an experiment (its file
         or directory), meaning its latest run."""
+        records, run, record = self._run_of(target)
+        return self._report(record or records.record(run))
+
+    def status(self, target: PathLike) -> Status:
+        """Where a run stands, read from its record alone: ``target`` is as :meth:`report`
+        takes it."""
+        records, run, _ = self._run_of(target)
+        return self._status(records, run)
+
+    def events(self, target: PathLike, *, follow: bool = False) -> Iterator[dict[str, Any]]:
+        """A run's events, oldest first; with ``follow``, each as it is written, until the
+        run ends however it ends. ``target`` is as :meth:`report` takes it."""
+        records, run, _ = self._run_of(target)
+        return records.events(run, follow=follow)
+
+    def stop(self, target: PathLike) -> Status:
+        """Ask a running run to stop, as Ctrl-C does, and return its status once it ended,
+        or after :data:`STOP_WAIT_S` while it is still releasing what it started. A run that
+        has ended is left as it is."""
+        records, run, _ = self._run_of(target)
+        records.stop(run, wait_s=STOP_WAIT_S)
+        return self._status(records, run)
+
+    def _run_of(self, target: PathLike) -> tuple[RunRecords, str, RunRecord | None]:
+        """The runs ``target`` names a run of, that run's id, and its record where finding
+        the run read it (an experiment's latest run), so it is read once: ``target`` is a
+        run's directory, or an experiment, meaning its latest run."""
         records, run, experiment = self._locate(target)
         if run is not None:
-            return self._report(records.record(run))
+            return records, run, None
         for record in records.records(latest_first=True):
             if not experiment or record.manifest.experiment == experiment:
-                return self._report(record)
+                return records, record.run, record
         raise NotFoundError(
             f"{os.fspath(target)} has no runs in {records.root}",
             fix=f"ix run {os.fspath(target)}",
             details={"path": os.fspath(target)},
+        )
+
+    def _status(self, records: RunRecords, run: str) -> Status:
+        # The writer first: reading it finishes the record of a run whose writer is gone, so
+        # the record read after it says how that run ended.
+        host, pid = records.writer(run)
+        record = records.record(run)
+        listed = RunRecords.summary(record)
+        log = records.log(run)
+        return Status(
+            run=run,
+            location=record.location,
+            experiment=listed.experiment,
+            status=record.status,
+            mode=listed.mode,
+            started_at=listed.started_at,
+            ended_at=record.ended_at,
+            planned=listed.planned,
+            carried_out=listed.carried_out,
+            pid=pid,
+            host=host,
+            events=f"{record.location}/{EVENT_LOG}",
+            log=str(log) if log.is_file() else "",
+        )
+
+    # --- mutation (provisional: ruling R2) ---
+
+    def _test_suites(self, source: PathLike) -> tuple[str, list[mutant_sample.Sampled]]:
+        """The experiment's directory, and each of its ``test-suite`` subjects with its options
+        as carried out. Raises :class:`InvalidExperimentError` for a subject written wrong;
+        no mutants yet is not wrong here."""
+        opened = self._open(source)
+        experiment = opened.examined.experiment
+        if experiment is None:
+            raise InvalidExperimentError(
+                f"{opened.examined.source} is not an experiment file",
+                opened.examined.problems,
+                fix=f"ix validate {opened.examined.source}",
+                complete=opened.examined.complete,
+            )
+        subjects = []
+        for name, subject in experiment.subjects.items():
+            kind = opened.vocabulary.kinds.kinds.get(schema.url("subject", subject.kind))
+            if kind is None or kind.name != TEST_SUITE:
+                continue
+            where = f"subjects.{name}"
+            wrong = [
+                problem
+                for problem in opened.examined.problems
+                if (problem.path == where or problem.path.startswith(where + "."))
+                and problem.kind != "probes_empty"
+            ]
+            if wrong:
+                raise InvalidExperimentError(
+                    f"{where} is not a suite ix can sample for ({len(wrong)} problem(s))",
+                    tuple(wrong),
+                    fix=f"ix validate {opened.examined.source}",
+                )
+            options = merged(kind.defaults(subject.options), subject.options)
+            try:
+                suite = suite_of(options, opened.base)
+            except ValueError as error:
+                raise ConfigError(
+                    f"{where}: {error}", fix="correct the subject's options",
+                    details={"path": where},
+                ) from error  # fmt: skip
+            subjects.append(mutant_sample.Sampled(name=name, suite=suite))
+        return opened.base, subjects
+
+    def mutants_sample(
+        self,
+        source: PathLike,
+        *,
+        n: int | None = None,
+        seed: int | None = None,
+        exclude: PathLike | None = None,
+        mutant_source: str | None = None,
+        timeout_s: float | None = None,
+    ) -> dict[str, Any]:
+        """Draw ``n`` mutants of the scope of the experiment's ``test-suite`` subjects and make
+        each subject's selection map: the ``ix.v1.mutation-sample`` document. Raises
+        :class:`ConfigError` when it cannot, before anything is written."""
+        base, subjects = self._test_suites(source)
+        chosen = self._chosen_source(mutant_source)
+        try:
+            return asyncio.run(
+                mutant_sample.sample(
+                    self._launcher,
+                    subjects,
+                    experiment=Path(base).resolve(),
+                    source=self._mutant_sources.source(chosen),
+                    source_name=chosen,
+                    source_drives=self._mutant_sources.drives(chosen),
+                    settings=mutant_sample.Settings.of(n=n, seed=seed, timeout_s=timeout_s),
+                    exclude=None if exclude is None else Path(os.fspath(exclude)).resolve(),
+                )
+            )
+        except mutant_sample.SampleRefusedError as refused:
+            raise ConfigError(str(refused), fix=refused.fix) from refused
+
+    def mutants_map(self, source: PathLike, *, timeout_s: float | None = None) -> dict[str, Any]:
+        """Make the selection map of each of the experiment's ``test-suite`` subjects and
+        nothing else, for mutant probe files another tool wrote: the ``ix.v1.mutation-maps``
+        document. Needs no mutant source. Raises :class:`ConfigError` when it cannot."""
+        _, subjects = self._test_suites(source)
+        settings = mutant_sample.Settings.of(n=None, seed=None, timeout_s=timeout_s)
+        try:
+            return asyncio.run(
+                mutant_sample.map_suites(self._launcher, subjects, settings=settings)
+            )
+        except mutant_sample.SampleRefusedError as refused:
+            raise ConfigError(str(refused), fix=refused.fix) from refused
+
+    def _chosen_source(self, named: str | None) -> str:
+        """The mutant source a sample is drawn with: the one named, or the one installed."""
+        installed_sources = self._mutant_sources.names()
+        if named is not None:
+            return named
+        if not installed_sources:
+            raise ConfigError(
+                "no mutant source is installed, so there is nothing to draw mutants from",
+                fix=f"{SOURCE_INSTALL}. Or write the probe files of kind mutant with another "
+                "tool and run `ix mutants map`, which needs no source",
+                details={"path": "--source"},
+            )
+        if len(installed_sources) > 1:
+            raise ConfigError(
+                f"{len(installed_sources)} mutant sources are installed: "
+                f"{', '.join(installed_sources)}",
+                fix="name one with --source",
+                details={"path": "--source"},
+            )
+        return installed_sources[0]
+
+    def mutants_read(self, target: PathLike, *, every: bool = False) -> dict[str, Any]:
+        """The survivors of a mutation run and its pruning candidates: the
+        ``ix.v1.mutants-reading`` document. ``target`` is as :meth:`report` takes it."""
+        records, run, found = self._run_of(target)
+        record = found or records.record(run)
+        manifest = record.manifest
+        experiment = Experiment.model_validate(manifest.declared)
+        probes = {
+            str(probe.get("id", "")): dict(probe.get("options") or {}) for probe in manifest.probes
+        }
+        of_probe = {trial.seq: trial.probe for trial in record.trials}
+        trials = [
+            mutant_reading.TrialRead(
+                probe=of_probe.get(interaction.seq, interaction.probe),
+                subject=interaction.subject,
+                role=interaction.role,
+                outcome=None if interaction.failure else interaction.observations.get("outcome"),
+                reason="" if interaction.failure is None else interaction.failure.reason,
+            )
+            for interaction in record.interactions
+        ]
+        maps: dict[str, dict[str, Any] | None] = {}
+        deselected: dict[str, tuple[str, ...]] = {}
+        pruned = None
+        for assigned in manifest.design.get("roles", ()):
+            name, role = str(assigned.get("subject")), str(assigned.get("role"))
+            subject = experiment.subjects.get(name)
+            if subject is None or schema.url("subject", subject.kind) != TEST_SUITE:
+                continue
+            options = subject.options
+            deselected[name] = tuple(str(node) for node in options.get("deselect") or ())
+            maps[name] = _map_of(Path(manifest.base, str(options.get("map", ""))))
+            if role in ("subject", "control") and pruned is None:
+                pruned = name
+        return mutant_reading.read(
+            trials,
+            probes,
+            maps,
+            deselected,
+            run=record.run,
+            experiment=manifest.experiment,
+            pruned=pruned,
+            every=every,
         )
 
     def runs(self, target: PathLike | None = None) -> Runs:
@@ -999,6 +1426,19 @@ class Root:
                 yield RunRecords.summary(record)  # another ix's: its id, state and counts
 
 
+def _map_of(path: Path) -> dict[str, Any] | None:
+    """A mutation run's selection map, or None when it is no longer there to read."""
+    try:
+        return read_map(path)
+    except MapUnreadableError:
+        return None
+
+
+def _width_change(given: int, written: int) -> str:
+    """A width given in place of the experiment's, as a plan or a run notes it."""
+    return f"trials_in_flight: {given} in place of {written} (--trials-in-flight)"
+
+
 def _required(
     adapter: Preflight, kind: str, options: Mapping[str, Any], base: str
 ) -> Sequence[Requirement]:
@@ -1024,7 +1464,7 @@ def _reads_spans(design: Design, kit: Kit) -> bool:
     :class:`~ix.domain.ports.SpanReader` and says so of its options."""
     return any(
         isinstance(sensor := kit.sensors.get(selected.kind), SpanReader)
-        and sensor.reads_spans(selected.options)
+        and sensor.reads_spans(design.options(sensor_entry(selected.kind), selected.options))
         for selected in design.sensors
     )
 

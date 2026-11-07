@@ -1,0 +1,80 @@
+[project]
+name = "ix-cosmic-ray"
+version = "0.1.0"
+description = "cosmic-ray's mutation operators as an ix mutant source: mutants for ix mutants sample, made with cosmic-ray as a generator library only"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+# A copy of the repository's LICENSE: a package built from this directory alone carries it.
+license-files = ["LICENSE"]
+authors = [
+    { name = "yzavyas", email = "yza.vyas@gmail.com" }
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    # This repository's ix, whose extension contract (ix.extension) the source is written
+    # against, bounded to the minor it is built against: before 1.0 a minor may break it.
+    "ix>=0.9,<0.10",
+    # The generator: its operators, its AST walk and mutate_code. Pinned to the minor whose
+    # API was checked (operator_names, get_operator, Operator.arguments and
+    # mutation_positions, ast_nodes, get_ast, mutate_code); none of it is documented as stable.
+    # MIT. It brings aiohttp, sqlalchemy, gitpython, stevedore and more, which is why it is a
+    # package of its own and not ix's dependency (owner ruling HO1 (c')).
+    "cosmic-ray==8.7.*",
+]
+
+[project.urls]
+Repository = "https://github.com/mox-labs/gnx"
+Documentation = "https://mox-labs.github.io/gnx"
+Issues = "https://github.com/mox-labs/gnx/issues"
+Changelog = "https://github.com/mox-labs/gnx/blob/main/components/capabilities/ix-cosmic-ray/CHANGELOG.md"
+
+# Registered as every matrix extension is: one line per point it registers at, so a session
+# that reads no mutant source loads none of it.
+[project.entry-points."matrix.extensions"]
+"ix.mutant-source" = "ix_cosmic_ray.source:register"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ix_cosmic_ray"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
+
+[tool.hatch.build]
+include = [
+    "src/ix_cosmic_ray/**/*.py",
+    "src/ix_cosmic_ray/py.typed",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TC"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+# cosmic-ray ships no type information.
+[[tool.mypy.overrides]]
+module = ["cosmic_ray.*"]
+ignore_missing_imports = true

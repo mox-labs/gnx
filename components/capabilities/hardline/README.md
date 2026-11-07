@@ -4,7 +4,7 @@ One port for every model family. Messages in; text or a validated object out; ta
 the family that answered, what it cost, and how long it took.
 
 ```bash
-uvx --from "git+https://github.com/mox-labs/gnx@hardline-v0.2.0#subdirectory=components/capabilities/hardline" hardline models
+uvx --from "git+https://github.com/mox-labs/gnx@hardline-v0.3.1#subdirectory=components/capabilities/hardline" hardline models
 ```
 
 hardline depends on no provider SDK: it speaks both wire protocols over HTTP itself, on httpx2.
@@ -56,13 +56,14 @@ conventions name providers: `openai`, `ollama`; what telemetry calls it, the bac
 unset) · `base_url` · `proxy` (an http(s) proxy, no
 credentials in it) · `api_key` (`env:`/`file:` only) · `local` · `structured` (`prompt` |
 `json_object` | `json_schema`) · `max_tokens` · `temperature` · `timeout_s` · `retries` (transient failures only, default 2, full-jitter backoff, honours a
-provider's Retry-After) · `fallbacks` (distinct registry names tried once retries are spent) ·
+provider's Retry-After) · `schema_retries` (the repairs `extract` makes on the row, default 1) ·
+`fallbacks` (distinct registry names tried once retries are spent) ·
 `limits` (bounds on a call, below) · `options` (the backend's own; see
 [Built-in backends](#built-in-backends)).
 
 **A call has its own bound.** One `complete` can make the sum over its chain of (`retries` + 1)
-backend calls, and one `extract` that much plus, for each schema repair, (`retries` + 1) of the
-chain's most-retried row, each paid for in tokens; `timeout_s` bounds each phase of one
+backend calls, and one `extract` that much plus, for each of the row's `schema_retries` repairs,
+(`retries` + 1) of the chain's most-retried row, each paid for in tokens; `timeout_s` bounds each phase of one
 (connecting, sending, each read), not the call as a whole. `limits` bounds the whole call, every
 retry, fallback and repair included, and is unset by default (owner ruling 2026-10-22):
 `hardline check` shows each row's worst case, its limits applied:
@@ -121,7 +122,8 @@ s.completion  # the Completion that produced it, attempts included
 
 `extract` states the schema in an instruction (and hands it to the provider when the row's
 `structured` mode allows), validates the reply, and on failure shows the model its own reply
-and the validation error once before raising `SchemaError`; an empty reply, which has nothing to
+and the validation error, as many times as the row's `schema_retries` (once by default), before
+raising `SchemaError`; the row asked for sets the count, whichever row of its chain answers; an empty reply, which has nothing to
 show, is followed by a turn saying it was empty instead. The repair is sent to the row that
 answered, never back to a row before it in the fallback chain that has just failed. Each JSON value in the reply is
 tried in turn, so bracketed prose before the answer ("see [1]") does not hide it. A provider's
@@ -142,19 +144,34 @@ if not c.answered:  # the model ended its turn, did not refuse, and said somethi
 
 A reply that asks for tools is a whole answer when the call offered them, and only then (see
 [Tools](#tools)). `finish_reason` is one vocabulary across providers; `native_finish_reason`
-keeps the provider's own value. Beside the text, every `Completion` carries the record of the call, which only
-hardline knows:
+keeps the provider's own value.
+
+A `Completion` is two documents. The reply, `hardline.v2.completion`, says what any model
+runtime can say of a call:
 
 | field | what it holds |
 |---|---|
-| `name`, `family`, `model`, `backend`, `local` | the row that **answered**; `fallback_from` names the one asked for, when a fallback answered |
-| `params` | what that row was sent: `max_tokens`, `temperature`, the structured mode (`None` for `complete`), the names of the `tools` offered |
-| `tool_calls` | the calls the model asked for, in order: each `id`, `name` and `arguments` (the JSON text the model wrote). Empty when it asked for none |
+| `name`, `family`, `model`, `provider`, `local` | the row that **answered**, and who served it: its `provider`, else its backend's name |
+| `text`, `tool_calls` | what the model said, and the calls it asked for, in order: each `id`, `name` and `arguments` (the JSON text the model wrote). Empty when it asked for none |
+| `finish_reason`, `native_finish_reason`, `refusal`, `answered` | why the reply ended, in hardline's vocabulary and the provider's; what it said when it refused; whether it is a whole answer, derived from these |
+| `usage` | the sum of the usage in `record.attempt_log`; a failed call reports none, so it adds nothing. `input_tokens` is every input token, the cache's included, on every backend; `cache_read_tokens` and `cache_write_tokens` say how many of them the provider's cache served or took |
+| `request_id`, `latency_ms` | the provider's id for the answer; the wall time of the whole call |
+
+Its `record`, `hardline.v1.call`, is how hardline made the call, which only hardline knows:
+
+| field | what it holds |
+|---|---|
+| `backend` | the entry-point name of the backend that answered |
+| `fallback_from` | the row asked for, when a fallback answered |
+| `attempts`, `retries` | schema attempts; transient retries |
+| `params` | what the answering row was sent: `max_tokens`, `temperature` (`provider_default` when none was sent), the structured mode (`None` for `complete`), the names of the `tools` offered |
 | `attempt_log` | every backend call, in order: the row asked, why it failed (`None` for the answer), the usage it reported, its latency |
-| `usage` | the sum of the usage in `attempt_log`; a failed call reports none, so it adds nothing. `input_tokens` is every input token, the cache's included, on every backend; `cache_read_tokens` and `cache_write_tokens` say how many of them the provider's cache served or took |
 | `turns_digest` | the digest of the turns the answering call was sent, `extract`'s schema instruction and repair turns included |
-| `row` | the answering row's digest, and for each field a configuration set, the tier that set it (`cwd ./hardline.yaml`, `matrix.models`, `default of backend openai-compat`) |
-| `request_id`, `latency_ms`, `attempts`, `retries` | the provider's id for the answer; wall time; schema attempts; transient retries |
+| `row` | the answering row's digest, and for every field of the row, where its value came from: the tier that set it (`cwd ./hardline.yaml`, or a host's label for its section, as `matrix-hardline models`), `default of backend openai-compat`, or `default` |
+
+The two grow apart. The reply refuses a key it does not know, so a reader of stored replies
+upgrades hardline before any writer does. The record ignores one, so a record a newer 0.x wrote,
+with keys it added, still reads; each refuses a `type_url` of another major.
 
 A digest is `sha256:` and the hex SHA-256 of canonical JSON (UTF-8, no whitespace, keys
 sorted): of `[[role, content], ...]` for the turns, of the row's `ModelSpec` for the row. A turn
@@ -239,7 +256,7 @@ The events are `AttemptFailed` (the row asked, why it failed, and `retry_in_s`, 
 it is asked again, or `None`), `FellBack` (`name` → `to`, and the reason) and `Answered` (the
 `Completion`). An observer ignores a kind it does not know, is called on the call's own task
 and must not block; one that raises is logged and ignored. With none, nothing is told: the
-`Completion` still carries `fallback_from` and the `attempt_log`. `build_runtime` passes one
+`Completion`'s record still carries `fallback_from` and the `attempt_log`. `build_runtime` passes one
 that counts retries and fallbacks in OpenTelemetry, below, unless it is handed another.
 
 ### Telemetry
@@ -289,14 +306,15 @@ registry row; anything else is a usage error before a call is spent. The library
 
 Every command that prints a result takes `--json`. The keys below are stable; new keys may be
 added, none removed or renamed without a version bump. A program that validates `complete
---json` output, or stored `Completion` JSON, back into a `Completion` refuses a key it does not
-know, so it upgrades hardline before the program that writes the JSON does.
+--json` output, or stored `Completion` JSON, back into a `Completion` refuses a top-level key it
+does not know, so it upgrades hardline before the program that writes the JSON does; a key added
+to `record` it ignores.
 
 | command | stdout JSON |
 |---|---|
 | `models --json` | `{"default": str\|null, "models": [ModelSpec without api_key, options]}`, each row's `base_url` filled |
-| `check --json` | `{"ok": bool, "tiers": [{"source": str, "present": bool}], "models": [{"name", "backend", "family", "ok": bool, "problem": str\|null, "worst_case": {"complete_calls": int, "extract_calls": int, "seconds": float\|null, "tokens": int\|null}}], "warnings": [problem]}`; `null` is no limit |
-| `complete --json` | the `Completion` without `raw`: `type_url, name, text, family, model, backend, local, usage, request_id, latency_ms, attempts, retries, fallback_from, finish_reason, native_finish_reason, refusal, tool_calls, params, attempt_log, turns_digest, row` |
+| `check --json` | `{"ok": bool, "tiers": [{"source": str, "present": bool}], "models": [{"name", "backend", "family", "ok": bool, "problem": str\|null, "worst_case": {"complete_calls": int, "extract_calls": int, "seconds": float\|null, "tokens": int\|null}, "rungs": {field: source}}], "warnings": [problem]}`; `null` is no limit; `rungs` says where each value `models --json` shows came from, `default` where no tier set it |
+| `complete --json` | the `Completion`: `type_url` (`hardline.v2.completion`), `name, family, model, provider, local, text, tool_calls, finish_reason, native_finish_reason, refusal, usage, request_id, latency_ms, record, answered`; `record` is `{type_url` (`hardline.v1.call`)`, backend, attempts, retries, fallback_from, params, attempt_log, turns_digest, row}` |
 
 `complete --json` carries no hardline version: it is a `Completion`, and validates back into
 one, which a key of the CLI's own would break. A program that ledgers the version reads
@@ -353,19 +371,26 @@ A backend is two members — a `structured_modes` frozenset that holds `prompt`,
 the registry row as a backend sees it: `name`, `backend`, `model`, `provider`, `base_url`,
 `proxy`, `timeout_s`, `structured`, `options`, and `has_key` (whether the row names a key). The
 runtime's retries, fallbacks and limits, the row's family and where its key lives are not in
-it; the key, resolved, is `api_key`. `ModelSpec.endpoint()` makes one. Four more members are
-optional:
+it; the key, resolved, is `api_key`. `ModelSpec.endpoint()` makes one. What a backend can do
+beyond that is a declared protocol of its own, each exported and `runtime_checkable`. hardline
+reads each with `isinstance`, once, from the backend as it was loaded, before it wraps it for
+telemetry, and never reads a member by name:
 
-- `check(endpoint) -> Sequence[str]`: what is wrong with a row for this backend, each problem
-  starting with its key (`options.region: ...`). The runtime calls it for every row when it is
-  built, so a row that would fail its first call fails composition and `hardline check`.
-- `aclose()`: closes the connections opened in the running loop. A runtime's `aclose()` calls it.
-- `default_base_url`: where a row that names none sends. The composition root writes it into the
-  row.
-- `supports_tools = True`: the backend sends a request's `tools` and its turns' tool parts on its
-  wire, and returns the calls asked for as `RawCompletion.tool_calls`. Without it, a call that
-  offers tools or sends tool turns to its rows is refused before anything is sent, so a backend
-  written before tool calling never drops them silently.
+- `CheckedBackend`, `check(endpoint) -> Sequence[str]`: what is wrong with a row for this
+  backend, each problem starting with its key (`options.region: ...`). The runtime calls it for
+  every row when it is built, so a row that would fail its first call fails composition and
+  `hardline check`.
+- `ClosableBackend`, `aclose()`: closes the connections opened in the running loop. A runtime's
+  `aclose()` calls it.
+- `LocatedBackend`, `default_base_url`: where a row that names none sends, an http(s) URL. The
+  composition root writes it into the row.
+- `ToolCallingBackend`, `supports_tools = True`: the backend sends a request's `tools` and its
+  turns' tool parts on its wire, and returns the calls asked for as `RawCompletion.tool_calls`.
+  Without it, a call that offers tools or sends tool turns to its rows is refused before
+  anything is sent, so a backend written before tool calling never drops them silently.
+
+A class attribute satisfies each (`supports_tools = True`, `default_base_url = "https://..."`):
+the backend need not import hardline's classes.
 
 `RawCompletion`'s `finish_reason`, `native_finish_reason` and `refusal` default to `None`, so a
 backend that does not set them still satisfies the port's types; its replies are then never
@@ -390,8 +415,9 @@ async def test_answers() -> None:
 ```
 
 `backend_problems` reads the members: `structured_modes` a frozenset of known modes with
-`prompt`, `complete` async, and `check`, `aclose` and `default_base_url` well formed when
-present (`supports_tools` a bool). `answer_problems` makes one call for a row the backend can serve, and requires its
+`prompt`, `complete` async, and each optional protocol a backend declares well formed, by the
+same `isinstance` the runtime uses (`check` callable, `aclose` async, `supports_tools` a bool,
+`default_base_url` an http(s) URL). `answer_problems` makes one call for a row the backend can serve, and requires its
 `check` to accept the row and `complete` to return a `RawCompletion` with a `finish_reason`.
 Each returns what is wrong, empty when nothing is.
 
@@ -422,6 +448,8 @@ supported) mean the row points somewhere that cannot serve it, and fail as `bad_
 
 ## Type URLs
 
-`hardline.v1/completion`, the `Completion` artifact, in the matrix convention
-`<namespace>.v<version>/<resource>`. A backend has no type URL: a registry row names it by its
-entry-point name.
+Each spelled `<package>.v<major>.<resource>`, as matrix, ix and recon spell theirs, and each
+major moving on its own: `hardline.v2.completion`, the reply (`Completion`); `hardline.v1.call`,
+the record of how hardline made the call (`CallRecord`, `Completion.record`); and
+`hardline.v1.error`, the CLI's error envelope. A backend has no type URL: a registry row names
+it by its entry-point name. [CONTRACT.md](CONTRACT.md) states how far each is promised.

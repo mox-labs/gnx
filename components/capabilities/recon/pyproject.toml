@@ -1,6 +1,6 @@
 [project]
 name = "recon"
-version = "0.16.0"
+version = "0.19.1"
 description = "Config-driven collection: fetch or run what a mission names, normalize the answers to JSONL, query them with SQL"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -35,7 +35,11 @@ dependencies = [
     # DuckDB imports pytz to return a TIMESTAMP WITH TIME ZONE, and does not declare it.
     "pytz>=2024.1",
     "tenacity>=9.0",
-    "markitdown[all]>=0.1.0",
+    # The extras for the converters recon registers (markitdown_converter._CONVERTERS), not
+    # `[all]`: that adds audio, YouTube and Azure ones recon never registers, and from 0.1.6 a
+    # pre-release Azure dependency, which held the resolution at an onnxruntime with no
+    # Python 3.14 wheel.
+    "markitdown[docx,outlook,pdf,pptx,xls,xlsx]>=0.1.0",
     # The library writes through the API alone, a no-op until an application installs an
     # SDK. The `recon` command is such an application: it carries the SDK and the OTLP
     # exporter over http/protobuf, the one protocol it exports over (no gRPC), so the OTEL_*
@@ -50,6 +54,10 @@ dependencies = [
     # resolves the schema's `$ref`s with a registry that retrieves nothing.
     "jsonschema>=4.20",
     "referencing>=0.28",
+    # The registry recon's extension points are on, and the component contract recon's flow
+    # members keep: reached through recon/_matrix.py alone (owner ruling, REQ §2). Bounded to
+    # the minor recon is built against: before 1.0 a matrix minor may break.
+    "matrix>=0.10,<0.11",
 ]
 
 [project.urls]
@@ -61,24 +69,16 @@ Changelog = "https://github.com/mox-labs/gnx/blob/main/components/capabilities/r
 [project.scripts]
 recon = "recon.adapters._in.cli:main"
 
-# Collector types and transforms are extensions. recon's built-ins register through the
-# same groups a third-party package uses; the entry-point name is the config's `type:`
-# (collectors) or the `$name` in a normalize spec (transforms).
-[project.entry-points."recon.collectors"]
-api = "recon.adapters._out.api_collector:collector_type"
-cli = "recon.adapters._out.cli_collector:collector_type"
-web = "recon.adapters._out.web_collector:collector_type"
-capture = "recon.adapters._out.capture_collector:collector_type"
-mcp = "recon.adapters._out.mcp_collector:collector_type"
-tail = "recon.adapters._out.tail_collector:collector_type"
-sse = "recon.adapters._out.sse_collector:collector_type"
-
-[project.entry-points."recon.transforms"]
-html2text = "recon.domain.normalize:html2text"
-inverted_index = "recon.domain.normalize:inverted_index"
-join = "recon.domain.normalize:join"
-first = "recon.domain.normalize:first"
-markitdown = "recon.adapters._out.markitdown_converter:markitdown_path"
+# recon's extension points (recon.collector, recon.transform) are matrix registry points, and
+# recon's built-ins register at them through matrix's one group, exactly as a third party's do:
+# a callable register(registry), here recon._matrix's.
+[project.entry-points."matrix.extensions"]
+"recon.collector" = "recon._matrix:register"
+"recon.source" = "recon._matrix:register"
+"recon.converter" = "recon._matrix:register"
+"recon.transform" = "recon._matrix:register"
+component = "recon._matrix:register"
+payload-type = "recon._matrix:register"
 
 [build-system]
 requires = ["hatchling"]

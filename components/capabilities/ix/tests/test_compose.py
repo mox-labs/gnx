@@ -23,16 +23,16 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 import yaml
-from ix_fakes import LOG, FakeLoad, experiment, fake_registry
+from ix_fakes import LOG, FakeLoad, carried, experiment, fake_registry
 
 from ix.adapters._out.compose import ComposeEnvironment, ownership_file
 from ix.adapters._out.matrix_process import MatrixLauncher
 from ix.application import running
 from ix.composition import Root
-from ix.composition.extension import POINTS
 from ix.domain import schema
 from ix.domain.experiment import EnvironmentConfig
 from ix.domain.run import HarnessError
+from ix.extension import POINTS
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -187,7 +187,8 @@ class Scope:
 
 def _compose(tmp_path: Path, **options: Any) -> EnvironmentConfig:
     (tmp_path / "compose.yaml").write_text("services: {}\n")
-    return EnvironmentConfig(kind="compose", options={"file": "compose.yaml", **options})
+    written = {"file": "compose.yaml", **options}
+    return EnvironmentConfig(kind="compose", options=carried("environment", "compose", written))
 
 
 def _environment() -> ComposeEnvironment:
@@ -585,7 +586,9 @@ async def test_a_real_stack_comes_up_bound_is_watched_and_comes_down(tmp_path: P
     scope = Scope(run_id=f"live-{os.getpid()}")
     try:
         bindings = await provider.up(
-            EnvironmentConfig(kind="compose", options={"file": "compose.yaml"}),
+            EnvironmentConfig(
+                kind="compose", options=carried("environment", "compose", {"file": "compose.yaml"})
+            ),
             base=str(tmp_path),
             scope=scope,
         )

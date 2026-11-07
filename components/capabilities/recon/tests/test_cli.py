@@ -26,20 +26,18 @@ from click.testing import CliRunner, Result
 
 import recon
 from recon.adapters._in.cli import main
-from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.system_clock import SystemClock
 from recon.composition import load_plugins, root
-from recon.domain import documents as documents_module
-from recon.domain.collector import BrokenPlugin, CollectorContext, CollectorType
-from recon.domain.errors import CollectionError, ErrorKind
-from recon.domain.type_url import is_type_url
-from tests.recon_fakes import building
+from recon.core.domain import documents as documents_module
+from recon.core.domain.collector import BrokenPlugin, InstalledType, Record
+from recon.core.domain.errors import CollectionError, ErrorKind
+from recon.core.domain.type_url import is_type_url
+from tests.recon_fakes import FakeCollector, LandedThrough, WrappingArchives, building, installed
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterator, Mapping
 
-    from recon.domain.capture import CaptureLog
-    from recon.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.collector import Effect, Item, Position, Run
 
 OK_CONFIG = {
     "collectors": [
@@ -70,7 +68,16 @@ def _invoke(*args: str, stdin: str | None = None, over: object | None = None) ->
 
 
 class _Raises:
-    """Operations that each raise ``error``: a defect, or an error that escapes them."""
+    """A session whose operations each raise ``error``: a defect, or an error that escapes
+    them, in either layer (``collection``, ``observation``)."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+        self.collection = self.observation = _Raising(error)
+
+
+class _Raising:
+    """One layer's operations, each raising ``error``."""
 
     def __init__(self, error: BaseException) -> None:
         self._error = error
@@ -114,8 +121,9 @@ def test_version_prints_the_installed_version() -> None:
 
 class TestOneFieldNameOneShape:
     """Polish R9 (Karman 4-5): a field name has one shape in every recon document.
-    ``archive`` is always an archive's id, what ``--archive`` takes, and a directory is
-    ``path``; ``records`` and ``windows`` are always counts, as they are in ``meta.yaml``."""
+    ``archive`` is always an archive's id, what ``--archive`` takes, and no document says
+    where an archive is kept; ``records`` and ``windows`` are always counts, as they are in
+    an archive's meta."""
 
     @staticmethod
     def _shapes(*, leaving_out: frozenset[str] = frozenset()) -> dict[str, set[str]]:
@@ -165,14 +173,13 @@ class TestOneFieldNameOneShape:
         survey = _doc(_invoke("survey", "m", "--json"))
         _invoke("survey", "m", "--json")  # so the first is not the latest
 
-        assert Path(survey["path"]).name == survey["archive"]
-        assert Path(survey["path"]).is_dir()
         query = _doc(_invoke("query", "m", "SELECT * FROM hello", "--archive", survey["archive"],
                              "--json"))  # fmt: skip
         watch = _invoke("watch", "m", "--once", "--archive", survey["archive"], "--json")
         [read] = [json.loads(line) for line in watch.stdout.splitlines()]
-        for document in (query, read):
-            assert (document["archive"], document["path"]) == (survey["archive"], survey["path"])
+        for document in (survey, query, read):
+            assert document["archive"] == survey["archive"]
+            assert "path" not in document, "no document says where an archive is kept"
 
 
 class TestSurvey:
@@ -188,13 +195,38 @@ class TestSurvey:
             ("hello", "ok", 2)
         ]
         assert doc["tables"][0]["type_url"] == "recon.v1.records"
-        assert Path(doc["path"]).parent == project / ".recon" / "m" / "archive"
+        assert "path" not in doc and "file" not in doc["tables"][0], "no location is said"
+        [listed] = _doc(_invoke("status", "m", "--json"))["missions"][0]["history"]
+        assert listed["id"] == doc["archive"]
 
-    def test_human_mode_prints_the_archive_path_on_stdout(self, project: Path) -> None:
+    def test_check_checks_a_dry_run_and_is_refused_without_one(self, project: Path) -> None:
+        """Ruling R11: a plan is pure; ``--check`` asks it to run the preflights too, and means
+        nothing to a survey, which checks each run as it runs it."""
+        _mission(project, "m", {"catalog": [{"name": "s", "type": "mcp",
+                                             "command": str(project / "no-such-server")}],
+                                "collectors": [{"name": "a", "type": "mcp", "source": "s",
+                                                "tool": "t"}]})  # fmt: skip
+
+        pure = _doc(_invoke("survey", "m", "--dry-run", "--json"))
+        checked = _doc(_invoke("survey", "m", "--dry-run", "--check", "--json"))
+        refused = _invoke("survey", "m", "--check", "--json")
+
+        assert (pure["requirements"], pure["preflight"], pure["runnable"]) == ([], [], None)
+        human = _invoke("survey", "m", "--dry-run").stdout
+        assert "Runnable" not in human, "unchecked is not unrunnable"
+        assert checked["preflight"] and checked["runnable"] is False
+        [required] = checked["requirements"]
+        assert required["holds"] is False
+        assert refused.exit_code == 2 and _error(refused)["kind"] == "usage"
+        assert "--dry-run --check" in _error(refused)["fix"]
+        assert not (project / ".recon" / "m" / "archive").exists(), "nothing was surveyed"
+
+    def test_human_mode_prints_the_archive_id_on_stdout(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         result = _invoke("survey", "m")
         assert result.exit_code == 0
-        assert Path(result.stdout.strip()).is_dir()
+        [listed] = _doc(_invoke("status", "m", "--json"))["missions"][0]["history"]
+        assert result.stdout.strip() == listed["id"], "what --archive takes"
 
     def test_mission_lives_under_the_git_root_not_the_cwd(
         self, project: Path, monkeypatch: pytest.MonkeyPatch
@@ -241,7 +273,8 @@ class TestSurvey:
         assert error["kind"] == "run_failed"
         assert error["details"]["failed"] == ["bad"]
         assert error["fix"]
-        archive = Path(error["details"]["path"])
+        assert error["details"]["archive"] == doc["archive"] and "path" not in error["details"]
+        archive = project / ".recon" / "m" / "archive" / doc["archive"]
         assert (archive / ".incomplete").exists()
         assert (archive / "good.jsonl").exists()
 
@@ -282,21 +315,21 @@ class TestSurvey:
         assert tables["ok"]["status"] == "ok", "every table's status is still reported"
         assert [tables[f"t{i}"]["error"]["kind"] for i in range(len(kinds))] == kinds
 
-    @pytest.mark.parametrize("step", ["write_meta", "mark_complete"])
+    @pytest.mark.parametrize("step", ["record", "complete"])
     def test_an_archive_that_could_not_be_finished_is_incomplete_and_fails(
         self, project: Path, step: str
     ) -> None:
-        """Regression: a survey whose ``meta.yaml`` or completion step failed (a full disk)
-        said ``status: ok`` and exited 0, and under --json the one word of it, an event,
-        went nowhere; the archive stayed incomplete and only a later query said so.
+        """Regression: a survey whose meta or completion step failed (a full disk) said
+        ``status: ok`` and exited 0, and under --json the one word of it, an event, went
+        nowhere; the archive stayed incomplete and only a later query said so.
         Changed requirement (owner ruling 2026-10-22): it exits with the shared contract's
         ``store`` kind, 9, not ``run_failed``."""
 
-        def fails(self: ArchiveFiles, archive: Path, *args: Any) -> NoReturn:
+        def fails(self: LandedThrough, *args: Any) -> NoReturn:
             raise OSError(28, "No space left on device")
 
-        unfinished = type("Unfinished", (ArchiveFiles,), {step: fails})
-        over = root(archives=unfinished(SystemClock()))
+        unfinished = type("Unfinished", (LandedThrough,), {step: fails})
+        over = root(archives=lambda home: WrappingArchives(home, SystemClock(), unfinished))
         _mission(project, "m", OK_CONFIG)
         result = _invoke("survey", "m", "--json", over=over)
 
@@ -310,11 +343,11 @@ class TestSurvey:
         error = _error(result)
         assert error["kind"] == "store"
         assert "could not be finished" in error["message"]
-        assert error["details"] == {"archive": doc["archive"], "path": doc["path"], "failed": []}
-        assert (Path(doc["path"]) / ".incomplete").exists()
+        assert error["details"] == {"archive": doc["archive"], "failed": []}
+        assert (project / ".recon" / "m" / "archive" / doc["archive"] / ".incomplete").exists()
         latest = _doc(_invoke("status", "--json"))["missions"][0]["latest"]
-        assert latest["ended"] == ("crashed" if step == "write_meta" else "finished"), (
-            "a survey that could not write meta.yaml left no record that it was stopped, so "
+        assert latest["ended"] == ("crashed" if step == "record" else "finished"), (
+            "a survey that could not record its meta left no record that it was stopped, so "
             "it never reads stopped"
         )
 
@@ -327,13 +360,14 @@ class TestSurvey:
         self, project: Path
     ) -> None:
         """Owner ruling 2026-10-22: an archive the survey could not finish exits ``store`` (9).
-        A table's failure is recorded in the ``meta.yaml`` that could not be written, so the
-        store's failure is the one to act on first; the failed tables are still named."""
+        A table's failure is recorded in the meta that could not be recorded, so the store's
+        failure is the one to act on first; the failed tables are still named."""
 
-        def fails(self: ArchiveFiles, archive: Path, *args: Any) -> NoReturn:
+        def fails(self: LandedThrough, *args: Any) -> NoReturn:
             raise OSError(28, "No space left on device")
 
-        over = root(archives=type("NoMeta", (ArchiveFiles,), {"write_meta": fails})(SystemClock()))
+        no_meta = type("NoMeta", (LandedThrough,), {"record": fails})
+        over = root(archives=lambda home: WrappingArchives(home, SystemClock(), no_meta))
         config = {
             "collectors": [
                 {"name": "good", "type": "cli", "run": "echo '{\"a\": 1}'"},
@@ -366,18 +400,14 @@ class TestSurvey:
         assert _error(result)["kind"] == "config"
 
 
-def _failing_type(kind: ErrorKind) -> CollectorType:
-    class Failing:
-        def collect(
-            self,
-            entry: CollectorEntry,
-            source: SourceEntry | None,
-            *,
-            captures: CaptureLog | None = None,
-        ) -> Iterator[dict[str, Any]]:
+def _failing_type(kind: ErrorKind) -> InstalledType:
+    class Failing(FakeCollector):
+        effects: frozenset[Effect] | None = frozenset({"network"})
+
+        def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
             raise CollectionError(f"simulated {kind} failure", kind=kind)
 
-    return CollectorType(create=lambda ctx: Failing(), effects=frozenset({"network"}))
+    return installed(f"fails-{kind}", lambda **needs: Failing())
 
 
 # --- survey -c ------------------------------------------------------------------------
@@ -449,7 +479,7 @@ class TestDryRun:
         built: list[str] = []
         registry = load_plugins()
         for name, ct in list(registry.collector_types.items()):
-            registry.collector_types[name] = replace(ct, create=building(built, name))
+            registry.collector_types[name] = replace(ct, build=building(built, name))
         result = _invoke("survey", "m", flag, "--json", over=root(plugins=registry))
 
         assert result.exit_code == 0, result.stderr
@@ -525,7 +555,7 @@ class TestStatus:
         assert mission["latest"]["format_version"] == 2
         assert mission["latest"]["tables"][0]["type_url"] == "recon.v1.records"
         types = {c["type"] for c in doc["plugins"]["collectors"]}
-        assert {"api", "cli", "web", "capture"} <= types
+        assert {"api", "cli", "capture"} <= types
         assert "$html2text" in doc["plugins"]["transforms"]
 
     def test_empty_is_still_a_wrapped_document(self, project: Path) -> None:
@@ -534,7 +564,7 @@ class TestStatus:
 
     def test_reports_a_broken_plugin(self, project: Path) -> None:
         registry = load_plugins()
-        registry.broken.append(BrokenPlugin("recon.collectors", "sql", "x:y", "ImportError: z"))
+        registry.broken.append(BrokenPlugin("recon.collector", "sql", "x:y", "ImportError: z"))
         over = root(plugins=registry)
 
         doc = _doc(_invoke("status", "--json", over=over))
@@ -637,7 +667,9 @@ class TestQuery:
         assert "hunter2" not in result.stdout + result.stderr
         error = _error(result)
         assert error["kind"] == "query"
-        assert str(project / ".recon" / "m" / "archive") in error["fix"]
+        assert "--baseline" in error["fix"] and ".recon" not in error["fix"], (
+            "the fix names the path-free form, never a location"
+        )
 
     def test_bad_sql_exits_10_naming_the_tables(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
@@ -671,15 +703,20 @@ class TestQueryProvenance:
         [archive] = (project / ".recon" / "m" / "archive").iterdir()
 
         doc = _doc(_invoke("query", "m", "SELECT a FROM hello", "--json"))
-        assert doc["archive"] == archive.name and doc["path"] == str(archive)
+        assert doc["archive"] == archive.name and "path" not in doc
         human = _invoke("query", "m", "SELECT a FROM hello")
         assert f"archive {archive.name}" in human.stderr
 
-    def test_help_says_where_archive_ids_come_from_and_how_to_read_older_or_raw_files(self) -> None:
+    def test_help_says_where_archive_ids_come_from_and_how_to_read_older_or_raw_records(
+        self,
+    ) -> None:
+        """Changed requirement (owner ruling R8): an earlier archive, a table's raw records and
+        a row's line are each read by name, never by a file's path."""
         text = " ".join(unstyle(_invoke("query", "--help").stdout).split())
         assert "recon status <mission>" in text and "--archive" in text
-        assert "read_json_auto" in text and "read_ndjson_objects" in text
-        assert "WITH ORDINALITY" in text
+        assert "--baseline" in text and "baseline.<table>" in text
+        assert "json.<table>" in text and "lines.<table>" in text
+        assert "read_json_auto" not in text and ".jsonl" not in text
 
 
 class TestAnUnreadableTable:
@@ -728,7 +765,7 @@ class TestAnUnreadableTable:
         assert result.exit_code == 0, result.stderr
         [warning] = _doc(result)["warnings"]
         assert warning["kind"] == "table_unreadable" and warning["got"] == "oa_works"
-        assert "$inverted_index" in warning["fix"] and "read_ndjson_objects" in warning["fix"]
+        assert "$inverted_index" in warning["fix"] and "json.oa_works" in warning["fix"]
         human = _invoke("survey", "m")
         assert "oa_works cannot be queried" in human.stderr and "$inverted_index" in human.stderr
 
@@ -738,8 +775,11 @@ class TestAnUnreadableTable:
         assert result.exit_code == 10
         error = _error(result)
         assert error["kind"] == "query"
-        assert "$inverted_index" in error["fix"] and "read_ndjson_objects" in error["fix"]
+        assert "$inverted_index" in error["fix"] and "json.oa_works" in error["fix"]
         assert error["details"]["table"] == "oa_works"
+        raw = _doc(_invoke("query", mission, "SELECT json->>'id' AS id FROM json.oa_works",
+                           "--json"))  # fmt: skip
+        assert raw["rows"] == [{"id": "W1"}], "the fix's form reads the records"
 
 
 class TestWhatCountsAsAnArchive:
@@ -896,11 +936,11 @@ class TestFanOutByKind:
 
     MIXED: ClassVar[list[dict[str, str]]] = [
         {"name": "repo", "type": "local", "url": "."},
-        {"name": "docs", "type": "web", "url": "https://docs.example.test"},
+        {"name": "docs", "type": "api", "url": "https://docs.example.test"},
     ]
 
     def test_the_plan_names_the_sources_a_collector_skips(self, project: Path) -> None:
-        """Regression: adding a web source to a mission fanned an unpinned ``cli`` collector
+        """Regression: adding an HTTP source to a mission fanned an unpinned ``cli`` collector
         out over it too, a command run in recon's working directory in its name."""
         _mission(project, "m", {"catalog": self.MIXED, "collectors": [
             {"name": "todos", "type": "cli", "run": "echo '{}'"},
@@ -911,10 +951,10 @@ class TestFanOutByKind:
         assert result.exit_code == 0, result.stderr
         doc = _doc(result)
         assert [run["output"] for run in doc["runs"]] == ["todos-repo"]
-        assert doc["skipped"] == [{"collector": "todos", "source": "docs", "kind": "web"}]
+        assert doc["skipped"] == [{"collector": "todos", "source": "docs", "kind": "api"}]
         assert doc["warnings"] == []
         human = _invoke("survey", "m", "-n")
-        assert "todos skips docs (web)" in human.stdout
+        assert "todos skips docs (api)" in human.stdout
 
     def test_a_survey_runs_only_the_sources_its_collectors_accept(self, project: Path) -> None:
         _mission(project, "m", {"catalog": self.MIXED, "collectors": [
@@ -926,7 +966,7 @@ class TestFanOutByKind:
         assert "warning" not in result.stderr
 
     def test_a_collector_with_no_source_it_accepts_is_a_plan_problem(self, project: Path) -> None:
-        """Regression: a ``cli`` collector over a catalog of ``web`` sources alone ran in recon's
+        """Regression: a ``cli`` collector over a catalog of HTTP sources alone ran in recon's
         working directory, once per source, with no warning."""
         _mission(project, "m", {"catalog": self.MIXED[1:], "collectors": [
             {"name": "todos", "type": "cli", "run": "pwd"},
@@ -935,7 +975,7 @@ class TestFanOutByKind:
         assert result.exit_code == 3
         [problem] = _error(result)["problems"]
         assert problem["path"] == "collectors.0.source" and problem["kind"] == "missing_key"
-        assert "docs (web)" in problem["message"]
+        assert "docs (api)" in problem["message"]
 
     def test_sources_of_one_kind_skip_nothing(self, project: Path) -> None:
         config = {
@@ -978,17 +1018,33 @@ class TestOneRecordHoldingTheRecords:
         fixed = _doc(_invoke("survey", "m", "--json"))
         assert fixed["tables"][0]["records"] == 3 and fixed["warnings"] == []
 
-    def test_a_shaped_record_or_a_type_that_does_not_extract_is_not_warned(
-        self, project: Path
-    ) -> None:
+    def test_a_shaped_record_or_one_its_type_structured_is_not_warned(self, project: Path) -> None:
+        """Changed requirement (ruling R-NS, 0.19): recon finds the records in every body, a
+        command's lines included, so a ``cli`` table's one record holding a list is warned
+        too, and its ``extract:`` works; a shaped record is not, nor one a type gave already
+        structured (a ``Record``), where no body was read."""
         nested = json.dumps({"feed": {"entry": [{"a": 1}, {"a": 2}]}})
-        config = {"collectors": [
+
+        class Structured(FakeCollector):
+            def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+                yield Record(json.loads(nested))
+
+        registry = load_plugins()
+        registry.collector_types["structured"] = installed("structured", lambda **n: Structured())
+        config: dict[str, Any] = {"collectors": [
             {"name": "lines", "type": "cli", "run": f"echo '{nested}'"},
             {"name": "shaped", "type": "cli", "run": f"echo '{nested}'",
              "normalize": {"entries": "feed.entry"}},
+            {"name": "given", "type": "structured"},
         ]}  # fmt: skip
         _mission(project, "m", config)
-        assert _doc(_invoke("survey", "m", "--json"))["warnings"] == []
+        doc = _doc(_invoke("survey", "m", "--json", over=root(plugins=registry)))
+        [warning] = doc["warnings"]
+        assert warning["kind"] == "extract_missing" and warning["path"] == "collectors.0.extract"
+        config["collectors"][0]["extract"] = "feed.entry"
+        (project / ".recon" / "m" / "config.yaml").write_text(yaml.safe_dump(config))
+        fixed = _doc(_invoke("survey", "m", "--json", over=root(plugins=registry)))
+        assert fixed["warnings"] == [] and fixed["tables"][0]["records"] == 2
 
 
 # --- templates / init -----------------------------------------------------------------
@@ -1007,12 +1063,9 @@ class TestTemplatesAndInit:
         have are the placeholders it asks the user to fill — and those must be caught by
         the plan, not discovered as a 404 against `/repos/{owner}/...`.
 
-        The configs are what is checked, so no preflight runs: ``mcp-server``'s would start
-        npx, which downloads its server."""
-        plugins = load_plugins()
-        for name, ct in list(plugins.collector_types.items()):
-            plugins.collector_types[name] = replace(ct, preflight="")
-        over = root(plugins=plugins)
+        The configs are what is checked, and a plan unchecked runs no preflight (ruling R11):
+        ``mcp-server``'s would start npx, which downloads its server."""
+        over = root()
         placeholder_templates = set()
         for item in _doc(_invoke("templates", "--json"))["templates"]:
             name = item["name"]
@@ -1173,21 +1226,17 @@ def test_a_plugin_reading_an_undeclared_variable_fails_its_table_with_a_fix(
     where to declare it; nothing is read from the process environment on the quiet."""
     monkeypatch.setenv("RECON_TEST_UNDECLARED", "a secret the mission never named")
 
-    class Greedy:
-        def __init__(self, ctx: CollectorContext) -> None:
-            self._env = ctx.env
+    class Greedy(FakeCollector):
+        def __init__(self, *, env: Mapping[str, str]) -> None:
+            self._env = env
 
-        def collect(
-            self,
-            entry: CollectorEntry,
-            source: SourceEntry | None,
-            *,
-            captures: CaptureLog | None = None,
-        ) -> Iterator[dict[str, Any]]:
-            yield {"leaked": self._env.get("RECON_TEST_UNDECLARED", "")}
+        def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+            yield Record({"leaked": self._env.get("RECON_TEST_UNDECLARED", "")})
 
     registry = load_plugins()
-    registry.collector_types["greedy"] = CollectorType(create=Greedy, effects=None)
+    registry.collector_types["greedy"] = installed(
+        "greedy", Greedy, needs={"env"}, declared=FakeCollector()
+    )
     mission = _mission(project, "m", {"collectors": [{"name": "g", "type": "greedy"}]})
 
     result = _invoke("survey", "m", "--json", over=root(plugins=registry))
@@ -1204,10 +1253,10 @@ def test_a_plugin_reading_an_undeclared_variable_fails_its_table_with_a_fix(
 def test_a_factory_failure_reaches_the_tables_not_a_traceback(project: Path) -> None:
     registry = load_plugins()
 
-    def explode(ctx: CollectorContext) -> NoReturn:
+    def explode(**needs: Any) -> NoReturn:
         raise ValueError("no credentials file")
 
-    registry.collector_types["fragile"] = replace(registry.collector_types["cli"], create=explode)
+    registry.collector_types["fragile"] = replace(registry.collector_types["cli"], build=explode)
     _mission(project, "m", {"collectors": [{"name": "f", "type": "fragile", "run": "true"}]})
     result = _invoke("survey", "m", "--json", over=root(plugins=registry))
     assert result.exit_code == 8
@@ -1313,20 +1362,13 @@ def test_a_survey_cut_short_leaves_its_archive_marked_incomplete(project: Path) 
     """Regression: Ctrl-C mid-survey left an archive with no meta.yaml and no marker, which
     status reported as ok and query read without a warning."""
 
-    class Interrupts:
-        def collect(
-            self,
-            entry: CollectorEntry,
-            source: SourceEntry | None,
-            *,
-            captures: CaptureLog | None = None,
-        ) -> Iterator[dict[str, Any]]:
-            yield {"a": 1}
+    class Interrupts(FakeCollector):
+        def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+            yield Record({"a": 1})
             raise KeyboardInterrupt
 
     plugins = load_plugins()
-    plugins.collector_types["stops"] = CollectorType(create=lambda ctx: Interrupts(),
-                                                     effects=None)  # fmt: skip
+    plugins.collector_types["stops"] = installed("stops", lambda **needs: Interrupts())
     mission = _mission(project, "m", {"collectors": [{"name": "s", "type": "stops"}]})
 
     result = _invoke("survey", "m", "--json", over=root(plugins=plugins))

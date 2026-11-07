@@ -19,24 +19,35 @@ from typing import TYPE_CHECKING, Any
 import pytest
 import yaml
 
-from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.mission_files import MissionFiles
-from recon.application.changes import Comparison, Hasher, MemoryJoin, canonical
-from recon.application.plan import build_plan
 from recon.composition import load_plugins, root
-from recon.domain.changes import ChangesSpec
-from recon.domain.errors import CollectionError, ReconError
-from recon.domain.http import HttpResponse
-from recon.domain.stream import window_id
-from tests.recon_fakes import FixedClock, VirtualClock, plugins_with
+from recon.core.application.plan import build_plan
+from recon.core.domain.archives import ArchiveRef
+from recon.core.domain.changes import ChangesSpec
+from recon.core.domain.collector import Item, Position, Record, Run
+from recon.core.domain.errors import CollectionError, ReconError
+from recon.core.domain.http import HttpResponse
+from recon.core.domain.stream import window_id
+from recon.observe.application.changes import Comparison, Hasher, MemoryJoin, canonical
+from tests.recon_fakes import (
+    FakeCollector,
+    FixedClock,
+    LandedThrough,
+    VirtualClock,
+    WrappingArchives,
+    archive_path,
+    files_of,
+    kept,
+    landing,
+    plugins_with,
+)
 from tests.test_paginated_survey import PagedApi
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from recon.domain.capture import CaptureLog
-    from recon.domain.collector import Plugins
-    from recon.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.collector import Plugins
+    from recon.core.domain.models import SourceEntry
 
 
 class Inbox:
@@ -68,6 +79,7 @@ class Surveys:
     """A mission's surveys, each a second after the last, of the inbox as it is then."""
 
     def __init__(self, project: Path, requester: Any = None) -> None:
+        self.project = project
         self.inbox = Inbox()
         self.clock = FixedClock()
         requester = requester if requester is not None else self.inbox
@@ -77,8 +89,8 @@ class Surveys:
     def survey(self, *messages: dict[str, Any]) -> tuple[Path, Any]:
         self.clock.advance(1)
         self.inbox.messages = list(messages)
-        document = self.recon.survey("m")
-        return Path(document.path), document
+        document = self.recon.observation.survey("m")
+        return kept(self.project, document), document
 
 
 def _rows(archive: Path, output: str = "inbox") -> list[dict[str, Any]]:
@@ -120,9 +132,11 @@ class TestTheChangeTable:
         _mission(tmp_path, {"key": ["id"]})
         surveys = Surveys(tmp_path)
         surveys.survey(A, B)
-        rows = surveys.recon.query("m", "SELECT op, key.id AS id FROM inbox_changes ORDER BY id")
+        rows = surveys.recon.collection.query(
+            "m", "SELECT op, key.id AS id FROM inbox_changes ORDER BY id"
+        )
         assert [tuple(r.values()) for r in rows.rows] == [("insert", "a"), ("insert", "b")]
-        tables = [t.output for t in ArchiveFiles(FixedClock()).tables(Path(rows.path))]
+        tables = [t.output for t in files_of(tmp_path).tables(ArchiveRef("m", rows.archive))]
         assert tables == ["inbox", "inbox.changes"], "the key index is no table"
 
     def test_nothing_changed_is_an_empty_change_table_that_still_binds(
@@ -133,9 +147,9 @@ class TestTheChangeTable:
         surveys.survey(A)
         archive, _ = surveys.survey(A)
         assert _rows(archive) == []
-        assert surveys.recon.query("m", "SELECT count(*) AS n FROM inbox_changes").rows == [
-            {"n": 0}
-        ]
+        assert surveys.recon.collection.query(
+            "m", "SELECT count(*) AS n FROM inbox_changes"
+        ).rows == [{"n": 0}]
 
     def test_no_hash_leaves_the_key_index(self, tmp_path: Path) -> None:
         """C2: hashes never leave recon: not in a change row, meta.yaml, the event log or a
@@ -165,7 +179,7 @@ class TestTheBaseline:
 
             def request(self, source: SourceEntry, method: str, url: str, **kw: Any) -> Any:
                 if self.fail:
-                    from recon.domain.errors import CollectionError
+                    from recon.core.domain.errors import CollectionError
 
                     raise CollectionError("down", kind="transient")
                 return super().request(source, method, url, **kw)
@@ -380,7 +394,12 @@ class TestWhatWasTold:
         """F3: stopped (Ctrl-C) or dead (anything else that ends the process) while comparing
         its second table, the survey's first change table is sealed and its summary is in
         ``meta.yaml`` already, so the next survey tells the first table nothing again and the
-        second its rows."""
+        second its rows.
+
+        Changed requirement (ruling R9): changes are derived after the archive is sealed, so the
+        archive reads ``finished`` whatever its change phase did, and its second table is
+        pending; the next survey derives it into that archive first (its catch-up), then
+        compares its own tables with it."""
 
         class EndsOnSecond:
             joins = 0
@@ -398,7 +417,7 @@ class TestWhatWasTold:
             project=tmp_path,
             clock=surveys.clock,
             memory_keys=0,
-            key_join=EndsOnSecond(),
+            key_join=lambda mission: EndsOnSecond(),
             requester=lambda t, d, r: surveys.inbox,
         )
         # fmt: skip
@@ -408,13 +427,15 @@ class TestWhatWasTold:
         meta = yaml.safe_load((ended / "meta.yaml").read_text())
         first = meta["tables"][0]["changes"]
         assert first["previous"] is None and (ended / "inbox.changes.jsonl").exists()
-        if how is SystemExit:
-            assert meta["ended"] is None, "written while it compared: it never said it ended"
-            history = surveys.recon.status("m").missions[0].history
-            assert history is not None and [a.ended for a in history] == ["crashed"]
+        assert meta["ended"] == "finished", "sealed before its changes were derived"
+        assert meta["tables"][1]["changes"] is None, "its second table is pending"
+        history = surveys.recon.observation.status("m").missions[0].history
+        assert history is not None and [a.ended for a in history] == ["finished"]
         surveys.recon = root({}, project=tmp_path, clock=surveys.clock,
                              requester=lambda t, d, r: surveys.inbox)  # fmt: skip
         again, _ = surveys.survey(A, B)
+        caught_up = [(r["op"], r["key"]["id"]) for r in _rows(ended, "other")]
+        assert caught_up == [("insert", "a"), ("insert", "b")], "told in its own archive"
         assert _rows(again, "inbox") == []
         self._told_once(tmp_path, "inbox")
         self._told_once(tmp_path, "other")
@@ -425,24 +446,28 @@ class TestWhatWasTold:
         """F3's other half, found by a mutant that survived (design record): the summary is
         written before the change table, so a survey that dies between them leaves a summary
         and no rows. That table told nothing: the next survey tells its rows."""
-        write_table = ArchiveFiles.write_table
         dies = {"left": 1}
 
-        def dies_at_rows(self: ArchiveFiles, archive: Path, output: str, *a: Any,
-                         **kw: Any) -> int:  # fmt: skip
-            if output.endswith(".changes") and dies["left"]:
-                dies["left"] -= 1
-                raise SystemExit("killed")
-            return write_table(self, archive, output, *a, **kw)
+        class DiesAtRows(LandedThrough):
+            def write(self, output: str, records: Any, **kw: Any) -> int:
+                if output.endswith(".changes") and dies["left"]:
+                    dies["left"] -= 1
+                    raise SystemExit("killed")
+                return super().write(output, records, **kw)
 
-        monkeypatch.setattr(ArchiveFiles, "write_table", dies_at_rows)
         _mission(tmp_path, {"key": ["id"]})
         surveys = Surveys(tmp_path)
+        surveys.recon = root(
+            {}, project=tmp_path, clock=surveys.clock,
+            archives=lambda home: WrappingArchives(home, surveys.clock, DiesAtRows),
+            requester=lambda t, d, r: surveys.inbox,
+        )  # fmt: skip
         with pytest.raises(SystemExit):
             surveys.survey(A, B)
         [died] = sorted((tmp_path / ".recon" / "m" / "archive").iterdir())
         meta = yaml.safe_load((died / "meta.yaml").read_text())
-        assert meta["ended"] is None and meta["tables"][0]["changes"]["previous"] is None
+        # Changed requirement (ruling R9): sealed before its changes were derived.
+        assert meta["ended"] == "finished" and meta["tables"][0]["changes"]["previous"] is None
         assert (died / "inbox.keys.jsonl").exists() and not (died / "inbox.changes.jsonl").exists()
         again, _ = surveys.survey(A, B)
         assert _ops(again) == [("insert", "a"), ("insert", "b")]
@@ -451,22 +476,33 @@ class TestWhatWasTold:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """F3: the told index is written before the change table, so one that cannot be
-        written leaves no row a reader sees and the next survey would not fold."""
-        write_sidecar = ArchiveFiles.write_sidecar
+        written leaves no row a reader sees and the next survey would not fold.
+
+        Changed requirement (ruling R9): changes are derived after the seal, so a told index
+        that cannot be written fails the table's changes (classified ``store``, warned
+        ``changes_failed``), never the archive, which is sealed whole before."""
         failing = {"left": 1}
 
-        def fails_once(self: ArchiveFiles, archive: Path, output: str, sidecar: Any,
-                       lines: Any) -> None:  # fmt: skip
-            if sidecar == "keys" and failing["left"]:
-                failing["left"] -= 1
-                raise OSError(28, "No space left on device")
-            write_sidecar(self, archive, output, sidecar, lines)
+        class FailsOnce(LandedThrough):
+            def keep(self, output: str, sidecar: Any, lines: Any) -> None:
+                if sidecar == "keys" and failing["left"]:
+                    failing["left"] -= 1
+                    raise OSError(28, "No space left on device")
+                super().keep(output, sidecar, lines)
 
-        monkeypatch.setattr(ArchiveFiles, "write_sidecar", fails_once)
         _mission(tmp_path, {"key": ["id"]})
         surveys = Surveys(tmp_path)
+        surveys.recon = root(
+            {}, project=tmp_path, clock=surveys.clock,
+            archives=lambda home: WrappingArchives(home, surveys.clock, FailsOnce),
+            requester=lambda t, d, r: surveys.inbox,
+        )  # fmt: skip
         failed, document = surveys.survey(A, B)
-        assert document.status == "incomplete"
+        assert document.status == "complete"
+        changes = document.tables[0].changes
+        assert changes is not None and changes.error is not None
+        assert changes.error.kind == "store"
+        assert [w["kind"] for w in document.warnings] == ["changes_failed"]
         assert not (failed / "inbox.changes.jsonl").exists()
         surveys.survey(A, B)
         self._told_once(tmp_path, "inbox")
@@ -507,7 +543,7 @@ class TestHostileContent:
             project=tmp_path,
             clock=surveys.clock,
             memory_keys=0,
-            key_join=Broken(),
+            key_join=lambda mission: Broken(),
             requester=lambda t, d, r: surveys.inbox,
         )
         # fmt: skip
@@ -553,7 +589,7 @@ class TestAJoinThatWillNotClose:
             project=tmp_path,
             clock=surveys.clock,
             memory_keys=0,
-            key_join=_ClosesBadly(),
+            key_join=lambda mission: _ClosesBadly(),
             requester=lambda t, d, r: surveys.inbox,
         )
         # fmt: skip
@@ -570,9 +606,9 @@ class TestAJoinThatWillNotClose:
     def test_a_window_s_rows_stand_and_the_warning_is_said(self, tmp_path: Path) -> None:
         _stream_mission(tmp_path)
         recon = root({}, project=tmp_path, clock=VirtualClock(), memory_keys=0,
-                     key_join=_ClosesBadly(),
+                     key_join=lambda mission: _ClosesBadly(),
                      plugins=plugins_with(feed=_Feed(TestStreams.RECORDS)))  # fmt: skip
-        document = recon.stream("m", "s", windows=3)
+        document = recon.observation.stream("m", "s", windows=3)
         first, second, third = _windows(tmp_path)
         assert _window_ops(first) == [("insert", "a"), ("insert", "b")]
         assert _window_ops(second) == [("update", "a"), ("insert", "c")]
@@ -632,9 +668,11 @@ class TestTheJoinsFiles:
 
         assert MAX_TEMP_DIRECTORY_SIZE == "4GiB"
         told = [(canonical([f"k{n:06d}"]), f"{n:032x}") for n in range(10)]
-        for join, cap in ((DuckdbJoin(), "4.0 GiB"),
-                          (DuckdbJoin(max_temp_directory_size="64MiB"), "64.0 MiB")):  # fmt: skip
-            joined = join.join(iter(told), iter([]), scratch=tmp_path / ".joins")
+        scratch = tmp_path / ".joins"
+        for join, cap in ((DuckdbJoin(scratch=scratch), "4.0 GiB"),
+                          (DuckdbJoin(scratch=scratch, max_temp_directory_size="64MiB"),
+                           "64.0 MiB")):  # fmt: skip
+            joined = join.join(iter(told), iter([]))
             try:
                 setting = joined._conn.execute(
                     "SELECT current_setting('max_temp_directory_size')").fetchone()  # fmt: skip
@@ -645,12 +683,13 @@ class TestTheJoinsFiles:
 
     def test_past_the_cap_the_table_s_changes_fail_classified(self, tmp_path: Path) -> None:
         from recon.adapters._out.duckdb_query import DuckdbJoin
-        from recon.domain.errors import ReconError
+        from recon.core.domain.errors import ReconError
 
         many = ((n, canonical([f"key-{n:09d}-" + "x" * 40]), f"{n:032x}") for n in range(400_000))
-        tight = DuckdbJoin(memory_limit="8MB", max_temp_directory_size="1MB")
+        tight = DuckdbJoin(scratch=tmp_path / ".joins", memory_limit="8MB",
+                           max_temp_directory_size="1MB")  # fmt: skip
         with pytest.raises(ReconError) as raised:
-            joined = tight.join(iter([]), many, scratch=tmp_path / ".joins")
+            joined = tight.join(iter([]), many)
             try:
                 list(joined.told(deletes=False))
             finally:
@@ -666,7 +705,8 @@ class TestALargeComparison:
     def _surveys(self, tmp_path: Path, large: _Counting, memory_keys: int) -> Surveys:
         _mission(tmp_path, {"key": ["id"], "deletes": True})
         surveys = Surveys(tmp_path)
-        surveys.recon = root({}, project=tmp_path, clock=surveys.clock, key_join=large,
+        surveys.recon = root({}, project=tmp_path, clock=surveys.clock,
+                             key_join=lambda mission: large,
                              memory_keys=memory_keys,
                              requester=lambda t, d, r: surveys.inbox)  # fmt: skip
         return surveys
@@ -681,7 +721,7 @@ class TestALargeComparison:
         assert _ops(archive) == [("update", "a"), ("insert", "c"), ("insert", "d"), ("delete", "b")]
 
     def test_the_default_is_two_hundred_thousand(self) -> None:
-        from recon.application.changes import MEMORY_KEYS
+        from recon.observe.application.changes import MEMORY_KEYS
 
         assert MEMORY_KEYS == 200_000
 
@@ -896,23 +936,17 @@ class TestThePlan:
 # --- streams (C7) ---------------------------------------------------------------------------
 
 
-class _Feed:
+class _Feed(FakeCollector):
     """A source of the records it is given, each positioned by its index, that then ends."""
 
-    def __init__(self, records: list[dict[str, Any]]) -> None:
-        self.records = records
+    def __init__(self, given: list[dict[str, Any]]) -> None:
+        # Not ``records``: that is the collector contract's member saying whether they end.
+        self.given = given
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-        after: Any = None,
-    ) -> Iterator[dict[str, Any]]:
-        start = 0 if after is None else int(after) + 1
-        for n in range(start, len(self.records)):
-            yield {**self.records[n], "_position": n}
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+        start = 0 if resume is None else int(resume.value) + 1
+        for n in range(start, len(self.given)):
+            yield Record(self.given[n], position=n)
 
 
 def _stream_mission(project: Path, retain: Any = "all") -> None:
@@ -923,7 +957,13 @@ def _stream_mission(project: Path, retain: Any = "all") -> None:
 
 
 def _windows(project: Path) -> list[Path]:
-    return ArchiveFiles(FixedClock()).archives(project / ".recon" / "m", stream="s")
+    return [archive_path(project, ref) for ref in files_of(project).archives("m", stream="s")]
+
+
+def _meta(window: Path) -> dict[str, Any]:
+    """The window's meta, as the file adapter reads it back."""
+    project = window.parents[4]
+    return files_of(project).meta(ArchiveRef("m", window.name, "s"))
 
 
 def _window_ops(window: Path) -> list[tuple[str, Any]]:
@@ -938,12 +978,12 @@ class TestStreams:
         _stream_mission(tmp_path)
         recon = root({}, project=tmp_path, clock=VirtualClock(),
                      plugins=plugins_with(feed=_Feed(self.RECORDS)))  # fmt: skip
-        recon.stream("m", "s", windows=3)
+        recon.observation.stream("m", "s", windows=3)
         first, second, third = _windows(tmp_path)
         assert _window_ops(first) == [("insert", "a"), ("insert", "b")]
         assert _window_ops(second) == [("update", "a"), ("insert", "c")]
         assert _window_ops(third) == [("insert", "d")], "b is as the chain last told it"
-        meta = ArchiveFiles(FixedClock()).read_meta(third)
+        meta = _meta(third)
         assert meta["tables"][0]["changes"]["previous"] == second.name
 
     def test_a_window_s_index_is_its_chain_s_fold_and_is_rebuilt_when_gone(
@@ -952,7 +992,7 @@ class TestStreams:
         _stream_mission(tmp_path)
         feed = _Feed(self.RECORDS[:4])
         recon = root({}, project=tmp_path, clock=VirtualClock(), plugins=plugins_with(feed=feed))
-        recon.stream("m", "s", windows=2)
+        recon.observation.stream("m", "s", windows=2)
         first, second = _windows(tmp_path)
         told = [json.loads(json.loads(line)["key"])[0]
                 for line in (second / "s.keys.jsonl").read_text().splitlines()[1:]]  # fmt: skip
@@ -960,8 +1000,8 @@ class TestStreams:
 
         (second / "s.keys.jsonl").unlink()
         (first / "s.keys.jsonl").unlink()
-        feed.records = self.RECORDS
-        recon.stream("m", "s", windows=1)
+        feed.given = self.RECORDS
+        recon.observation.stream("m", "s", windows=1)
         third = _windows(tmp_path)[-1]
         assert _window_ops(third) == [("insert", "d")], "folded again from the first window"
 
@@ -974,22 +1014,20 @@ class TestStreams:
                    {"id": "a", "v": 1}, {"id": "z", "v": 1}]  # fmt: skip
         recon = root({}, project=tmp_path, clock=VirtualClock(),
                      plugins=plugins_with(feed=_Feed(records)))  # fmt: skip
-        recon.stream("m", "s", windows=3)
+        recon.observation.stream("m", "s", windows=3)
         _, ambiguous, third = _windows(tmp_path)
         assert _window_ops(ambiguous) == []
-        meta = ArchiveFiles(FixedClock()).read_meta(ambiguous)
+        meta = _meta(ambiguous)
         assert meta["tables"][0]["changes"]["ambiguous"] == 1
         assert _window_ops(third) == []
 
     def _crashed_window(self, tmp_path: Path, index: int, records: list[dict[str, Any]]) -> Path:
         """A window as a writer killed mid-window leaves it: made, its lock let go, its
         ``.incomplete`` marker, its table's whole lines and one cut short, no ``meta.yaml``."""
-        store = ArchiveFiles(FixedClock())
         opened = datetime(2026, 1, 2, 4, 0, index, tzinfo=UTC)
-        window = store.create(tmp_path / ".recon" / "m", window_id(index, opened), stream="s")
-        lines = b"".join(json.dumps(r).encode() + b"\n" for r in records)
-        (window / "s.jsonl.tmp").write_bytes(lines + b'{"id": "torn')
-        store.release(window)
+        with landing(tmp_path, archive_id=window_id(index, opened), stream="s") as (_, window):
+            lines = b"".join(json.dumps(r).encode() + b"\n" for r in records)
+            (window / "s.jsonl.tmp").write_bytes(lines + b'{"id": "torn')
         return window
 
     def test_a_window_killed_mid_way_is_told_by_the_next_and_nothing_twice(
@@ -1003,22 +1041,22 @@ class TestStreams:
         records = self.RECORDS + [{"id": "e", "v": 1}, {"id": "a", "v": 3}]
         feed = _Feed(records[:2])
         recon = root({}, project=tmp_path, clock=VirtualClock(), plugins=plugins_with(feed=feed))
-        recon.stream("m", "s", windows=1)  # a1, b1
+        recon.observation.stream("m", "s", windows=1)  # a1, b1
         dead = self._crashed_window(tmp_path, 1, [{**records[2], "_position": 2},
                                                  {**records[3], "_position": 3}])  # fmt: skip
-        feed.records = records[:6]
-        recon.stream("m", "s", windows=1)  # resumed after 3: b1, d1
+        feed.given = records[:6]
+        recon.observation.stream("m", "s", windows=1)  # resumed after 3: b1, d1
         first, crashed, resumed = _windows(tmp_path)
         assert crashed == dead
         assert _window_ops(resumed) == [("update", "a"), ("insert", "c"), ("insert", "d")]
-        summary = ArchiveFiles(FixedClock()).read_meta(resumed)["tables"][0]["changes"]
+        summary = _meta(resumed)["tables"][0]["changes"]
         assert summary["previous"] == first.name and summary["untold"] == [dead.name]
         assert summary["rebaselined"] is False
 
         # The resumed window's told index, rebuilt, folds the dead window's records too.
         (resumed / "s.keys.jsonl").unlink()
-        feed.records = records
-        recon.stream("m", "s", windows=1)  # e1, a3
+        feed.given = records
+        recon.observation.stream("m", "s", windows=1)  # e1, a3
         last = _windows(tmp_path)[-1]
         assert _window_ops(last) == [("insert", "e"), ("update", "a")]
 
@@ -1040,15 +1078,15 @@ class TestStreams:
 
         _stream_mission(tmp_path)
         recon = root({}, project=tmp_path, clock=VirtualClock(), memory_keys=0,
-                     key_join=FailsFirst(),
+                     key_join=lambda mission: FailsFirst(),
                      plugins=plugins_with(feed=_Feed(self.RECORDS)))  # fmt: skip
-        recon.stream("m", "s", windows=3)  # a1 b1 (failed) | a2 c1 | b1 d1
+        recon.observation.stream("m", "s", windows=3)  # a1 b1 (failed) | a2 c1 | b1 d1
         failed, second, third = _windows(tmp_path)
-        meta = ArchiveFiles(FixedClock()).read_meta(failed)
+        meta = _meta(failed)
         assert meta["tables"][0]["changes"]["error"] is not None
         assert _window_ops(second) == [("insert", "a"), ("insert", "b"), ("update", "a"),
                                        ("insert", "c")]  # fmt: skip
-        summary = ArchiveFiles(FixedClock()).read_meta(second)["tables"][0]["changes"]
+        summary = _meta(second)["tables"][0]["changes"]
         assert summary["untold"] == [failed.name] and summary["previous"] is None
         assert summary["rebaselined"] is False
         assert _window_ops(third) == [("insert", "d")], "b as told, nothing told twice"
@@ -1062,54 +1100,55 @@ class TestStreams:
         class FailsAt(_Feed):
             fail_at: int | None = 3
 
-            def collect(self, entry: Any, source: Any, *, captures: Any = None,
-                        after: Any = None) -> Iterator[dict[str, Any]]:  # fmt: skip
-                for record in super().collect(entry, source, captures=captures, after=after):
-                    if record["_position"] == self.fail_at:
+            def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+                for item in super().collect(run, resume):
+                    if isinstance(item, Record) and item.position == self.fail_at:
                         raise CollectionError("the source broke", kind="transient")
-                    yield record
+                    yield item
 
         _stream_mission(tmp_path)
         feed = FailsAt(self.RECORDS)
         recon = root({}, project=tmp_path, clock=VirtualClock(), plugins=plugins_with(feed=feed))
-        recon.stream("m", "s", windows=3)  # a1 b1 | a2, then the error
+        recon.observation.stream("m", "s", windows=3)  # a1 b1 | a2, then the error
         feed.fail_at = None
-        recon.stream("m", "s", windows=1)  # resumed after 2: c1, b1
+        recon.observation.stream("m", "s", windows=1)  # resumed after 2: c1, b1
         first, failed, resumed = _windows(tmp_path)
-        meta = ArchiveFiles(FixedClock()).read_meta(failed)
+        meta = _meta(failed)
         assert meta["tables"][0]["status"] == "error"
         assert _window_ops(failed) == [("update", "a")]
         assert _window_ops(resumed) == [("insert", "c")]
-        assert ArchiveFiles(FixedClock()).read_meta(resumed)["tables"][0]["changes"][
-            "previous"] == failed.name  # fmt: skip
+        assert _meta(resumed)["tables"][0]["changes"]["previous"] == failed.name
 
     def test_a_window_never_tells_a_delete_whatever_its_spec_says(self, tmp_path: Path) -> None:
         """C7, held by the detector itself, not only by the plan's refusal of deletes: true on
         a stream (a mutant that left it to the plan survived; design record)."""
-        import shutil
-
-        from recon.application.changes import ChangeDetector
+        from recon.core.domain.documents import TableOutcome
+        from recon.observe.application.changes import ChangeDetector
 
         _stream_mission(tmp_path)
         recon = root({}, project=tmp_path, clock=VirtualClock(),
                      plugins=plugins_with(feed=_Feed(self.RECORDS[:4])))  # fmt: skip
-        recon.stream("m", "s", windows=2)  # a1 b1 | a2 c1: b is not in the second
+        recon.observation.stream("m", "s", windows=2)  # a1 b1 | a2 c1: b is not in the second
         first, second = _windows(tmp_path)
-        again = tmp_path / "again"
-        shutil.copytree(second, again)
-        for sidecar in ("s.changes.jsonl", "s.keys.jsonl"):
-            (again / sidecar).unlink()
-        store = ArchiveFiles(FixedClock())
+        store = files_of(tmp_path, FixedClock())
         secret = MissionFiles(tmp_path, FixedClock()).change_key("m")
-        detector = ChangeDetector(store, tmp_path / ".recon" / "m", secret)
-        [table] = store.read_meta(second)["tables"]
-        from recon.domain.documents import TableOutcome
-
+        detector = ChangeDetector(store, "m", secret)
+        [table] = _meta(second)["tables"]
         outcome = TableOutcome.model_validate({**table, "changes": None})
-        told = detector.window(again, "s", first.name, outcome,
-                               ChangesSpec(key=["id"], deletes=True), None)  # fmt: skip
+        records = store.records(ArchiveRef("m", second.name, "s"), "s")
+        assert records is not None
+        opened = datetime(2030, 1, 1, tzinfo=UTC)
+        # The second window's records again, in a window of their own, compared with the
+        # chain up to the first as the second was.
+        with landing(tmp_path, store=store, archive_id=window_id(2, opened), stream="s") as (
+            again,
+            where,
+        ):
+            again.write("s", (record for record in list(records)))
+            told = detector.window(again, "s", first.name, outcome,
+                                   ChangesSpec(key=["id"], deletes=True), None)  # fmt: skip
         assert told.changes is not None and told.changes.deletes == 0
-        assert [row["op"] for row in _rows(again, "s")] == ["update", "insert"]
+        assert [row["op"] for row in _rows(where, "s")] == ["update", "insert"]
 
     def test_a_window_whose_changes_fail_is_sealed_and_says_so(self, tmp_path: Path) -> None:
         """F6 for a stream: the change phase never fails a window."""
@@ -1119,11 +1158,12 @@ class TestStreams:
                 raise RuntimeError("the join broke")
 
         _stream_mission(tmp_path)
-        recon = root({}, project=tmp_path, clock=VirtualClock(), memory_keys=0, key_join=Broken(),
+        recon = root({}, project=tmp_path, clock=VirtualClock(), memory_keys=0,
+                     key_join=lambda mission: Broken(),
                      plugins=plugins_with(feed=_Feed(self.RECORDS[:2])))  # fmt: skip
-        document = recon.stream("m", "s", windows=1)
+        document = recon.observation.stream("m", "s", windows=1)
         [window] = _windows(tmp_path)
-        meta = ArchiveFiles(FixedClock()).read_meta(window)
+        meta = _meta(window)
         assert meta["tables"][0]["status"] == "ok" and meta["tables"][0]["records"] == 2
         assert meta["tables"][0]["changes"]["error"]["kind"] == "unknown"
         assert [w["kind"] for w in document.warnings] == ["changes_failed"]
@@ -1133,7 +1173,7 @@ class TestStreams:
         _stream_mission(tmp_path, retain={"archives": 1})
         recon = root({}, project=tmp_path, clock=VirtualClock(),
                      plugins=plugins_with(feed=_Feed(self.RECORDS)))  # fmt: skip
-        recon.stream("m", "s", windows=3)
+        recon.observation.stream("m", "s", windows=3)
         stream = tmp_path / ".recon" / "m" / "streams" / "s"
         assert [w.name for w in _windows(tmp_path)] == [_windows(tmp_path)[-1].name]
         assert len(list(stream.rglob("s.keys.jsonl"))) == 1

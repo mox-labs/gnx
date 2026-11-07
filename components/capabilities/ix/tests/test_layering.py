@@ -29,6 +29,7 @@ import), logic in a file whose imports are all allowed, and what matrix does at 
 from __future__ import annotations
 
 import ast
+import inspect
 import subprocess
 import sys
 from pathlib import Path
@@ -170,18 +171,18 @@ def test_only_composition_wires_outbound_adapters() -> None:
         if any(_within(module, ("ix.adapters._out",)) for module in _imports(file))
     }
     outside = {name for name in importers if not name.startswith("adapters/_out/")}
-    assert outside == {"composition/__init__.py", "composition/extension.py"}
+    assert outside == {"composition/__init__.py", "composition/entry_point.py"}
 
 
 def test_outbound_adapters_know_neither_use_cases_nor_the_command_line() -> None:
-    """An outbound adapter reaches the domain and its fellow adapters, nothing else in ix:
-    not the use cases, not the composition root, not the command line."""
+    """An outbound adapter reaches the domain, the extension contract and its fellow
+    adapters, nothing else in ix: not the use cases, not the composition root, not the
+    command line. (Changed requirement: what an adapter is handed is published in
+    ``ix.extension``, which the built-in adapters import as a third party's do.)"""
     for file in _files("adapters", "_out"):
         reached = {m for m in _imports(file) if m.split(".")[0] == "ix"}
-        assert all(_within(m, ("ix.domain", "ix.adapters._out")) for m in reached), (
-            file.name,
-            reached,
-        )
+        allowed = ("ix.domain", "ix.extension", "ix.adapters._out")
+        assert all(_within(m, allowed) for m in reached), (file.name, reached)
 
 
 def test_the_facade_imports_no_adapter() -> None:
@@ -202,12 +203,14 @@ def test_only_composition_and_the_matrix_adapters_name_matrix() -> None:
     import it: the components matrix drives ix through, and the adapters ix drives matrix
     through. Every other module, the domain and the use cases first, is held to none."""
     importers = {file.relative_to(SRC).as_posix() for file in _files() if _names_matrix(file)}
+    # Changed requirement: the extension contract names matrix's AgentCapabilities, the
+    # answer of Runtimes.capabilities, for its type alone (layers.json holds it to that).
     allowed = {
         file.relative_to(SRC).as_posix()
         for file in _files()
         if file.parent == SRC / "composition"
         or (file.parent.parent == SRC / "adapters" and file.name.startswith("matrix_"))
-    }
+    } | {"extension.py"}
     assert importers <= allowed, importers - allowed
     # The rule is about something: the adapters that speak to matrix exist and do.
     assert {
@@ -352,11 +355,13 @@ class TestLibrarySurface:
         parts are reachable as field types and are not exported."""
         # Changed requirement: the command configures telemetry through the API, since it
         # names nothing but ``ix``.
+        # Changed requirement (ruling Q5, long runs): a run started detached is followed and
+        # stopped through the library as the command does, with the status it returns.
         functions = {"load", "validate", "resolve", "plan", "register", "deviations", "run",
-                     "report", "runs", "genres", "kinds", "skill", "error_document",
-                     "configure_telemetry"}  # fmt: skip
+                     "start", "status", "events", "stop", "report", "runs", "genres", "kinds",
+                     "skill", "error_document", "configure_telemetry"}  # fmt: skip
         documents = {"Validation", "Problem", "Design", "Plan", "Registered", "Deviations",
-                     "Report", "Runs", "Genres", "Kinds"}  # fmt: skip
+                     "Report", "Status", "Runs", "Genres", "Kinds"}  # fmt: skip
         authored = {"Experiment", "Genre", "Kind"}
         errors = {"IxError", "ConfigError", "NotFoundError", "InvalidExperimentError",
                   "RegistrationConflictError", "UnregisteredError", "UsageError"}  # fmt: skip
@@ -364,17 +369,24 @@ class TestLibrarySurface:
         # published beside its codes and meanings, so help and the skill read one table.
         tables = {"PROBLEM_KINDS", "ERROR_KINDS", "EXIT_CODES", "EXIT_MEANINGS", "EXIT_NEXT",
                   "__version__"}  # fmt: skip
-        assert set(ix.__all__) == functions | documents | authored | errors | tables
-        assert len(ix.__all__) <= 40
+        # Changed requirement (ruling R2): mutation testing's provisional surface is one
+        # module of functions, ix.mutants (sample, map, read), which returns JSON-ready documents.
+        namespaces = {"mutants"}
+        assert set(ix.__all__) == functions | documents | authored | errors | tables | namespaces
+        assert len(ix.__all__) <= 46
+        assert set(ix.mutants.__all__) == {"sample", "map", "read"}
 
     def test_no_declared_name_is_shadowed_by_a_subpackage(self) -> None:
         """Importing ``ix.<sub>`` binds ``<sub>`` on ``ix``; a function of the same name
         would be replaced by the module the first time anything imported it."""
         modules = {path.stem for path in SRC.iterdir() if path.is_dir() or path.suffix == ".py"}
-        assert not (set(ix.__all__) & modules)
+        # A declared module (ix.mutants) is the module itself, so it shadows nothing.
+        declared_modules = {name for name in ix.__all__ if inspect.ismodule(getattr(ix, name))}
+        assert declared_modules == {"mutants"}
+        assert not ((set(ix.__all__) - declared_modules) & modules)
         ix.skill()  # reads the genre and kind packages
         for name in ("genres", "kinds", "plan", "validate", "register", "deviations", "run",
-                     "report", "runs"):  # fmt: skip
+                     "start", "status", "events", "stop", "report", "runs"):  # fmt: skip
             assert callable(getattr(ix, name)), name
 
 
@@ -399,9 +411,11 @@ def test_the_domain_names_no_genre_and_no_kind() -> None:
     kinds = {file.stem.split(".", 1)[1] for file in (builtin / "kinds").glob("*.yaml")}
     assert genres >= {"evaluate", "compare", "characterize", "regress"}
     assert kinds >= {"http-load", "function-test", "inspect-task", "compose", "judge"}
-    # Words that are also plain English or a family name stay out of the scan.
+    # Words that are also plain English or a family name stay out of the scan; so does
+    # "command", an option type the domain holds before any kind, and "check", the word for
+    # what an A/A pass, a preflight and a genre do.
     names = (genres | kinds) - {"none", "process", "prompt", "usage", "memory", "timing",
-                                "outcome"}  # fmt: skip
+                                "outcome", "command", "check"}  # fmt: skip
     for file in _files("domain"):
         tree = ast.parse(file.read_text(encoding="utf-8"))
         docstrings = {
@@ -469,7 +483,7 @@ def test_every_type_reachable_from_a_public_result_is_exported_from_ix_domain() 
                 walk(field.annotation)
 
     for name in ("Report", "Plan", "Registered", "Deviations", "Validation", "Experiment",
-                 "Genre", "Kind", "Design", "Runs"):  # fmt: skip
+                 "Genre", "Kind", "Design", "Runs", "Status"):  # fmt: skip
         walk(getattr(ix, name))
     reachable = {model.__name__ for model in seen} - set(ix.__all__)
     assert {"Interval", "Decision", "SubjectConfig", "Sensitivity"} <= reachable  # the walk works

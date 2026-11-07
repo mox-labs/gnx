@@ -1,4 +1,4 @@
-"""The operating system's schedulers, behind the :class:`~recon.domain.schedule.Scheduler`
+"""The operating system's schedulers, behind the :class:`~recon.core.domain.schedule.Scheduler`
 port: launchd's user agents, systemd's user timers, and the user's crontab.
 
 Each runs its scheduler's own command through a ``Runner`` (``launchctl``, ``systemctl
@@ -32,13 +32,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from recon.adapters._out.private_files import make_dirs, write_file
-from recon.domain.errors import ReconError
-from recon.domain.schedule import ProjectedFile
+from recon.core.domain.errors import ReconError
+from recon.observe.domain.scheduling import ProjectedFile
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from recon.domain.schedule import Platform, Scheduler
+    from recon.core.domain.schedule import Platform
+    from recon.observe.domain.scheduling import Scheduler
 
 
 @dataclass(frozen=True)

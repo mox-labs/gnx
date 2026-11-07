@@ -2,6 +2,191 @@
 
 All notable changes to matrix. Versions follow semver; before 1.0 a minor may break.
 
+## 0.10.0 — 2026-11-06
+
+matrix depends on no model runtime (owner ruling HO1, 2026-11-06), and the model-runtime port
+is one call in full. Each entry compares with 0.9.0. The hardline model runtime moves to a
+bridge distribution of its own, `matrix-hardline` 0.1.0.
+
+### Removed (breaking)
+
+- **hardline is no dependency of matrix**, and no module of matrix imports it
+  (`tests/test_architecture.py`). The `hardline` model runtime (`matrix.v1.model-runtime.hardline`,
+  `matrix.adapters._out.runtime.model`, `HardlineModelRuntime`) is gone from matrix: install
+  `matrix-hardline`, which registers `matrix-hardline.v1.model-runtime` from its own entry
+  point. A config that names a model runtime nobody registered is refused when it is composed,
+  and with only the `mock` installed the fix says what to install.
+- **`matrix.models` is gone**, with the `models` need and its re-rooting of problems. A model
+  runtime's registry is its own config's (`model_runtimes.local: {type:
+  matrix-hardline.v1.model-runtime, models: {...}}`), or its own tiers. `models` leaves the
+  plan's settings, the reuse fingerprint and `NEEDS`.
+- **`ModelCall` and the session row keep runtime-neutral facts only.** `backend`, `attempts`,
+  `retries`, `fallback_from`, `params`, `attempt_log`, `turns_digest` and `row` are gone, and
+  the types `RequestParams`, `CallAttempt` and `RegistryRow` with them. What only one runtime
+  knows is in `provenance` (below): hardline's, whole, under `hardline.v1.call`.
+- **`pydantic_ai_model` is no member of a model runtime**, and **`usage_counted_by` no member
+  of an agent runtime**: nothing of any port is read by its name. The `matrix.agent.end` field
+  `usage_counted_by` is gone too (`through_model_runtime`, below).
+- **`ModelRequest(prompt=..., system=...)` is gone**: a request is its `turns`
+  (`ModelRequest.from_prompt(prompt, system=...)` makes a prompt's), and `prompt` is a derived
+  read, the one user turn's text.
+- **The `model_runtime_entries` need is gone** (beta since 0.7), and `NEEDS` holds no beta
+  need. It handed a component every model runtime's registry `Entry` so that the model step
+  could name its runtime on its session rows. `model_runtimes` says that now (below): a
+  component that declared both declares `model_runtimes` alone and reads
+  `model_runtimes.type_url(name)` and `model_runtimes.drives(name)` where it read the entry's
+  `type_url` and `drives`, to pass to `call_model(..., runtime_url=..., drives=...)`. A
+  model step's session rows name its runtime's type URL and what it drives, as before.
+
+### Changed (breaking)
+
+- **`ModelRuntime.check(model, *, uses=frozenset())`**: `uses` is a set of `tools` and
+  `output`, what a call will ask of the model, so a runtime refuses at binding what it cannot
+  do on it. A model step checks `output` when its kind has a registered schema; the pydantic-ai
+  runtime checks `tools` when an agent is offered any. A runtime written for 0.9 takes `uses`.
+- **`ModelRequest` is one call in full**: `turns` (`Turn`: `role`, `content`, `tool_calls`,
+  `tool_call_id`, `is_error`), `model`, `tools` (`ToolSpec`), `output`, `max_tokens`,
+  `temperature`. **`ModelCall` gains `tool_calls`** (`ToolCall`) and **`provenance`**. A
+  `provenance` key that is not a versioned type URL is refused.
+- **The `pydantic-ai` agent runtime makes its calls on a matrix model runtime**: its config
+  names one, `model_runtime`, of `matrix.model_runtimes` (unset, the only one composed: see
+  Added); its `models` option is
+  gone, it needs `model_runtimes`, and it drives `pydantic-ai-slim` alone. Composition builds
+  model runtimes before agent runtimes. A pydantic-ai setting a call cannot carry (all but
+  `max_tokens` and `temperature`) is a `ConfigError`, never dropped; a part it cannot send
+  (an image prompt, a provider's native tool) is refused too. Its tool failures reach the
+  model runtime as tool turns with `is_error`.
+- **`call_sent` digests the request's turns, tools, model, output schema and overrides**, so
+  a `sent` from 0.9 does not match the same request under 0.10. A judge's call made through
+  `pydantic_ai_model` digests by the same rule as a step's.
+- **The `model_runtimes` need is a `ModelRuntimes`**: a read-only mapping of each model
+  runtime by name, as before, which every reader of it keeps reading as one, that also says
+  what each was built as, `type_url(name)` and `drives(name)`. A host that hands the need
+  itself, building through the registry rather than through `compose`, hands a
+  `ModelRuntimes`: subclass it and implement the mapping and both methods (ix does, for the
+  runtimes it builds when asked).
+- **`limits.deadline_s` defaults to 3600** (ruling M-O7), where it was none: each component
+  has an hour from when it starts unless the config says otherwise, so a run left alone ends.
+  `deadline_s: null` written is no deadline, for a soak run, and is told apart from unset: on
+  the run, and on one component (`limits.components.<name>.deadline_s: null`, which used to
+  mean "the run's" and now means none for that component). A component past its deadline is
+  stopped through the stop path as before, and its failure names the key to raise or set to
+  null. The plan shows the hour as matrix's default. A run that relied on no deadline writes
+  `deadline_s: null`; ix does, for its experiment runs.
+- **`RELEASE_TAG` is `matrix-v0.10.0`**: the install lines and every repair fix name it.
+- **A `matrix.extensions` entry point's name is a point its extension registers at** (ruling
+  M-DISC), and its value the extension's `register`: an extension at three points has three
+  lines naming one `register`. Discovery reads the names from the installed metadata, without
+  importing anything, and loads only the extensions that declare a point the session reads:
+  `compose` asks for matrix's six points (`MATRIX_POINTS`), `catalog` and `describe` for every
+  one, `list_runs` for `store`. A recon session no longer imports ix's registration. An
+  extension that registers at, or declares, a point its entry points do not name is
+  quarantined whole, the message naming the line to add; an entry point written for 0.9
+  (named after its distribution) is one, at its first registration. `Failure.extension` is the
+  extension's `register` (`acme.matrix_ext:register`), where it was the entry point's name.
+  matrix's own entry points name its six points.
+
+### Added
+
+- **`provenance`**, on `ModelCall` and the session row: what only the runtime that made a
+  call knows, documents keyed by type URL, each validated against the schema its package
+  registered when the session row is recorded (`ContractError` when refused).
+- **`matrix.pydantic_ai_model(runtime, model=None, *, settings=None, runtime_url=None,
+  drives=())`**: pydantic-ai's `Model` over any `ModelRuntime` (ruling M-O6); each call is a
+  session row, as a step's is.
+- **A model step's `runtime` and the pydantic-ai runtime's `model_runtime` default to the
+  only model runtime the config composes** (ruling M-RT), resolved when the step or the
+  runtime is built and never at a call. With none composed, or several, a key left unset is a
+  `missing_key` problem at its path listing them, so adding a second model runtime never
+  changes which one answers. `matrix plan` gives the name each resolved to, origin `matrix`,
+  note `the only model runtime composed`. A name given is held to the composed ones as before.
+- **`through_model_runtime`**: composition binds an agent whose runtime needs
+  `model_runtimes` so, its end event says so, and the `otel` observer counts none of its
+  tokens, which its model runtime counts.
+- **`matrix.testing.ModelRuntimeConformance`**: the suite for the model-runtime port, run
+  against the mock and every stand-in in matrix's tests and the bridge's.
+- **A registry serves a session's points**: `default_registry(points=...)` and
+  `Registry.scope` keep the entries at those points and ignore a registration at any other,
+  so an extension serving two owners' points (an ix sensor and a recon collector) loads in a
+  session of either. `Extension.points` is what an extension declares; one given in code
+  declares nothing and is trusted.
+- New exports: `Turn`, `Role`, `ToolSpec`, `ToolCall`, `Use`, `pydantic_ai_model`,
+  `MATRIX_POINTS`, `ModelRuntimes`.
+
+## 0.9.0 — 2026-11-06
+
+### Changed (breaking)
+
+- **One surface is promised: the component-author contract.** `Component`, `Context`,
+  `Inputs`, `Attribution`, the kind grammar and the one-provider rule,
+  `Registry.register` and `register_payload`, the `matrix.extensions` group, the stable
+  needs, the stop protocol and `ContractError` change only by addition; `tests/test_contract.py`
+  pins them, and `CONTRACT.md` states them. Everything else exported is public and changes
+  with its consumers in this repository, said here. The 0.6 list (the executor, the agent
+  types, composition, config keys, the record layout) is no longer promised: it named more
+  than could be kept.
+- **`ctx.sessions()` is gone.** A row that carries the sessions behind it in itself takes
+  them from a scope, `async with ctx.attributed() as behind:`, and hands itself over with
+  `sessions=behind.sessions()`. A row handed over without `sessions` still names every
+  session the component ran that no row has named yet. Its one reader was a diff around each
+  trial, which `attributed()` replaced in 0.8.
+- **`matrix describe` gives each need its type.** An entry's `needs` in `matrix.v1.extension`
+  is a list of `{name, type, summary, stability}`, from the needs table; a need of the host's
+  own has `type` and `stability` null. `Entry.describe()` gives the same. The catalog keeps
+  the names.
+- **A `compose(context=...)` key that names one of matrix's needs** (`agents`,
+  `model_runtimes`, `schemas`, `models`, `model_runtime_entries`, `name`) is a `ConfigError`:
+  composition supplies those, and a host's value silently replaced them. `cwd`, and needs of
+  the host's own, are handed over as before.
+- **Optional members are declared protocols, never found by name.** matrix checks each with
+  `isinstance`: `SupportsWarnings`, `SupportsResolved` and `SupportsAclose` on runtimes of
+  either kind, `SupportsEvents` on a store's writer, `SupportsLocation` and
+  `SupportsDamaged` on a store, `SupportsAround` and `SupportsClose` on an observer. An
+  implementation keeps the same member names and shapes, so none has to change; one whose
+  member does not match its protocol's shape fails that protocol's conformance test.
+  `location_of` and `damaged_of` return what the store gives, no longer coerced to `str`.
+  `usage_counted_by` and `pydantic_ai_model` are still read by name: they belong to the seam
+  between agent and model runtimes, which this release leaves as it is.
+- **What an agent runtime's sessions do is declared when it registers**:
+  `registry.register("agent-runtime", ..., config=..., capabilities=...)`, a pure function of
+  the validated config giving `AgentCapabilities`. A config class's method named
+  `capabilities()` declares nothing unless its registration passes it
+  (`capabilities=MyConfig.capabilities`); `capabilities` at another point, or without a
+  `config`, is a `ConfigError`. The registry imports no agent type to run.
+- **The plan reports every effective value and where it came from.** `matrix.v1.plan`'s
+  `limits` (what differed from the defaults) is gone; `settings` lists the effective value of
+  every key the run is made from, each `{path, value, origin, file, note}`: the run's limits
+  and each component's (its own where it overrides the run's, the run's where it does not),
+  the store's, every runtime's, agent's and observer's options, each component's config,
+  `definitions` and `models`. `origin` is `config`, with the `file` that set it,
+  `definition`, `extension` (an extension's own default) or `matrix` (matrix's). A default is
+  listed as one, and a `note` says what it means where the value does not: a config that
+  sets no `deadline_s` plans a run with no deadline, and says so. `matrix plan` prints the
+  same, a line each. An agent's `model`, `tools` and `max_turns` say whether its config, its
+  definition or its runtime decides them; the model a runtime picks when none is named is not
+  known to the plan.
+- **matrix's test stand-ins keep the ports they stand in for.** Three agent runtimes in the
+  OpenTelemetry tests returned a response without a `stop`, which the port forbids; they now
+  say how their session ended.
+
+### Added
+
+- **`Context`**, the protocol a component's `run(inputs, ctx)` is written against: the ten
+  members of `RunContext` that remain, declared. `RunContext` is the executor's
+  implementation, and built by hand the context of a unit test, as before. matrix's own steps
+  and `process.spawn` take a `Context`.
+- **`NEEDS` and `Need`**: the table of the shared needs composition hands an extension, each
+  with its type, what it is and its stability (`models` and `model_runtime_entries` are
+  `beta`). Composition supplies exactly these, the skill prints them, and a missing need's fix
+  says whether matrix or the host hands it over.
+- **`matrix.testing`: a conformance suite per port.** `AgentRuntimeConformance`,
+  `ConstructStoreConformance`, `ObserverConformance`, `DocumentSourceConformance`,
+  `ContextConformance` and `ComponentConformance` check what each port promises when it is
+  called, and that each optional member an implementation has keeps its protocol. Subclass
+  one in a test and say how to build yours. matrix runs each against each of its own
+  implementations and its tests' stand-ins, and ix against its own. There is none for the
+  model-runtime port.
+
 ## 0.8.0 — 2026-10-24
 
 ### Added

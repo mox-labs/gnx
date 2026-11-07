@@ -22,6 +22,7 @@ from matrix import (
     SESSION,
     ConfigError,
     Construct,
+    Context,
     ContractError,
     Executor,
     Inputs,
@@ -32,15 +33,17 @@ from matrix import (
     NotFoundError,
     Ref,
     Run,
-    RunContext,
     RunError,
     StoreError,
     default_registry,
     wire,
 )
+from matrix.testing import ConstructStoreConformance
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from matrix import ConstructStore
 
 TRIAL, READING, SEED = "acme.v1.trial", "acme.v1.reading", "acme.v1.seed"
 
@@ -51,7 +54,7 @@ class Step:
         self.provides = frozenset(provides)
         self._body = body
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> Any:
+    async def run(self, inputs: Inputs, ctx: Context) -> Any:
         return await self._body(inputs, ctx)
 
 
@@ -68,7 +71,7 @@ async def test_a_row_handed_over_is_on_disk_before_the_call_returns(tmp_path: Pa
     store = JsonlConstructStore(tmp_path)
     seen: dict[str, Any] = {}
 
-    async def trials(inputs: Inputs, ctx: RunContext) -> Any:
+    async def trials(inputs: Inputs, ctx: Context) -> Any:
         ctx.provide(TRIAL, Trial(seq=0))
         ctx.provide(TRIAL, {"seq": 1})
         # Still running, and nothing has been awaited: this is what a kill right now leaves.
@@ -91,10 +94,10 @@ async def test_a_row_handed_over_is_on_disk_before_the_call_returns(tmp_path: Pa
 
 
 async def test_a_finished_run_reads_back_with_rows_ledger_and_status(tmp_path: Path) -> None:
-    async def trials(inputs: Inputs, ctx: RunContext) -> Any:
+    async def trials(inputs: Inputs, ctx: Context) -> Any:
         return {TRIAL: [{"seq": i, "seed": inputs.one(SEED)} for i in range(2)]}
 
-    async def sense(inputs: Inputs, ctx: RunContext) -> Any:
+    async def sense(inputs: Inputs, ctx: Context) -> Any:
         return {READING: [{"seq": t["seq"], "ok": True} for t in inputs[TRIAL]]}
 
     wiring = wire(
@@ -143,7 +146,7 @@ async def test_nested_values_are_written_as_json_not_as_their_str(tmp_path: Path
         a: int
         b: str
 
-    async def give(inputs: Inputs, ctx: RunContext) -> Any:
+    async def give(inputs: Inputs, ctx: Context) -> Any:
         return {
             TRIAL: {
                 "inner": Inner(a=1, b="x"),
@@ -175,7 +178,7 @@ async def test_a_row_that_is_not_json_data_is_refused_naming_the_field(tmp_path:
     class Handle:
         pass
 
-    async def give(inputs: Inputs, ctx: RunContext) -> Any:
+    async def give(inputs: Inputs, ctx: Context) -> Any:
         try:
             ctx.provide(TRIAL, {"meta": {"handle": Handle()}})
         except ContractError as e:
@@ -235,7 +238,7 @@ def test_a_ledger_entry_whose_row_never_landed_is_reported_as_torn(tmp_path: Pat
 async def test_a_run_cut_off_between_the_two_writes_reads_back_with_its_torn_tail(
     tmp_path: Path,
 ) -> None:
-    async def trials(inputs: Inputs, ctx: RunContext) -> Any:
+    async def trials(inputs: Inputs, ctx: Context) -> Any:
         return {TRIAL: [{"seq": 0}, {"seq": 1}]}
 
     store = JsonlConstructStore(tmp_path)
@@ -275,7 +278,7 @@ def test_a_record_that_contradicts_itself_is_a_store_error() -> None:
 async def test_opening_an_existing_run_id_is_a_store_error(make: Any, tmp_path: Path) -> None:
     ran: list[str] = []
 
-    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+    async def body(inputs: Inputs, ctx: Context) -> Any:
         ran.append("ran")
 
     store = make(tmp_path)
@@ -288,7 +291,7 @@ async def test_opening_an_existing_run_id_is_a_store_error(make: Any, tmp_path: 
 
 
 async def test_the_memory_store_keeps_the_same_record() -> None:
-    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+    async def body(inputs: Inputs, ctx: Context) -> Any:
         ctx.provide(TRIAL, {"seq": 0})
         return {TRIAL: {"seq": 1}}
 
@@ -350,7 +353,7 @@ async def test_a_store_that_fails_fails_the_run_with_kind_store() -> None:
     released: list[str] = []
     stopping = asyncio.Event()
 
-    async def trials(inputs: Inputs, ctx: RunContext) -> Any:
+    async def trials(inputs: Inputs, ctx: Context) -> Any:
         ctx.defer(lambda: released.append("released"))
         ctx.provide(TRIAL, {"seq": 0})  # appends 1 and 2: its ledger entry, then the row
         try:
@@ -359,11 +362,11 @@ async def test_a_store_that_fails_fails_the_run_with_kind_store() -> None:
             caught.append(e)
             raise
 
-    async def bystander(inputs: Inputs, ctx: RunContext) -> Any:
+    async def bystander(inputs: Inputs, ctx: Context) -> Any:
         await ctx.stopping.wait()
         stopping.set()
 
-    async def sense(inputs: Inputs, ctx: RunContext) -> Any:
+    async def sense(inputs: Inputs, ctx: Context) -> Any:
         return None
 
     store = Failing(on_append=4)
@@ -400,13 +403,13 @@ async def test_a_row_handed_over_after_the_store_failed_is_refused_not_kept_in_m
     failed = asyncio.Event()
     refused: list[BaseException] = []
 
-    async def first(inputs: Inputs, ctx: RunContext) -> Any:
+    async def first(inputs: Inputs, ctx: Context) -> Any:
         try:
             ctx.provide(TRIAL, {"seq": 0})
         finally:
             failed.set()
 
-    async def second(inputs: Inputs, ctx: RunContext) -> Any:
+    async def second(inputs: Inputs, ctx: Context) -> Any:
         await failed.wait()
         try:
             ctx.provide(READING, "kept?")
@@ -427,7 +430,7 @@ async def test_a_row_handed_over_after_the_store_failed_is_refused_not_kept_in_m
 
 
 async def test_a_returned_row_or_an_input_the_store_cannot_keep_fails_the_run() -> None:
-    async def trials(inputs: Inputs, ctx: RunContext) -> Any:
+    async def trials(inputs: Inputs, ctx: Context) -> Any:
         return {TRIAL: {"seq": 0}}
 
     wiring = wire({"trials": Step(trials, requires=[SEED], provides=[TRIAL])}, inputs=[SEED])
@@ -444,7 +447,7 @@ async def test_a_returned_row_or_an_input_the_store_cannot_keep_fails_the_run() 
 
 
 async def test_a_run_that_cannot_be_finished_in_the_store_is_a_failed_run() -> None:
-    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+    async def body(inputs: Inputs, ctx: Context) -> Any:
         return None
 
     with pytest.raises(RunError) as e:
@@ -473,11 +476,11 @@ async def test_a_schema_that_raises_any_error_breaks_the_contract_and_the_run_en
     running = asyncio.Event()
     unwound: list[str] = []
 
-    async def bad(inputs: Inputs, ctx: RunContext) -> Any:
+    async def bad(inputs: Inputs, ctx: Context) -> Any:
         await running.wait()
         return {TRIAL: {"seq": -1}}
 
-    async def sibling(inputs: Inputs, ctx: RunContext) -> Any:
+    async def sibling(inputs: Inputs, ctx: Context) -> Any:
         running.set()
         try:
             await ctx.stopping.wait()
@@ -510,7 +513,7 @@ async def test_a_run_whose_record_broke_in_an_unforeseen_way_is_recorded_failed(
         def append(self, kind: str, row: Any) -> None:
             raise ConfigError("the bucket is read-only")
 
-    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+    async def body(inputs: Inputs, ctx: Context) -> Any:
         return None
 
     store = Refusing()
@@ -525,7 +528,7 @@ async def test_an_input_that_cannot_be_copied_is_refused_before_the_record_opens
 ) -> None:
     import threading
 
-    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+    async def body(inputs: Inputs, ctx: Context) -> Any:
         return None
 
     store = JsonlConstructStore(tmp_path)
@@ -536,7 +539,7 @@ async def test_an_input_that_cannot_be_copied_is_refused_before_the_record_opens
 
 
 async def test_a_jsonl_writer_refuses_a_kind_the_run_has_no_table_for(tmp_path: Path) -> None:
-    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+    async def body(inputs: Inputs, ctx: Context) -> Any:
         return None
 
     store = JsonlConstructStore(tmp_path)
@@ -905,7 +908,7 @@ async def test_the_run_directory_holds_what_the_docs_say(tmp_path: Path) -> None
     """The layout a reader without matrix relies on (data-model.md): the file names, and the
     keys of a finished ``run.json``."""
 
-    async def trials(inputs: Inputs, ctx: RunContext) -> Any:
+    async def trials(inputs: Inputs, ctx: Context) -> Any:
         return {TRIAL: {"seq": 0}}
 
     store = JsonlConstructStore(tmp_path)
@@ -1001,7 +1004,7 @@ async def test_a_failed_append_still_finishes_the_record_failed_then_closes_its_
     """After a failed append no row is appended, but the store is still asked to finish the
     record, as ``failed``; the event sink is closed after that, once the events drained."""
 
-    async def trials(inputs: Inputs, ctx: RunContext) -> Any:
+    async def trials(inputs: Inputs, ctx: Context) -> Any:
         ctx.provide(TRIAL, {"seq": 0})
 
     store = _Finishes(fail_on_append=2)  # the first row's ledger entry lands, the row does not
@@ -1013,7 +1016,7 @@ async def test_a_failed_append_still_finishes_the_record_failed_then_closes_its_
 async def test_an_unsafe_run_id_is_refused_before_anything_runs(tmp_path: Path) -> None:
     ran: list[str] = []
 
-    async def trials(inputs: Inputs, ctx: RunContext) -> Any:
+    async def trials(inputs: Inputs, ctx: Context) -> Any:
         ran.append("ran")
 
     with pytest.raises(ConfigError, match="safe"):
@@ -1023,3 +1026,14 @@ async def test_an_unsafe_run_id_is_refused_before_anything_runs(tmp_path: Path) 
             run_id="../outside",
         )
     assert ran == [] and list(tmp_path.iterdir()) == []
+
+
+class TestTheStandInStores(ConstructStoreConformance):
+    """The stores this module stands in with keep the port when they are not told to fail."""
+
+    @pytest.fixture(autouse=True, params=[Failing, _Finishes])
+    def _made(self, request: pytest.FixtureRequest) -> None:
+        self.made: type[ConstructStore] = request.param
+
+    def store(self) -> ConstructStore:
+        return self.made()

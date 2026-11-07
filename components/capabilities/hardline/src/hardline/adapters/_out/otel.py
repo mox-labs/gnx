@@ -54,7 +54,7 @@ from hardline.domain.errors import BackendError
 from hardline.domain.types import AttemptFailed, FellBack, Problem, RawCompletion
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Mapping
 
     from hardline.domain.types import CallEvent, Endpoint, Request
 
@@ -133,12 +133,12 @@ class Telemetry:
 
 
 class TracedBackend:
-    """``inner``, with one ``chat`` span and the inference metrics per call. Every other member
-    of the port, optional ones included, is ``inner``'s."""
+    """``inner``'s attempts, with one ``chat`` span and the inference metrics each. It is a
+    ``ModelBackend`` and declares nothing more: what ``inner`` can do beyond the port's two
+    members the runtime reads from ``inner`` itself, before wrapping it."""
 
-    def __init__(self, inner: Any, name: str, telemetry: Telemetry) -> None:
+    def __init__(self, inner: Any, telemetry: Telemetry) -> None:
         self._inner = inner
-        self._name = name
         self._telemetry = telemetry
 
     @property
@@ -146,30 +146,12 @@ class TracedBackend:
         modes: frozenset[str] = self._inner.structured_modes
         return modes
 
-    @property
-    def supports_tools(self) -> bool:
-        return getattr(self._inner, "supports_tools", False) is True
-
-    @property
-    def default_base_url(self) -> str | None:
-        url = getattr(self._inner, "default_base_url", None)
-        return url if isinstance(url, str) else None
-
-    def check(self, spec: Endpoint) -> Sequence[str]:
-        check = getattr(self._inner, "check", None)
-        return list(check(spec)) if callable(check) else []
-
-    async def aclose(self) -> None:
-        aclose = getattr(self._inner, "aclose", None)
-        if callable(aclose):
-            await aclose()
-
     async def complete(
         self, spec: Endpoint, request: Request, api_key: str | None
     ) -> RawCompletion:
         common = {
             "gen_ai.operation.name": "chat",
-            "gen_ai.provider.name": spec.provider or self._name,
+            "gen_ai.provider.name": spec.provider_name,
             "gen_ai.request.model": spec.model,
             **_server(spec.base_url),
         }

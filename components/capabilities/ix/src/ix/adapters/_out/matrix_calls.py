@@ -3,17 +3,17 @@
 **A trial is one model call.** A model call is not an agent session: it has no loop, no
 tools, no turns and no working directory. Reaching a ``model-call`` subject opens a
 :class:`Call` under a handle (``respondent``) in the
-:class:`~ix.adapters._out.matrix_agents.Sessions` the ``prompt`` probe shares; the probe puts
+:class:`~ix.extension.Sessions` the ``prompt`` probe shares; the probe puts
 its prompt, and the call makes one request through :meth:`matrix.ModelRuntime.call`.
 Leaving the subject closes the handle.
 
 **What makes the call is matrix's.** The call builds its runtime from the registry's
-``model-runtime`` point by name (``hardline``, ``mock``, or any model runtime installed).
-The subject must name it: there is no default, because a runtime may call a model provider,
-which is never implicit. The runtime takes the subject's ``runtime_options`` as its config,
-as written, and its ``check`` resolves the subject's ``model`` before anything starts. A
-runtime registered as a stand-in (``stand_in``: matrix's ``mock``) gives canned replies:
-its trials are marked ``simulated``.
+``model-runtime`` point by name (``matrix-hardline.v1.model-runtime``, ``mock``, or any model
+runtime installed). The subject must name it: there is no default, because a runtime may call a
+model provider, which is never implicit. The runtime takes the subject's ``runtime_options`` as its
+config, as written, and its ``check`` resolves the subject's ``model`` before anything starts. A
+runtime registered as a stand-in (``stand_in``: matrix's ``mock``) gives canned replies: its trials
+are marked ``simulated``.
 
 **What is recorded.** Each call goes through matrix's own call path
 (:func:`matrix.call_model`), as a model step's does: a ``matrix.model`` span of work, under
@@ -50,12 +50,9 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from ix.adapters._out.matrix_agents import (
     ACTIVATION,
     CANNED,
-    MODEL_RUNTIME,
     RESPONDENT,
     STAND_IN,
     TOOL_USAGE,
-    Runtimes,
-    Sessions,
     built,
     carried_out,
     released,
@@ -66,21 +63,21 @@ from ix.domain.kind import placeholders
 from ix.domain.ports import Requirement, StoodIn
 from ix.domain.problem import Problem, problem
 from ix.domain.run import HarnessError, Target
+from ix.extension import MODEL_RUNTIME
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
 
     from ix.domain.experiment import SubjectConfig
     from ix.domain.ports import Surroundings
+    from ix.extension import Runtimes, Sessions
 
 FUNCTION_TEST = "ix.v1.sensor.function-test"
 
-#: What a call carries of how it was made (what was sent, each attempt, the registry row,
-#: its session row) that no sensor reads: the usage facet keeps the facts sensors measure and
-#: report.
-_RECORD = frozenset(
-    {"native_finish_reason", "params", "attempt_log", "turns_digest", "row", "session"}
-)
+#: What a call carries that no sensor reads: the runtime's own record of how it was made
+#: (``provenance``), the tools a call that offers none asked for, and its session row. The
+#: usage facet keeps the facts sensors measure and report.
+_RECORD = frozenset({"native_finish_reason", "provenance", "tool_calls", "session"})
 
 #: The sensors a model call leaves nothing to read for, and what each would read.
 NO_TOOLS = {ACTIVATION: "whether a skill fires", TOOL_USAGE: "whether a tool is called"}
@@ -95,7 +92,7 @@ class CallOptions(BaseModel):
     #: Required, with no default: a runtime may call a model provider, so a subject names
     #: its own.
     runtime: str
-    #: A name the runtime resolves (a hardline registry name); None: its default.
+    #: A name the runtime resolves; None: its default.
     model: str | None = None
     system_prompt: str | None = None
     #: The runtime's own config, passed through as written.
@@ -105,7 +102,7 @@ class CallOptions(BaseModel):
 @dataclass
 class Call:
     """One trial's model call: the runtime it is made on, and how it is asked. A
-    :class:`~ix.adapters._out.matrix_agents.Respondent`."""
+    :class:`~ix.extension.Respondent`."""
 
     options: CallOptions
     simulated: bool
@@ -122,8 +119,8 @@ class Call:
         with built():
             runtime = self.runtimes.build(MODEL_RUNTIME, self.options.runtime, config)
             runtime.check(self.options.model)
-        request = matrix.ModelRequest(
-            prompt=prompt, model=self.options.model, system=self.options.system_prompt
+        request = matrix.ModelRequest.from_prompt(
+            prompt, model=self.options.model, system=self.options.system_prompt
         )
         url = matrix.model_runtime_type_url(self.options.runtime)
         drives = tuple(self.runtimes.drives(MODEL_RUNTIME, self.options.runtime))
@@ -199,8 +196,8 @@ def _unobservable(around: Surroundings) -> list[Problem]:
 
 class ModelCallSubject:
     """One model call per trial: see the module docstring. Offers ``respondent`` (the call's
-    handle). A :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight` and
-    a :class:`~ix.domain.ports.StandIn`."""
+    handle). A :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight`, a
+    :class:`~ix.domain.ports.StandIn` and :class:`~ix.domain.ports.ModelCalls`."""
 
     def __init__(self, sessions: Sessions, runtimes: Runtimes) -> None:
         self._sessions = sessions
@@ -237,6 +234,10 @@ class ModelCallSubject:
                 if key not in takes
             ),
         ]
+
+    def model_calls(self, options: Mapping[str, Any]) -> int:
+        """One call a trial; none on a stand-in. Raises for a runtime nothing registered."""
+        return 0 if self._runtimes.stand_in(MODEL_RUNTIME, str(options["runtime"])) else 1
 
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn:
         """The call on ``mock``: the real runtime's ``runtime_options`` set aside, the

@@ -1,0 +1,355 @@
+"""recon's errors, the problems a plan finds, and the one exit-code table.
+
+Every error has a ``kind`` that says what the caller should do next, a message that names
+what is wrong, a ``fix`` (the next command to run or the config line to change), and
+``details``: structured fields such as the archive a failed survey left. :data:`EXIT_CODES`
+gives the exit code of every kind, :data:`EXIT_MEANINGS` what each means and
+:data:`EXIT_NEXT` what to do about it; the command line, the skill text and the tests read
+these and no other. The kinds every capability CLI shares have the codes agreed in
+``components/capabilities/exit-codes.json``, and the problem record and its shared kinds
+are the ones ``components/capabilities/error-envelope.json`` agrees; the tests hold recon
+to both. recon's own kinds take codes from 10 up, one kind per code.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Literal
+
+ErrorKind = Literal[
+    "unknown",
+    "usage",
+    "config",
+    "not_found",
+    "transient",
+    "auth",
+    "conflict",
+    "run_failed",
+    "store",
+    "query",
+    "busy",
+    "stale",
+    "interrupted",
+]
+
+#: The kinds an error can have, as ``error.kind`` in the ``recon.v1.error`` envelope.
+ERROR_KINDS: tuple[ErrorKind, ...] = (
+    "unknown",
+    "usage",
+    "config",
+    "not_found",
+    "transient",
+    "auth",
+    "conflict",
+    "run_failed",
+    "store",
+    "query",
+    "busy",
+    "stale",
+    "interrupted",
+)
+
+#: The exit code of each outcome and error kind.
+EXIT_CODES: dict[str, int] = {
+    "ok": 0,
+    "unknown": 1,
+    "usage": 2,
+    "config": 3,
+    "not_found": 4,
+    "transient": 5,
+    "auth": 6,
+    "conflict": 7,
+    "run_failed": 8,
+    "store": 9,
+    "query": 10,
+    "busy": 11,
+    "stale": 12,
+    "interrupted": 130,
+}
+
+#: What each kind in :data:`EXIT_CODES` means.
+EXIT_MEANINGS: dict[str, str] = {
+    "ok": "done",
+    "unknown": "a failure recon did not classify",
+    "usage": "a bad command, flag or argument",
+    "config": "the mission config or another input is invalid",
+    "not_found": "no such mission, archive or template",
+    "transient": "every failed table failed transiently (HTTP 429, 5xx, network, a "
+    "deadline); the archive is kept, marked incomplete",
+    "auth": "a table failed on credentials (HTTP 401, 403); the archive is kept, marked incomplete",
+    "conflict": "init, or survey -c, would overwrite a different mission config",
+    "run_failed": "a table failed, and not only on credentials or transiently; the archive is "
+    "kept, marked incomplete",
+    "store": "the survey could not finish its archive; it is kept, marked incomplete",
+    "query": "the SQL failed, or reached outside the mission's archives",
+    "busy": "another recon is writing the stream, surveying the mission, or reading the "
+    "subscription",
+    "stale": "the config changed since its schedule was installed; ticks are refused",
+    "interrupted": "Ctrl-C or SIGTERM stopped the command; a survey's archive reads `ended: "
+    "stopped` (a stopped `recon stream` exits 0)",
+}
+
+#: What to do next on each kind in :data:`EXIT_CODES`.
+EXIT_NEXT: dict[str, str] = {
+    "ok": "go on: plan, survey, query, in that order",
+    "unknown": "report it as a bug in recon, with the command that raised it",
+    "usage": "correct the command; `recon <command> --help` lists its arguments",
+    "config": "fix each problem at its `path` as its `fix` says, then plan again; when "
+    "`complete` is false, more problems may follow the fix",
+    "not_found": "run the command the error's `fix` names",
+    "transient": "if a table's error names a `deadline:` or `timeout:`, raise it (a retry "
+    "fails too); else survey again later",
+    "auth": "give the failing source's auth.token (or headers_helper) a valid key, then "
+    "survey again",
+    "conflict": "add --replace to overwrite it, or choose another mission name",
+    "run_failed": "read each failed table's error and fix its cause, then plan and survey again",
+    "store": "free space where the archive is, or make it writable, then survey again",
+    "query": "correct the SQL as the error's `fix` says; for a missing table, it names the "
+    "tables there are",
+    "busy": "let it run, or stop it as the `fix` says (`kill -TERM <pid>`, the pid in "
+    "`details`), then run the command again",
+    "stale": "read what changed, then `recon schedule install <mission>`",
+    "interrupted": "run the command again",
+}
+
+#: The kinds a problem or a warning can have, as ``problems[].kind`` and ``warnings[].kind``:
+#: the shared vocabulary first, then recon's own. A consumer tolerates a kind it does not
+#: know: the set grows.
+PROBLEM_KINDS: tuple[str, ...] = (
+    "yaml_syntax",
+    "wrong_shape",
+    "unknown_key",
+    "missing_key",
+    "invalid_value",
+    "name_unknown",
+    "name_taken",
+    # a {placeholder} nothing fills
+    "unresolved",
+    # a range: that would ask the same question each step, or for both an end and a span,
+    # or deletes of a table that holds new data only; a span past max_steps; a checkpoint
+    # committed under another request
+    "range_unused",
+    "range_ambiguous",
+    "range_deletes",
+    "range_steps",
+    "checkpoint_request_changed",
+    # warnings
+    "env_unset",
+    "plugin_broken",
+    "otel_unavailable",
+    "telemetry_failed",
+    # a table came back as one record holding the list of records
+    "extract_missing",
+    # a table's file that SQL cannot read as a table
+    "table_unreadable",
+    # the survey could not write meta.yaml or mark its archive complete
+    "archive_unfinished",
+    # a table kept empty because recon could not find or keep its records: an extract: that
+    # resolves to nothing in a response that is not empty, items that are not objects,
+    # captures no filter kept
+    "extract_unresolved",
+    "records_not_objects",
+    "captures_unmatched",
+    # a table kept empty because the MCP tool or resource it reads answered with no content
+    "result_empty",
+    # events OpenTelemetry or on_event never got: a receiver was slower than the survey
+    "events_dropped",
+    # a receiver of a survey's events had not returned from one when the survey ended
+    "telemetry_stuck",
+    # what a survey that died while making its archive left behind, unlisted
+    "archive_abandoned",
+    # records of a stream that arrived and were dropped, one warning a cause (a full buffer,
+    # one too large, a stop at once), at the path of the key that governs it
+    "records_dropped",
+    # a stream's source had not returned its next record when the stream stopped
+    "source_stuck",
+    # a stream that keeps every window because its entry sets no retain:
+    "retain_unset",
+    # a query of a stream that read more windows than it is cheap to open
+    "windows_many",
+    # a paginated table's crawl stopped short, so the table is truncated: at its cap of
+    # pages, at a token it had used already, or at empty pages in a row that still linked on
+    "paginate_pages",
+    "paginate_loop",
+    "paginate_empty",
+    # a stream's crawl that went on from an earlier run and could not as it was: the source
+    # refused the resumed page's token, so it began again; or that page moved under it
+    "paginate_restarted",
+    "paginate_shifted",
+    # a stream's crawl begun again at one page in two windows in a row: it gets no further
+    "paginate_starved",
+    # a deadline shorter than the least time a crawl takes at its source's rate limit
+    "deadline_short",
+    # a table's deletes asked for and not told: its crawl cut short, keyless or ambiguous records
+    "deletes_withheld",
+    # a table's changes that could not be told: the table kept, compared again next time
+    "changes_failed",
+    # a join that failed as it closed, once its change table was sealed: the rows stand
+    "join_unclosed",
+    # a mission's config changed since its schedule was installed: its ticks are refused
+    "config_changed",
+    # a scheduler that cannot keep the schedule's missed: (cron runs no missed tick)
+    "missed_ignored",
+    # ticks skipped in a row because the one before still ran: the survey outlasts every
+    "schedule_overrun",
+    # a mission's directory or file that users other than its owner can reach
+    "mission_exposed",
+    # a scheduled mission's credential named as env:NAME, which no tick's environment holds
+    "env_unscheduled",
+    # a scheduled mission's npx or uvx package with no exact version: fetched anew every tick
+    "package_unpinned",
+    # a subscription's delivery: a row its command failed, given again at the next; a row set
+    # aside after its last attempt, so the rows after it go on; the subscription held by
+    # another consumer; archives retain: removed before their rows were delivered
+    "delivery_failed",
+    "delivery_dead_lettered",
+    "subscription_busy",
+    "changes_retired",
+    # a subscription whose unacked change rows hold back archives retain: would remove
+    "subscription_behind",
+    # a range's backlog past one run, nothing new past settle, a fixed range collected to its
+    # end, a --range over source time already committed
+    "range_behind",
+    "range_current",
+    "range_complete",
+    "range_overlaps",
+)
+
+
+@dataclass(frozen=True)
+class Problem:
+    """One finding in a mission config, located by a path dotted from its root
+    (``collectors.2.type``), or a warning about the run it describes.
+
+    ``allowed`` lists the legal values where the set is closed; ``got`` is the value that was
+    written, when it is a scalar worth quoting back; ``source`` names the file the problem is
+    in when it is not the config the command was given.
+    """
+
+    path: str
+    message: str
+    kind: str = "invalid_value"
+    fix: str = ""
+    got: str | int | float | bool | None = None
+    allowed: tuple[str, ...] = ()
+    source: str = ""
+
+    def __str__(self) -> str:
+        return f"{self.path}: {self.message}" if self.path else self.message
+
+    def document(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "kind": self.kind,
+            "message": self.message,
+            "fix": self.fix,
+            "allowed": list(self.allowed),
+            "got": self.got,
+            "source": self.source,
+        }
+
+
+class ReconError(Exception):
+    """Base for every error recon raises on purpose.
+
+    ``complete`` is false when checking stopped before every problem was found.
+    """
+
+    kind: ErrorKind = "unknown"
+    fix: str | None = None
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: ErrorKind | None = None,
+        fix: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        if kind is not None:
+            self.kind = kind
+        if fix is not None:
+            self.fix = fix
+        self.details: dict[str, Any] = dict(details or {})
+        self.problems: list[Problem] = []
+        self.complete = True
+
+    @property
+    def message(self) -> str:
+        return str(self.args[0]) if self.args else type(self).__name__
+
+    def __str__(self) -> str:
+        return self.message
+
+    @property
+    def exit_code(self) -> int:
+        return EXIT_CODES[self.kind]
+
+
+class UsageError(ReconError):
+    """A command was given a flag, an argument or a name it does not take."""
+
+    kind: ErrorKind = "usage"
+
+
+class ConfigError(ReconError, ValueError):
+    """Invalid input. ``problems`` lists every finding, not just the first; ``complete`` is
+    false when a finding stopped the checks that would have found more."""
+
+    kind: ErrorKind = "config"
+
+    def __init__(
+        self,
+        message: str,
+        problems: list[Problem] | None = None,
+        *,
+        fix: str | None = None,
+        complete: bool = True,
+    ) -> None:
+        super().__init__(message, fix=fix)
+        self.problems = list(problems or [])
+        self.complete = complete
+
+
+class NotFoundError(ReconError, KeyError):
+    """A named mission, archive or template does not exist."""
+
+    kind: ErrorKind = "not_found"
+
+
+class ConflictError(ReconError):
+    """The operation would overwrite something that differs from what it would write."""
+
+    kind: ErrorKind = "conflict"
+
+
+class QueryError(ReconError):
+    """SQL against an archive failed."""
+
+    kind: ErrorKind = "query"
+
+
+class CollectionError(ReconError):
+    """Collection failed. ``kind`` says whether retrying (transient) or a new key (auth)
+    helps; any other failure is ``run_failed``, or ``config`` when the mission must change."""
+
+    kind: ErrorKind = "run_failed"
+
+
+class NoRecordsError(CollectionError):
+    """A collector found nothing to keep, for a reason worth saying: an ``extract:`` that
+    resolves to nothing in a response that is not empty, items that are not objects,
+    captures no filter kept, a tool that answered with no content. A source that had nothing
+    says nothing; this is the other case.
+
+    Raised before any record is yielded. The survey then keeps the table, empty, and warns
+    with the message and ``fix`` as a ``problem_kind`` problem at ``collectors.<i>.<field>``;
+    raised after a record, it fails the table as ``run_failed``, since keeping an empty
+    table would drop what came first. A collector type of any package may raise it.
+    """
+
+    def __init__(self, message: str, *, problem_kind: str, field: str, fix: str) -> None:
+        super().__init__(message, fix=fix)
+        self.problem_kind = problem_kind
+        self.field = field

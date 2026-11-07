@@ -19,10 +19,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import matrix
+import matrix_hardline
 import pytest
 import yaml
 from click.testing import CliRunner
 from matrix.adapters._out.observers.otel import OtelObserver
+from matrix.testing import AgentRuntimeConformance
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -33,7 +35,7 @@ from ix.adapters._in.cli import main
 from ix.adapters._out.matrix_agents import Loop
 from ix.adapters._out.otel_tracing import OtelTracer
 from ix.composition import Root, using
-from ix.composition.extension import register
+from ix.composition.entry_point import register
 from ix.composition.settings import IxSettings
 
 if TYPE_CHECKING:
@@ -51,6 +53,10 @@ type CommandsOn = Callable[[Root], Root]
 def commands_on() -> Iterator[CommandsOn]:
     with ExitStack() as stack:
         yield lambda root: stack.enter_context(using(root))
+
+
+#: The model runtime that calls a model, as an experiment names it: the bridge's type URL.
+HARDLINE = matrix_hardline.TYPE_URL
 
 
 def _settings(**fields: Any) -> matrix.Config[IxSettings]:
@@ -93,7 +99,13 @@ def _registry(answer: Callable[[str], matrix.AgentResponse]) -> matrix.Registry:
         runtime.answer = answer
         return runtime
 
-    registry.register("agent-runtime", SCRIPTED, build, config=ScriptedConfig)
+    registry.register(
+        "agent-runtime",
+        SCRIPTED,
+        build,
+        config=ScriptedConfig,
+        capabilities=ScriptedConfig.capabilities,
+    )
     return registry
 
 
@@ -389,7 +401,13 @@ def _mounting() -> matrix.Registry:
         runtime.answer = _fires()
         return runtime
 
-    registry.register("agent-runtime", MOUNTING, build, config=MountingConfig)
+    registry.register(
+        "agent-runtime",
+        MOUNTING,
+        build,
+        config=MountingConfig,
+        capabilities=MountingConfig.capabilities,
+    )
     return registry
 
 
@@ -545,7 +563,9 @@ class TestAVerdictIsTiedToWhatItJudged:
         dirty = root.run(lab, exploratory=True).provenance
         assert dirty is not None and (dirty.commit, dirty.dirty) == (commit, True)
         assert dirty.checkout() == f"commit {commit[:12]} (dirty)"
-        assert set(dirty.versions) == {"ix", "matrix", "hardline"}
+        # Changed requirement (I-3): ix named hardline among the versions it records; it now
+        # records its own, matrix's, and those each installed runtime declares it drives.
+        assert set(dirty.versions) == {"ix", "matrix", "claude-agent-sdk", "pydantic-ai-slim"}
         assert dirty.versions["matrix"] == importlib.metadata.version("matrix")
         assert MOUNTING in {runtime.type_url for runtime in dirty.runtimes}
 
@@ -572,7 +592,12 @@ class TestAVerdictIsTiedToWhatItJudged:
             return runtime
 
         registry.register(
-            "agent-runtime", driving, build, config=ScriptedConfig, drives=("pydantic", "acme-gone")
+            "agent-runtime",
+            driving,
+            build,
+            config=ScriptedConfig,
+            capabilities=ScriptedConfig.capabilities,
+            drives=("pydantic", "acme-gone"),
         )
         lab = _routing(
             tmp_path, subjects={"catalog": {"kind": "agent-session", "runtime": driving}}
@@ -617,13 +642,13 @@ class Oneshot:
 
     answer: Callable[[str], str]
 
-    def check(self, model: str | None) -> None:
+    def check(self, model: str | None, *, uses: frozenset[str] = frozenset()) -> None:
         if model not in (None, "one-1"):
             raise matrix.ConfigError(f"oneshot has no model {model!r}", fix="model: one-1")
 
     async def call(self, request: matrix.ModelRequest) -> matrix.ModelCall:
         return matrix.ModelCall(
-            text=self.answer(request.prompt), name="one-1", model="one-1", family="acme",
+            text=self.answer(request.prompt or ""), name="one-1", model="one-1", family="acme",
             usage=matrix.TokenUsage(input_tokens=12, output_tokens=3), request_id="r-1",
             latency_ms=40,
         )  # fmt: skip
@@ -640,7 +665,9 @@ def _third_parties() -> matrix.Registry:
     def judges(task: str) -> matrix.AgentResponse:
         if "Rubric:" not in task:
             return fires(task)
-        return matrix.AgentResponse(content='{"score": 0.6}', num_turns=1, family="scripted")
+        return matrix.AgentResponse(
+            content='{"score": 0.6}', num_turns=1, stop="completed", family="scripted"
+        )
 
     registry = _registry(judges)
 
@@ -852,12 +879,20 @@ def _pooled(log: list[list[tuple[str, object]]]) -> matrix.Registry:
     def agent(config: ScriptedConfig) -> PooledAgent:
         runtime = PooledAgent(log)
         runtime.answer = lambda task: matrix.AgentResponse(
-            content='{"score": 0.6}' if "Rubric:" in task else "BANANA", num_turns=1
+            content='{"score": 0.6}' if "Rubric:" in task else "BANANA",
+            num_turns=1,
+            stop="completed",
         )
         return runtime
 
     registry.register("model-runtime", POOLED_MODEL, model)
-    registry.register("agent-runtime", POOLED_AGENT, agent, config=ScriptedConfig)
+    registry.register(
+        "agent-runtime",
+        POOLED_AGENT,
+        agent,
+        config=ScriptedConfig,
+        capabilities=ScriptedConfig.capabilities,
+    )
     return registry
 
 
@@ -925,7 +960,13 @@ def _sandboxed() -> matrix.Registry:
         runtime.answer = _fires()
         return runtime
 
-    registry.register("agent-runtime", SANDBOXED, build, config=SandboxConfig)
+    registry.register(
+        "agent-runtime",
+        SANDBOXED,
+        build,
+        config=SandboxConfig,
+        capabilities=SandboxConfig.capabilities,
+    )
     return registry
 
 
@@ -975,7 +1016,8 @@ class TestCapabilitiesAreAsked:
     def test_the_pydantic_ai_runtime_loads_no_skills_and_says_so(self, tmp_path: Path) -> None:
         """pydantic-ai has no skills: skills given to a session on it can never fire, and an
         activation sensor on it has none to see, whatever its options are called."""
-        session = {"kind": "agent-session", "runtime": "pydantic-ai"}
+        session = {"kind": "agent-session", "runtime": "pydantic-ai",
+                   "runtime_options": {"model_runtime": "m"}}  # fmt: skip
         skilled = {**session, "skills": ["skills/review"]}
         assert self._validated(tmp_path / "a", skilled) == {("subjects.it.skills", "unobservable")}
         assert self._validated(tmp_path / "b", session, sensors=[{"kind": "activation"}]) == {
@@ -1004,13 +1046,25 @@ class TestASkillToolNobodyNames:
     skill fires read every ``must_trigger`` probe as not fired, a confident ``fails`` and a
     perfect score on the decoys, and validate said nothing."""
 
-    @pytest.mark.parametrize("config", [SilentConfig, ToollessConfig])
+    @pytest.mark.parametrize(
+        ("config", "capabilities"),
+        [(SilentConfig, None), (ToollessConfig, ToollessConfig.capabilities)],
+    )
     def test_activation_is_unobservable_until_the_tool_is_named(
-        self, tmp_path: Path, config: type[BaseModel]
+        self,
+        tmp_path: Path,
+        config: type[BaseModel],
+        capabilities: Callable[[Any], matrix.AgentCapabilities] | None,
     ) -> None:
         registry = _third_parties()
         url = "acme.v1.agent-runtime.quiet"
-        registry.register("agent-runtime", url, lambda config: Scripted(), config=config)
+        registry.register(
+            "agent-runtime",
+            url,
+            lambda config: Scripted(),
+            config=config,
+            capabilities=capabilities,
+        )
         session = {"kind": "agent-session", "runtime": url}
         root = Root(registry=registry, settings=_settings())
         lab = _either(tmp_path / "a", session, routing=True, sensors=[{"kind": "activation"}])
@@ -1054,7 +1108,9 @@ class Elsewhere:
         )
         skills = sorted(path.name for path in (self.cwd / "agent" / "skills").glob("*"))
         calls = tuple({"name": "use_skill", "input": {"skill": skill}} for skill in skills)
-        return matrix.AgentResponse(content="ok", tool_calls=calls, num_turns=1, family="acme")
+        return matrix.AgentResponse(
+            content="ok", tool_calls=calls, num_turns=1, stop="completed", family="acme"
+        )
 
 
 def _elsewhere() -> matrix.Registry:
@@ -1063,7 +1119,14 @@ def _elsewhere() -> matrix.Registry:
     def build(config: ElsewhereConfig, *, cwd: str | None = None) -> Elsewhere:
         return Elsewhere(cwd or ".")  # the preflight builds it with no directory
 
-    registry.register("agent-runtime", ELSEWHERE, build, config=ElsewhereConfig, needs={"cwd"})
+    registry.register(
+        "agent-runtime",
+        ELSEWHERE,
+        build,
+        config=ElsewhereConfig,
+        capabilities=ElsewhereConfig.capabilities,
+        needs={"cwd"},
+    )
     return registry
 
 
@@ -1120,22 +1183,31 @@ PYDANTIC_AI = "matrix.v1.agent-runtime.pydantic-ai"
 class TestASecondRealAgentRuntime:
     """matrix's ``pydantic-ai`` runtime is the second agent runtime that runs a model's loop,
     and ix names it in an ``agent-session`` subject as it names ``claude-sdk``: by
-    its registered name, its options declared by its config. Here its model is hardline's
-    mock backend, a stand-in row, and its tool a function in this module: no model is
+    its registered name, its options declared by its config. Its calls are made on a model
+    runtime matrix's config names (``matrix.model_runtimes``), here hardline through the bridge
+    on its mock backend, a stand-in row, and its tool a function in this module: no model is
     called, and the session's loop, tool call included, runs for real."""
 
     def test_an_agent_session_runs_on_it_with_its_tools_and_its_facts(self, tmp_path: Path) -> None:
         registry = matrix.default_registry(discover=False)
         register(registry)
-        root = Root(registry=registry, settings=_settings())
+        matrix_hardline.register(registry)
         asks = {"tool_calls": [{"name": "lookup", "arguments": '{"word": "banana"}'}]}
         row = {"backend": "mock", "model": "m-1", "family": "stand",
                "options": {"script": [asks, "BANANA, a long yellow fruit"]}}  # fmt: skip
+        named = {"q": {"type": HARDLINE, "models": {"models": {"q": row}}}}
+        root = Root(
+            registry=registry,
+            settings=matrix.Config[IxSettings](
+                client=IxSettings(),
+                matrix=matrix.MatrixConfig.model_validate({"model_runtimes": named}),
+            ),
+        )
         session = {
             "kind": "agent-session",
             "runtime": "pydantic-ai",
             "runtime_options": {
-                "models": {"models": {"q": row}},
+                "model_runtime": "q",
                 "default_model": "q",
                 "tools": {"lookup": f"{__name__}:lookup"},
             },
@@ -1154,7 +1226,45 @@ class TestASecondRealAgentRuntime:
         assert {(u["runtime"], u["family"]) for u in usage} == {(PYDANTIC_AI, "stand")}
         sessions = _session_rows(report)
         assert {(s["runtime"], s["turns"]) for s in sessions} == {(PYDANTIC_AI, 2)}
-        assert {tuple(s["drives"]) for s in sessions} == {("pydantic-ai-slim", "hardline")}
+        # Changed requirement: the session's runtime drives pydantic-ai alone; hardline is driven
+        # by the model runtime its calls are made on, which records its own calls.
+        assert {tuple(s["drives"]) for s in sessions} == {("pydantic-ai-slim",)}
+
+
+def test_a_runtime_that_needs_the_model_runtimes_is_handed_them_as_the_need_declares() -> None:
+    """ix hands a runtime that needs ``model_runtimes`` the need as matrix declares it, a
+    ``matrix.ModelRuntimes``: each model runtime matrix's config names, and what it is built
+    as, so a session row made on one can name it."""
+    from matrix.adapters._out.runtime.mock import (
+        MockAgentRuntime,
+        MockModelRuntime,
+        MockModelRuntimeConfig,
+    )
+
+    from ix.composition import _Runtimes
+
+    handed: list[matrix.ModelRuntimes] = []
+
+    def capture(*, model_runtimes: matrix.ModelRuntimes) -> MockAgentRuntime:
+        handed.append(model_runtimes)
+        return MockAgentRuntime()
+
+    url = "acme.v1.model-runtime.echo"
+    registry = matrix.default_registry(discover=False)
+    registry.register(
+        "agent-runtime", "acme.v1.agent-runtime.capture", capture, needs={"model_runtimes"}
+    )
+    registry.register(
+        "model-runtime", url, MockModelRuntime, config=MockModelRuntimeConfig, drives=("acme",)
+    )
+    settings = matrix.MatrixConfig.model_validate({"model_runtimes": {"e": {"type": url}}})
+    _Runtimes(registry, lambda: settings).build(
+        "agent-runtime", "acme.v1.agent-runtime.capture", {}
+    )
+    [named] = handed
+    assert isinstance(named, matrix.ModelRuntimes) and list(named) == ["e"]
+    assert (named.type_url("e"), named.drives("e")) == (url, ("acme",))
+    assert isinstance(named["e"], MockModelRuntime)
 
 
 class Hanging(Scripted):
@@ -1225,7 +1335,7 @@ class TestADryRun:
         )
         data = yaml.safe_load((lab / "experiment.yaml").read_text())
         data["sensors"] = [
-            {"kind": "judge", "model_runtime": "hardline", "rubric": "Did it review the diff?"}
+            {"kind": "judge", "model_runtime": HARDLINE, "rubric": "Did it review the diff?"}
         ]
         data["metrics"] = ["judged_score"]
         (lab / "experiment.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
@@ -1252,7 +1362,7 @@ class TestADryRun:
         model-runtime point: no hardline model is resolved or called."""
         lab = _either(
             tmp_path,
-            {"kind": "model-call", "runtime": "hardline", "model": "nowhere",
+            {"kind": "model-call", "runtime": HARDLINE, "model": "nowhere",
              "runtime_options": {"temperature": 0}},
         )  # fmt: skip
         data = yaml.safe_load((lab / "experiment.yaml").read_text())
@@ -1267,7 +1377,7 @@ class TestADryRun:
         (estimate,) = [e for e in report.analysis.estimates if e.metric == "text_matched"]
         assert estimate.value == pytest.approx(0.5)
         usage = [row["observations"]["usage"] for row in _rows(report, "ix.v1.interaction")]
-        assert {(row["runtime"], row["backend"], row["simulated"]) for row in usage} == {
+        assert {(row["runtime"], row["family"], row["simulated"]) for row in usage} == {
             ("matrix.v1.model-runtime.mock", "mock", True)
         }
 
@@ -1326,7 +1436,13 @@ def _listening(heard: list[tuple[str | None, str]]) -> matrix.Registry:
         runtime.answer, runtime.heard = _fires(), heard
         return runtime
 
-    registry.register("agent-runtime", SCRIPTED, build, config=ScriptedConfig)
+    registry.register(
+        "agent-runtime",
+        SCRIPTED,
+        build,
+        config=ScriptedConfig,
+        capabilities=ScriptedConfig.capabilities,
+    )
     return registry
 
 
@@ -1455,7 +1571,8 @@ class TestAPromptReachesTheAgentAsWritten:
             'You said ok; quote {response} as {"k": {"v": 1}} for {{user}} at {size}.'
         }
         until = "{{response}} {{done}} {}"
-        assert Loop(strategy="self-review", until=until).until == "{response} {{done}} {}"
+        loop = Loop(strategy="self-review", rounds=2, prompt="p", until=until, test_timeout="1s")
+        assert loop.until == "{response} {{done}} {}"
 
     def test_a_factor_named_as_a_round_fills_leaves_the_rounds_escape_to_the_round(
         self, tmp_path: Path
@@ -1593,11 +1710,10 @@ class TestTheLiveGuardIsOnIxsPath:
     ) -> None:
         row = {"backend": "openai-compat", "model": "q-1", "family": "q",
                "base_url": "http://127.0.0.1:9/v1"}  # fmt: skip
-        settings = matrix.Config[IxSettings](
-            client=IxSettings(), matrix=matrix.MatrixConfig(models={"models": {"q": row}})
-        )
-        lab = _either(tmp_path, {"kind": "model-call", "runtime": "hardline", "model": "q"})
-        report = Root(settings=settings).run(lab, exploratory=True)
+        options = {"models": {"models": {"q": row}}}
+        call = {"kind": "model-call", "runtime": HARDLINE, "model": "q", "runtime_options": options}
+        lab = _either(tmp_path, call)
+        report = Root(settings=_settings()).run(lab, exploratory=True)
         refused = list(refused_live_calls)
         refused_live_calls.clear()  # before anything can fail: what is left fails the test
         assert report.trials.carried_out == 10
@@ -1683,7 +1799,7 @@ class Throttled:
     """A model runtime whose every call is rate limited after one attempt that answered:
     what a provider out of quota looks like, with what the attempts cost."""
 
-    def check(self, model: str | None) -> None:
+    def check(self, model: str | None, *, uses: frozenset[str] = frozenset()) -> None:
         return None
 
     async def call(self, request: matrix.ModelRequest) -> matrix.ModelCall:
@@ -1693,10 +1809,7 @@ class Throttled:
             reason="rate_limited",
             call=matrix.ModelCall(
                 usage=spent,
-                attempt_log=(
-                    matrix.CallAttempt(name="t", usage=spent, latency_ms=5),
-                    matrix.CallAttempt(name="t", reason="rate_limit", latency_ms=1),
-                ),
+                provenance={"acme.v1.attempts": {"attempts": [{"ok": True}, {"ok": False}]}},
             ),
         )
 
@@ -1709,8 +1822,8 @@ def _judged_calls(tmp_path: Path) -> ix.Report:
     """A dry run of a model-call subject judged by a model judge: both on matrix's mock."""
     lab = _either(
         tmp_path,
-        {"kind": "model-call", "runtime": "hardline", "model": "nowhere"},
-        sensors=[{"kind": "judge", "model_runtime": "hardline", "rubric": "Helpful."}],
+        {"kind": "model-call", "runtime": HARDLINE, "model": "nowhere"},
+        sensors=[{"kind": "judge", "model_runtime": HARDLINE, "rubric": "Helpful."}],
         metrics=["judged_score"],
     )
     return Root(settings=_settings()).run(lab, dry_run=True)
@@ -1743,9 +1856,8 @@ class TestAVerdictTracesToTheModelThatAnswered:
                 mock, "mock", "stop",
             )  # fmt: skip
             prompt = interaction["observations"]["response"]["prompt"]
-            assert subject["sent"] == matrix.digest(
-                {"prompt": prompt, "system": None, "model": "nowhere", "output": None}
-            )
+            asked = matrix.ModelRequest.from_prompt(prompt, model="nowhere")
+            assert subject["sent"] == matrix.call_sent(asked)  # matrix's one digest rule
             assert by != answered
 
     def test_each_rows_ledger_entry_names_the_sessions_the_row_names(self, tmp_path: Path) -> None:
@@ -1811,7 +1923,8 @@ class TestAVerdictTracesToTheModelThatAnswered:
             (behind,) = interaction["sessions"]
             failed = sessions[behind]
             assert (failed["status"], failed["reason"]) == ("failed", "rate_limited")
-            assert failed["usage"]["input_tokens"] == 9 and len(failed["attempt_log"]) == 2
+            assert failed["usage"]["input_tokens"] == 9
+            assert len(failed["provenance"]["acme.v1.attempts"]["attempts"]) == 2
 
 
 class _RecorderConfig(BaseModel):
@@ -1840,7 +1953,9 @@ class TestFactorsDriveAgentSettings:
 
             def answer(task: str) -> matrix.AgentResponse:
                 asked.append(task)
-                return matrix.AgentResponse(content=config.default or "a draft", num_turns=1)
+                return matrix.AgentResponse(
+                    content=config.default or "a draft", num_turns=1, stop="completed"
+                )
 
             runtime.answer = answer
             return runtime
@@ -1910,7 +2025,9 @@ class TestAReportCallsNoModel:
         def answer(task: str) -> matrix.AgentResponse:
             if "Rubric:" in task:
                 judged.append(task)
-                return matrix.AgentResponse(content='{"score": 0.9, "reason": "fine"}')
+                return matrix.AgentResponse(
+                    content='{"score": 0.9, "reason": "fine"}', stop="completed"
+                )
             return _fires()(task)
 
         registry = _registry(answer)
@@ -2165,7 +2282,13 @@ def _cautious_registry(answer: Callable[[str], matrix.AgentResponse]) -> matrix.
         runtime.answer = answer
         return runtime
 
-    registry.register("agent-runtime", SCRIPTED, build, config=ScriptedConfig)
+    registry.register(
+        "agent-runtime",
+        SCRIPTED,
+        build,
+        config=ScriptedConfig,
+        capabilities=ScriptedConfig.capabilities,
+    )
     return registry
 
 
@@ -2334,3 +2457,46 @@ class TestTheSecondDrive:
         assert shown.exit_code == 0, shown.output
         assert "cannot discriminate" not in shown.stdout and "Screen" not in shown.stdout
         assert ix.run(lab, dry_run=True).screen == ()
+
+
+def _scripted(tmp_path: Path) -> Scripted:
+    return Scripted()
+
+
+def _pooled_agent(tmp_path: Path) -> Scripted:
+    return PooledAgent([])
+
+
+def _listening_runtime(tmp_path: Path) -> Scripted:
+    runtime = Listening()
+    runtime.heard = []
+    return runtime
+
+
+def _hanging(tmp_path: Path) -> Scripted:
+    return Hanging()
+
+
+def _cautious(tmp_path: Path) -> Scripted:
+    return Cautious()
+
+
+def _elsewhere_runtime(tmp_path: Path) -> Elsewhere:
+    Elsewhere.seen = []
+    return Elsewhere(str(tmp_path))
+
+
+class TestTheStandInAgentRuntimes(AgentRuntimeConformance):
+    """Each agent runtime this module stands in with keeps matrix's port, answering as the
+    tests answer (``_fires``). ``Hanging`` hangs on a hard task only, and this one is not."""
+
+    @pytest.fixture(autouse=True, params=[_scripted, _pooled_agent, _listening_runtime,
+                                          _hanging, _cautious, _elsewhere_runtime])  # fmt: skip
+    def _made(self, request: pytest.FixtureRequest, tmp_path: Path) -> None:
+        made = request.param(tmp_path)
+        if isinstance(made, Scripted):
+            made.answer = _fires()
+        self.made: matrix.AgentRuntime = made
+
+    def runtime(self) -> matrix.AgentRuntime:
+        return self.made

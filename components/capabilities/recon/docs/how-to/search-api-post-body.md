@@ -9,7 +9,7 @@ This walkthrough uses **Exa** (neural search) because the auth is simple and the
 Install recon from the gnx repository (see [first-survey.md](./first-survey.md) for an editable install from a checkout):
 
 ```bash
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.16.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.19.1#subdirectory=components/capabilities/recon"
 recon --version
 ```
 
@@ -83,13 +83,13 @@ Expected output:
 ```
 1 run(s) from 1 collector(s), 1 source(s)
   probe: 1 records
-/Users/you/project/.recon/exa-discovery/archive/2026-04-19-113022-123456
+2026-04-19-113022-123456
 ```
 
 ## Stage 2 — Inspect the raw shape
 
 ```bash
-cat .recon/exa-discovery/archive/*/probe.jsonl | jq .
+recon query exa-discovery "SELECT json FROM json.probe" --json | jq -r '.rows[].json' | jq .
 ```
 
 Exa returns records shaped like:
@@ -141,7 +141,7 @@ Re-run on the same one-record sample:
 
 ```bash
 recon survey exa-discovery
-cat .recon/exa-discovery/archive/*/probe.jsonl | jq .
+recon query exa-discovery "SELECT * FROM probe" --json | jq '.rows'
 ```
 
 Uniform columns, populated. If a path was wrong, the field would be `null` — fix and re-run. Iteration is cheap because `numResults: 1` keeps the probe one request.
@@ -194,7 +194,7 @@ recon survey exa-discovery
 ```
 1 run(s) from 1 collector(s), 1 source(s)
   neural-search: 15 records
-/Users/you/project/.recon/exa-discovery/archive/2026-04-19-114510-654321
+2026-04-19-114510-654321
 ```
 
 ## Stage 5 — Query

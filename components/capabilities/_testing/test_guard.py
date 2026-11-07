@@ -143,10 +143,18 @@ async def test_ix_loading_a_remote_target_is_refused(
 ) -> None:
     # The route a test of ix's http-load takes: its k6 adapter, through matrix's process groups.
     from ix.adapters._out.k6_load import K6Load
+    from ix.adapters._out.matrix_documents import KindFiles
     from ix.adapters._out.matrix_process import MatrixLauncher
+    from ix.composition import type_url_problem
+    from ix.domain.kind import kinds
     from ix.domain.run import Target
 
-    options = {"target": URL, "load_model": "closed", "concurrency": 1, "duration": "1s"}
+    written = {"target": URL, "load_model": "closed", "concurrency": 1, "duration": "1s"}
+    # As a run gives an adapter its options: each default the kind declares filled in.
+    load = kinds(KindFiles(packages=["ix.builtin.kinds"]).files(), grammar=type_url_problem)
+    declared = load.get("probe", "http-load")
+    assert declared is not None
+    options = {**declared.defaults(written), **written}
     with pytest.raises(AssertionError, match="loopback"):
         await K6Load(MatrixLauncher(), binary=_k6(tmp_path)).apply(
             options, Target(subject="remote"), seed=0

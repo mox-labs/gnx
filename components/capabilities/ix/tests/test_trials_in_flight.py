@@ -35,11 +35,11 @@ from click.testing import CliRunner
 from ix_fakes import LOG, FakeSubject, FakeTiming, experiment, fake_registry
 from matrix import (
     TASK,
+    Context,
     Executor,
     JsonlConstructStore,
     Limits,
     MatrixConfig,
-    RunContext,
     Session,
     compose,
     digest,
@@ -128,7 +128,7 @@ class TestEachTrialNamesItsOwnSessions:
             requires = frozenset({TASK})
             provides = frozenset({schema.INTERACTION})
 
-            async def run(self, inputs: Any, ctx: RunContext) -> None:
+            async def run(self, inputs: Any, ctx: Context) -> None:
                 kit = _kit(_Answering())
                 async with asyncio.TaskGroup() as group:
                     running_now = [
@@ -166,7 +166,7 @@ class TestEachTrialNamesItsOwnSessions:
             requires = frozenset({TASK})
             provides = frozenset({schema.INTERACTION})
 
-            async def run(self, inputs: Any, ctx: RunContext) -> None:
+            async def run(self, inputs: Any, ctx: Context) -> None:
                 for trial in trials:
                     interaction = await running.invoke(trial, setup, _kit(_Answering()), ctx)
                     landed.append(interaction)
@@ -276,11 +276,16 @@ class TestTheWidthIsAConditionOfTheRun:
         examined = ix.application.experiments.examine(
             yaml.safe_load((folder / "experiment.yaml").read_text()), vocabulary
         )
-        with pytest.raises(ix.UsageError, match="changed for this run"):
+        # The rule is checked in one place, ``prepare``: called directly, it refuses with the
+        # same kind, flag and fix as the command does.
+        note = "trials_in_flight: 3 in place of 1 (--trials-in-flight)"
+        with pytest.raises(ix.UsageError, match="--trials-in-flight 3 changes the design") as held:
             running.prepare(
                 examined, vocabulary, None, run="r", base=str(folder), now="", version="",
-                overridden=("trials_in_flight: 3 in place of 1 (--trials-in-flight)",),
+                overridden=(running.Override("--trials-in-flight", "trials_in_flight", 3, note),),
             )  # fmt: skip
+        assert held.value.details == {"path": "--trials-in-flight", "value": 3}
+        assert "--exploratory --trials-in-flight N" in str(held.value.fix)
 
 
 class TestAWidthIsPlannedBeforeItIsTried:
@@ -996,7 +1001,7 @@ def _sensed(
         requires = frozenset({TASK})
         provides = frozenset({schema.READING})
 
-        async def run(self, inputs: Any, ctx: RunContext) -> None:
+        async def run(self, inputs: Any, ctx: Context) -> None:
             found.extend(
                 await running.sense(setup, kit, trials=trials, interactions=interactions, scope=ctx)
             )

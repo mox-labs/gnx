@@ -24,10 +24,10 @@ from recon.adapters._in.cli import main
 from recon.adapters._out import otel_telemetry
 from recon.adapters._out.http_requester import HttpRequester
 from recon.adapters._out.otel_telemetry import OtelEvents, export_from_env
-from recon.domain.errors import CollectionError
-from recon.domain.models import AuthConfig, SourceEntry
-from recon.domain.ratelimit import RateLimiter
-from recon.domain.telemetry import Telemetry
+from recon.core.domain.errors import CollectionError
+from recon.core.domain.models import AuthConfig, SourceEntry
+from recon.core.domain.ratelimit import RateLimiter
+from recon.core.domain.telemetry import Telemetry
 from tests.recon_fakes import FixedClock
 
 
@@ -142,7 +142,7 @@ def test_every_survey_keeps_its_events_in_its_archive(project: Path) -> None:
         )
     )
     survey = json.loads(_invoke("survey", "m", "--json").stdout)
-    archive = Path(survey["path"])
+    archive = project / ".recon" / "m" / "archive" / survey["archive"]
     events = [json.loads(line) for line in (archive / "telemetry.jsonl").read_text().splitlines()]
 
     assert [e["name"] for e in events] == [
@@ -194,17 +194,18 @@ def test_the_event_log_keeps_its_file_open_and_each_event_is_on_disk_as_it_happe
 def test_a_table_s_progress_is_an_event_at_most_once_a_second(tmp_path: Path) -> None:
     """A5: while a table is written, ``recon.collect.progress`` says how many of its records
     are written, at most once a second by the clock port, inside the table's span."""
-    from recon.domain.models import ReconConfig
-    from tests.recon_fakes import plugins_with, run_survey
+    from recon.core.domain.collector import Record
+    from recon.core.domain.models import ReconConfig
+    from tests.recon_fakes import FakeCollector, plugins_with, run_survey
 
     clock = FixedClock()
 
-    class Slow:
-        def collect(self, entry: Any, source: Any, *, captures: Any = None) -> Any:
+    class Slow(FakeCollector):
+        def collect(self, run: Any, resume: Any) -> Any:
             for n in range(5):
                 if n:
                     clock.sleep(0.6)
-                yield {"n": n}
+                yield Record({"n": n})
 
     config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "x"}]})
     archive, _ = run_survey(config, tmp_path, plugins=plugins_with(x=Slow()), clock=clock)
@@ -704,13 +705,15 @@ def test_a_failure_exports_no_command_and_no_credential_in_a_url(
     assert {t["name"] for t in tables} >= {"gone", "big"} and len(tables) > 2
     assert {t["status"] for t in tables} == {"error"}
     traces = b"".join(body for path, body in _Collector.received if path == "/v1/traces")
-    events = (Path(survey["path"]) / "telemetry.jsonl").read_text()
+    events = (
+        (project / ".recon" / "m" / "archive" / survey["archive"]) / "telemetry.jsonl"
+    ).read_text()
     assert b"recon.collect" in traces
     for exported in (traces, events.encode()):
         assert b"COMMAND-TOKEN" not in exported and b"echo" not in exported
         assert b"PASSWORD-TOKEN" not in exported and b"user:" not in exported
-    assert b"meta.yaml" in traces, "a failed table's span says where its error is"
-    meta = (Path(survey["path"]) / "meta.yaml").read_text()
+    assert b"recon status" in traces, "a failed table's span says where its error is"
+    meta = ((project / ".recon" / "m" / "archive" / survey["archive"]) / "meta.yaml").read_text()
     assert "PASSWORD-TOKEN" not in meta and "REDACTED:REDACTED@127.0.0.1" in meta
     assert "COMMAND-TOKEN" in meta, "the archive keeps the error, for whoever reads it"
 
@@ -830,8 +833,8 @@ def test_a_query_span_ends_with_the_count_of_its_rows(tmp_path: Path) -> None:
     from recon.adapters._out.archive_files import ArchiveFiles
     from recon.adapters._out.duckdb_query import DuckdbQuery
     from recon.adapters._out.mission_files import MissionFiles
-    from recon.application.use_cases import Recon
     from recon.composition import load_plugins
+    from recon.core.application.collection import Collection
     from tests.recon_fakes import run_survey
 
     run_survey(
@@ -839,19 +842,20 @@ def test_a_query_span_ends_with_the_count_of_its_rows(tmp_path: Path) -> None:
         tmp_path,
     )
     sink, clock = Recorded(), FixedClock()
-    archives = ArchiveFiles(clock)
+    archives = ArchiveFiles(tmp_path / ".recon", clock)
 
     def no_survey(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("a query builds no collector")
 
-    querying = Recon(
+    querying = Collection(
         missions=MissionFiles(tmp_path, clock),
+        landing=archives,
         archives=archives,
         query=DuckdbQuery(archives),
         clock=clock,
         plugins=load_plugins(),
         build_collectors=no_survey,
-        telemetry=lambda archive, channel, reads=None: Telemetry([sink], clock),
+        telemetry=lambda events, channel, reads=None: Telemetry([sink], clock),
         env={},
         version="0",
     )

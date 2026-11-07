@@ -13,15 +13,17 @@ from typing import TYPE_CHECKING, Any
 import pytest
 import yaml
 
-from recon.adapters._out.archive_files import ArchiveFiles
-from recon.application.subscriptions import Position, row_id
 from recon.composition import root
-from recon.domain.errors import NotFoundError, UsageError
-from tests.recon_fakes import FixedClock, VirtualClock, plugins_with
+from recon.core.domain.archives import ArchiveRef
+from recon.core.domain.errors import NotFoundError, UsageError
+from recon.observe.application.subscriptions import ChangeReader, Position, row_id
+from tests.recon_fakes import FixedClock, VirtualClock, files_of, landing, plugins_with
 from tests.test_changes import Surveys, _Feed, _mission, _rows, _stream_mission, _windows
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from recon.composition import Recon
 
 A, B, C = ({"id": "a", "subject": "hello"}, {"id": "b", "subject": "hi"},
            {"id": "c", "subject": "yo"})  # fmt: skip
@@ -54,7 +56,7 @@ class TestEveryRowOnceInOrder:
         surveys.survey(A, B)
         surveys.survey(A)  # nothing new but b gone
         surveys.survey(A, C)
-        read = surveys.recon.changes_since("m", "inbox")
+        read = surveys.recon.observation.changes_since("m", "inbox")
         assert [(row.op, row.key) for row in read.rows] == [
             ("insert", {"id": "a"}), ("insert", {"id": "b"}), ("delete", {"id": "b"}),
             ("insert", {"id": "c"}),
@@ -69,14 +71,14 @@ class TestEveryRowOnceInOrder:
         _mission(tmp_path, {"key": ["id"]})
         surveys = Surveys(tmp_path)
         surveys.survey(A)
-        first = surveys.recon.changes_since("m", "inbox")
+        first = surveys.recon.observation.changes_since("m", "inbox")
         assert [row.key for row in first.rows] == [{"id": "a"}]
-        caught_up = surveys.recon.changes_since("m", "inbox", first.cursor)
+        caught_up = surveys.recon.observation.changes_since("m", "inbox", first.cursor)
         assert caught_up.rows == [] and not caught_up.more
         surveys.survey(A, B)
         surveys.survey(A, B)  # an empty change table: the read goes past it
         surveys.survey(A, B, C)
-        later = surveys.recon.changes_since("m", "inbox", caught_up.cursor)
+        later = surveys.recon.observation.changes_since("m", "inbox", caught_up.cursor)
         assert [row.key for row in later.rows] == [{"id": "b"}, {"id": "c"}]
 
     def test_a_bound_cuts_a_read_at_a_whole_row_and_says_more(self, tmp_path: Path) -> None:
@@ -86,7 +88,7 @@ class TestEveryRowOnceInOrder:
         surveys.survey(A, B, C)
         seen, cursor, reads = [], None, 0
         while True:
-            read = surveys.recon.changes_since("m", "inbox", cursor, max_records=1)
+            read = surveys.recon.observation.changes_since("m", "inbox", cursor, max_records=1)
             reads += 1
             assert read.count <= 1
             seen += [row.key["id"] for row in read.rows if row.key]
@@ -99,12 +101,12 @@ class TestEveryRowOnceInOrder:
         _mission(tmp_path, {"key": ["id"]})
         surveys = Surveys(tmp_path)
         surveys.survey(A, B)
-        once = surveys.recon.changes_since("m", "inbox")
-        again = surveys.recon.changes_since("m", "inbox")
+        once = surveys.recon.observation.changes_since("m", "inbox")
+        again = surveys.recon.observation.changes_since("m", "inbox")
         assert [row.id for row in once.rows] == [row.id for row in again.rows]
         assert len({row.id for row in once.rows}) == 2
         archive = once.rows[0].archive
-        reader = surveys.recon._change_reader("m", "inbox")  # noqa: SLF001 - the id's maker
+        reader = _reader(surveys.recon)  # noqa: SLF001 - the id's maker
         assert once.rows[0].id == reader.row_id(archive, 0, "insert", {"id": "a"})
         assert reader.row_id(archive, 0, "update", {"id": "a"}) != once.rows[0].id
         assert reader.row_id(archive, 1, "insert", {"id": "a"}) != once.rows[0].id
@@ -121,7 +123,7 @@ class TestEveryRowOnceInOrder:
             _mission(project, {"key": ["id"]})
             surveys = Surveys(project)
             surveys.survey(A)
-            [row] = surveys.recon.changes_since("m", "inbox").rows
+            [row] = surveys.recon.observation.changes_since("m", "inbox").rows
             ids.append(row.id)
             key = (project / ".recon" / "m" / "changes.key").read_bytes()
             assert row.id == row_id(key, "m", row.archive, "inbox", 0, "insert", {"id": "a"})
@@ -138,7 +140,7 @@ class TestEveryRowOnceInOrder:
         archive, _ = surveys.survey(A, B)
         index = (archive / "inbox.keys.jsonl").read_text().splitlines()[1:]
         hashes = [json.loads(line)["hash"] for line in index]
-        text = json.dumps(surveys.recon.changes_since("m", "inbox").document())
+        text = json.dumps(surveys.recon.observation.changes_since("m", "inbox").document())
         assert hashes and not any(h in text for h in hashes)
 
     def test_a_stream_s_change_rows_are_read_across_its_windows(self, tmp_path: Path) -> None:
@@ -147,9 +149,9 @@ class TestEveryRowOnceInOrder:
                                          {"id": "a", "v": 2}, {"id": "c"}]  # fmt: skip
         recon = root({}, project=tmp_path, clock=VirtualClock(),
                      plugins=plugins_with(feed=_Feed(records)))  # fmt: skip
-        recon.stream("m", "s", windows=2)
+        recon.observation.stream("m", "s", windows=2)
         first, second = (w.name for w in _windows(tmp_path))
-        read = recon.changes_since("m", "s")
+        read = recon.observation.changes_since("m", "s")
         assert [(row.archive, row.op, row.key) for row in read.rows] == [
             (first, "insert", {"id": "a"}), (first, "insert", {"id": "b"}),
             (second, "update", {"id": "a"}), (second, "insert", {"id": "c"}),
@@ -186,19 +188,19 @@ class TestD1AtLeastOnceThroughACrash:
                 surveys.survey(*inbox.values())
                 continue
             bound = rng.randint(1, 4)
-            read = surveys.recon.changes_since("m", "inbox", kept, max_records=bound)
+            read = surveys.recon.observation.changes_since("m", "inbox", kept, max_records=bound)
             cut += read.more and read.count == bound
             crashed = rng.random() < 0.35  # acted on the rows, then died before keeping it
             got += [(row.id, not crashed) for row in read.rows]
             if not crashed:
                 kept = read.cursor
         while True:  # it comes back, and reads on from what it kept, to the end
-            read = surveys.recon.changes_since("m", "inbox", kept)
+            read = surveys.recon.observation.changes_since("m", "inbox", kept)
             got += [(row.id, True) for row in read.rows]
             kept = read.cursor
             if not read.more:
                 break
-        reader = surveys.recon._change_reader("m", "inbox")  # noqa: SLF001 - the id's maker
+        reader = _reader(surveys.recon)  # noqa: SLF001 - the id's maker
         told = [reader.row_id(a, n, row["op"], row["key"]) for a, n, row in _told(tmp_path)]
         seen: dict[str, bool] = {}
         for row, was_kept in got:
@@ -220,7 +222,7 @@ class TestD2ARetiredArchiveIsSaid:
         surveys.survey(A, B)
         surveys.survey(A, B, C)
         assert not first.exists(), "retain: removed it"
-        read = surveys.recon.changes_since("m", "inbox")
+        read = surveys.recon.observation.changes_since("m", "inbox")
         assert read.retired_range is not None and read.retired_range.first == first.name
         assert read.retired_range.count == 2
         assert [row.key for row in read.rows] == [{"id": "c"}]
@@ -228,11 +230,11 @@ class TestD2ARetiredArchiveIsSaid:
     def test_a_cursor_in_an_archive_retired_since_goes_on_and_says_so(self, tmp_path: Path) -> None:
         surveys = self._retiring(tmp_path)
         first, _ = surveys.survey(A, B)
-        part = surveys.recon.changes_since("m", "inbox", max_records=1)
+        part = surveys.recon.observation.changes_since("m", "inbox", max_records=1)
         assert [row.key for row in part.rows] == [{"id": "a"}] and part.more
         second, _ = surveys.survey(A, B, C)
         assert not first.exists()
-        read = surveys.recon.changes_since("m", "inbox", part.cursor)
+        read = surveys.recon.observation.changes_since("m", "inbox", part.cursor)
         assert read.retired_range is not None
         assert (read.retired_range.first, read.retired_range.count) == (first.name, 1)
         assert [(row.archive, row.key) for row in read.rows] == [(second.name, {"id": "c"})]
@@ -245,11 +247,12 @@ class TestD2ARetiredArchiveIsSaid:
         first, _ = surveys.survey(A)
         middle, _ = surveys.survey(A, B)
         surveys.survey(A, B, C)
-        ArchiveFiles(FixedClock()).retire(middle, {"id": middle.name, "rule": "test"})
-        read = surveys.recon.changes_since("m", "inbox")
+        with files_of(tmp_path, FixedClock()).hold("m") as held:
+            held.retire(ArchiveRef("m", middle.name), {"rule": "test"})
+        read = surveys.recon.observation.changes_since("m", "inbox")
         assert [row.key for row in read.rows] == [{"id": "a"}] and read.more
         assert read.retired_range is None
-        on = surveys.recon.changes_since("m", "inbox", read.cursor)
+        on = surveys.recon.observation.changes_since("m", "inbox", read.cursor)
         assert on.retired_range is not None and on.retired_range.first == middle.name
         assert [row.key for row in on.rows] == [{"id": "c"}]
 
@@ -266,10 +269,10 @@ class TestD3AnUnsealedChangeTableIsNeverRead:
         (died / "inbox.changes.jsonl").rename(died / "inbox.changes.jsonl.tmp")
         meta = yaml.safe_load((died / "meta.yaml").read_text())
         (died / "meta.yaml").write_text(yaml.safe_dump({**meta, "ended": None}))
-        read = surveys.recon.changes_since("m", "inbox")
+        read = surveys.recon.observation.changes_since("m", "inbox")
         assert read.rows == [] and not read.more
         again, _ = surveys.survey(A, B)
-        on = surveys.recon.changes_since("m", "inbox", read.cursor)
+        on = surveys.recon.observation.changes_since("m", "inbox", read.cursor)
         assert [(row.archive, row.op, row.key) for row in on.rows] == [
             (again.name, "insert", {"id": "a"}), (again.name, "insert", {"id": "b"}),
         ]  # fmt: skip
@@ -278,20 +281,24 @@ class TestD3AnUnsealedChangeTableIsNeverRead:
         _mission(tmp_path, {"key": ["id"]})
         surveys = Surveys(tmp_path)
         surveys.survey(A)
-        store = ArchiveFiles(FixedClock())
-        mission = tmp_path / ".recon" / "m"
-        writing = store.create(mission, "2030-01-01-000000-000000")
         row = {"op": "insert", "key": {"id": "z"}, "record": {"id": "z"}}
-        (writing / "inbox.changes.jsonl.tmp").write_text(json.dumps(row) + "\n")
-        read = surveys.recon.changes_since("m", "inbox")
-        assert [r.key for r in read.rows] == [{"id": "a"}]
-        assert read.state == "writing" and not read.more
-        held = surveys.recon.changes_since("m", "inbox", read.cursor)
-        assert held.rows == [] and held.state == "writing", "the reader waits on it"
-        (writing / "inbox.changes.jsonl.tmp").rename(writing / "inbox.changes.jsonl")
-        store.release(writing)
-        sealed = surveys.recon.changes_since("m", "inbox", held.cursor)
+        with landing(tmp_path, archive_id="2030-01-01-000000-000000") as (_, writing):
+            (writing / "inbox.changes.jsonl.tmp").write_text(json.dumps(row) + "\n")
+            read = surveys.recon.observation.changes_since("m", "inbox")
+            assert [r.key for r in read.rows] == [{"id": "a"}]
+            assert read.state == "writing" and not read.more
+            held = surveys.recon.observation.changes_since("m", "inbox", read.cursor)
+            assert held.rows == [] and held.state == "writing", "the reader waits on it"
+            (writing / "inbox.changes.jsonl.tmp").rename(writing / "inbox.changes.jsonl")
+        sealed = surveys.recon.observation.changes_since("m", "inbox", held.cursor)
         assert [r.key for r in sealed.rows] == [{"id": "z"}]
+
+
+def _reader(recon: Recon) -> ChangeReader:
+    """The reader of mission m's inbox change rows, as recon builds it: what makes a row's ``id``
+    and signs a cursor."""
+    prepared = recon.collection.prepare("m")
+    return recon.observation._follow.change_reader("m", "inbox", prepared)  # noqa: SLF001
 
 
 def _body(**changed: Any) -> str:
@@ -317,14 +324,14 @@ class TestD4AForeignCursorIsRefused:
 
     def test_a_cursor_of_another_output_or_mission_is_refused(self, tmp_path: Path) -> None:
         surveys = self._two(tmp_path)
-        other = surveys.recon.changes_since("m", "other").cursor
+        other = surveys.recon.observation.changes_since("m", "other").cursor
         with pytest.raises(UsageError) as refused:
-            surveys.recon.changes_since("m", "inbox", other)
+            surveys.recon.observation.changes_since("m", "inbox", other)
         assert refused.value.details == {"mission": "m", "output": "other"}
         assert refused.value.fix
-        theirs = surveys.recon.changes_since("n", "inbox").cursor
+        theirs = surveys.recon.observation.changes_since("n", "inbox").cursor
         with pytest.raises(UsageError):
-            surveys.recon.changes_since("m", "inbox", theirs)
+            surveys.recon.observation.changes_since("m", "inbox", theirs)
 
     @pytest.mark.parametrize(
         "cursor",
@@ -334,25 +341,25 @@ class TestD4AForeignCursorIsRefused:
     def test_a_cursor_recon_did_not_give_is_refused(self, tmp_path: Path, cursor: str) -> None:
         surveys = self._two(tmp_path)
         with pytest.raises(UsageError):
-            surveys.recon.changes_since("m", "inbox", cursor)
+            surveys.recon.observation.changes_since("m", "inbox", cursor)
 
     def test_a_read_of_an_archive_s_records_gives_no_cursor_a_change_read_takes(
         self, tmp_path: Path
     ) -> None:
         surveys = self._two(tmp_path)
-        records = surveys.recon.read_since("m").cursor
+        records = surveys.recon.observation.read_since("m").cursor
         with pytest.raises(UsageError):
-            surveys.recon.changes_since("m", "inbox", records)
+            surveys.recon.observation.changes_since("m", "inbox", records)
 
     def test_a_cursor_naming_an_archive_the_mission_never_had_is_refused(
         self, tmp_path: Path
     ) -> None:
         """Even one recon signed: an archive gone with no tombstone is no place to read on."""
         surveys = self._two(tmp_path)
-        reader = surveys.recon._change_reader("m", "inbox")  # noqa: SLF001 - a signed cursor
+        reader = _reader(surveys.recon)  # noqa: SLF001 - a signed cursor
         never = reader.encode(Position(archive="2001-01-01-000000-000000"))
         with pytest.raises(UsageError) as refused:
-            surveys.recon.changes_since("m", "inbox", never)
+            surveys.recon.observation.changes_since("m", "inbox", never)
         assert "neither has nor retired" in str(refused.value)
 
     def test_a_forged_but_plausible_cursor_is_refused_never_read_on_from(
@@ -361,22 +368,22 @@ class TestD4AForeignCursorIsRefused:
         """Ixian S4: a real archive, a row past the end of its change table (or any edit of a
         cursor recon gave) is refused, never a read that silently skips or repeats rows."""
         surveys = self._two(tmp_path)
-        real = surveys.recon.changes_since("m", "inbox").cursor
+        real = surveys.recon.observation.changes_since("m", "inbox").cursor
         body = json.loads(bytes.fromhex(real.removeprefix("c1").split(".")[0]))
         for forged in ({**body, "row": 999}, {**body, "done": not body["done"]},
                        {**body, "index": 7}):  # fmt: skip
             text = json.dumps(forged, separators=(",", ":")).encode().hex()
             for cursor in ("c1" + text, "c1" + text + "." + real.split(".")[-1]):
                 with pytest.raises(UsageError):
-                    surveys.recon.changes_since("m", "inbox", cursor)
-        assert surveys.recon.changes_since("m", "inbox", real).rows == []
+                    surveys.recon.observation.changes_since("m", "inbox", cursor)
+        assert surveys.recon.observation.changes_since("m", "inbox", real).rows == []
 
     def test_an_output_without_changes_is_not_found_and_names_those_with(
         self, tmp_path: Path
     ) -> None:
         surveys = self._two(tmp_path)
         with pytest.raises(NotFoundError) as missing:
-            surveys.recon.changes_since("m", "nope")
+            surveys.recon.observation.changes_since("m", "nope")
         assert missing.value.details["allowed"] == ["inbox", "other"]
 
 
@@ -384,4 +391,4 @@ def test_a_bound_below_one_is_refused(tmp_path: Path) -> None:
     _mission(tmp_path, {"key": ["id"]})
     surveys = Surveys(tmp_path)
     with pytest.raises(UsageError):
-        surveys.recon.changes_since("m", "inbox", max_records=0)
+        surveys.recon.observation.changes_since("m", "inbox", max_records=0)

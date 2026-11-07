@@ -5,8 +5,11 @@
   row in a :class:`Construct`: a table per kind, kept in a store as the run goes.
 * **Agents**: an :class:`AgentDefinition` (what) bound to an :class:`AgentRuntime` (where),
   checked at binding. ``matrix.v1.agent-step`` makes an agent an ordinary component.
-* **Model calls**: one call on a :class:`ModelRuntime`, with no loop or tools, recorded as a
-  :class:`ModelCall`. ``matrix.v1.model-step`` makes one an ordinary component.
+* **Model calls**: one call on a :class:`ModelRuntime` (turns, tools offered, an output type;
+  no loop), recorded as a :class:`ModelCall`. ``matrix.v1.model-step`` makes one an ordinary
+  component, and :func:`pydantic_ai_model` makes any model runtime a pydantic-ai ``Model``.
+  matrix ships no model runtime that calls a model: one is installed with the package that
+  registers it (``matrix-hardline``).
 * **Composition**: ``load_config`` reads the shared config tiers, ``compose`` builds runtimes,
   agents, observers and the store from them, and the registry finds every extension
   (built-ins too) through the ``matrix.extensions`` entry point. ``plan_config`` says what a
@@ -15,7 +18,7 @@
 * **Loading**: ``load`` and ``load_each`` read YAML and markdown documents as the pydantic
   type the caller names, reporting every problem as a :class:`Problem` with its key path.
 
-The README lists which of these names are the stable public API.
+The README says which of these are promised: the component-author contract alone.
 
 A type URL is ``<namespace>.v<N>.<name>``: lowercase segments joined by dots, checked by
 :func:`check_type_url`.
@@ -26,6 +29,7 @@ from importlib.metadata import PackageNotFoundError, version
 from . import process
 from .adapters._in.signals import cancel_on_signals
 from .adapters._in.skill import render as _render_skill
+from .adapters._out.runtime.pydantic_ai import pydantic_ai_model
 from .adapters._out.stores.jsonl import JsonlConstructStore, MemoryConstructStore
 from .composition.builtins import (
     agent_runtime_type_url,
@@ -56,7 +60,7 @@ from .composition.documents import (
 from .composition.telemetry import Telemetry, configure_telemetry
 from .domain.agent import AgentCapabilities, AgentDefinition, AgentResponse, BoundAgent
 from .domain.agent_step import AGENT_RESPONSE, AGENT_STEP, TASK, AgentStep, AgentStepConfig
-from .domain.component import LEDGER, Component, Inputs, RunContext, Wiring, wire
+from .domain.component import LEDGER, Component, Context, Inputs, RunContext, Wiring, wire
 from .domain.config import (
     AgentConfig,
     ComponentConfig,
@@ -102,13 +106,15 @@ from .domain.executor import (
 from .domain.ids import TypeUrl, check_type_url, is_type_url, parse_type_url, type_url
 from .domain.loading import Accumulate, BesideFile, Loader
 from .domain.model_call import (
-    CallAttempt,
     FinishReason,
     ModelCall,
     ModelRequest,
-    RegistryRow,
-    RequestParams,
+    Role,
     TokenUsage,
+    ToolCall,
+    ToolSpec,
+    Turn,
+    Use,
 )
 from .domain.model_step import (
     MODEL_CALL,
@@ -118,14 +124,29 @@ from .domain.model_step import (
     ModelStepConfig,
     call_model,
 )
-from .domain.observer import Event, EventPolicy, Observer, RecordingObserver
+from .domain.needs import NEEDS, ModelRuntimes, Need
+from .domain.observer import (
+    Event,
+    EventPolicy,
+    Observer,
+    RecordingObserver,
+    SupportsAround,
+    SupportsClose,
+)
+from .domain.optional import SupportsAclose, SupportsResolved, SupportsWarnings
 from .domain.ports._out.agent_runtime import RUNTIME_LOGGER, Agent, AgentRuntime
-from .domain.ports._out.construct_store import ConstructStore, RunWriter
+from .domain.ports._out.construct_store import (
+    ConstructStore,
+    RunWriter,
+    SupportsDamaged,
+    SupportsEvents,
+    SupportsLocation,
+)
 from .domain.ports._out.document_source import Document, DocumentSource
 from .domain.ports._out.model_runtime import ModelRuntime
 from .domain.problems import Problem
 from .domain.ref import REF, Ref
-from .domain.registry import Entry, Extension, Failure, Registry
+from .domain.registry import MATRIX_POINTS, Entry, Extension, Failure, Registry
 from .domain.session import (
     SESSION,
     Attribution,
@@ -160,8 +181,10 @@ __all__ = [
     "EXIT_MEANINGS",
     "EXIT_NEXT",
     "LEDGER",
+    "MATRIX_POINTS",
     "MODEL_CALL",
     "MODEL_STEP",
+    "NEEDS",
     "PROMPT",
     "REF",
     "RUNTIME_LOGGER",
@@ -181,7 +204,6 @@ __all__ = [
     "Attribution",
     "BesideFile",
     "BoundAgent",
-    "CallAttempt",
     "Catalog",
     "CheckReport",
     "CompilationError",
@@ -199,6 +221,7 @@ __all__ = [
     "Construct",
     "ConstructStore",
     "Container",
+    "Context",
     "ContractError",
     "Document",
     "DocumentSource",
@@ -223,8 +246,10 @@ __all__ = [
     "ModelRequest",
     "ModelRuntime",
     "ModelRuntimeError",
+    "ModelRuntimes",
     "ModelStep",
     "ModelStepConfig",
+    "Need",
     "NotFoundError",
     "Observer",
     "ObserverConfig",
@@ -233,10 +258,9 @@ __all__ = [
     "RecordingObserver",
     "Ref",
     "Registry",
-    "RegistryRow",
     "ReleaseOutcome",
-    "RequestParams",
     "Retry",
+    "Role",
     "Reuse",
     "Run",
     "RunCancelled",
@@ -249,9 +273,21 @@ __all__ = [
     "Session",
     "StoreConfig",
     "StoreError",
+    "SupportsAclose",
+    "SupportsAround",
+    "SupportsClose",
+    "SupportsDamaged",
+    "SupportsEvents",
+    "SupportsLocation",
+    "SupportsResolved",
+    "SupportsWarnings",
     "Telemetry",
     "TokenUsage",
+    "ToolCall",
+    "ToolSpec",
+    "Turn",
     "TypeUrl",
+    "Use",
     "UsageError",
     "Wiring",
     "__version__",
@@ -284,6 +320,7 @@ __all__ = [
     "parse_type_url",
     "plan_config",
     "process",
+    "pydantic_ai_model",
     "record_session",
     "skill",
     "store_type_url",

@@ -35,7 +35,7 @@ from ix.application.skill import (
 )
 from ix.domain.errors import ERROR_KINDS, EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT
 from ix.domain.experiment import Experiment, Margin
-from ix.domain.kind import arrivals, seconds
+from ix.domain.kind import Kinds, arrivals, seconds
 from ix.domain.problem import PROBLEM_KINDS
 
 Write = Any  # the write_experiment fixture
@@ -62,6 +62,15 @@ def _reference(name: str) -> str:
 
 def _everything() -> str:
     return "\n".join([_skill(), *(_reference(name) for name in REFERENCES)])
+
+
+def _subcommand(command: Any, words: list[str]) -> tuple[Any, list[str]]:
+    """The command a snippet runs, and the words after it: a group's subcommand when the next
+    word names one (``ix mutants sample``)."""
+    found = getattr(command, "commands", {})
+    if words and words[0] in found:
+        return found[words[0]], words[1:]
+    return command, words
 
 
 def _frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -219,6 +228,29 @@ class TestEveryClaimHolds:
         assert {"--skill", "-r", "--version"} <= top
         assert {command.split()[1] for command, _ in COMMANDS} == set(main.commands)
 
+    def test_every_flag_it_writes_after_a_command_is_one_that_command_takes(self) -> None:
+        """Review D8: a flag the skill tells an agent to pass (``ix run <path> --detach``,
+        ``ix events <run> --follow``) is one the command has, so following the skill never
+        meets a usage error. Each code span or block line ``ix <command> ...`` is read."""
+        spans = re.findall(r"`(ix [a-z][a-z-]* [^`\n]*)`", _everything())
+        blocks = [line.strip() for block in re.findall(r"```\w*\n(.*?)```", _everything(), re.S)
+                  for line in block.splitlines() if line.strip().startswith("ix ")]  # fmt: skip
+        checked = 0
+        for snippet in [*spans, *blocks]:
+            command, *words = snippet.split("#", 1)[0].split()[1:]
+            if command not in main.commands:
+                continue  # a command that does not exist is the test above's
+            # Changed requirement: a command may be a group (`ix mutants sample`), whose flags
+            # are its subcommand's.
+            found, words = _subcommand(main.commands[command], words)
+            takes = {option for param in found.params for option in param.opts}
+            for word in words:
+                flag = word.split("=", 1)[0].strip("`,;:.()")
+                if flag.startswith("-") and flag != "-":
+                    assert flag in takes, (snippet, flag)
+                    checked += 1
+        assert checked > 10
+
     def test_the_exit_table_is_the_one_table(self) -> None:
         rows = re.findall(r"^\| (\d+) \| `([a-z_]+)` \| (.*?) \| (.*?) \|$", _skill(), re.M)
         assert [(kind, int(code)) for code, kind, _, _ in rows] == list(EXIT_CODES.items())
@@ -375,16 +407,20 @@ class TestTheReferencesTeachFromTheRecords:
 
     def test_every_kind_from_its_declaration(self) -> None:
         text = _reference("kinds")
-        for kind in ix.kinds().kinds.values():
+        found = ix.kinds()
+        for kind in found.kinds.values():
             assert f"**`{kind.label}`**: {kind.summary}" in text
             for name, option in kind.options.items():
                 assert f"`{name}`{'*' if option.required else ''}" in text, (kind.label, name)
-            for metric in kind.metrics:
+        for sensor in found.of("sensor"):
+            for metric in sensor.metrics:
                 assert f"metric `{metric.name}`" in text
-            if kind.service_keys:
-                keys = ", ".join(f"`{{<service>.{key}}}`" for key in kind.service_keys)
-                assert f"**`{kind.label}`**" in text and f"binds each service as {keys}" in text
-        judged = [m for k in ix.kinds().kinds.values() for m in k.metrics if m.judged]
+        for environment in found.of("environment"):
+            if environment.service_keys:
+                keys = ", ".join(f"`{{<service>.{key}}}`" for key in environment.service_keys)
+                assert f"**`{environment.label}`**" in text
+                assert f"binds each service as {keys}" in text
+        judged = [m for k in found.of("sensor") for m in k.metrics if m.judged]
         assert text.count("JUDGED by a model") == len(judged) == 6  # judge 4, evaluator 2
 
     def test_the_kinds_it_says_forbid_overlap_are_the_ones_declared(self) -> None:
@@ -422,7 +458,7 @@ class TestTheReferencesTeachFromTheRecords:
         }
         declared = {
             (kind.label, metric.name)
-            for kind in ix.kinds().kinds.values()
+            for kind in ix.kinds().of("sensor")
             for metric in kind.metrics
             if metric.contended
         }
@@ -550,12 +586,8 @@ class TestTheAgentsReference:
             for key in sensor.truth:
                 assert f"`{key}`" in text, (name, key)
 
-    def test_its_numbers_and_words_are_the_codes(self) -> None:
-        from ix.adapters._out.matrix_agents import (
-            SESSION_TIMEOUT_S,
-            VERIFIED,
-            Loop,
-        )
+    def test_its_numbers_and_words_are_the_codes(self, builtin_kinds: Kinds) -> None:
+        from ix.adapters._out.matrix_agents import Loop
         from ix.domain.summaries import NOISY
 
         text = " ".join(_reference("agents").split())
@@ -569,7 +601,15 @@ class TestTheAgentsReference:
         assert "`model_runtime` (one model call per reading" in text
         assert "`agent_runtime` (a one-turn session with no tools per reading" in text
         assert "and has no default" in text
-        assert f"`timeout` ({SESSION_TIMEOUT_S:g}s)" in text and f"`{VERIFIED}`" in text
+        prompt = builtin_kinds.get("probe", "prompt")
+        assert prompt is not None
+        timeout = prompt.options["timeout"].default
+        session = builtin_kinds.get("subject", "agent-session")
+        assert session is not None
+        until = session.options["loop"].fields["until"].default
+        assert (
+            f"`timeout` ({timeout} when left out)" in text and f"(`{until}` when left out)" in text
+        )
         for strategy in get_args(Loop.model_fields["strategy"].annotation):
             assert f"strategy: {strategy}" in text, strategy
         assert f"more than {NOISY:g} of the range" in text
@@ -620,9 +660,9 @@ class TestTheAgentsReference:
             words = snippet.split()
             if len(words) < 2 or words[0] != "ix" or words[1] not in main.commands:
                 continue
-            command = main.commands[words[1]]
+            command, rest = _subcommand(main.commands[words[1]], words[2:])
             own = {option for param in command.params for option in param.opts}
-            for flag in (word for word in words[2:] if word.startswith("--")):
+            for flag in (word for word in rest if word.startswith("--")):
                 assert flag in own, (snippet, flag)
                 checked.add((words[1], flag))
         assert ("run", "--repeats") in checked and ("run", "--exploratory") in checked

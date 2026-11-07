@@ -13,18 +13,19 @@ disturbed by it) and reports a verdict: `holds`, `fails` or `inconclusive`. The 
 
 ```bash
 # the ix command
-uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.7.0#subdirectory=components/capabilities/ix"
+uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.9.0#subdirectory=components/capabilities/ix"
 # the library, in a project
-uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.7.0#subdirectory=components/capabilities/ix"
+uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.9.0#subdirectory=components/capabilities/ix"
 ```
 
 ix is installed from its repository at the release's tag. It is on no package index, and the
 project named `ix` on PyPI is another one. ix runs on matrix, a package of the same
 repository: installed from the git URL, uv clones the repository, finds the workspace it
 belongs to and takes matrix from there. Every runtime comes with it: `claude-sdk` (Claude
-Agent SDK sessions), `pydantic-ai` (a pydantic-ai loop whose model calls hardline makes),
-`hardline` (one model call through hardline), and the OpenTelemetry SDK that exports spans
-over OTLP. There are no extras. A service experiment needs `k6` on `PATH`.
+Agent SDK sessions), `pydantic-ai` (a pydantic-ai loop whose model calls are made on a
+matrix model runtime), `matrix-hardline.v1.model-runtime` (one model call through hardline,
+from the `matrix-hardline` bridge, which ix depends on), and the OpenTelemetry SDK that
+exports spans over OTLP. There are no extras. A service experiment needs `k6` on `PATH`.
 
 ## The experiment model
 
@@ -62,7 +63,8 @@ anything did), `ix runs [path]` (each run kept beside the experiment, or with no
 experiment's runs under the current directory: when it started,
 whether it was gated, exploratory or a dry run, the commit it ran from, its verdict or
 indication, its trials),
-`ix genres` and
+`ix status <run>`, `ix events <run> --follow` and `ix stop <run>` (a run started with
+`ix run --detach`, or any other: [Long runs](#long-runs)), `ix genres` and
 `ix kinds` (what is installed), and `ix --skill` (the skill an agent reads; `-r NAME` prints
 one of its references). A path is the experiment file, a directory holding
 `experiment.yaml`, or `-` for an experiment on standard input. Every command takes `--json`.
@@ -105,7 +107,7 @@ and the sensor from the metric: `timing` provides `latency`. `ix plan` shows eac
 where it came from, the decision first:
 
 ```
-delay-slower  compare (ix.v1.genre.compare)  plan 7ec2dd8efab9
+delay-slower  compare (ix.v1.genre.compare)  plan 7b6ed29d74c6
 Question:     Is a server that waits 50% longer per request faster than the one it would replace?
 Decides:      candidate is better than baseline on latency p50
 Comparison:   superiority
@@ -185,7 +187,9 @@ Work in this order:
    runtime names it: claude-sdk's `Skill`), a tool-reading
    sensor on a `model-call` subject, files to collect that no tool can write. `Runnable` says
    whether the runtime can start here (`claude-sdk` needs the Claude Code CLI and its
-   credentials).
+   credentials). `Model calls` says how many the run starts at most, as work and never as a
+   price: each agent session (one a loop's round), model call and judge's reading counted
+   once however many requests it makes, none on a stand-in (`work` in `--json`).
 2. **Dry run.** Give the probe a `mock_response`, a reply whose grade you know, and run
    `ix run <path> --dry-run`: the file as written, with the session on the `mock` runtime
    and the real runtime's config (`runtime_options`, `plugins`) set aside (the report
@@ -221,6 +225,35 @@ report must contain. It holds no code and names no kind.
 | `compare` | Is the variant better than the control, or no worse? | one control, one or more variants | `primary`, `comparison`, and `margin` for non-inferiority and equivalence | holds / fails / inconclusive |
 | `regress` | May this change ship against the baseline? | one control, one variant | `primary`, `margin` | holds / fails / inconclusive |
 | `characterize` | How does this subject behave across the range? | one | `primary`, `factors` | none: estimates only |
+| `check` | Does the predicate hold on every trial of this subject? | one | `primary`, a boolean | holds / fails / inconclusive |
+| `mutation-score` | What share of seeded faults in this code does the test suite detect? | one test suite | `primary` (`killed`) | none: estimates only |
+| `mutation-regress` | Does the changed suite still detect what the baseline suite detects, within the margin? | one control suite, one variant | `primary`, `margin` | holds / fails / inconclusive |
+
+`check` observes; it does not estimate. Its analysis decides on a boolean primary alone,
+with no interval, so one trial (its default and its minimum) is enough to read: it holds
+when the primary read true on every trial, fails when it read false on one or the subject
+failed one, and is inconclusive only when a trial could not be read (a harness failure, a
+reading that could not be taken), never because the subject failed. It reads no threshold,
+margin or guardrail, and refuses one (`decision_inapplicable`), as it does a primary that is
+not a boolean (`metric_shape`). Its warrant says what one observation cannot show: how often
+the predicate holds. It gates reliably only a subject that gives the same result every time
+it is run on the same input; for one whose output varies (an agent session, a model call, a
+service under load) the report gives the Wilson interval the share it saw leaves (1 of 1
+leaves about [0.21, 1]). To rely on such a subject, use `evaluate` with a pass-rate
+threshold. A command checked against a service is the `command` probe with the
+`exit-status` sensor:
+
+```yaml
+name: proxy-health
+question: Does the proxy answer its health check once it is up?
+genre: check
+subjects:
+  proxy: {kind: process, command: [./proxy], url: "http://127.0.0.1:8080"}
+probes:
+  - kind: command
+    command: [curl, -fsS, "{url}/healthz"]
+primary: {metric: exited_ok}
+```
 
 `compare` offers three comparisons: `superiority` asks for a difference (the variant is
 better), `non-inferiority` for no loss beyond the margin, `equivalence` for no difference
@@ -238,8 +271,9 @@ A genre's `design` (repeats, order, calibration, estimator, overlap) carries a n
 standing. Its `overlap` (`allowed` when unsaid) says whether its trials may overlap at all:
 `regress` says `forbidden`, so a gate's trials run one at a time whatever its kinds allow;
 a genre that extends another may forbid it, never allow it again.
-The built-in genres need at least 5 repeats to decide (3 for `characterize`) and default to
-10 (5); their methods are checked by simulation at those counts (see
+The built-in genres that estimate need at least 5 repeats to decide (3 for
+`characterize`) and default to 10 (5); `check` needs 1. Their methods are checked by
+simulation at those counts (see
 [the method](#the-verdict-and-the-method-behind-it)). A genre that decides cannot use `min`
 or `max` as its estimator.
 
@@ -251,12 +285,20 @@ offers and needs, for a sensor the metrics it provides and whether a model judge
 and for an environment the keys each service it brings up is bound with (`service_keys:
 [host, port, url]`, named `{<service>.<key>}`). `ix kinds` lists them.
 
+Every family has its own record, chosen by the family segment of the kind's `name`
+(`acme.v1.sensor.x` is a sensor kind). All four declare `name`, `summary`, `options`,
+`offers`, `needs` and `overlap`; a probe kind adds `duration` (the duration options that add
+up to one trial), a sensor kind `metrics` (at least one), `truth` and `confusion`, an
+environment kind `service_keys`. A key another family's record has is refused, naming the
+family that declares it. In code, `ix.Kind` is the union of the four, and each record
+(`SubjectKind`, `ProbeKind`, `SensorKind`, `EnvironmentKind`) is exported from `ix.domain`.
+
 Every kind also says whether two trials may use it at once (`overlap: allowed`, or
 `forbidden`, which a kind that says nothing is), and each metric whether what it reads moves
 with whatever runs beside the trial (`contended: true`: a time, a throughput, a memory
 peak). Of the built-ins, `agent-session`, `model-call`, `prompt`, `none` and every sensor
 that reads what a trial stored allow overlap; `process` and `http` subjects, `http-load`,
-`inspect-task` (an Inspect task may bring up sandboxes its samples share), `timing`,
+`command`, `inspect-task` (an Inspect task may bring up sandboxes its samples share), `timing`,
 `memory` and the `process` and `compose` environments forbid it.
 Every metric of `timing` and `memory` is contended, and `usage`'s `duration` and the
 evaluator's `eval_duration_passed`. `ix kinds` shows both: each kind's `overlap`, and each
@@ -265,9 +307,23 @@ metric's `judged` and `contended`.
 | family | kinds |
 |---|---|
 | subject | `process`, `http`, `agent-session`, `model-call` |
-| probe | `http-load`, `prompt`, `inspect-task` |
-| sensor | `timing`, `memory`, `activation`, `tool-usage`, `function-test`, `outcome`, `text-match`, `usage`, `judge`, `evaluator` |
+| probe | `http-load`, `prompt`, `command`, `inspect-task` |
+| sensor | `timing`, `memory`, `activation`, `tool-usage`, `function-test`, `outcome`, `text-match`, `exit-status`, `usage`, `judge`, `evaluator` |
 | environment | `none`, `process`, `compose` |
+
+An option a kind declares a `default` for has that value when an entry leaves it out (a
+`prompt` probe's `timeout` is `600s`, a `process` subject's `startup_timeout` `30s`): the
+declaration holds it, not the adapter, so `ix plan` lists it under the entry
+(`probes.<id>.timeout`, from `kind`), a registration freezes it, and a later ix that changes
+it shows a deviation (`design.defaults.probes.<id>.timeout`) rather than moving a
+registered verdict unseen. An option whose value, left out, is its runtime's own (an agent
+session's `model` and `max_turns`, a judge's `model`) is listed from `runtime`, naming the
+runtime: ix cannot know that value. A mapping option may be declared key by key (an agent
+session's `loop`: `rounds` 3, `until`, `test_timeout`, and a `prompt` for each strategy; each
+service of a `process` environment: `cwd`, `startup_timeout` 30s), its defaults filled inside
+what is written; and a default may follow another option (`http-load`'s `concurrency`: 1
+client for a `closed` model, 100 for an `open` one). `ix kinds --json` and
+`ix --skill -r kinds` show each default.
 
 A declaration is not an adapter. ix can **run** these:
 
@@ -275,10 +331,11 @@ A declaration is not an adapter. ix can **run** these:
 |---|---|---|
 | subject | `process` | starts the command for each trial in its own process group, waits for `ready` to answer (or `url` to accept a connection), and kills the group after the trial |
 | subject | `http` | starts nothing: an endpoint that is already up, with optional `headers` and a bearer token read from `auth: env:NAME` |
-| subject | `agent-session` | a fresh session per trial on the matrix agent runtime its required `runtime` names (`claude-sdk` calls a model provider; `pydantic-ai` runs pydantic-ai's loop with every model call through hardline; `mock` calls no model; any agent runtime installed, by type URL), in a new temporary working directory seeded from `fixtures`, `skills` and a `setup` command, removed after the trial; `runtime_options` are the runtime's config, passed through as written; a `loop` asks again for a self-review or with the tests that failed |
-| subject | `model-call` | one call per trial on the matrix model runtime its required `runtime` names (`hardline` calls a model provider; `mock` calls no model; any model runtime installed), with its `model` resolved before anything starts; no tools, turns or working directory, so `activation`, `tool-usage`, `collect` and a `function-test` `file` are refused on it (`unobservable`) |
-| probe | `http-load` | runs k6 for `warmup` then `duration`, with `load_model: closed` (`concurrency` clients) or `open` (an arrival `rate`); only the measured part is read, and each request sent in it is waited for until it is answered or its `timeout` (k6's 60s) runs out |
+| subject | `agent-session` | a fresh session per trial on the matrix agent runtime its required `runtime` names (`claude-sdk` calls a model provider; `pydantic-ai` runs pydantic-ai's loop with every model call on the model runtime its `runtime_options.model_runtime` names, one of `matrix.model_runtimes`; `mock` calls no model; any agent runtime installed, by type URL), in a new temporary working directory seeded from `fixtures`, `skills` and a `setup` command, removed after the trial; `runtime_options` are the runtime's config, passed through as written; a `loop` asks again for a self-review or with the tests that failed |
+| subject | `model-call` | one call per trial on the matrix model runtime its required `runtime` names (`matrix-hardline.v1.model-runtime` calls a model provider through hardline; `mock` calls no model; any model runtime installed, by type URL), with its `model` resolved before anything starts; no tools, turns or working directory, so `activation`, `tool-usage`, `collect` and a `function-test` `file` are refused on it (`unobservable`) |
+| probe | `http-load` | runs k6 for `warmup` then `duration`, with `load_model: closed` (`concurrency` clients, 1 when left out) or `open` (an arrival `rate`, with `concurrency` clients started before the load, 100 when left out; an arrival when every one is waiting is dropped, and counted an error); only the measured part is read, and each request sent in it is waited for until it is answered or its `timeout` (60s when left out) runs out |
 | probe | `prompt` | puts the prompt to the session or the call and keeps the reply; for a session also every tool call, each round's transcript and the files named in `collect` |
+| probe | `command` | runs `command` once with the subject up, in `cwd` (the experiment's directory when left out) with `env` added, its `{url}` and every other placeholder filled as a probe's are, and keeps its exit code and the last 64 KiB of what it wrote to stdout and stderr; one that cannot start or runs past its `timeout` (60s when left out) is the harness's failure. The program and each file an argument names are digested as what was tested |
 | sensor | `timing` | `latency`, `ttfb`, `throughput`, and `error_rate` as a count (failed requests and dropped arrivals, of those sent and dropped), from what the load probe recorded |
 | sensor | `memory` | `memory_peak`: the highest resident memory of the subject's process group, sampled with `ps` every `interval` while the probe runs |
 | sensor | `activation` | `activated_correctly`: the expected skill fired (a call of the tool the session's runtime says fires a skill, claude-sdk's `Skill`, or of the sensor's `tool`, naming it whole: `review` is fired by `review` or `plugin:review`, never by `code-review-lite`), or nothing fired for a decoy |
@@ -286,6 +343,7 @@ A declaration is not an adapter. ix can **run** these:
 | sensor | `function-test` | `tests_passed`, `tests_pass_share`, `tests_score`: the truth's test cases run against the code in the reply, or a file the agent wrote, in a child process |
 | sensor | `outcome` | `outcome_score`, `outcome_passed`: the experiment's own grader functions, run in a child process; without one, the share of the truth's `expected_facts` the reply holds |
 | sensor | `text-match` | `text_matched`: the reply starts or ends with, equals, contains, excludes or matches (a regular expression) what the probe's truth or the sensor's options say; no code of your own |
+| sensor | `exit-status` | `exited_ok`: the command a probe ran exited with `code` (0 when left out) |
 | sensor | `usage` | tokens, `cost`, `turns`, `tool_calls`, `duration`, `rounds`, and `hit_limit`, as the runtime reported them; what it did not report (a model call's cost or turns) is left out |
 | sensor | `judge` | a model scores the reply against a rubric, by one call on the model runtime `model_runtime` names or a one-turn session on the agent runtime `agent_runtime` names; its metrics are reported and never decide |
 | sensor | `evaluator` | one of pydantic-evals' evaluators, named by `evaluator` with its `arguments`, reads the trial: the reply, the probe's truth `expected_output` and `metadata`, how long the probe took, and the spans that ended in the trial (matrix's `execute_tool` spans, for `ToolCorrectness`, `TrajectoryMatch`, `MaxToolCalls`). Its assertions are `eval_passed` and its score `eval_score`, but `MaxDuration`'s is `eval_duration_passed`, a time and so contended; an evaluator that calls a model (`LLMJudge`, `GEval`) gives `judged_eval_passed` and `judged_eval_score`, on the model its `model_runtime` gives, never pydantic-evals' default. ix keeps the loop: `Dataset.evaluate` is not used |
@@ -307,19 +365,35 @@ adapter that skips its check on a placeholder still checks the rest.
 
 An adapter plugs in through matrix's registry, as every extension does. A package declares
 its kind as data at the `ix.kind` entry point, and registers the adapter from its
-`matrix.extensions` entry point at ix's point for the family (`ix.subject`, `ix.probe`,
-`ix.sensor`, `ix.environment`) under the kind's type URL. ix resolves every adapter it runs
-that way, its own included, so a new one needs no edit to ix. An adapter declares what it
-needs built: `launcher` to start processes, `runtimes` to run an agent or make a model call
-on matrix's runtimes (at its `agent-runtime` or `model-runtime` point), `sessions` to share
-an agent session or a model call between a subject and a probe, by the handle the subject
-offers as its `respondent` facet. Each family's point holds what is registered there to its
-port (`Subject`, `Probe`, `Sensor`, `Environment` in `ix.domain.ports`): a class that lacks
-one of its members is refused at registration.
+`matrix.extensions` entry point at ix's point for the family (`ix.extension.POINTS`:
+`ix.subject`, `ix.probe`, `ix.sensor`, `ix.environment`) under the kind's type URL; the entry
+point's name is that point (`"ix.sensor" = "acme.ix_ext:register"`), so only a session that
+reads ix's points imports the package. ix
+resolves every adapter it runs that way, its own included, so a new one needs no edit to ix.
+Everything an adapter author writes against is in one public module, `ix.extension`, and
+ix's own adapters import it as a third party's do. An adapter declares what it needs built,
+each a keyword its factory takes, with the Protocol of what it is given:
+
+| need | given | for |
+|---|---|---|
+| `launcher` (`LAUNCHER`) | a `Launcher` | starting processes, each in a group of its own that ends whole |
+| `runtimes` (`RUNTIMES`) | `Runtimes` | running an agent or making a model call on matrix's runtimes, at its `agent-runtime` or `model-runtime` point |
+| `sessions` (`SESSIONS`) | `Sessions` | sharing an agent session or a model call (a `Respondent`) between a subject and a probe, by the handle the subject offers as its `respondent` facet |
+| `judge_models` (`JUDGE_MODELS`) | `JudgeModels` | a pydantic-ai `Model` that makes its calls through a matrix model runtime, as a pydantic-evals judge needs |
+
+Each family's point holds what is registered there to its port (`ix.extension.PORTS`:
+`Subject`, `Probe`, `Sensor`, `Environment`): a class that lacks one of its members is
+refused at registration. What else an adapter can say is a separate optional Protocol, read
+with `isinstance`: `Preflight`, `Review`, `StandIn`, `SpanReader`, `Liveness`, and for the
+scope a run hands an environment, `Traced` and `Recorded` (with the `Attribution` it
+yields). `JudgeModels` and `SpanReader` have one user each and are provisional.
 
 ```python
+from ix.extension import LAUNCHER, POINTS
+
+
 def register(registry):
-    registry.register("ix.subject", "acme.v1.subject.echo", EchoSubject, needs={"launcher"})
+    registry.register(POINTS["subject"], "acme.v1.subject.echo", EchoSubject, needs={LAUNCHER})
 ```
 
 `ix validate` holds an experiment to the declarations:
@@ -381,6 +455,80 @@ rate's margin is in points (`10pp`) or a share, never percent (`unit_mismatch`),
 the whole range (`1`, `100pp`); a rate's threshold is a share between 0 and 1, never 0 or 1
 themselves (`invalid_value`).
 
+## Mutation testing
+
+Does a test suite fail when the code is wrong? ix seeds faults (mutants: `<` for `<=`, `and`
+for `or`, a constant moved by one) into one scope, applies each once to a fresh copy of the
+tree, and runs the tests that ran its statement. The share killed is the suite's power to show these
+faults, never a proof that the code is correct.
+
+```sh
+# a mutant source, ix-cosmic-ray (cosmic-ray's operators), installed beside ix:
+uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.9.0#subdirectory=components/capabilities/ix" --with "git+https://github.com/mox-labs/gnx@ix-cosmic-ray-v0.1.0#subdirectory=components/capabilities/ix-cosmic-ray"
+ix mutants sample lab/mutation/recon-items --n 100 --seed 1
+ix validate lab/mutation/recon-items && ix register lab/mutation/recon-items
+ix run lab/mutation/recon-items --trials-in-flight 4
+ix mutants read lab/mutation/recon-items       # survivors, and the tests it found no use for
+```
+
+The experiment (`lab/mutation/recon-items/experiment.yaml`, genre `mutation-score`, primary
+`killed`) has one suite, and `ix mutants sample` writes its probes into `probes/`:
+
+```yaml
+subjects:
+  recon:
+    kind: test-suite
+    root: ../../../components/capabilities
+    command: [.venv/bin/python, -m, pytest, recon/tests, -q, -p, no:cacheprovider]
+    tests: [../../../components/capabilities/recon/tests]
+    scope: [../../../components/capabilities/recon/src/recon/core/application/items.py]
+    map: mutation/recon.map.json
+```
+
+**`ix mutants sample`** draws the mutants:
+
+- It asks the mutant source for every mutant of each scope file, and keeps those that parse and
+  change the code. It counts the rest by why: unparsable, unchanged, an annotation only, a
+  `TYPE_CHECKING` block, a line marked `# ix: no mutate`.
+- It draws `--n` of them from `--seed`, and pins each as `probes/m-<id>.yaml`.
+- It runs each suite's baseline once under coverage.py's per-test contexts and writes the
+  selection map.
+- It needs pytest-cov in the suite's environment, not ix's, and a baseline that passes.
+
+**`ix mutants map`** makes the map alone, for probe files another tool wrote: a `mutant` probe
+file is the boundary any generator speaks, and it runs with no source installed.
+
+**A trial** has three rules:
+
+- The copy is first on `PYTHONPATH`, ahead of an editable install of the tree. Every run checks
+  where each scope module was imported from: anywhere else is the harness's failure
+  (`not_the_mutant`), never a survivor.
+- A test that failed on the mutant kills it only if it fails again run alone on the mutant,
+  and passes run alone on the same copy with the original restored. Each run of the suite
+  has a temporary directory of its own.
+- A survivor no test ran is run against every test (`confirm: uncovered`, the default). A run
+  past its time limit is unread (`timeout`), never killed.
+- Coverage records no test against a line a child process runs, so a test that drives the
+  scope's code through a subprocess (a CLI test starting the tool) is never selected for it.
+  For such a suite set `confirm: all`: every survivor then runs against every test.
+
+**`ix mutants read`** names each survivor as an assertion gap (the tests that ran its statement
+are listed) or a coverage gap. It also gives the **pruning candidates**: the tests a greedy keep
+set leaves out of the kill matrix, with the `deselect` list a variant needs. They are only
+candidates. Confirm them with a `mutation-regress` on a fresh sample, disjoint from the first:
+
+```sh
+ix mutants sample <new experiment> --seed 2 --exclude lab/mutation/recon-items
+```
+
+The two suites meet the same mutants, so the difference is paired (Tango's score interval):
+
+- With no mutant on which they disagree, 100 mutants bound a loss near 3.7 points, and 400
+  near 1.
+- ix removes no test.
+
+`CONTRACT.md` has every option, outcome and refusal; `ix --skill -r mutation` teaches the flow.
+
 ## Extending
 
 Genres and kinds are data files. Put them in a package and name the package at the entry
@@ -404,12 +552,16 @@ was refused and why.
 ## Registration
 
 `ix register` writes `<file-stem>.registration.json` beside the experiment. It stores the
-design as resolved, what the file sets and what the genre supplies (comparison, margin,
-threshold, guardrails, control, repeats, seed, order, calibration, estimators, the analysis
-and its parameters, the sensors), with the digests of the probe set, the experiment and the
-plan, and the digest of each file and folder the subjects and sensors name: the skills,
-plugins (each folder a `*` matches), fixtures and agent `definition`, a sensor's `graders`
-or `rubric_file`, and any option a kind declares a `path` or `paths`. A `command` (a
+design as resolved, what the file sets, what the genre supplies and what each kind defaults
+(comparison, margin, threshold, guardrails, control, repeats, seed, order, calibration,
+estimators, the analysis and its parameters, the sensors, the defaults by entry), in a
+declared form of its own, `ix.v1.registered-design`, with the digests of the probe set, the
+experiment and the plan. The plan's digest is computed over that same form, built key by
+key, so a rename inside ix's records moves no digest; a release that moves one says so in
+the changelog, with the registrations to amend. The record also holds the digest of each file
+and folder the subjects and sensors name: the skills, plugins (each folder a `*` matches),
+fixtures and agent `definition`, a sensor's `graders` or `rubric_file`, and any option a kind
+declares a `path` or `paths`. A `command` (a
 `process` subject's, relative to its `cwd`; an agent session's `setup`) adds each item that
 names a file: `[python3, server.py]` digests `server.py`, and `["./proxy", --config,
 env/a.yaml]` the program and its config. A program found on PATH is not the experiment's.
@@ -424,7 +576,10 @@ env/a.yaml]` the program and its config. A program found on PATH is not the expe
 - `ix deviations <path>` lists each frozen value that changed, with what was registered and
   what it is now, and exits 14 when it finds any. A genre that changes after registration
   shows up here, because its values were frozen and not just its name.
-- A comment, key order or a default written out is not a deviation. A reworded `question` or
+- A kind's default is frozen with the design (`defaults`, by entry): one that a later ix
+  declares otherwise is a deviation, as a genre's value is.
+- A comment, key order or a value the file's own schema defaults written out
+  (`environment: {kind: none}`) is not a deviation. A reworded `question` or
   `rationale` changes the experiment's digest and not the plan's.
 - `ix register` on a changed experiment is refused (exit 7, `conflict`) and the record is
   kept.
@@ -496,7 +651,11 @@ read at the same width, one at a time for a kind that forbids overlap.
 - **Stopping.** Ctrl-C (or SIGTERM) stops the trial in flight, kills the process groups the
   run started, and exits 12 with the partial report. A run the harness could not finish (an
   environment that did not come up, or went down between trials) exits 8. `ix report` of a
-  run still being written exits 13.
+  run still being written exits 13. `ix stop <run>` stops a run from elsewhere
+  ([Long runs](#long-runs)).
+- **A run's id** is `<experiment>-<UTC time>-<4 hex digits>`, or what `--run-id ID` names
+  (letters, digits, `.`, `_`, `-`); an id a run is kept under already is refused (exit 2),
+  since a run's record is never reopened.
 - **Refused before it starts**: whatever an entry needs of this host that does not hold
   here. Each adapter checks its own (a `preflight`): a program that is not there (a
   subject's or a service's command, `k6` for `http-load`), an `auth` variable that is not
@@ -504,14 +663,17 @@ read at the same width, one at a time for a kind that forbids overlap.
   or cannot play the agent as written, a model runtime (a subject's or a judge's) that
   cannot start or cannot resolve the model. `ix plan` lists every requirement under
   `Requires` with whether it holds, and those that do not under `Runnable: no` with the
-  fix; they depend on the host, so they do not stop `ix register`.
+  fix; they depend on the host, so they do not stop `ix register`. Under `Model calls` it
+  counts the work a run asks of model providers, from what each adapter says one trial
+  starts (`ModelCalls` in `ix.extension`), and names each entry that may call a model and
+  does not say: the count is a bound only over what it counts, and never a price.
 - **Failures have an owner.** A trial the subject failed (it exited, it was not up in time,
   it answered no request successfully within the measured time, it returned a different body; an agent session that
   broke, was refused or ran past its probe's `timeout`) counts against the subject. A trial the harness failed (k6 missing
   or broken, no request sent, a timeout, a stop request, an environment that went down, a
   model runtime that was unavailable, rate-limited or refused its credentials) is missing
   data. Every request sent in the measured time is waited for, past it if need be, until
-  it is answered or the probe's `timeout` (k6's 60s when absent) runs out. Latency and time
+  it is answered or the probe's `timeout` (60s, k6's own, when left out) runs out. Latency and time
   to first byte count the requests the subject answered successfully, and throughput only
   those answered within the measured time. `error_rate` counts every request that failed,
   timed out or was never answered, of those sent. Under an open model, k6 starts every
@@ -520,6 +682,52 @@ read at the same width, one at a time for a kind that forbids overlap.
   an error, and the trial is measured with its `dropped` count. A sensor that
   could not read is a reading with a failure. None of these stops a run, but a lost
   environment; the report counts each.
+
+### Long runs
+
+A run can outlast the call that started it: an agent's tool call has a time limit, and a
+long experiment does not. `ix run <path> --detach` starts the run in a process of its own and
+returns as soon as that process has opened the run's record, printing the run's status
+(`ix.v1.status`): its id first, its directory, the process writing it (`pid`, `host`), the
+trials planned and carried out, its event log. It exits as `ix status` does, 13 while the
+run runs. It is refused before anything starts exactly as a run in the foreground is, with
+the same exit codes (an unregistered experiment exits 15), and a path of `-` is refused
+(exit 2): the process reads nothing on standard input. The process is an ordinary
+`ix run` of the same experiment under the same id, in a session of its own, so the end of
+the caller's terminal or tool call does not reach it; it records, stops and reports as a
+run in the foreground does. What it writes to standard error is kept beside the run's
+directory, `<run id>.log` (`log` in the status). One that has not opened its record within
+two minutes is stopped, and the start fails (exit 3).
+
+Then, for that run or any other (a run's directory, or an experiment for its latest run):
+
+- `ix status <run>` says where it stands, read from the record alone: `running`, or how
+  it ended (`completed`, `interrupted`, `failed`), and how many of its trials were carried
+  out. It exits 13 while the run runs, 0 once it completed, 12 for a run that was stopped
+  or whose process died, 8 for one the harness could not finish. A completed run's verdict
+  is `ix report`'s, not the status's: exit 0 from `status` says the run completed, nothing
+  about what it found.
+- `ix events <run> --follow` prints the run's events as they are written (`--json`: one
+  `matrix.v1.event` a line) and returns once the run has ended, however it ended: a run
+  whose process was killed reads as interrupted, and the follower returns. It then exits as
+  `ix status` would. `--follow` on a run still written on another host is refused (exit 2):
+  whether its process there is alive cannot be read from here; read its events without
+  `--follow`, or poll `ix status`. Events are telemetry and may be dropped: read results
+  from the report. Ctrl-C stops following and leaves the run running.
+- `ix stop <run>` stops a running run as Ctrl-C stops one in the foreground (it sends the
+  process writing it SIGTERM): the trial in flight is kept as the harness's, everything the
+  run started is released, and the record says `interrupted`. It waits up to 30 seconds for
+  the run to end and prints its status; a run still releasing what it started then still
+  says `running` (exit 13): ask `ix status` again. A run that has ended is left as it is; a
+  run written on another host is refused (exit 2).
+- `ix report <run>` gives its verdict once it has ended.
+
+```bash
+ix run lab/proxy --detach --json      # exits 13: running; prints its directory
+ix status <run directory> --json      # 13 while it runs; 0, 12 or 8 once it has ended
+ix events <run directory> --follow    # returns when it ends
+ix report <run directory>             # the verdict
+```
 
 ### The record
 
@@ -546,11 +754,12 @@ that builds its own `Root` may name another store whose config takes `root`):
 The manifest records what the verdict is about and where the run ran from: the digest of
 each file and folder the subjects and sensors name (`contents`, paths and digests, never what
 the files hold); the git commit the experiment sits at and whether a tracked file differed
-from it (`dirty`), or `not a repository`; the installed versions of ix, matrix and hardline;
+from it (`dirty`), or `not a repository`; the installed versions of ix, matrix and of each
+distribution an installed runtime drives;
 and every agent and model runtime installed, by type URL, with the distribution that
 registered it and its version, and each distribution it drives with that one's version (the
 Claude Agent SDK, for `claude-sdk`); and where each setting it read came from
-(`provenance.settings`: `ix.runs`, `matrix.observers` and `matrix.models`, each with the file
+(`provenance.settings`: `ix.runs`, `matrix.observers` and `matrix.model_runtimes`, each with the file
 that set it or `default`, never the value). `ix report` prints the digests (`Contents`), the commit
 (`Ran from`) and the versions, `ix runs` the commit, and `--json` carries all of it.
 
@@ -623,7 +832,9 @@ every verdict.
      requests out of requests sent) is a rate pooled over every unit, with the Wilson
      interval at Korn and Graubard's effective sample size, the trial as the cluster. Zero
      failures in 10,000 requests bound the rate near 3.8/10,000, never at 0. A difference of
-     two rates is Newcombe's interval;
+     two booleans' rates is paired, block by block (Tango's score interval of the paired
+     table: only the blocks where the two disagree move it); a difference of two counts is
+     Newcombe's interval;
    - `min` and `max` have no interval ix can stand behind: they are reported, never decided
      on.
 3. With the gain being the variant minus the control, turned so that positive is better:
@@ -690,7 +901,10 @@ cannot run in flight: those kinds forbid overlap, and no measurement says yet wh
 several at once would do to them. A subject left running by a run that was
 killed outright is not found and stopped later: in the next run, each trial of a subject
 whose address already answers is recorded as a harness failure (`address_in_use`) instead
-of being measured. The sensors cannot be run again over a stored run and written back.
+of being measured. The sensors cannot be run again over a stored run and written back. A
+stopped or killed run cannot be resumed; it is run again. A run written on another host
+(a shared run directory) can be read, not followed or stopped from here, and one whose
+process died there reads as running until a reader on that host finishes its record.
 
 ## Settings and telemetry
 
@@ -705,7 +919,9 @@ ix:
 ```
 
 An unknown key is refused, by its path and file. The same read gives the `matrix:` section:
-the observers of a run, and the models a `hardline` model runtime is handed.
+the observers of a run, and the named model runtimes (`matrix.model_runtimes`) a
+`pydantic-ai` session's `model_runtime` names. A model runtime's own models are its config's:
+a model-call subject's or a judge's `runtime_options.models` for hardline.
 
 ix makes spans through the OpenTelemetry API, under the instrumentation scope `ix`:
 `ix.plan`, `ix.run`, `ix.environment`, `ix.trial` and `ix.sensor`, with each reading as a
@@ -745,21 +961,30 @@ report = ix.run(slower)  # ix.Report; blocks until the run ends
 again = ix.report(report.location)  # the same report, from the record
 listed = ix.runs(slower)  # ix.Runs
 
+started = ix.start(slower)  # ix.Status, once its own process has opened the record
+ix.status(started.location).status  # "running", then how it ended
+for event in ix.events(started.location, follow=True):  # until the run ends
+    print(event["name"])
+ix.stop(started.location)  # ix.Status; a run that ended is left as it is
+
 experiment = ix.load("examples/proxy-streaming")  # ix.Experiment
 ix.plan(experiment.model_copy(update={"repeats": 9})).trials.total  # 243
 ```
 
 `ix.__all__` is the declared API: `__version__`, `load`, `validate`, `resolve`, `plan`,
-`register`, `deviations`, `run`, `report`, `runs`, `genres`, `kinds`, `skill`,
-`configure_telemetry`, `error_document`; the documents they return (`Validation`,
-`Problem`, `Design`, `Plan`, `Registered`, `Deviations`, `Report`, `Runs`, `Genres`,
-`Kinds`); the three records an author or an extension writes (`Experiment`, `Genre`,
-`Kind`); the errors (`IxError`, `ConfigError`, `NotFoundError`, `InvalidExperimentError`,
+`register`, `deviations`, `run`, `start`, `status`, `events`, `stop`, `report`, `runs`,
+`genres`, `kinds`, `skill`, `configure_telemetry`, `error_document`; `mutants`, the module of
+mutation testing's provisional functions (its own section below); the documents they
+return (`Validation`, `Problem`, `Design`, `Plan`, `Registered`, `Deviations`, `Report`,
+`Status`, `Runs`, `Genres`, `Kinds`); the three records an author or an extension writes
+(`Experiment`, `Genre`, `Kind`, the union of a kind's four family records); the errors
+(`IxError`, `ConfigError`, `NotFoundError`, `InvalidExperimentError`,
 `RegistrationConflictError`, `UnregisteredError`, `UsageError`); and the tables
 `PROBLEM_KINDS`, `ERROR_KINDS`, `EXIT_CODES`, `EXIT_MEANINGS` and `EXIT_NEXT`. Every part of
-those records (`SubjectConfig`, `Margin`, `Decision`, `Interval`, ...) and every port an
-extension implements (`Subject`, `Probe`, `Sensor`, `Environment`) is exported from
-`ix.domain`, the one public path to them; the modules inside it are not public.
+those records (`SubjectConfig`, `Margin`, `Decision`, `Interval`, ...) is exported from
+`ix.domain`, the one public path to them; the modules inside it are not public. What an
+extension implements and is handed (the ports, the needs, `Target`, `SubjectError`,
+`HarnessError`) is `ix.extension`'s.
 
 `ix.run` returns a report for every run that started, however it ended: `Report.status` is
 `completed`, `interrupted` or `failed`, and `Report.exit_code` is what a command should exit
@@ -791,8 +1016,9 @@ not:
 ## Output
 
 `--json` prints one document with a `schema` field: `ix.v1.validation`, `ix.v1.plan`,
-`ix.v1.registered`, `ix.v1.deviations`, `ix.v1.report`, `ix.v1.runs`, `ix.v1.genres`,
-`ix.v1.kinds`.
+`ix.v1.registered`, `ix.v1.deviations`, `ix.v1.report`, `ix.v1.status` (`ix status`, `ix stop`,
+`ix run --detach`), `ix.v1.runs`, `ix.v1.genres`, `ix.v1.kinds`. `ix events --json` prints one
+`matrix.v1.event` document a line.
 
 A command that fails prints one envelope on stderr, as one JSON line under `--json`:
 
@@ -817,7 +1043,7 @@ over.
 
 | Exit | Kind | Meaning |
 |------|------|---------|
-| 0 | `ok` | done; for validate, the experiment is valid; for run and report, the verdict holds, or there is no verdict to give and none was asked for (exploratory or dry) |
+| 0 | `ok` | done; for validate, the experiment is valid; for run and report, the verdict holds, or there is no verdict to give and none was asked for (exploratory or dry); for status, events and stop, the run completed, which is no verdict |
 | 1 | `unknown` | a failure ix did not classify |
 | 2 | `usage` | a bad flag or argument |
 | 3 | `config` | the experiment is invalid, or it cannot be carried out here as written (a kind with no adapter, a subject that cannot start, an unsupported analysis): read the message and the fix |
@@ -827,7 +1053,7 @@ over.
 | 10 | `fails` | the verdict is fails |
 | 11 | `inconclusive` | the verdict is inconclusive |
 | 12 | `run_interrupted` | the run stopped before it finished; the record is kept and it gives no verdict |
-| 13 | `running` | the run has not finished yet; report it again when it has |
+| 13 | `running` | the run has not finished yet (from `ix stop`: it is still releasing what it started); ask `ix status` again, or `ix events --follow` until it ends |
 | 14 | `deviations` | the experiment differs from its registration (ix deviations); a run of it gave no gate result |
 | 15 | `unregistered` | ix run needs a registration, or --exploratory |
 | 16 | `simulated` | a stand-in (a mock runtime) answered a run held to its registration: it measured the harness, not the subject, and gives no gate result |
@@ -845,5 +1071,6 @@ cut short by Ctrl-C, which prints the error envelope instead.
 | `ix --skill` | The skill an agent reads, with frontmatter so it is a `SKILL.md` as printed: what ix is for and when not to use it, install and prerequisites, a quick start that runs, the commands in order, the errors and exit codes with what to do next. Generated from what is installed |
 | `ix --skill -r NAME` | One reference the skill lists: `experiment` (every key and value form), `genres`, `kinds`, `running` (registration, running, the verdict), `agents` (an agent evaluation end to end), `problems` |
 | [Design record, 2026-10-19](docs/design/2026-10-19-record.md) | Every design judgment ix rests on, one row each with its test and evidence: the verdict's statistics with their sources and simulations, the agent path, the runtime ports, what a verdict is tied to, requirements in place of effects, environments, the layer map, the evaluator sensor, and the owner's rulings they follow |
+| [CONTRACT.md](CONTRACT.md) | What each published surface 0.8 changed hides, its members, defaults, failure behaviour and stability: the extension contract, a kind option's default, the registered design and the plan digest, the work a plan counts, `check` with its probe and sensor, and an override on a gated run |
 | [CHANGELOG.md](CHANGELOG.md) | What each release changed |
 | [SECURITY.md](SECURITY.md) | What ix reads, writes, starts, runs and sends |

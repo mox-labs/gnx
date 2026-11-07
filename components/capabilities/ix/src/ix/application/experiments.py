@@ -19,8 +19,8 @@ from ix.domain.analysis import Spread, spread
 from ix.domain.design import select_sensors
 from ix.domain.errors import ConfigError, NotFoundError
 from ix.domain.experiment import PROBES_FOLDER, Experiment, ProbeConfig, ProbeSet, probe_set
-from ix.domain.kind import per_cell
-from ix.domain.plan import Plan, RegistrationStatus, Required, plan, sensitivity
+from ix.domain.kind import merged, per_cell
+from ix.domain.plan import Plan, RegistrationStatus, Required, Work, plan, sensitivity
 from ix.domain.ports import Review, Surroundings
 from ix.domain.problem import InvalidExperimentError, Problem, Validation, problem
 from ix.domain.registration import (
@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 
     from ix.domain.design import Design
     from ix.domain.genre import Genre, Genres
-    from ix.domain.kind import Kinds
+    from ix.domain.kind import Kind, Kinds
     from ix.domain.provenance import Content
     from ix.domain.run import RunRecord
 
@@ -193,11 +193,13 @@ def reviewed(
         built = adapter(kind)
         if not isinstance(built, Review):
             continue
-        # Each cell's options, as its trials will have them: a factor on one option hides
-        # nothing the adapter can tell about the others.
+        # Each cell's options, as its trials will have them (each default the kind declares
+        # filled in): a factor on one option hides nothing the adapter can tell about the
+        # others.
         declared = vocabulary.kinds.get("subject", subject.kind)
         text = declared.text_options if declared else ()
-        for options in per_cell(subject.options, experiment.factors, text=text):
+        written = _carried(declared, subject.options)
+        for options in per_cell(written, experiment.factors, text=text):
             found += [
                 said
                 for said in _review(built, kind, options, around(f"subjects.{name}"))
@@ -213,12 +215,18 @@ def reviewed(
             found += _review(
                 built,
                 sensor.kind,
-                sensor.options,
+                _carried(vocabulary.kinds.kinds.get(sensor.kind), sensor.options),
                 around("sensors" if index is None else f"sensors.{index}"),
             )
     if not found:
         return examined
     return replace(examined, problems=(*examined.problems, *found), design=None)
+
+
+def _carried(kind: Kind | None, written: Mapping[str, Any]) -> dict[str, Any]:
+    """``written`` as an entry of ``kind`` is carried out: each default the kind declares for
+    what it leaves out filled in."""
+    return dict(written) if kind is None else merged(kind.defaults(written), written)
 
 
 def _review(
@@ -386,11 +394,13 @@ def make_plan(
     *,
     location: str = "",
     requirements: tuple[Required, ...] = (),
+    work: Work | None = None,
     earlier: Iterable[RunRecord] = (),
 ) -> Plan:
     """What a run would do, where the experiment stands against its registration, what it
-    ``requirements`` of this host (each with whether it holds here), and, from the
-    ``earlier`` runs of the experiment (latest first), how small an effect it can detect."""
+    ``requirements`` of this host (each with whether it holds here), the model calls it
+    starts (``work``, as the adapters here count them), and, from the ``earlier`` runs of the
+    experiment (latest first), how small an effect it can detect."""
     made, current = standing(examined, vocabulary, now="", version="")
     checked = valid(examined, "planned")
     blocks = checked.design.repeats * len(checked.probes.probes)
@@ -406,6 +416,7 @@ def make_plan(
         update={
             "registration": status,
             "requirements": requirements,
+            "work": work or Work(),
             "sensitivity": sensed,
             "warnings": examined.warnings,
         }

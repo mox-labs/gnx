@@ -1,16 +1,16 @@
 """``matrix.v1.model-step``: one model call as an ordinary component.
 
 The model counterpart of the agent step. It names a configured **model runtime**, not an
-agent: a model call has no loop, no tools and no turns. What it requires and provides comes
-from its config:
+agent: a model step's call is one prompt, with no loop and no tools. What it requires and
+provides comes from its config:
 
 * it **requires** the kinds its ``inputs`` name, and renders their rows into the prompt;
 * it **provides** the call's reply, a :class:`ModelCall` carrying the prompt as sent and
   pointing at the call's row in ``matrix.v1.session``, which it records, under the kind
   ``response`` names; and, when ``output`` names a kind, the reply as one row of that
   kind. When a package registered a schema for that kind, the runtime is asked for that
-  structure and validates the reply against it (hardline repairs a reply that does not fit);
-  otherwise the reply must be one JSON document. The executor validates the row against the
+  structure and validates the reply against it (a runtime may repair a reply that does not
+  fit); otherwise the reply must be one JSON document. The executor validates the row against the
   kind's schema like any other.
 
 **A reply that is not a whole answer fails the step.** A reply cut at ``max_tokens``, refused,
@@ -23,18 +23,19 @@ is not taken to have cut it, and the row keeps the None.
 
 The call is a span of work: ``matrix.model.start`` and ``.end`` (the model asked for, and the
 one that answered and why its reply ended), with each observer's ``around`` entered while the
-runtime works, so what the runtime opens inside it (hardline's spans) nests under it. That path
+runtime works, so what the runtime opens inside it (its own spans) nests under it. That path
 is public, :func:`call_model`, for a caller that calls a model runtime itself: its call is then
 the same span of work and the same session row as a step's.
 
 Both the prompt's placeholders and the model name are checked when the step is built: a
-typo, or a model the runtime cannot resolve, is a ``config`` problem at composition. A
-runtime that holds connections (``aclose()``) has them closed when the run ends, in the run's
-event loop, which made them.
+typo, a model the runtime cannot resolve, or an ``output`` structure it cannot give on that
+model, is a ``config`` problem at composition. A
+runtime that holds connections (``SupportsAclose``) has them closed when the run ends, in the
+run's event loop, which made them.
 
 Config::
 
-    runtime: fast                         # a matrix.model_runtimes name
+    runtime: fast                         # a matrix.model_runtimes name; unset, the only one
     model: haiku                          # a name the runtime resolves; unset, its default
     system: "You extract claims."         # optional
     inputs: {diff: acme.v1.diff}          # placeholder -> the kind it stands for
@@ -48,13 +49,14 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import BaseModel, ConfigDict
 
 from matrix.domain.errors import ConfigError, ContractError, ModelRuntimeError, NotFoundError
 from matrix.domain.ids import check_type_url
 from matrix.domain.model_call import ModelRequest
+from matrix.domain.needs import ONLY_COMPOSED, model_runtime_named
 from matrix.domain.observer import (
     CURRENT_SPAN,
     MODEL_END,
@@ -64,6 +66,7 @@ from matrix.domain.observer import (
     emit,
     observing,
 )
+from matrix.domain.optional import SupportsAclose
 from matrix.domain.session import (
     Session,
     call_sent,
@@ -76,7 +79,7 @@ from matrix.domain.template import check_template, json_document, render
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from matrix.domain.component import Inputs, RunContext
+    from matrix.domain.component import Context, Inputs
     from matrix.domain.model_call import ModelCall
     from matrix.domain.observer import Observer
     from matrix.domain.ports._out.model_runtime import ModelRuntime
@@ -87,7 +90,8 @@ PROMPT = "matrix.v1.prompt"
 
 
 class ModelStepConfig(BaseModel):
-    """A model step: one call on `runtime` (a configured model runtime) to `model` (a name it
+    """A model step: one call on `runtime` (a configured model runtime; unset, the only one the
+    config composes, and refused when it composes none or several) to `model` (a name it
     resolves; unset, its default), with `prompt`, a template whose {placeholders} `inputs`
     fill with the rows of the kinds they name, and an optional `system` prompt. `response` is
     the kind its call record is provided as; a kind has one provider, so each model step in a
@@ -97,7 +101,9 @@ class ModelStepConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    runtime: str
+    #: A name under ``matrix.model_runtimes``; unset, the only one composed, resolved when the
+    #: step is built.
+    runtime: Annotated[str | None, ONLY_COMPOSED] = None
     model: str | None = None
     system: str | None = None
     #: placeholder name -> the kind whose rows fill it
@@ -122,6 +128,8 @@ class ModelStep:
         runtime_url: str | None = None,
         drives: tuple[str, ...] = (),
     ) -> None:
+        name = model_runtime_named(config.runtime, model_runtimes, key="runtime")
+        config = config.model_copy(update={"runtime": name})
         for placeholder, kind in config.inputs.items():
             check_type_url(kind, where=f"model-step inputs.{placeholder}")
         check_type_url(config.response, where="model-step response")
@@ -129,27 +137,26 @@ class ModelStep:
             check_type_url(config.output, where="model-step output")
         if config.prompt is None and len(config.inputs) != 1:
             raise ConfigError(
-                f"model-step on {config.runtime!r} has {len(config.inputs)} inputs and no "
-                "prompt template",
+                f"model-step on {name!r} has {len(config.inputs)} inputs and no prompt template",
                 fix="give a prompt template with a {placeholder} for each input",
             )
         if config.prompt is not None:
-            check_template(
-                config.prompt, config.inputs, where=f"model-step prompt on {config.runtime!r}"
-            )
-        runtime = model_runtimes.get(config.runtime)
+            check_template(config.prompt, config.inputs, where=f"model-step prompt on {name!r}")
+        runtime = model_runtimes.get(name)
         if runtime is None:
             raise NotFoundError(
-                f"model-step: no model runtime named {config.runtime!r}. "
+                f"model-step: no model runtime named {name!r}. "
                 f"Composed: {', '.join(sorted(model_runtimes)) or '(none)'}",
                 fix="name a model runtime defined under matrix.model_runtimes",
             )
-        runtime.check(config.model)  # an unknown model is refused now, not mid-run
+        self._output = (schemas or {}).get(config.output) if config.output is not None else None
+        # An unknown model, or a structure it cannot give, is refused now, not mid-run.
+        runtime.check(config.model, uses=frozenset({"output"}) if self._output else frozenset())
         self._config = config
+        self._name = name
         self._runtime = runtime
         self._runtime_url = runtime_url
         self._drives = tuple(drives)
-        self._output = (schemas or {}).get(config.output) if config.output is not None else None
         self.requires: frozenset[str] = frozenset(config.inputs.values())
         self.provides: frozenset[str] = frozenset(
             {config.response} | ({config.output} if config.output is not None else set())
@@ -157,16 +164,16 @@ class ModelStep:
 
     def render(self, inputs: Mapping[str, tuple[Any, ...]]) -> str:
         """The prompt for these rows: one row as itself, several as a JSON list."""
-        where = f"model-step on {self._config.runtime!r}"
+        where = f"model-step on {self._name!r}"
         return render(self._config.prompt, self._config.inputs, inputs, where=where)
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
-        close = getattr(self._runtime, "aclose", None)
-        if callable(close):  # the runtime's connections close in the loop that made them
-            ctx.defer(close)
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
+        if isinstance(self._runtime, SupportsAclose):
+            # The runtime's connections close in the loop that made them.
+            ctx.defer(self._runtime.aclose)
         prompt = self.render(inputs)
-        request = ModelRequest(
-            prompt=prompt, model=self._config.model, system=self._config.system, output=self._output
+        request = ModelRequest.from_prompt(
+            prompt, model=self._config.model, system=self._config.system, output=self._output
         )
         call = (await self._call(request)).model_copy(update={"prompt": prompt})
         self._whole(call)
@@ -181,7 +188,7 @@ class ModelStep:
         return await call_model(
             self._runtime,
             request,
-            name=self._config.runtime,
+            name=self._name,
             runtime_url=self._runtime_url,
             drives=self._drives,
         )
@@ -204,7 +211,7 @@ class ModelStep:
             why = f"{why} ({call.native_finish_reason!r})"
         model = call.name or call.model or self._config.model or "(default)"
         raise ModelRuntimeError(
-            f"the model step on {self._config.runtime!r}: model {model!r} gave no whole "
+            f"the model step on {self._name!r}: model {model!r} gave no whole "
             f"answer: {why} (finish_reason {reason!r})",
             reason="refused" if case in ("refusal", "content_filter") else "failed",
             fix=fix,
@@ -220,7 +227,7 @@ class ModelStep:
         except LookupError:
             excerpt = text.strip()[:_EXCERPT] or "(empty)"
             raise ContractError(
-                f"the model step on {self._config.runtime!r} was to reply with JSON for {kind} "
+                f"the model step on {self._name!r} was to reply with JSON for {kind} "
                 f"(the step's `output`), but its reply holds no JSON document: {excerpt!r}",
                 fix=f"ask for one JSON document for {kind} in the step's prompt or system "
                 "prompt, or register a schema for the kind so the runtime asks for it; on the "

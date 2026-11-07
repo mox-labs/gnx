@@ -22,17 +22,17 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from recon.adapters._out.archive_files import ArchiveFiles
 from recon.composition import root
+from recon.core.domain.archives import ArchiveRef
 from tests.paged_server import PagedServer
-from tests.recon_fakes import FixedClock
+from tests.recon_fakes import FixedClock, archive_path, files_of
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     import pytest
 
-    from recon.domain.documents import StreamDocument
+    from recon.core.domain.documents import StreamDocument
 
 CLI = "import sys; from recon.adapters._in.cli import main; sys.exit(main())"
 PAGINATE = {"type": "cursor", "next": "meta.next", "param": "cursor"}
@@ -53,11 +53,18 @@ def _project(project: Path, url: str, window: dict[str, Any], **entry: Any) -> N
 
 
 def _stream(project: Path, **bound: Any) -> StreamDocument:
-    return root({}, project=project, clock=FixedClock()).stream("m", "items", **bound)
+    return root({}, project=project, clock=FixedClock()).observation.stream("m", "items", **bound)
 
 
 def _windows(project: Path) -> list[Path]:
-    return ArchiveFiles(FixedClock()).archives(project / ".recon" / "m", stream="items")
+    store = files_of(project, FixedClock())
+    return [archive_path(project, ref) for ref in store.archives("m", stream="items")]
+
+
+def _state(window: Path) -> str:
+    """The window's state, as the file adapter reads it (the project is its fifth parent)."""
+    ref = ArchiveRef("m", window.name, window.parent.name)
+    return files_of(window.parents[4], FixedClock()).state(ref)
 
 
 def _lines(path: Path) -> list[dict[str, Any]]:
@@ -178,9 +185,8 @@ def _kill_mid_crawl(project: Path, server: PagedServer, held: int) -> None:
     finally:
         if process.poll() is None:
             process.kill()
-    store = ArchiveFiles(FixedClock())
     started = time.monotonic()
-    while store.state(_windows(project)[-1]) == "writing" and time.monotonic() - started < 10:
+    while _state(_windows(project)[-1]) == "writing" and time.monotonic() - started < 10:
         time.sleep(0.01)  # the lock goes with the process, as the kernel releases it
 
 
@@ -213,14 +219,14 @@ class TestKilledMidCrawl:
             _kill_mid_crawl(tmp_path, server, held)
             first, dead = _windows(tmp_path)
             assert _meta(first)["stream"]["closed_by"] == "pages"
-            assert ArchiveFiles(FixedClock()).state(dead) == "incomplete"
+            assert _state(dead) == "incomplete"
             assert not (dead / "meta.yaml").exists(), "killed: no record of its end"
             assert _pages(dead) == [2, 3] and [r["id"] for r in _rows(dead)] == [4, 5]
             server.release.set()
 
             broken = tmp_path / "broken"
             shutil.copytree(tmp_path / ".recon", broken / ".recon")
-            from recon.application import stream as stream_module
+            from recon.core.application import stream as stream_module
 
             with monkeypatch.context() as patched:
                 patched.setattr(stream_module, "crawl_resume", lambda *args, **kwargs: None)
@@ -291,7 +297,7 @@ class TestTheSourceMovedUnderTheCrawl:
         [shifted] = [w for w in warnings if w["kind"] == "paginate_shifted"]
         assert shifted["got"] == 1 and shifted["fix"]
 
-        from recon.domain import paginate
+        from recon.core.domain import paginate
 
         monkeypatch.setattr(paginate, "found_at", lambda contents, mark, i: i)
         ids, _ = run(tmp_path / "by-index")
@@ -318,7 +324,7 @@ class TestTheSourceMovedUnderTheCrawl:
         [shifted] = [w for w in warnings if w["kind"] == "paginate_shifted"]
         assert shifted["got"] == -1
 
-        from recon.domain import paginate
+        from recon.core.domain import paginate
 
         monkeypatch.setattr(paginate, "found_at", lambda contents, mark, i: i)
         ids, _ = run(tmp_path / "by-index")
@@ -392,8 +398,8 @@ class TestTicksWhoseTokensExpire:
         from datetime import UTC, datetime, timedelta
 
         from recon.adapters._out.schedule_files import SCHEDULE_LOG
-        from recon.application.schedules import offset_s
-        from recon.domain.schedule import ScheduleHost
+        from recon.observe.application.schedules import offset_s
+        from recon.observe.domain.scheduling import ScheduleHost
         from tests.test_schedule_install import FakeRunner, Host
 
         every = 600
@@ -411,9 +417,9 @@ class TestTicksWhoseTokensExpire:
             scheduled = ScheduleHost("/opt/recon/bin/recon", ("/usr/bin", "/bin"))
             recon = root({"PATH": "/usr/bin:/bin"}, project=tmp_path, clock=clock,
                          schedulers=host.scheduler, schedule_host=scheduled)  # fmt: skip
-            digest = recon.schedule_install("m", platform="launchd").config_sha256 or ""
+            digest = recon.observation.schedule_install("m", platform="launchd").config_sha256 or ""
             for _ in range(ticks):
-                documents.append(recon.schedule_tick("m", config_sha256=digest))
+                documents.append(recon.observation.schedule_tick("m", config_sha256=digest))
                 server.expire()
                 clock.advance(every)
         log = (tmp_path / ".recon" / "m" / SCHEDULE_LOG).read_text().splitlines()
@@ -446,3 +452,50 @@ class TestTicksWhoseTokensExpire:
         assert starved["got"] == 1 and "window.pages" in starved["fix"]
         assert "every" in starved["fix"]
         assert "paginate_starved" in logged[2] and "paginate_starved" not in logged[1]
+
+
+class TestNormalizationMovedIntoTheCore:
+    """Regression (contract v2; design record M5-1): the ``api`` type applied ``normalize:``
+    before it gave a record its position, and a resumed crawl found where it left off by
+    comparing the page it asked for again with the last record kept, both normalized. recon now
+    normalizes every type's records itself, and drives the crawl, so it must compare the
+    resumed page's records shaped as the store kept the boundary."""
+
+    #: A spec under which no record recon reads equals the one it keeps: ``title`` is kept as
+    #: ``label``.
+    NORMALIZE = {"id": "id", "label": "title"}
+
+    def _run(self, project: Path) -> tuple[list[int], list[Any], list[dict[str, Any]]]:
+        with PagedServer(12, 3) as server:
+            _project(project, server.url, {"pages": 2}, normalize=self.NORMALIZE)
+            _stream(project)  # ids 0..5, then the window seals at two pages: cut mid-crawl
+            server.data.insert(0, {"id": 100, "title": "new"})  # the source moves under it
+            since = len(server.tried)
+            resumed = _stream(project)
+            asked = server.tried[since:]
+            _stream(project, windows=10)
+        return _ids(project), asked, resumed.warnings
+
+    def test_a_crawl_cut_mid_way_resumes_at_its_page_and_keeps_each_record_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ids, asked, warnings = self._run(tmp_path / "found")
+        assert asked[0] == 1, "the resumed run asks first for the page it left off on"
+        assert ids == list(range(12)), "every record once, in order"
+        [shifted] = [w for w in warnings if w["kind"] == "paginate_shifted"]
+        assert shifted["got"] == 1, "the boundary was found one record on, by its content"
+        rows = [row for window in _windows(tmp_path / "found") for row in _rows(window)]
+        assert all(set(row) == {"id", "label", "_position"} for row in rows)
+
+        # Check the checker: compare the resumed page's records as recon read them, before
+        # normalize:, and the boundary is never found; the crawl goes on by its index and
+        # keeps a record twice.
+        from recon.core.application import items
+        from recon.core.domain.paginate import content
+
+        monkeypatch.setattr(
+            items, "_contents", lambda raws, shaping: [content(r.data) for r in raws]
+        )
+        ids, _, warnings = self._run(tmp_path / "raw")
+        assert ids != list(range(12)) and len(ids) != len(set(ids)), ids
+        assert [w["got"] for w in warnings if w["kind"] == "paginate_shifted"] == [None]

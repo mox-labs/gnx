@@ -27,15 +27,9 @@ from typing import Any
 
 import pytest
 
-from recon.domain.errors import UsageError
-from recon.domain.schedule import (
-    PLATFORMS,
-    Platform,
-    ProjectedFile,
-    ScheduledRun,
-    fire_times,
-    project,
-)
+from recon.core.domain.errors import UsageError
+from recon.core.domain.schedule import PLATFORMS, Platform
+from recon.observe.domain.scheduling import ProjectedFile, ScheduledRun, fire_times, project
 
 GOLDEN = Path(__file__).parent / "fixtures" / "schedules"
 UPDATE = os.environ.get("RECON_UPDATE_GOLDEN") == "1"

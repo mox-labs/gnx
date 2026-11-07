@@ -1,7 +1,8 @@
 """What a verdict rests on beyond the experiment's own document.
 
 The experiment's digest covers the file, which names a subject's skills, plugins, fixtures
-and agent definition, and a sensor's graders or rubric, by **path**. What is at those paths
+and agent definition, a sensor's graders or rubric, and the script a probe's command runs, by
+**path**. What is at those paths
 is what was tested, so its digest is frozen at registration and recorded with each run
 (:class:`Content`): a skill edited after registration is a deviation, as an edited probe
 file is. An option holds files when its kind declares it a ``path`` or a list of
@@ -37,7 +38,9 @@ from ix.domain.kind import fill, placeholders
 from ix.domain.schema import Stored
 
 if TYPE_CHECKING:
-    from ix.domain.experiment import Experiment
+    from collections.abc import Sequence
+
+    from ix.domain.experiment import Experiment, ProbeConfig
     from ix.domain.kind import Kind, Kinds, Option
 
 #: The option types whose values name files: one path, or a list of them.
@@ -150,16 +153,21 @@ def _named(entry: str, kind: Kind | None, written: list[Mapping[str, Any]]) -> l
     return found
 
 
-def named_files(experiment: Experiment, kinds: Kinds) -> tuple[Named, ...]:
-    """Every file or folder the experiment's subjects, named sensors and environment give an
-    option of their kind's ``path``, ``paths`` or ``command`` type (a compose file is a
-    ``path``), each once, in the order written. A subject's options are filled for each
-    cell, as a trial fills them, so a factor that picks a skill names each skill it can
-    pick."""
+def named_files(
+    experiment: Experiment, kinds: Kinds, probes: Sequence[ProbeConfig] = ()
+) -> tuple[Named, ...]:
+    """Every file or folder the experiment's subjects, ``probes``, named sensors and
+    environment give an option of their kind's ``path``, ``paths`` or ``command`` type (a
+    compose file is a ``path``; a check's script is a ``command``'s program), each once, in
+    the order written. A subject's and a probe's options are filled for each cell, as a trial
+    fills them, so a factor that picks a skill names each skill it can pick."""
     found: list[Named] = []
     for name, subject in experiment.subjects.items():
         filled = [fill(subject.options, cell) for cell in cells(experiment.factors)]
         found += _named(f"subjects.{name}", kinds.get("subject", subject.kind), filled)
+    for probe in probes:
+        filled = [fill(probe.options, cell) for cell in cells(experiment.factors)]
+        found += _named(f"probes.{probe.id}", kinds.get("probe", probe.kind), filled)
     for index, sensor in enumerate(experiment.sensors):
         found += _named(f"sensors.{index}", kinds.get("sensor", sensor.kind), [sensor.options])
     environment = experiment.environment
@@ -193,12 +201,12 @@ class Provenance(Stored):
     #: Why there is no commit: ``not a repository``, ``no commit yet``, ``git is not
     #: installed``, or what git said.
     no_commit: str = ""
-    #: The installed versions of matrix, ix and hardline, by distribution; ``not installed``
-    #: for one that is not.
+    #: The installed versions of ix, matrix and each distribution an installed runtime drives,
+    #: by distribution; ``not installed`` for one that is not.
     versions: dict[str, str] = {}
     #: Every runtime installed at matrix's agent-runtime and model-runtime points.
     runtimes: tuple[RuntimeOrigin, ...] = ()
-    #: Each setting the run read (``ix.runs``, ``matrix.observers``, ``matrix.models``) and
+    #: Each setting the run read (``ix.runs``, ``matrix.observers``, ``matrix.model_runtimes``) and
     #: the rung that set it: the config file (several, comma-separated, when tiers merged a
     #: mapping), ``default`` when no tier set it, or ``given in code`` when the caller passed
     #: the settings. Never the value.

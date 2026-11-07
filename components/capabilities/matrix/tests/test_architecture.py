@@ -14,7 +14,7 @@
    version), and nothing outside ``ids`` splits a string on ``/``.
 3. **The command line** reaches matrix through ``import matrix`` and the names in
    ``matrix.__all__`` alone, so what it can do, a program can do with the declared names.
-4. The API reference and the README's stable names agree with ``matrix.__all__``.
+4. The API reference, and the names the README promises, agree with ``matrix.__all__``.
 
 What these cannot see, so review still reads for it (the design record keeps the list): a
 module reached by ``importlib`` or through an alias, a use that is not an import, an adapter's
@@ -65,6 +65,32 @@ def test_every_file_is_in_a_layer_and_every_dependency_points_inward() -> None:
     assert report.exit_code == 0
     assert report.files_in_scan == len(list(SRC.rglob("*.py")))
     assert all(count > 0 for count in report.layers.values()), report.layers
+
+
+def test_matrix_depends_on_no_model_runtime() -> None:
+    """Owner ruling HO1 (2026-11-06): matrix privileges no model runtime. hardline is in none
+    of its dependencies, no module of it imports hardline, and the map forbids it in every
+    layer, so a model runtime reaches matrix only as an extension (matrix-hardline's)."""
+    import tomllib
+
+    declared = tomllib.loads((PACKAGE / "pyproject.toml").read_text())["project"]["dependencies"]
+    assert not [d for d in declared if re.match(r"hardline\b", d)]
+    importing = [
+        str(file.relative_to(SRC))
+        for file in SRC.rglob("*.py")
+        for node in ast.walk(ast.parse(file.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Import | ast.ImportFrom)
+        and any(
+            name.split(".")[0] == "hardline"
+            for name in (
+                [a.name for a in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module or ""]
+            )
+        )
+    ]
+    assert importing == []
+    assert all("hardline" in layer["forbid"] for layer in MAP["layers"])
 
 
 @pytest.mark.parametrize("violation", [pytest.param(p, id=p.rule) for p in plants(MAP, PACKAGE)])
@@ -196,9 +222,10 @@ def test_the_api_reference_lists_every_exported_name_and_no_other() -> None:
     assert listed == set(matrix.__all__), listed ^ set(matrix.__all__)
 
 
-def test_the_names_the_readme_calls_stable_are_exported() -> None:
+def test_the_names_the_readme_promises_are_exported() -> None:
     text = (PACKAGE / "README.md").read_text()
-    section = text[text.index("## The stable public API") : text.index("## Documentation")]
-    stable = section[: section.index("Every other exported name")]
-    named = set(re.findall(r"`([A-Za-z_]+)`", stable)) - {"matrix", "v1"}
+    section = text[text.index("## What is promised") : text.index("## Documentation")]
+    stable = section[: section.index("Everything else exported")]
+    # A config key and a stability, which are quoted words but not names.
+    named = set(re.findall(r"`([A-Za-z_]+)`", stable)) - {"grace_s", "stable"}
     assert named and named <= set(matrix.__all__), named - set(matrix.__all__)

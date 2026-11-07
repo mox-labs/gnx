@@ -1,5 +1,112 @@
 # Changelog — recon
 
+## 0.19.1 — 2026-11-06
+
+On matrix 0.10. Nothing of recon's own surface changes.
+
+### Changed
+
+- **A recon session imports no other package's registration.** matrix 0.10 loads only the
+  extensions whose entry points declare a point the session reads (ruling M-DISC), and recon
+  asks for its own four, so ix's registration, and the httpx2 it imports, are no longer loaded
+  to plan or report. The guard in `tests/test_layering.py` is back to its 0.17 form: building
+  a root loads no heavy library, whatever else is installed (design record M5-5).
+- **recon's `matrix.extensions` entry points name its points**: `recon.collector`,
+  `recon.source`, `recon.converter`, `recon.transform`, `component`, `payload-type`, each
+  `recon._matrix:register`, where one entry point was named `recon`. A third party's extension
+  declares its points the same way (`docs/reference/extending.md`).
+- recon depends on `matrix>=0.10,<0.11`.
+- **recon depends on markitdown's extras for the converters it registers** (`docx`, `outlook`,
+  `pdf`, `pptx`, `xls`, `xlsx`), not on `markitdown[all]`. `[all]` added audio, YouTube and
+  Azure dependencies recon never registers, and from markitdown 0.1.6 a pre-release Azure
+  package, which held the resolution at markitdown 0.1.5 and an onnxruntime with no Python 3.14
+  wheel: recon would not install on 3.14. The converters recon offers are unchanged.
+
+## 0.19.0 — 2026-11-06
+
+### Collector contract v2 (M5, completed)
+
+- **One contract, `recon.extension`** (review C7, ruling R13): a collector type's `Collector` has `effects`, `records` (`finite`, `unbounded_recon_paced` or `unbounded_source_paced`), `accepts` (the source kinds its runs use), pure `describe(run)` and `check(run)`, `collect(run, resume)` and `close()`. A `Run` is one table's: its entry, its source, and its `settings`, the type's own keys validated by its schema and filled for the run. A run gives items: `Body` (bytes of a media type, whole or as they arrive), `Record` (already structured), `PageMark`, `Gap`, `Dropped`, `Truncated`.
+- **recon captures, converts, finds and shapes the records of every type, once** (ruling R-NS): no type applies `normalize:` or writes its own capture. A body is captured with the credentials its type sent kept out (a record keeps what its source said), converted by the converter it names or its media type picks, its records found with `extract:`, each shaped with `normalize:`.
+- **`Paged`: recon drives a crawl** (`page(run, token) -> Page`): its stopping, page log, `{page, i}` positions, and for a stream's crawl resumed after a stop, the page it left off on asked for again and the last record kept found there by its content, compared as the store kept it, shaped. The `api` type is `Paged`; how a page is asked for stays its own.
+- **`Preflight`**: `preflight` and `requirements(run)`, found with `isinstance` when recon reads the type, as `Paged` is.
+- **Two new points**, `recon.source` (a source kind: `check(source)`, `env(source)`, its config the kind's own keys) and `recon.converter` (`media_types`, `convert(chunks, media_type, origin)`). Built-in kinds `api`, `local`, `file`, `mcp`; converters `json`, `xml`, `lines`, `document` (markitdown) and `mcp_result`. `$markitdown` converts a file through the `document` converter's conversion.
+- **A type is built as `build(**needs)`** with the needs it names: `requester`, `shell`, `clock`, `telemetry`, `deadline`, `rate_limiter`, `credentials`, `env`, `user_agent`, `project`, `capture_logs`. Credentials arrive through the `credentials` need; the capture type reads logs through `capture_logs`; no type is handed the mission's directory. recon builds each installed type once per session with stand-in needs that refuse to be used, to read what it declares.
+- **`recon.testing`, the conformance kit** (`CollectorConformance`): what a type promises, checked by its behaviour; `records(collector, run)` is recon's pipeline for one run. Every built-in passes it, and so does a client type written as an outside package would write it.
+- **`extract:` is every type's**: recon finds the records in each converted value and each record's data (a `cli` command's JSON lines included).
+- **`api`'s `response_format: text`** (the answer line by line) and **`document`** (converted to markdown by its content type, one record `{url, title, content, content_type}`).
+- **`recon types --json`** lists each converter and the media types it converts, and each source kind's origin and summary.
+
+### Changed (breaking)
+
+- **`CollectorType` and its 19 fields are gone**, and with them `CollectorContext`, the `normalizes`, `extracts`, `paginates`, `unbounded`, `paced_by`, `requires_source`, `preflight`, `source_kinds`, `accepts_kinds`, `source_settings`, `check_source`, `source_env` and `check_run` switches and hooks, the `PageLog` and `GapLog` a type was handed, `SupportsRequirements`, and the `DocumentConverter` port (`root()` and `recon.open` take no `converter`). An entry at `recon.collector` registers a collector's build with `config=` its settings schema (refusing unknown keys) and `needs=`.
+- **`type: web` is gone** (ruling R10), the collector type and the source kind: a config naming either is a plan problem whose fix says what to write (`type: api` with `response_format: document`; a source `type: api`). The document record has no `status_code`. `api`'s `response_format: html` is no value (it was refused at plan time before).
+- **`recon.v1.types`**: `sources[].added_by` is replaced by `origin` and `summary`, since a kind is an entry of its own; `capabilities` names `paginate` and `preflight` only.
+- **A `cli` entry with `patterns:` keeps one capture a command**, each with its own `commands`, `exit_codes` and `status`, where it kept one for the entry.
+- **An `mcp` capture is recon's**: its body is still the whole result, its credentials redacted value by value; an api body that echoed a credential is redacted the same way when it is JSON, and written again only then.
+- **A replayed capture is captured again** by a survey with `preserve_raw`, with its original `kind` and request.
+- **A stream's window capture holds each record as recon found it, before `normalize:`**, for every type (an `api` stream's held normalized records).
+- **An `mcp` source's `env:` and `file:` references and its `headers_helper`** resolve through the `credentials` need: the same rules, through the one resolver every kind's credential goes through.
+- **The `docs-mine` template** reads its pages with `api` and `response_format: document`.
+
+## 0.18.0 — 2026-11-06
+
+### Two layers: the collect core and the observe layer (M3)
+
+- **`recon.core`** runs one act: it plans a mission's runs, fetches each source, captures what came back, normalizes it, and lands each table with its checkpoint in one seal, and it answers SQL over what was landed (`Collection`, its driving port). **`recon.observe`** collects over time: the span each ranged table asks for after what it committed, what changed, retention, schedules, subscriptions and their delivery, following an archive or a stream, status (`Observation`). The core never imports the observe layer, and the observe layer uses only `recon.core.__all__`, as any outside driver would: two import-contract tests, each with a planted violation, and `layers.json` maps every module to its layer.
+- **What changed is derived after the seal** (ruling R9), into the same archive, through `Hold.derive(ref)`, which opens a sealed archive again under its writer lock so it reads `writing` while its change table and told index are written. The act's commit (its tables and ranges) never waits on it, and a failure to derive is the table's `changes.error` and a `changes_failed` warning, no longer an unfinished archive. Change rows, cursors and acks read as before.
+- **A pending table** (sealed `finished` under the mission's config with no change summary: its writer died between the seal and the deriving) holds a change reader, and the next survey or stream run of that config derives it in its own archive first.
+- **`recon.open(root)`** gives a session, `recon.Recon`, whose `collection` and `observation` are the two layers' operations; the command line drives one.
+
+### Values in, discovery out (M4)
+
+- **`recon.open(root, *, extensions=, landing=)`** (ruling R15): in-process extensions, and the store acts land in (one recon's query engine reads, else `usage`). The module functions run over one session per project, opened on first use: no root is rebuilt per call.
+- **A config may be a value** (a `ReconConfig` or a mapping), planned as a file's data, hashed as its canonical JSON, never written as the mission's `config.yaml`; each archive it lands keeps it under `config`, every URL reported as recon reports one, so no credential reaches the meta.
+- **`recon types [--json]`** (`recon.v1.types`): each collector type, its origin, effects, `records_kind`, capabilities and config JSON Schema; each source kind; each transform. **`recon schema`** (`recon.v1.mission-config`): the mission file's JSON Schema.
+- **`--root DIR`** and **`RECON_ROOT`** on the command line.
+- **The plan's `provenance` gives every effective value** of the config's own keys, as written (`mission`) or filled in (`recon`), the older defaults among them (a source's `timeout`, `max_bytes`, `auth`, an entry's `type_url`, `deadline`, `preserve_raw`), with a note where unset means something (ruling G2).
+
+### The matrix seam and recon's extension points (M5)
+
+- **recon depends on `matrix>=0.9,<0.10`** and names it in one module, `recon/_matrix.py` (a `single_importer` rule and a test).
+- **`recon.collector` and `recon.transform` are points on matrix's registry** (ruling R2). The built-ins register from recon's own `matrix.extensions` entry point; a config names a built-in by its short name (`type: api`, `$html2text`) and anyone else's by its type URL (`type: acme.v1.collector.sql`), ruling R3. Code using recon registers its own in-process: `recon.open(extensions=[register])`.
+- **Optional members are declared protocols** (ruling G3): a collector's `close` and `requirements`, a requester's `close` and `follow`, a telemetry sink's `around`, `trace_headers` and `close` (`recon.core.domain.optional`), each read with `isinstance`.
+
+### The component face (M6)
+
+- **Three flow members at matrix's `component` point** (ruling R4): `recon.v1.component.plan` provides `recon.v1.span`; `recon.v1.component.collect` requires spans and provides `recon.v1.act`, one row as each act seals, so a killed run keeps every act it sealed (`records: true` hands each sealed table's records over too); `recon.v1.component.changes` requires acts and provides `recon.v1.change`. Payload schemas for the three kinds; each kind renamable (`kinds:`, ruling R7). The core runs on a worker thread of its own (ruling R16). A harness that schedules recon itself leaves `plan` out and gives the spans.
+
+### Changed (breaking)
+
+- **`recon.application` and `recon.domain` are gone**: their modules are under `recon.core` and `recon.observe`. `application/use_cases.py` and its `Recon` are deleted; `recon.composition.root()` returns the session.
+- **The `recon.collectors` and `recon.transforms` entry-point groups are gone**: a package registers at `recon.collector` and `recon.transform` from its `matrix.extensions` entry point.
+- **A normalize column may not start with `_`** (ruling R18): that prefix is recon's own.
+- **A survey that dies in its change phase reads `finished`**, its tables sealed before their changes (R9); a told index or change table that cannot be written no longer makes the archive incomplete.
+- **Each session loads every installed `matrix.extensions` entry point**, so it imports each installed package's registration (ix's, where ix is installed).
+
+### Not in this release
+
+- **Collector contract v2** (`Body` and `Record` items, `Paged`, the core capturing, converting, extracting and normalizing for every type, converters and source kinds as points, `web` folded into `api`, a conformance kit): the design record (`docs/design/2026-11-06-record.md`, M5-1) says why. The provider contract changes once more when it lands.
+
+## 0.17.0 — 2026-11-06
+
+### Ranges: source time asked for once, run after run
+
+- **`range:` on a snapshot entry** (rulings R1, R5, R-TOMB): each survey asks the entry's source for the source time since what its table last committed, step by step, so a schedule collects every span once and leaves none between. Three kinds, by the keys written: continuing (neither `end` nor `last`), fixed (`start` and `end`, complete at `end`), rolling (`last`, the latest span again each run, moving nothing). Keys and defaults, each in the plan's `provenance` with its origin: `step` 3600 s, `settle` 60 s, `max_steps` 24, `align` none, `start` none (one step back from the horizon). The contract: `docs/reference/ranges.md`, which `recon --skill -r ranges` prints.
+- **`{range.start}`, `{range.end}`, `{range.last}`**, filled by the core in any type's settings (an endpoint's params, an MCP tool's arguments, a command), as `iso`, `epoch`, `epoch_ms` or `date`; a lone number-format placeholder becomes a number. Every record of a ranged table carries `_range`; its outcome, the archive's meta and `recon status` carry `range` (`start`, `end`, `kind`, `from`, `request`, `steps`).
+- **The checkpoint moves only with a commit**: a range commits with its table, sealed `ok` and not `truncated`, in the archive's meta recorded with `ended`; a failed, killed or cut-short run commits nothing and the next asks again. Tombstones keep the ranges their archive committed, so retention never loses a checkpoint. A property test over random ticks, failures, kills, manual runs, backfills and retention proves committed ranges contiguous, disjoint and never asked twice.
+- **`recon survey --range START..END`** backfills without moving a checkpoint (`range_overlaps` warns of committed time asked again); a changed request is refused `checkpoint_request_changed` until `--rebase OUTPUT` or `--restart OUTPUT`. The library: `interval=`, `rebase=`, `restart=` on `recon.plan` and `recon.survey`.
+- New problem kinds `range_unused`, `range_ambiguous`, `range_deletes`, `range_steps`, `checkpoint_request_changed`; warning kinds `range_behind`, `range_current`, `range_complete`, `range_overlaps`.
+
+### Changed (breaking)
+
+- **A plan is pure** (ruling R11): `recon survey --dry-run`, `recon stream --dry-run` and `recon.plan()` start, fetch and connect to nothing; an `mcp` run's preflight runs behind `--check` (`check=True`). `runnable` is null unless checked; `provenance` says `preflight`. `--check` without `--dry-run` is `usage`.
+- **A source whose limits recon does not know is sent 1 request a second, burst 1** (ruling R12; it was 10, burst 3). The plan reports each source's `catalog.<i>.rate_limit` with its origin; a mission whose source allows more says so.
+- **No location in any document** (ruling R8, owner ruling G5): the survey, stream, window, status, query and read documents lose `path`; a table's outcome loses `file`; the plan's writes say `stream_names`. `recon status` gives each table's `truncated` and `changes`, each window's record, and each stream's windows as `history`. The archive layout is recon's own: read archives by id.
+- **A query reads its archives' tables alone** (SECURITY.md R-19): a path in SQL is refused. What a path served is named: `--baseline <archive id>` gives `baseline.<table>`, `json.<table>` each record's JSON text, `lines.<table>` its line, what a row is cited by.
+- **The storage ports carry no path** (M1): the 30-method `ArchiveStore` is gone, replaced by `Landing` → `Hold` → `Landed` (writing, the meta recorded as the commit point), `Archives` (reading, by `ArchiveRef`) and `ArchiveQuery`. `MissionStore`, `SubscriptionStore`, `ScheduleStore`, `CaptureLog`, `ShellRunner` and `KeyJoin` lose recon's own paths. `root(archives=...)` builds the archive adapter over the project's state directory. The on-disk layout is unchanged.
+- **`CONTRACT.md`**: each surface touched here, with the decision it hides, its members, defaults, failure behaviour and stability (ruling G6).
+
 ## 0.16.0 — 2026-10-25
 
 ### A crawl that resumes: a stream of page windows

@@ -1,34 +1,43 @@
-"""SQL over an archive's tables, in DuckDB.
+"""SQL over archives' tables, in DuckDB.
 
-The tables are the ones the archive's store lists (``ArchiveStore.tables``): this adapter
-reads each where the store says it is and knows nothing else of how archives are stored.
-Every table is a view named by :func:`~recon.domain.archives.table_name` (non-identifier
-characters become ``_``). A table that collected nothing is a view with no rows, whose
-columns are the ones the store says it keeps (its collector's ``normalize:`` spec's),
-null-typed, so a query of them binds as it would on a full table; ``_empty`` is a column of
-it too, for queries written against the sentinel line an empty table's file holds. A query
-across a stream's windows (:meth:`DuckdbQuery.execute_across`) makes each view of the
-table's file in every window, read as one, by column name.
+The tables are the ones the archive adapter this is built with lists (:class:`TableFiles`):
+this adapter reads each where that adapter says it is, and knows nothing else of how archives
+are stored; no location reaches a caller, a document or an error. Every table is a view
+named by :func:`~recon.core.domain.archives.table_name` (non-identifier characters become ``_``).
+A table that collected nothing is a view with no rows, whose columns are the ones the adapter
+says it keeps (its collector's ``normalize:`` spec's), null-typed, so a query of them binds as
+it would on a full table; ``_empty`` is a column of it too, for queries written against the
+sentinel line an empty table holds. A query across a stream's windows makes each view of the
+table in every window, read as one, by column name.
+
+Beside each table's view, in schemas of their own:
+
+- ``json.<table>``: each record as its JSON text, the one column ``json``, for records SQL
+  cannot make columns of (``json->>'id'``);
+- ``lines.<table>``, over one archive: each record with ``line``, its place in the table
+  counted from 1 in the order it was landed, before any ``WHERE`` or ``ORDER BY``: what a row
+  is cited by;
+- ``baseline.<table>``, given a baseline archive: that archive's table, so a query asks what is
+  new since it (``... EXCEPT SELECT ... FROM baseline.<table>``).
 
 A view is made per table, and one that cannot be made does not stop the others. DuckDB reads
 a JSON object as a struct, so an object keyed by data rather than by field names (OpenAlex's
 ``abstract_inverted_index``, keyed by word) can hold two keys that differ only in case,
-which no struct can: that table gets no view. A query that does not use it runs and is
-warned; one that does fails as a ``query`` error that says how to read the table instead.
-A survey asks the same question of every table it wrote (:meth:`DuckdbQuery.unreadable`),
-so the warning comes before the first query.
+which no struct can: that table gets no view of columns, and its ``json`` view stands. A query
+that does not use it runs and is warned; one that does fails as a ``query`` error that says
+how to read the table instead. A survey asks the same question of every table it wrote
+(:meth:`DuckdbQuery.unreadable`), so the warning comes before the first query.
 
 A failed query's fix is about what failed: a missing table names the tables there are; any
 other SQL error quotes DuckDB and points at its SQL documentation, or at the usual shape of
-the query when DuckDB's message names one (``unnest`` beside an aggregate); a binder
-error from a glob that spans archives says the archives' columns can differ.
+the query when DuckDB's message names one (``unnest`` beside an aggregate).
 
 The SQL is not trusted. Whoever writes it has usually just read the tables, and the tables
-are collected text, so the connection is confined before any SQL runs: it reads files only
-under the mission's ``archive/`` directory (every archive of the mission, which keeps
-cross-archive diffs working), spills nothing to disk, installs and loads no extension, and
-reaches no network. DuckDB
-lets SQL write wherever it may read, so a query runs only SELECT statements (``WITH``,
+are collected text, so the connection is confined before any SQL runs: it reads the files of
+the tables of the archives the query names (the archive, a stream's windows, the baseline)
+and no other file, not even another of those archives' own (their meta, event log, told
+index), spills nothing to disk, installs and loads no extension, and reaches no network.
+DuckDB lets SQL write wherever it may read, so a query runs only SELECT statements (``WITH``,
 ``FROM``, ``DESCRIBE`` and ``SUMMARIZE`` are SELECTs to DuckDB): a ``COPY``, ``ATTACH``,
 ``CREATE`` or any other statement is refused before anything runs.
 """
@@ -41,32 +50,60 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from recon.adapters._out.private_files import make_dirs
-from recon.domain.archives import Rows, table_name
-from recon.domain.errors import NotFoundError, Problem, QueryError, ReconError
+from recon.core.domain.archives import Rows, table_name
+from recon.core.domain.errors import NotFoundError, Problem, QueryError, ReconError
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Sequence
 
-    from recon.domain.archives import ArchiveStore, StoredTable
-    from recon.domain.changes import ChangeOp
+    from recon.core.domain.archives import ArchiveRef
+    from recon.core.domain.changes import ChangeOp
+
+#: The schemas recon makes beside the tables' own views.
+JSON, LINES, BASELINE = "json", "lines", "baseline"
 
 
-def _confine(conn: Any, readable: Path) -> None:
-    """Restrict a fresh connection to reading under ``readable``. Order matters:
-    ``allowed_directories`` can only be set while external access is still on, turning
+class TableFile(Protocol):
+    """One of an archive's tables, as the archive adapter describes it to this one."""
+
+    @property
+    def output(self) -> str: ...
+    @property
+    def file(self) -> Path: ...
+    @property
+    def empty(self) -> bool: ...
+    @property
+    def columns(self) -> tuple[str, ...]: ...
+    @property
+    def sealed(self) -> bool: ...
+
+
+@runtime_checkable
+class TableFiles(Protocol):
+    """What this adapter needs of the archive adapter it is built with: each archive's tables,
+    each with its file (raising QueryError for a layout it does not read). File locations pass
+    between the two adapters alone; the composition root asks a landing it is given whether it
+    is one (``isinstance``)."""
+
+    def tables(self, ref: ArchiveRef) -> Sequence[TableFile]: ...
+
+
+def _confine(conn: Any, readable: Sequence[Path]) -> None:
+    """Restrict a fresh connection to reading the files ``readable``, and no other. Order
+    matters: ``allowed_paths`` can only be set while external access is still on, turning
     external access off cannot be undone, and the lock stops the extension settings from
     being switched back. Spilling to disk is off: DuckDB adds its temp directory (``.tmp/``
     under the working directory) to the directories SQL may read, so a query could read
     whatever is there; a query that would spill fails for memory instead. The time zone is
     UTC: DuckDB reads ``…Z`` as a timestamp with no zone, and a cast to TIMESTAMPTZ would
     otherwise take the machine's zone for it; a time with an explicit offset keeps it."""
-    root = str(readable).replace("'", "''")
+    allowed = ", ".join(_literal(path) for path in dict.fromkeys(readable))
     conn.execute("SET TimeZone='UTC'")
     conn.execute("SET temp_directory=''")
-    conn.execute(f"SET allowed_directories=['{root}']")
+    conn.execute(f"SET allowed_paths=[{allowed}]")
     conn.execute("SET autoinstall_known_extensions=false")
     conn.execute("SET autoload_known_extensions=false")
     conn.execute("SET enable_external_access=false")
@@ -93,30 +130,32 @@ def _reads_only(conn: Any, sql: str) -> None:
 
 
 class DuckdbQuery:
-    """``archives`` is the store whose tables the SQL reads."""
+    """The :class:`~recon.core.domain.archives.ArchiveQuery` over the archive adapter ``files``."""
 
-    def __init__(self, archives: ArchiveStore) -> None:
-        self._archives = archives
+    def __init__(self, files: TableFiles) -> None:
+        self._files = files
 
-    def execute(self, archive: Path, sql: str) -> Rows:
-        return self._execute([archive.absolute()], sql)
-
-    def execute_across(self, archives: Sequence[Path], sql: str) -> Rows:
-        return self._execute([archive.absolute() for archive in archives], sql)
-
-    def _execute(self, archives: list[Path], sql: str) -> Rows:
+    def run(
+        self, archives: Sequence[ArchiveRef], sql: str, *, baseline: ArchiveRef | None = None
+    ) -> Rows:
         import duckdb  # only a query needs it
 
-        archive = archives[-1]
-        tables = _grouped([_sealed(self._archives.tables(a)) for a in archives])
+        last = archives[-1]
+        tables = _grouped([_sealed(self._files.tables(a)) for a in archives])
         if not tables:
-            raise NotFoundError(f"no tables in archive {archive}")
+            raise NotFoundError(f"no tables in archive {last.id} of {last.mission}")
+        before: dict[str, list[TableFile]] = {}
+        if baseline is not None:
+            before = _grouped([_sealed(self._files.tables(baseline))])
+        readable = _files(tables) + _files(before)
         conn = duckdb.connect()
         try:
-            _confine(conn, archive.parent)
-            unreadable = _views(conn, tables)
+            _confine(conn, readable)
+            unreadable = _views(conn, tables, numbered=len(archives) == 1)
+            if baseline is not None:
+                _schema_views(conn, BASELINE, before)
             names = list(tables)
-            readable = [name for name in names if name not in unreadable]
+            readable_names = [name for name in names if name not in unreadable]
             try:
                 _reads_only(conn, sql)
                 result = conn.execute(sql)
@@ -128,82 +167,134 @@ class DuckdbQuery:
                     f"DuckDB could not import {module}: {exc}", fix=_module_fix(module)
                 ) from exc
             except duckdb.Error as exc:
-                for name, (file, why) in unreadable.items():
+                for name, why in unreadable.items():
                     if isinstance(exc, duckdb.CatalogException) and _names(sql, name):
                         raise QueryError(
                             f"table {name} cannot be queried: {why}",
-                            fix=_unreadable_fix(str(file), why),
-                            details={"table": name, "file": str(file)},
+                            fix=_unreadable_fix(name, why),
+                            details={"table": name},
                         ) from exc
                 raise QueryError(
-                    f"SQL error: {exc}\nAvailable tables: {', '.join(readable)}",
-                    fix=_fix(exc, archive, readable, sql),
+                    f"SQL error: {exc}\nAvailable tables: {', '.join(readable_names)}",
+                    fix=_fix(exc, readable_names, sql, baseline is not None),
                 ) from exc
             warnings = [
-                _unreadable(name, file, why, ", and this query did not use it")
-                for name, (file, why) in unreadable.items()
+                _unreadable(name, why, ", and this query did not use it")
+                for name, why in unreadable.items()
             ]
             return Rows(columns=columns, rows=rows, warnings=warnings)
         finally:
             conn.close()
 
-    def unreadable(self, archive: Path) -> list[Problem]:
+    def unreadable(self, archive: ArchiveRef) -> list[Problem]:
         import duckdb
 
-        tables = _grouped([_sealed(self._archives.tables(archive.absolute()))])
+        tables = _grouped([_sealed(self._files.tables(archive))])
         if not tables:
             return []
         conn = duckdb.connect()
         try:
-            _confine(conn, archive.absolute().parent)
-            return [
-                _unreadable(name, file, why) for name, (file, why) in _views(conn, tables).items()
-            ]
+            _confine(conn, _files(tables))
+            return [_unreadable(name, why) for name, why in _views(conn, tables).items()]
         finally:
             conn.close()
 
 
-def _sealed(tables: list[StoredTable]) -> list[StoredTable]:
-    """The tables SQL reads: a table not yet sealed holds provisional records, and its file
-    is not where the store says it will be."""
+def _sealed(tables: Sequence[TableFile]) -> list[TableFile]:
+    """The tables SQL reads: a table not yet sealed holds provisional records."""
     return [table for table in tables if table.sealed]
 
 
-def _grouped(archives: list[list[StoredTable]]) -> dict[str, list[StoredTable]]:
+def _files(tables: dict[str, list[TableFile]]) -> list[Path]:
+    """The files the views of ``tables`` read: all SQL over them may read."""
+    return [part.file for parts in tables.values() for part in parts if not part.empty]
+
+
+def _grouped(archives: list[list[TableFile]]) -> dict[str, list[TableFile]]:
     """Each table by the name SQL knows it by, with its part in each archive read, in the
     archives' order: one part for a single archive, a window's each for a stream's."""
-    grouped: dict[str, list[StoredTable]] = {}
+    grouped: dict[str, list[TableFile]] = {}
     for tables in archives:
         for table in tables:
             grouped.setdefault(table_name(table.output), []).append(table)
     return grouped
 
 
-def _views(conn: Any, tables: dict[str, list[StoredTable]]) -> dict[str, tuple[Path, str]]:
-    """Make a view of each table, of all its parts; return the tables that got none, with a
-    file of theirs and why. Parts read together are joined by column name, so a column one
-    part lacks is null in its rows."""
+def _views(
+    conn: Any, tables: dict[str, list[TableFile]], *, numbered: bool = False
+) -> dict[str, str]:
+    """Make each table's view of all its parts, its ``json`` view and, ``numbered``, its
+    ``lines`` view; return the tables that got no view of columns, with why. Parts read
+    together are joined by column name, so a column one part lacks is null in its rows."""
     import duckdb
 
-    unreadable: dict[str, tuple[Path, str]] = {}
+    conn.execute(f"CREATE SCHEMA {JSON}")
+    if numbered:
+        conn.execute(f"CREATE SCHEMA {LINES}")
+    unreadable: dict[str, str] = {}
     for name, parts in tables.items():
         files = [part.file for part in parts if not part.empty]
-        if not files:
-            columns = list(dict.fromkeys(column for part in parts for column in part.columns))
-            kept = [f"NULL AS {_identifier(column)}" for column in columns]
-            if "_empty" not in columns:
-                kept.append("NULL::BOOLEAN AS _empty")
-            body = f"SELECT {', '.join(kept)} WHERE false"
-        elif len(files) == 1:
-            body = f"SELECT * FROM read_json_auto({_literal(files[0])})"
-        else:
-            listed = ", ".join(_literal(file) for file in files)
-            body = f"SELECT * FROM read_json_auto([{listed}], union_by_name = true)"
+        conn.execute(f"CREATE VIEW {JSON}.{_identifier(name)} AS {_json_body(files)}")
         try:
-            conn.execute(f'CREATE VIEW "{name}" AS {body}')
+            conn.execute(f"CREATE VIEW {_identifier(name)} AS {_body(parts)}")
         except duckdb.Error as exc:
-            unreadable[name] = ((files or [parts[0].file])[0], _first_line(exc))
+            unreadable[name] = _first_line(exc)
+            continue
+        if numbered:
+            conn.execute(f"CREATE VIEW {LINES}.{_identifier(name)} AS {_numbered_body(parts)}")
     return unreadable
+
+
+def _schema_views(conn: Any, schema: str, tables: dict[str, list[TableFile]]) -> None:
+    """Each table's view in ``schema``; one that cannot be made is left out, as a query that
+    names it then says."""
+    import duckdb
+
+    conn.execute(f"CREATE SCHEMA {schema}")
+    for name, parts in tables.items():
+        try:
+            conn.execute(f"CREATE VIEW {schema}.{_identifier(name)} AS {_body(parts)}")
+        except duckdb.Error:
+            continue
+
+
+def _body(parts: list[TableFile]) -> str:
+    """A table's records as columns, from all its parts."""
+    files = [part.file for part in parts if not part.empty]
+    if not files:
+        return _no_rows(parts)
+    if len(files) == 1:
+        return f"SELECT * FROM read_json_auto({_literal(files[0])})"
+    listed = ", ".join(_literal(file) for file in files)
+    return f"SELECT * FROM read_json_auto([{listed}], union_by_name = true)"
+
+
+def _numbered_body(parts: list[TableFile]) -> str:
+    """One archive's table, each record with its ``line``."""
+    files = [part.file for part in parts if not part.empty]
+    if not files:
+        return _no_rows(parts, "NULL::BIGINT AS line")
+    return (
+        "SELECT ordinality AS line, * EXCLUDE (ordinality) "
+        f"FROM read_json_auto({_literal(files[0])}) WITH ORDINALITY"
+    )
+
+
+def _json_body(files: list[Path]) -> str:
+    """A table's records, each as its JSON text."""
+    if not files:
+        return "SELECT NULL::JSON AS json WHERE false"
+    listed = ", ".join(_literal(file) for file in files)
+    return f"SELECT json FROM read_ndjson_objects([{listed}])"
+
+
+def _no_rows(parts: list[TableFile], *first: str) -> str:
+    """An empty table's view: the columns it keeps, null-typed, and no row."""
+    columns = list(dict.fromkeys(column for part in parts for column in part.columns))
+    kept = [*first, *(f"NULL AS {_identifier(column)}" for column in columns)]
+    if "_empty" not in columns:
+        kept.append("NULL::BOOLEAN AS _empty")
+    return f"SELECT {', '.join(kept)} WHERE false"
 
 
 def _literal(path: Path) -> str:
@@ -228,8 +319,8 @@ def _names(sql: str, table: str) -> bool:
     return re.search(rf"(?<![\w\"]){re.escape(table)}(?![\w\"])", sql, re.IGNORECASE) is not None
 
 
-def _unreadable_fix(file: str, why: str) -> str:
-    raw = f"SELECT json FROM read_ndjson_objects('{file}')"
+def _unreadable_fix(name: str, why: str) -> str:
+    raw = f"SELECT json FROM {JSON}.{name}"
     if "Duplicate name" in why:
         return (
             "a record holds an object keyed by data, not by field names (OpenAlex's "
@@ -244,14 +335,13 @@ def _unreadable_fix(file: str, why: str) -> str:
     )
 
 
-def _unreadable(name: str, file: Path, why: str, context: str = "") -> Problem:
+def _unreadable(name: str, why: str, context: str = "") -> Problem:
     return Problem(
         "",
         f"table {name} cannot be queried{context}: {why}",
         kind="table_unreadable",
-        fix=_unreadable_fix(str(file), why),
+        fix=_unreadable_fix(name, why),
         got=name,
-        source=str(file),
     )
 
 
@@ -259,20 +349,9 @@ def _unreadable(name: str, file: Path, why: str, context: str = "") -> Problem:
 SQL_DOCS = "https://duckdb.org/docs/current/sql/introduction"
 UNNEST_DOCS = "https://duckdb.org/docs/current/sql/query_syntax/unnest"
 
-#: A quoted string in the SQL: a path a ``read_*`` function is given.
-_LITERAL = re.compile(r"'((?:[^']|'')*)'")
 _MISSING_TABLE = re.compile(r"Table with name \S+ does not exist")
+_BASELINE = re.compile(rf"(?<![\w\"]){BASELINE}\s*\.", re.IGNORECASE)
 _REQUIRED_MODULE = re.compile(r"Required module '([\w.]+)' failed to import")
-
-
-def _cross_archive_glob(sql: str) -> str | None:
-    """The first quoted path in ``sql`` with a wildcard in a directory, which reads a table
-    from more than one archive (``archive/*/t.jsonl``); None when there is none."""
-    for match in _LITERAL.finditer(sql):
-        directory = match.group(1).replace("''", "'").rpartition("/")[0]
-        if any(wildcard in directory for wildcard in "*?["):
-            return match.group(1)
-    return None
 
 
 def _module_fix(module: str) -> str:
@@ -283,7 +362,7 @@ def _module_fix(module: str) -> str:
     )
 
 
-def _fix(exc: Exception, archive: Path, tables: list[str], sql: str) -> str:
+def _fix(exc: Exception, tables: list[str], sql: str, baseline: bool) -> str:
     import duckdb
 
     message = _first_line(exc)
@@ -297,25 +376,20 @@ def _fix(exc: Exception, archive: Path, tables: list[str], sql: str) -> str:
         )
     if isinstance(exc, duckdb.PermissionException):
         return (
-            f"a query reads only files under {archive.parent}, loads no extension and makes "
-            f"no network request: query this archive's tables, or another archive as "
-            f"read_json_auto('{archive.parent}/<archive id>/<table>.jsonl')"
+            "a query reads only the tables of the archives it names, by their names, loads "
+            "no extension and makes no network request: query the tables by name (json.<table> "
+            "for each record's JSON text); for what is new since an earlier archive, name it with "
+            "--baseline <archive id> and read its tables as baseline.<table>"
         )
     if "Duplicate name" in str(exc):
-        return _unreadable_fix("<the .jsonl file>", str(exc))
+        return _unreadable_fix("<table>", str(exc))
+    if isinstance(exc, duckdb.CatalogException) and not baseline and _BASELINE.search(sql):
+        return (
+            "baseline.<table> is an earlier archive's table: name that archive with "
+            "--baseline <archive id> (`recon status <mission>` lists the ids)"
+        )
     if isinstance(exc, duckdb.CatalogException) and _MISSING_TABLE.search(message):
         return f"query one of these tables: {', '.join(tables) or '(none)'}"
-    glob = _cross_archive_glob(sql)
-    if isinstance(exc, duckdb.BinderException) and glob is not None:
-        return (
-            f"'{glob}' reads the table from every archive it matches, and archives surveyed "
-            "with different normalize: specs (or one without) have different columns, so a "
-            f"column one has may not bind ({message}): read one archive's file by its path, "
-            f"'{archive}/<table>.jsonl' for the archive this query read (`recon status "
-            f"{archive.parent.parent.name} --json` lists every archive's path under "
-            "missions[0].history); to read across archives on purpose, give read_json_auto "
-            "union_by_name=true and filename=true, and select the columns every archive has"
-        )
     if isinstance(exc, duckdb.BinderException) and "UNNEST" in message:
         return (
             f"{message}: DuckDB does not unnest a list in WHERE or GROUP BY, or beside an "
@@ -328,13 +402,13 @@ def _fix(exc: Exception, archive: Path, tables: list[str], sql: str) -> str:
 
 # --- the join of a large told index (ruling C6) --------------------------------------------
 #
-# DuckdbJoin: the KeyJoin (``recon.domain.changes``) of a large told index, on a DuckDB
+# DuckdbJoin: the KeyJoin (``recon.observe.domain.joins``) of a large told index, on a DuckDB
 # connection of its own that runs no SQL but this module's. The told index and the table's keys
 # are written, as they are read, to two CSV files in a directory of the join's own, which DuckDB
 # reads; every answer is read back a batch at a time. So the process holds a batch, and DuckDB
 # at most ``memory_limit``, spilling the rest into the same directory, at most
 # ``max_temp_directory_size`` of it; past that the join fails, classified (``store``). The
-# directory is made under the ``scratch`` the caller gives (the mission's ``.joins``, 0700), named
+# directory is made under the ``scratch`` the join is built with (its mission's, 0700), named
 # for the process, and ``close`` removes it; one a process that died left (its CSV copies of keys
 # and hashes, its spill) is removed when the next join starts there (Erlang, round-4 review F7).
 # The connection is confined before it reads anything, as the query's is: it reads and spills
@@ -365,28 +439,27 @@ FROM new_keys GROUP BY k
 
 class DuckdbJoin:
     """Joins on DuckDB within ``memory_limit``, ``threads`` and ``max_temp_directory_size``
-    (DuckDB's own names for them)."""
+    (DuckDB's own names for them), each join's files in a directory of its own under
+    ``scratch`` (a mission's, private; None: the system's temporary directory)."""
 
     def __init__(
         self,
         *,
+        scratch: Path | None = None,
         memory_limit: str = MEMORY_LIMIT,
         threads: int = 1,
         max_temp_directory_size: str = MAX_TEMP_DIRECTORY_SIZE,
     ) -> None:
+        self._scratch = scratch
         self._memory_limit = memory_limit
         self._threads = threads
         self._max_temp = max_temp_directory_size
 
     def join(
-        self,
-        told: Iterable[tuple[str, str]],
-        new: Iterable[tuple[int, str, str]],
-        *,
-        scratch: Path | None = None,
+        self, told: Iterable[tuple[str, str]], new: Iterable[tuple[int, str, str]]
     ) -> _DuckdbJoined:
         return _DuckdbJoined(told, new, self._memory_limit, self._threads, self._max_temp,
-                             scratch)  # fmt: skip
+                             self._scratch)  # fmt: skip
 
 
 class _DuckdbJoined:
@@ -484,9 +557,10 @@ class _DuckdbJoined:
         return ReconError(
             f"the join of a large told index failed: {exc}",
             kind="store",
-            fix=f"give the join more room, DuckdbJoin(memory_limit=..., max_temp_directory_size"
-            f"=...) in root(key_join=) (its spill is capped at {self._max_temp}), or free space "
-            "under the mission; the next survey compares the table again",
+            fix=f"give the join more room, a DuckdbJoin(memory_limit=..., max_temp_directory_size"
+            f"=...) from root(key_join=), which builds each mission's join (its spill is capped "
+            f"at {self._max_temp}), or free space under the mission; the next survey compares "
+            "the table again",
         )
 
 

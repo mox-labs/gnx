@@ -251,6 +251,33 @@ project's files) for the same compose file whose process is gone; a
 compose file is digested like the subjects' files, and each service's image id is recorded
 in the run's bindings, so what ran can be told afterwards.
 
+### 14. A mutation run runs your test suite on mutated copies of your code
+
+A `test-suite` subject's `command` is run, as written, once for the baseline and several times
+a trial, in a fresh copy of `root` in the system's temporary directory. It is the suite's own
+interpreter and its environment, with ix's environment and two additions:
+
+- the copy's import roots, and a folder of ix's holding one pytest plugin, first on
+  `PYTHONPATH`;
+- `TMPDIR`, a temporary directory of the run's own, removed with it;
+- `IX_MUTATION_*` variables naming the plugin's files.
+
+**That is not a sandbox.** The suite runs mutated code with whatever access the suite has: a
+test that writes outside its tree, opens sockets or reads credentials does so as it would
+under `pytest`. The original tree is never written, but a test can write anywhere the user
+can. Sample and run a suite you would run yourself.
+
+- **ix's plugin** (`ix_mutation_trial`) runs inside the suite's interpreter. It imports only
+  the standard library, selects tests, and writes a report of outcomes and of where each scope
+  module was imported from.
+- **coverage's data** is read by the suite's Python running ix's reader script by path, with
+  `-I`.
+- **A mutant source runs in ix's process** when `ix mutants sample` builds it: a source package
+  is code you install. `ix-cosmic-ray` also loads every cosmic-ray operator provider installed
+  beside it (its SECURITY.md).
+- **A probe file of kind `mutant` is data**: a span of a file in the scope and the text put
+  there. A probe that names a file outside its subject's scope is refused by `validate`.
+
 ## Findings
 
 ### I-8 — `ix` is a taken name on PyPI (2026-10-09)
@@ -267,7 +294,7 @@ write.
 
 Until a naming decision is made, a package extending ix should depend on it by git URL at
 a release's tag
-(`ix @ git+https://github.com/mox-labs/gnx@ix-v0.7.0#subdirectory=components/capabilities/ix`),
+(`ix @ git+https://github.com/mox-labs/gnx@ix-v0.9.0#subdirectory=components/capabilities/ix`),
 not by bare name.
 
 ### Earlier findings

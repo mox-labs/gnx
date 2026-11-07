@@ -64,6 +64,7 @@ from matrix.domain.observer import (
     EventPolicy,
     Observer,
     SpanScope,
+    SupportsClose,
     around,
     check_event_name,
     check_measure,
@@ -139,8 +140,22 @@ class Retry(BaseModel):
         return min(self.backoff_s * self.multiplier ** (attempt - 1), self.max_wait_s)
 
 
+#: The run's ``deadline_s`` when none is set: an hour for each component.
+DEFAULT_DEADLINE_S = 3600.0
+
+
+def _deadline_key(limits: Limits, name: str) -> str:
+    """The key, as config writes it, that set the component ``name``'s deadline."""
+    own = limits.components.get(name)
+    if own is not None and "deadline_s" in own.model_fields_set:
+        return f"matrix.limits.components.{name}.deadline_s"
+    return "matrix.limits.deadline_s"
+
+
 class ComponentLimits(BaseModel):
-    """Bounds for one component, overriding the run's. ``None`` inherits the run's value."""
+    """Bounds for one component, overriding the run's. A key left unset inherits the run's
+    value; so does ``None``, but for ``deadline_s``, where ``None`` written is no deadline for
+    this component (a soak component in a run whose others keep the run's)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -155,11 +170,14 @@ class Limits(BaseModel):
 
     ``concurrency`` caps how many components run at once; ``None`` (the default) leaves it to
     the wiring. ``deadline_s`` applies to each component separately, from the moment it
-    starts; ``components`` overrides it (and ``grace_s``, ``cleanup_s``, ``retry``) for the
-    names it lists. ``grace_s`` is how long a component has to return after a stop request
-    before it is cancelled; ``cleanup_s`` how long a cancelled component, or one deferred
-    release, has to finish before it is abandoned. ``retry`` is the :class:`Retry` policy of
-    every component; by default nothing is retried.
+    starts: an hour unless set (ruling M-O7), so a run that is left alone ends; ``None``
+    written is no deadline, for a soak run. A component past it is stopped through the stop
+    path and fails, its error naming the key to raise. ``components`` overrides it (and
+    ``grace_s``, ``cleanup_s``, ``retry``) for the names it lists. ``grace_s`` is how long a
+    component has to return after a stop request before it is cancelled; ``cleanup_s`` how
+    long a cancelled component, or one deferred release, has to finish before it is
+    abandoned. ``retry`` is the :class:`Retry` policy of every component; by default nothing
+    is retried.
 
     ``on_failure``: ``fast`` (the default) stops every running component and skips the rest
     as soon as one fails; ``isolate`` skips only the components that depend on the failed one
@@ -169,7 +187,7 @@ class Limits(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     concurrency: int | None = Field(default=None, ge=1)
-    deadline_s: float | None = Field(default=None, gt=0)
+    deadline_s: float | None = Field(default=DEFAULT_DEADLINE_S, gt=0)
     grace_s: float = Field(default=5.0, ge=0)
     cleanup_s: float = Field(default=30.0, gt=0)
     on_failure: Literal["fast", "isolate"] = "fast"
@@ -180,7 +198,7 @@ class Limits(BaseModel):
         """``(deadline_s, grace_s, cleanup_s)`` for the component ``name``."""
         own = self.components.get(name, ComponentLimits())
         return (
-            own.deadline_s if own.deadline_s is not None else self.deadline_s,
+            own.deadline_s if "deadline_s" in own.model_fields_set else self.deadline_s,
             own.grace_s if own.grace_s is not None else self.grace_s,
             own.cleanup_s if own.cleanup_s is not None else self.cleanup_s,
         )
@@ -415,10 +433,9 @@ class Executor:
 
 def _close(sink: Observer | None) -> None:
     """Close the record's event log once the run's events have drained into it."""
-    close = getattr(sink, "close", None)
-    if callable(close):
+    if isinstance(sink, SupportsClose):
         try:
-            close()
+            sink.close()
         except Exception:
             logger.exception("the run's event log could not be closed")
 
@@ -607,10 +624,6 @@ class _Hooks:
         if self._late("session"):
             return None
         return self._session.record_session(self._name, row)
-
-    def sessions(self) -> tuple[int, ...]:
-        """The session rows the component ran that no row it handed over has named."""
-        return self._session.since(self._name)
 
     def defer(self, release: Release) -> None:
         if not callable(release):
@@ -1052,10 +1065,13 @@ class _Session:
         time, or within the grace of a stop request, is recorded; after a stop request it
         ends ``stopped``, since it returned what it had, not necessarily all of it."""
         name = step.name
+        key = _deadline_key(self._limits, name)
+        raise_it = f"raise {key}, or set it to null for no deadline"
         overran = ComponentError(
-            f"component {name!r} timed out after {step.deadline_s}s",
+            f"component {name!r} timed out after {step.deadline_s}s: {raise_it}",
             component=name,
             reason="timeout",
+            fix=raise_it,
         )
         on_deadline = step.progress.reason == "deadline"
         if not task.done():
@@ -1179,10 +1195,14 @@ class _Session:
 
     def record_session(self, name: str, row: Session) -> int:
         """Record a session component ``name`` ran, with the trace it ended in; durable when
-        this returns. Its position is named by the next rows the component hands over."""
+        this returns. Its position is named by the next rows the component hands over. Each
+        document of its ``provenance`` must validate against the schema registered for its
+        type URL, when one is: a ContractError when not, and the session is not recorded."""
         ids = self._trace() if self._trace is not None else None
         if ids is not None and row.trace_id is None:
             row = row.model_copy(update={"trace_id": ids[0], "span_id": ids[1]})
+        for url, document in row.provenance.items():
+            _validate(self._wiring, url, document, where=f"{name}: a session's provenance")
         try:
             entry = self._append(name, SESSION, _private(row, SESSION))
         except StoreError as e:

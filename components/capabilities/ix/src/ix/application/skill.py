@@ -20,7 +20,14 @@ from ix.domain import schema
 from ix.domain.analysis import METHOD
 from ix.domain.errors import ERROR_KINDS, EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT, UsageError
 from ix.domain.experiment import ESTIMATORS, STATISTICS, Experiment, Threshold
-from ix.domain.kind import KIND_FAMILIES, NOTE_PREFIX
+from ix.domain.kind import (
+    KIND_FAMILIES,
+    KIND_RECORDS,
+    NOTE_PREFIX,
+    EnvironmentKind,
+    SensorKind,
+    SubjectKind,
+)
 from ix.domain.plan import VERDICTS
 from ix.domain.problem import PROBLEM_KINDS
 
@@ -69,8 +76,27 @@ COMMANDS: tuple[tuple[str, str], ...] = (
         "N trials at once, the file unchanged: no verdict; refused where overlap confounds",
     ),
     ("ix run <path>", "carry it out and print the report; the exit code is the verdict"),
+    (
+        "ix run <path> --detach",
+        "start it in a process of its own and return its status: a long run outlasts a call",
+    ),
+    ("ix status <run>", "where a run stands and how far it got; exits 13 while it runs"),
+    ("ix events <run> --follow", "its events as they come; returns once the run has ended"),
+    ("ix stop <run>", "stop a running run as Ctrl-C does; the record is kept"),
     ("ix report <path>", "the latest run's report again; or give a run directory"),
     ("ix runs <path>", "each run: when, its commit, gated, exploratory or dry, verdict, trials"),
+    (
+        "ix mutants sample <path> --n 100 --seed 1",
+        "draw the mutants of a test-suite's scope as probes/ and make its selection map",
+    ),
+    (
+        "ix mutants map <path>",
+        "make each test-suite's selection map alone, for mutant probe files another tool wrote",
+    ),
+    (
+        "ix mutants read <run>",
+        "a mutation run's survivors (an assertion or a coverage gap) and its pruning candidates",
+    ),
     ("ix genres", "the genres installed, and any genre file ix refused"),
     (
         "ix kinds",
@@ -89,6 +115,8 @@ REFERENCES: dict[str, str] = {
     "running": "registration, running, the run record, and how a verdict is reached",
     "agents": "evaluating an agent end to end: sessions, probe files, sensors, dry runs, "
     "screens, the judge, and reading the report",
+    "mutation": "testing a test suite: sampling mutants, running them, reading the survivors, "
+    "pruning tests, and what each trial leaves",
     "problems": "every problem kind validate reports",
 }
 
@@ -96,11 +124,14 @@ REFERENCES: dict[str, str] = {
 #: to a kind this ix can run, and ``http-load`` to the program its adapter starts.
 PREREQUISITES: dict[str, str] = {
     "agent-session": "runs on one of matrix's agent runtimes: `claude-sdk` needs the Claude "
-    "Code CLI and its credentials; `pydantic-ai` needs a hardline model (its "
-    "`models` or matrix's) and makes every model call through hardline; `mock` needs nothing "
-    "and calls no model. `ix plan` lists one that cannot start under `Runnable: no`",
-    "model-call": "runs on one of matrix's model runtimes: `hardline` needs a hardline model; "
-    "`mock` needs nothing and calls no model. `ix plan` lists a runtime that cannot start, or "
+    "Code CLI and its credentials; `pydantic-ai` needs a model runtime named in "
+    "`matrix.model_runtimes` (its `runtime_options.model_runtime`) and makes every model call "
+    "on it; `mock` needs nothing and calls no model. `ix plan` lists one that cannot start "
+    "under `Runnable: no`",
+    "model-call": "runs on one of matrix's model runtimes: `matrix-hardline.v1.model-runtime` "
+    "needs a hardline model (its `runtime_options.models`, or hardline's tiers); `mock` needs "
+    "nothing and calls "
+    "no model. `ix plan` lists a runtime that cannot start, or "
     "a model it cannot resolve, under `Runnable: no`",
     "function-test": "and `outcome` run Python in a child process with a time limit and no "
     "credentials in its environment; it is not a sandbox, so test code from a subject you "
@@ -110,6 +141,11 @@ PREREQUISITES: dict[str, str] = {
     "memory": "samples resident memory with `ps`, so it reads memory on macOS and Linux",
     "process": "starts the `command` it is given; `ix plan` lists a program that is not "
     "there under `Runnable: no`",
+    "test-suite": "runs the suite's own Python and pytest (its `command`) in a fresh copy of "
+    "`root` for each trial; `ix mutants sample` and `ix mutants map` need pytest-cov in that "
+    "Python's environment, and `ix mutants sample` a mutant source (`ix-cosmic-ray`). `ix plan` "
+    "lists a selection map that is missing or stale under `Runnable: no`, with the command "
+    "that makes it",
     "compose": "runs `docker compose` against a daemon that answers: `ix plan` checks docker, "
     "the daemon, compose and the file, and lists what fails under `Runnable: no`. A dry run "
     "brings the stack up for real",
@@ -202,6 +238,66 @@ probes:
 primary: {metric: ttfb, statistic: p99}
 margin: 5%
 """,
+    "mutation-score": """\
+name: parser-mutation
+question: Do the tests fail when the parser is wrong?
+genre: mutation-score
+subjects:
+  tests:
+    kind: test-suite
+    root: .
+    command: [.venv/bin/python, -m, pytest, tests, -q]
+    tests: [tests]
+    scope: [src/pkg/parser.py]
+    map: mutation/tests.map.json
+# `ix mutants sample` writes the probes, one file per mutant in probes/; one is shown inline.
+probes:
+  - {kind: mutant, file: src/pkg/parser.py, start: [12, 15], end: [12, 16], original: "<",
+     replacement: "<=", operator: core/ReplaceComparisonOperator_Lt_LtE}
+primary: {metric: killed}
+""",
+    "mutation-regress": """\
+name: parser-pruning
+question: Do the tests still catch the parser's faults without the slow ones?
+genre: mutation-regress
+subjects:
+  whole:
+    kind: test-suite
+    root: .
+    command: [.venv/bin/python, -m, pytest, tests, -q]
+    tests: [tests]
+    scope: [src/pkg/parser.py]
+    map: mutation/suite.map.json
+  pruned:
+    kind: test-suite
+    root: .
+    command: [.venv/bin/python, -m, pytest, tests, -q]
+    tests: [tests]
+    scope: [src/pkg/parser.py]
+    map: mutation/suite.map.json
+    deselect: ["tests/test_parser.py::test_slow_roundtrip"]
+# `ix mutants sample` writes the probes, one file per mutant in probes/; three are shown inline.
+probes:
+  - {kind: mutant, file: src/pkg/parser.py, start: [12, 15], end: [12, 16], original: "<",
+     replacement: "<=", operator: core/ReplaceComparisonOperator_Lt_LtE}
+  - {kind: mutant, file: src/pkg/parser.py, start: [20, 11], end: [20, 14], original: "and",
+     replacement: "or", operator: core/ReplaceAndWithOr}
+  - {kind: mutant, file: src/pkg/parser.py, start: [31, 18], end: [31, 19], original: "0",
+     replacement: "1", operator: core/NumberReplacer}
+primary: {metric: killed}
+margin: 5pp
+""",
+    "check": """\
+name: proxy-health
+question: Does the proxy answer its health check once it is up?
+genre: check
+subjects:
+  proxy: {kind: process, command: [./proxy], url: "http://127.0.0.1:8080"}
+probes:
+  - kind: command
+    command: [curl, -fsS, "{url}/healthz"]
+primary: {metric: exited_ok}
+""",
 }
 
 #: From the question a person asks to the genre that answers it, in the person's words.
@@ -219,6 +315,19 @@ QUESTION_TO_GENRE: tuple[tuple[str, str], ...] = (
     ),
     ('"Are A and B the same?"', "`compare`, `comparison: equivalence`, with a `margin`"),
     ('"How does X change with Y?"', "`characterize`, Y a factor; estimates, no verdict"),
+    (
+        '"Do my tests fail when the code is wrong?", "are my tests effective?"',
+        "`mutation-score` over sampled mutants (`ix mutants sample` first): a kill rate, no "
+        "verdict; `ix --skill -r mutation`",
+    ),
+    (
+        '"May I prune these tests?", "is the changed suite as strong?"',
+        "`mutation-regress`, the same mutants for both suites, a `margin` set before the run",
+    ),
+    (
+        '"Does X do it, here, now?" (a command exits 0, a reply holds a fact)',
+        "`check`, a boolean primary, one trial: an observation, never a rate",
+    ),
 )
 
 #: The skill folder the ``agents`` reference evaluates, and its SKILL.md.
@@ -493,8 +602,9 @@ def _install(version: str, kinds: Kinds) -> str:
             "",
             "ix is on no package index: it is installed from its repository at the release's "
             "tag, and uv takes matrix, which ix runs on, from the same repository. Every agent "
-            "and model runtime comes with it (`claude-sdk`, `pydantic-ai`, `hardline`), and "
-            "the OpenTelemetry SDK that exports spans over OTLP: there are no extras.",
+            "and model runtime comes with it (`claude-sdk`, `pydantic-ai`, and "
+            "`matrix-hardline.v1.model-runtime` from the matrix-hardline bridge), and the "
+            "OpenTelemetry SDK that exports spans over OTLP: there are no extras.",
             "",
             "What the runnable kinds need on the host:",
             "",
@@ -925,14 +1035,48 @@ def _genres(genres: Genres) -> str:
 
 
 def _option_values(option: Option) -> str:
-    """What an option takes: its closed set, its open choices, or its type; and whether it
-    is prompt text."""
+    """What an option takes: its closed set, its open choices, or its type; whether it is
+    prompt text; and what it is left out."""
     text = ", prompt text" if option.text else ""
+    if option.default is not None:
+        text += f"; {_written(option.default)} when left out"
+    elif option.default_by is not None:
+        text += f"; left out, as its {option.default_by.option} says"
+    elif option.default_from:
+        text += "; left out, its runtime's own"
+    elif option.left_out:
+        text += f"; left out, {option.left_out}"
+    if option.fields:
+        text += "; keys " + ", ".join(
+            f"{name}{'*' if field.required else ''}"
+            + (f"={_written(field.default)}" if field.default is not None else "")
+            for name, field in option.fields.items()
+        )
     if option.allowed:
         return f" ({'|'.join(option.allowed)}{text})"
     if option.choices:
         return f" ({option.type}: {', '.join(option.choices)} or another{text})"
     return f" ({option.type}{text})"
+
+
+def _written(value: object) -> str:
+    """A value as an author writes it in YAML."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _default(kinds: Kinds, family: str, kind: str, option: str) -> str:
+    """The default the installed ``kind`` of ``family`` declares for ``option`` (dotted for a
+    mapping's field: ``loop.rounds``), as an author writes it; ``(none)`` when it is not
+    installed or declares none, which the skill's tests refuse for a built-in."""
+    declared = kinds.get(family, kind)
+    options = declared.options if declared is not None else {}
+    found = None
+    for name in option.split("."):
+        found = options.get(name)
+        options = found.fields if found is not None else {}
+    return "(none)" if found is None or found.default is None else _written(found.default)
 
 
 def _kind_line(kind: Kind, runnable: bool) -> str:
@@ -948,14 +1092,14 @@ def _kind_line(kind: Kind, runnable: bool) -> str:
         facets.append(f"needs {', '.join(kind.needs)}")
     if kind.offers:
         facets.append(f"offers {', '.join(kind.offers)}")
-    if kind.truth:
+    if isinstance(kind, SensorKind) and kind.truth:
         facets.append(f"reads truth {', '.join(kind.truth)}")
-    if kind.service_keys:
+    if isinstance(kind, EnvironmentKind) and kind.service_keys:
         keys = ", ".join(f"`{{<service>.{key}}}`" for key in kind.service_keys)
         facets.append(f"binds each service as {keys}")
     facets.append(f"overlap {kind.overlap}")
     parts.append(f"  {'; '.join(facets)}")
-    for metric in kind.metrics:
+    for metric in kind.metrics if isinstance(kind, SensorKind) else ():
         traits = [metric.shape, f"{metric.direction} is better"]
         if metric.unit:
             traits.insert(1, metric.unit)
@@ -982,12 +1126,25 @@ def _kinds(kinds: Kinds) -> str:
         )
         blocks.append(f"### {titles[family]}\n\n{lines}")
     families = "\n\n".join(blocks)
+    startup = _default(kinds, "subject", "process", "startup_timeout")
+    shared = [key for key in SubjectKind.model_fields if key != "schema_"]
+    added = []
+    for family, record in KIND_RECORDS.items():
+        keys = ", ".join(
+            f"`{key}`" for key in record.model_fields if key not in [*shared, "schema_"]
+        )
+        if keys:
+            added.append(f"{'an' if family == 'environment' else 'a'} {family} kind adds {keys}")
+    own = "; ".join(added)
     return f"""\
 ## Kinds
 
 Subjects and probes must fit: a probe kind needs facets, and every subject's kind must offer
 them (`kind_unfit`). A sensor needs facets from the subjects or from what the probes leave
-behind. Required options are marked `*`.
+behind. Required options are marked `*`. An option left out is carried out with the default
+its kind declares (`600s when left out`), which `ix plan` lists under the entry
+(`probes.<id>.timeout`, from `kind`) and a registration freezes; `its runtime's own` is a
+value ix cannot know, which the plan names as the runtime's.
 
 A kind marked **declared only** has no adapter in this ix: an experiment that uses it can be
 validated, planned and registered, `validate` warns (`kind_unimplemented`), the plan says
@@ -996,11 +1153,28 @@ cannot be built here (`ix kinds` says why). What an entry needs of this host (a 
 PATH, an `auth` variable that is set, a runtime that resolves the model, the docker daemon)
 its adapter checks: the plan's `requirements` list each with `holds`, and one that does not
 hold is under `Runnable: no` with its `why` and `fix`. It depends on the host, so the
-experiment can still be registered.
+experiment can still be registered. The plan's `work` (`Model calls`) is how many model
+calls the run starts at most, as work, never a price: each agent session (one per round of a
+`loop`), model call and judge's reading counted once however many requests it makes, none
+on a stand-in, with each entry that may call a model and does not say how many named under
+`uncounted`.
+
+A kind of your own is two parts, and needs no edit to ix: its declaration, a YAML file like these
+(in a lab's `kinds/` folder, or a package's at the `ix.kind` entry point), and its adapter,
+registered from the package's `matrix.extensions` entry point named for
+`ix.extension.POINTS[family]` (`"ix.sensor" = "acme.ix_ext:register"`) under the kind's type URL,
+with the needs it is built with (`launcher`, `runtimes`, `sessions`, `judge_models`). Everything an
+adapter is written against is in `ix.extension`: the ports, each need's Protocol, the optional
+roles, and what an adapter raises.
+
+Every kind declares {", ".join(f"`{key}`" for key in shared)}; {own}. Which family a
+declaration is comes from its `name` (`acme.v1.sensor.x` is a sensor), and a key of another
+family's is refused (`kind_invalid`, naming the family that declares it).
 
 A `process` subject is up when its `ready` URL answers an HTTP GET with a status below 500;
 without `ready`, when its `url` accepts a connection; with neither, as soon as it starts. One
-that is not up within `startup_timeout` (30s) fails the trial as the subject's (`not_ready`).
+that is not up within `startup_timeout` ({startup} when left out) fails the trial as the
+subject's (`not_ready`).
 
 Each kind's `overlap` says whether two trials may use it at once: `allowed` when neither
 changes what the other measures (a fresh agent session each), `forbidden` when they would (a
@@ -1012,7 +1186,7 @@ trial (a time, a throughput, a memory peak).
 """
 
 
-def _running() -> str:
+def _running(kinds: Kinds) -> str:
     method = "\n".join(f"- {line}" for line in METHOD)
     return f"""\
 ## Registration
@@ -1091,12 +1265,14 @@ experiment writes `trials_in_flight`. It prints progress on stderr and then the 
   of each file the subjects and sensors name (`contents`: paths and digests, never what
   the files hold), the git commit and whether a tracked file differed from it
   (`provenance.commit`, `provenance.dirty`; `not a repository` outside one), the versions
-  of ix, matrix and hardline, and each runtime installed with the distribution that
+  of ix, matrix and what each installed runtime drives, and each runtime installed with
+  the distribution that
   registered it and the versions of what it drives (`claude-agent-sdk` for `claude-sdk`).
   `ix report` prints them under `Contents`, `Ran from` and `Versions`; `ix runs` gives each
   run's commit.
 - **Stopping.** Ctrl-C stops the trial in flight, stops everything the run started and
-  exits {EXIT_CODES["run_interrupted"]} with the partial report. `ix report <run directory>`
+  exits {EXIT_CODES["run_interrupted"]} with the partial report; `ix stop <run directory>`
+  does the same from elsewhere (below). `ix report <run directory>`
   reads any run again, finished or not; a run that did not finish gives no verdict, and one
   still running exits {EXIT_CODES["running"]}. A report calls no model and runs no code: a
   run stopped before a judge, an `evaluator`, `function-test` or `outcome` read is reported
@@ -1123,7 +1299,48 @@ experiment writes `trials_in_flight`. It prints progress on stderr and then the 
   {EXIT_CODES["run_failed"]}). A *sensor* failure is a reading that could not be taken. The
   report counts each. A subject too slow for an open model's rate is measured, not
   dropped. `error_rate` counts a request that failed, timed out (`http-load`'s
-  `timeout`, k6's 60s) or was never answered, and each arrival dropped, as an error.
+  `timeout`, {_default(kinds, "probe", "http-load", "timeout")} when left out) or was never
+  answered, and each arrival dropped, as an error.
+
+## Long runs
+
+A run can take longer than your tool call may last. Start it detached, and come back to it
+in later calls.
+
+```bash
+ix run <path> --detach --json        # returns once it has started; exits {EXIT_CODES["running"]}
+ix status <run directory> --json     # where it stands: exits {EXIT_CODES["running"]} while it runs
+ix report <run directory>            # the verdict, once it has ended
+```
+
+- **`ix run <path> --detach`** takes the flags any run does (`--exploratory`, `--dry-run`,
+  `--repeats`, `--trials-in-flight`, `--run-id`). It is refused before anything starts
+  exactly as a run in the foreground is, with the same exit codes (unregistered:
+  {EXIT_CODES["unregistered"]}), and `-` is refused (exit {EXIT_CODES["usage"]}). Once the
+  run's own process has opened its record it prints `ix.v1.status`, `run` (its id) first,
+  then `location` (its directory: pass it to the commands below), `status`, `planned`,
+  `carried_out`, `pid`, `events`, `log` (what the run's process wrote to stderr) and `exit`.
+  It exits as `ix status` does. A start that has not opened its record within two minutes is
+  stopped, and exits {EXIT_CODES["config"]}.
+- **`ix status <run>`** reads the record alone, so ask it as often as you like: `status` is
+  `running`, `completed`, `interrupted` or `failed`, with `carried_out` of `planned` trials.
+  It exits {EXIT_CODES["running"]} while the run runs, {EXIT_CODES["ok"]} once it completed,
+  {EXIT_CODES["run_interrupted"]} for a run that was stopped or whose process died, and
+  {EXIT_CODES["run_failed"]} for one the harness could not finish. **{EXIT_CODES["ok"]} from
+  `status` is not a verdict**: it says the run completed; `ix report` says what it found.
+- **`ix events <run> --follow`** prints the run's events as they are written (`--json`: one
+  `matrix.v1.event` a line) and returns once the run has ended, however it ended (a killed
+  run included), exiting as `ix status` then would. It waits as long as the run takes, so
+  call it only when the run will end within your tool call; otherwise ask `ix status`
+  again later. On a run still written on another host `--follow` is refused (exit
+  {EXIT_CODES["usage"]}): read its events without it, or poll `ix status`. Events are
+  telemetry and may be dropped: results are the report's.
+- **`ix stop <run>`** stops a running run as Ctrl-C does: the trial in flight is kept as the
+  harness's, what the run started is released, and the record says `interrupted`. It waits
+  up to 30 seconds and prints the status; one still releasing says `running` (exit
+  {EXIT_CODES["running"]}): ask `ix status` again. A run that has ended is left as it is.
+- `<run>` is a run's directory, or an experiment, meaning its latest run. A run started in
+  the foreground can be followed and stopped the same way.
 
 ## Reading a verdict
 
@@ -1152,8 +1369,11 @@ the margin. Choose the comparison for the claim to be made.
 """
 
 
-def _agents() -> str:
+def _agents(kinds: Kinds) -> str:
     dry, usage = EXIT_CODES["ok"], EXIT_CODES["usage"]
+    until = _default(kinds, "subject", "agent-session", "loop.until")
+    setup = _default(kinds, "subject", "agent-session", "setup_timeout")
+    rounds = _default(kinds, "subject", "agent-session", "loop.rounds")
     return f"""\
 ## Evaluating an agent
 
@@ -1172,27 +1392,28 @@ probes and a metric. What makes it one is the kinds.
   says a session finds its skills: claude-sdk's `.claude/skills`, read as its `project`
   settings), `fixtures` (files and folders copied
   into the working directory first), `setup` (a command run there after them:
-  `[python3, seed.py]`) and `runtime_options`: the runtime's own config, passed through as
-  written. For `claude-sdk` that is `permission_mode`, `setting_sources` (`[]` keeps this
-  machine's settings and plugins out), `fallback_model`, `max_budget_usd` and `agents`;
-  `matrix describe matrix.v1.agent-runtime.claude-sdk` lists them. A key the runtime's
+  `[python3, seed.py]`), `setup_timeout` (how long it may take: {setup} when left out) and
+  `runtime_options`: the runtime's own config, passed through as
+  written; `matrix describe <the runtime's type URL>` lists the keys it takes
+  (`matrix describe matrix.v1.agent-runtime.claude-sdk`). A key the runtime's
   config does not declare is `option_unknown`; `plugins` on a runtime that takes none are
   `option_inapplicable`.
-- **To measure a model rather than an agent, the subject is `model-call`.** Each trial is
-  one call on the matrix model runtime its `runtime` names (`hardline`, `mock`, or any
-  installed): no turns, no tools, no working directory. Options: `model` (a name the
-  runtime resolves, checked by `ix plan`), `system_prompt` and `runtime_options` (the
-  runtime's config: `temperature`, `max_tokens` for `hardline`). The `prompt` probe
-  applies, without `collect`; `activation` and `tool-usage` read tool calls a call never
-  makes, so validate refuses them on it (`unobservable`), and a `function-test` `file`.
+- **To measure a model rather than an agent, the subject is `model-call`.** Each trial is one call
+  on the matrix model runtime its `runtime` names (`matrix-hardline.v1.model-runtime`, `mock`, or
+  any installed): no turns, no tools, no working directory. Options: `model` (a name the runtime
+  resolves, checked by `ix plan`), `system_prompt` and `runtime_options` (the runtime's
+  config: `matrix describe <its type URL>` lists its keys). The `prompt` probe applies,
+  without `collect`; `activation` and `tool-usage` read tool calls a call never makes, so
+  validate refuses them on it (`unobservable`), and a `function-test` `file`.
 - **The probe is `prompt`.** Write one file per probe in a `probes/` folder beside the
   experiment and leave `probes:` out: the markdown body is the prompt, and every
   frontmatter key but `id`, `kind` and `options` is the truth sensors read
   (it never reaches the agent). Probe options, under `options:` in a file: `collect`
-  (files the agent writes, kept for grading), `feedback` (tests a test-feedback loop shows
+  (files the agent writes, kept for grading; `collect_limit`, the largest kept, in bytes:
+  a sensor reading a larger one gives no reading), `feedback` (tests a test-feedback loop shows
   the agent), `mock_response` (the reply a stand-in runtime such as `mock` gives),
-  `timeout` (600s): a session or call that runs past it fails the trial as the subject's
-  (`overran`).
+  `timeout` ({_default(kinds, "probe", "prompt", "timeout")} when left out): a session or
+  call that runs past it fails the trial as the subject's (`overran`).
   An option written beside the truth is truth, which the probe never sees: validate says
   so (`truth_unclaimed`) and shows where it goes. `probes/review-ask.md`:
 
@@ -1235,10 +1456,11 @@ probes and a metric. What makes it one is the kinds.
   same holds for any agent runtime that says so.
 - **Conditions to compare are subjects** under `compare`: one changed option each (a
   `system_prompt`, a `definition` file, a `model`, a `loop`). A `loop` adds rounds:
-  `{{strategy: self-review, rounds: 3}}` asks again with the previous answer until it
-  carries `SOLUTION_VERIFIED`; `{{strategy: test-feedback}}` shows the agent which of the
-  probe's `feedback` tests failed, until none do. Tokens, turns and cost add up over the
-  rounds.
+  `{{strategy: self-review}}` asks again with the previous answer until it carries its
+  `until` (`{until}` when left out), for `rounds` in all (`{rounds}` when left out);
+  `{{strategy: test-feedback}}` shows the agent which of the probe's `feedback` tests
+  failed, until none do. Each strategy's next-round `prompt` is its kind's declared
+  default unless written. Tokens, turns and cost add up over the rounds.
 
 ## Evaluating a skill
 
@@ -1314,10 +1536,11 @@ have written it anyway. Two things show more.
 
 `judge` asks a model to score a reply against your `rubric` from 0 to 1. It names its
 runtime with one of two options, and has no default: `model_runtime` (one model call per
-reading: `hardline` calls a model provider, `mock` does not) or `agent_runtime` (a one-turn
-session with no tools per reading: `claude-sdk` calls a model provider, `mock` does not).
+reading: the hardline bridge's calls a model provider, `mock` does not) or `agent_runtime`
+(a one-turn session with no tools per reading: `claude-sdk` calls a model provider, `mock`
+does not).
 Validate refuses a judge that names neither, or both:
-`{{kind: judge, model_runtime: hardline, rubric: rubric.md}}`. Its readings
+`{{kind: judge, model_runtime: matrix-hardline.v1.model-runtime, rubric: rubric.md}}`. Its readings
 are judged: they are reported and **never decide** a verdict. `repeats: 3` asks it three
 times per reply: `judge_agreement` is how often it agreed with itself. Two flags are
 printed whenever a trial raises one: `judge_inconsistent` (its repeats split on pass or
@@ -1360,9 +1583,9 @@ are in the reading's detail. One `evaluator` entry per experiment: a second is
   `model_runtime` names (with `model`, `runtime_options`), never from `arguments` and never
   from pydantic-evals' default; validate refuses one with no `model_runtime`
   (`option_missing`) or a `model` in its arguments. A dry run judges on pydantic-ai's
-  `TestModel`, which calls no model. On `hardline` it judges on the registry row `model`
-  names, each request a hardline call; a model runtime that gives no pydantic-ai model is
-  `Runnable: no` in `ix plan`, and the `judge` sensor scores there.
+  `TestModel`, which calls no model. On any other it judges on pydantic-ai's model over
+  that runtime (on hardline's, the registry row `model` names), each request a call and a
+  row of the run's session table.
 
 ## Reading the report
 
@@ -1389,6 +1612,145 @@ or rewriting the cases fails. A session's working directory is a fresh temporary
 removed after the trial; the agent's tools act on your machine as `permission_mode`
 allows. Telemetry: with `OTEL_EXPORTER_OTLP_ENDPOINT` set, ix exports `ix.plan`, `ix.run`,
 `ix.trial` and `ix.sensor` spans and matrix the sessions inside them.
+"""
+
+
+def _mutation() -> str:
+    return """\
+## Testing a test suite: mutation
+
+A mutant is a small fault seeded in the code (`<` for `<=`, `and` for `or`, a constant moved
+by one). A suite that fails on it **kills** it. `mutation-score` estimates the share of
+sampled mutants a suite kills, with a Wilson interval. `mutation-regress` asks whether a
+changed suite is no worse than the baseline suite on the same mutants, within a margin.
+That share is the suite's power to show these faults, never that the code is correct.
+
+### The steps
+
+1. Write the experiment: a subject of kind `test-suite` per suite, the genre, and
+   `primary: {metric: killed}` (the `mutant-kill` sensor). `mutation-regress` also needs a
+   `margin` (`5pp`). `ix --skill -r genres` has both examples.
+2. `ix mutants sample <path> --n 100 --seed 1` draws the mutants:
+   - It asks the mutant source for every mutant of each scope file and keeps those that parse
+     and change the code.
+   - It draws `--n` of them from `--seed` and writes one probe file each as
+     `probes/m-<id>.yaml`.
+   - It runs each suite's baseline once under coverage.py's per-test contexts and writes the
+     selection map where the subject's `map` says, and `mutation/population.json`.
+   - It prints `ix.v1.mutation-sample`: the population by operator, what was left out and
+     why, the uncovered mutants drawn, and an estimate of the test time.
+3. `ix validate <path>`, `ix plan <path>`, `ix register <path>`, then `ix run <path>`
+   (`--trials-in-flight N` runs N mutants at once, each in its own copy). For a long run, use
+   `ix run <path> --detach` and follow it with `ix events <run> --follow`.
+4. `ix report <run>` gives the kill rate with its interval, and the trials it could not read,
+   by reason.
+5. `ix mutants read <run>` lists the survivors and the pruning candidates.
+
+What `ix mutants sample` needs, and refuses without:
+
+- **A mutant source.** `ix-cosmic-ray` provides cosmic-ray's operators. Install it beside
+  ix as ix was installed, from this repository at its release's tag
+  (`components/capabilities/ix-cosmic-ray`; it is on no package index): with `uv tool
+  install`, add `--with "<its git URL>"`. Probe
+  files of kind `mutant` that any other tool wrote run without one: put them in `probes/`
+  and run `ix mutants map <path>`, which makes the selection maps alone.
+- **coverage.py and pytest-cov in the suite's environment**, not ix's:
+  `<suite python> -m pip install pytest-cov`.
+- **A baseline that passes.** Deselect a test that fails, or fix it.
+- **An empty `probes/`.** Sample into a new experiment.
+
+### The subject, `test-suite`
+
+- `root` is the tree. Every trial gets a fresh copy of it, and the tree itself is never
+  written.
+- `command` is the suite's own Python and pytest's arguments, relative to `root`:
+  `[.venv/bin/python, -m, pytest, tests, -q]`.
+- `tests` are the test files or folders, digested.
+- `scope` is the files mutants change; `map` is the selection map's file.
+- `deselect` lists node ids left out of the suite. A pruned variant is the same suite less
+  these.
+- `confirm` says which survivors run again against every test:
+  - `uncovered` (the default): only those no test ran;
+  - `all`: every survivor, which calibrates the selection. Use it when tests drive the
+    scope's code in child processes (a CLI test that starts the tool): coverage records no
+    test against a line a child process runs, so such a test is never selected;
+  - `none`: never.
+- Each run of the suite may take `timeout_factor` (3) times its tests' baseline time, and
+  never less than `timeout_floor` (10s).
+
+The copy is put first on `PYTHONPATH`, so the suite imports the copy, not an editable
+install of the tree. Every run checks this. A trial that imported a scope module from
+anywhere else is the harness's failure (`not_the_mutant`), never a survivor.
+
+### A trial
+
+It applies one mutant, then runs the tests the map says ran a line of the statement it lies
+in: the whole of a simple statement, the header of a compound one (a test that short-circuits
+a multi-line condition before the mutated line is still run against it).
+
+- A mutant whose statement only imports ran runs every test.
+- A test that failed on the mutant **killed** it only if it fails again run alone on the
+  mutant, and passes run alone on the same copy with the original restored. A failure that
+  does not recur is a flake (`unreproduced`), never a kill. Every run has a temporary
+  directory of its own, so trials in flight share none.
+
+`outcome` (also the `mutant-kill` reading's detail) holds:
+
+- `status`: `killed`, `survived`, or `uncovered` (no test ran it and `confirm: none`);
+- `stage`: `selected`, `confirmed` or `none`;
+- `covered`, `selected`, `ran`, and `lines` (the statement's, which selected the tests);
+- `killers` (node ids, or `<collection>`), `unattributed` (tests that fail without the
+  mutant too) and `unreproduced` (failures that did not recur on the mutant);
+- `covered_by`: for a survivor, the tests that ran its statement and passed;
+- `imported_from` and `drifted` (its file changed since it was sampled);
+- `timeout_s` and `duration_s`.
+
+A trial the harness failed is left out of the rate and counted by its reason:
+
+- `timeout`: a run past its limit, never read as a kill;
+- `not_the_mutant`, `mutant_inapplicable` (the tree does not hold the mutant's `original`
+  text), `unattributable` (only tests that fail without the mutant failed), `runner`
+  (pytest's own trouble), `map`;
+- `equivalent`: a probe marked `equivalent: "<why>"`. The mark moves the probe set's digest,
+  so amend the registration with the reason.
+
+### Reading a run
+
+`ix mutants read <run>` prints `ix.v1.mutants-reading` (`--json`, `--all`; 50 of each list
+otherwise). Each survivor is one of two gaps:
+
+- **`assertion_gap`**: tests ran its statement and passed. Strengthen what they assert; they
+  are named.
+- **`coverage_gap`**: no test ran its statement. Write a test.
+
+The **pruning candidates** come from the kill matrix of the subject (the control, in
+`mutation-regress`):
+
+- The keep set takes every test that is the only killer of some mutant, then adds tests
+  greedily until every killed mutant is killed by one.
+- The candidates are the judged tests outside the keep set, removable together as far as these
+  mutants show. `deselect` is the list a variant leaves out.
+- A candidate that `also_runs` files outside the scope was not judged there.
+
+**Confirm before removing anything.** Run `ix mutants sample <new experiment> --seed 2
+--exclude <first experiment>` to draw a fresh sample disjoint from the first. On it, run a
+`mutation-regress` whose control is the whole suite and whose variant deselects the
+candidates, with the margin the person sets. Only `holds` supports the pruning. ix removes no
+test.
+
+### Sizing a regress
+
+The two suites meet the same mutants, so only the mutants they disagree on move the
+difference. With no disagreement, n mutants bound a loss near 3.84 / (n + 3.84):
+
+| mutants | the bound |
+|---|---|
+| 100 | about 3.7 points |
+| 200 | about 1.9 points |
+| 400 | about 1 point |
+
+A margin below that is inconclusive, not a pass. A change to the code is not a change to the
+suite: for a code refactor, run `mutation-score` on each tree, each with its own sample.
 """
 
 
@@ -1432,9 +1794,11 @@ def render(
         case "kinds":
             body = _kinds(kinds)
         case "running":
-            body = _running()
+            body = _running(kinds)
         case "agents":
-            body = _agents()
+            body = _agents(kinds)
+        case "mutation":
+            body = _mutation()
         case _:
             body = _problems()
     return f"# ix {version} reference: {reference}\n\n{body}"

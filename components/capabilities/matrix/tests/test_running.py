@@ -15,6 +15,7 @@ from matrix import (
     ComponentEnding,
     ComponentFailure,
     ConfigError,
+    Context,
     Executor,
     Inputs,
     JsonlConstructStore,
@@ -27,7 +28,6 @@ from matrix import (
     Retry,
     Reuse,
     Run,
-    RunContext,
     RunError,
     compose,
     default_registry,
@@ -49,7 +49,7 @@ class Flaky:
         self.details = details
         self.calls = 0
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         self.calls += 1
         if self.calls <= self.times:
             raise AgentRuntimeError("busy", reason=self.reason, **self.details)
@@ -154,7 +154,7 @@ async def test_a_component_that_handed_over_rows_is_not_retried() -> None:
         provides = (UPPER,)
         calls = 0
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> None:
+        async def run(self, inputs: Inputs, ctx: Context) -> None:
             Partial.calls += 1
             ctx.provide(UPPER, "half")
             raise AgentRuntimeError("busy", reason="unavailable")
@@ -180,7 +180,7 @@ async def test_a_run_stopped_while_a_component_waits_to_retry_does_not_retry_it(
         requires: tuple[str, ...] = ()
         provides = (COUNT,)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> None:
+        async def run(self, inputs: Inputs, ctx: Context) -> None:
             raise RuntimeError("down")
 
     flaky = Flaky(times=1)
@@ -218,7 +218,7 @@ class Upper:
     requires = (TEXT,)
     provides = (UPPER,)
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         return {UPPER: [t.upper() for t in inputs[TEXT]]}
 
 
@@ -227,7 +227,7 @@ class Count:
     provides = (COUNT,)
     calls = 0
 
-    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
         Count.calls += 1
         return {COUNT: len(inputs[UPPER])}
 
@@ -374,7 +374,7 @@ async def test_a_failed_component_is_not_reused(tmp_path: Path) -> None:
         requires = (UPPER,)
         provides = (COUNT,)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> None:
+        async def run(self, inputs: Inputs, ctx: Context) -> None:
             raise RuntimeError("bug")
 
     registry = default_registry(discover=False)
@@ -396,7 +396,7 @@ async def test_a_component_stopped_before_it_finished_is_not_reused(tmp_path: Pa
         requires = (TEXT,)
         provides = (UPPER,)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+        async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
             running.set()
             await ctx.stopping.wait()
             return {UPPER: ["partial"]}
@@ -405,7 +405,7 @@ async def test_a_component_stopped_before_it_finished_is_not_reused(tmp_path: Pa
         requires = (TEXT,)
         provides = ("acme.v1.other",)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> None:
+        async def run(self, inputs: Inputs, ctx: Context) -> None:
             await running.wait()
             raise RuntimeError("kaput")
 
@@ -449,14 +449,14 @@ async def test_reused_rows_reach_downstream_in_the_type_a_fresh_run_gives(tmp_pa
         requires = (TEXT,)
         provides = (UPPER,)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+        async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
             return {UPPER: [Score(score=3), {"score": 4}]}
 
     class Use:
         requires = (UPPER,)
         provides = (COUNT,)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+        async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
             seen.extend(type(row).__name__ for row in inputs[UPPER])
             return {COUNT: sum(row.score for row in inputs[UPPER])}
 
@@ -493,7 +493,7 @@ async def test_rows_that_cannot_be_reused_fail_that_component_and_skip_its_depen
         requires = (TEXT,)
         provides = (UPPER,)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+        async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
             ran.append("make")
             return {UPPER: {"n": 1}}
 
@@ -501,7 +501,7 @@ async def test_rows_that_cannot_be_reused_fail_that_component_and_skip_its_depen
         requires = (UPPER,)
         provides = (COUNT,)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+        async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
             ran.append("use")
             return {COUNT: 1}
 
@@ -509,7 +509,7 @@ async def test_rows_that_cannot_be_reused_fail_that_component_and_skip_its_depen
         requires = (TEXT,)
         provides = ("acme.v1.free",)
 
-        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+        async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
             ran.append("free")
             return {"acme.v1.free": 1}
 

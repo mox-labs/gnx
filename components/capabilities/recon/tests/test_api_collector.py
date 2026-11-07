@@ -14,13 +14,25 @@ from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
-from recon.domain.capture import REDACTED
-from recon.domain.errors import NoRecordsError
-from recon.domain.http import HttpResponse
-from recon.domain.models import AuthConfig, CollectorEntry, SourceEntry
-from recon.domain.normalize import resolve_path, to_records
-from recon.domain.substitution import find_unresolved, substitute
-from tests.recon_fakes import collector_entry
+from recon.core.domain.capture import REDACTED
+from recon.core.domain.errors import NoRecordsError
+from recon.core.domain.http import HttpResponse
+from recon.core.domain.models import AuthConfig, CollectorEntry, SourceEntry
+from recon.core.domain.normalize import resolve_path, to_records
+from recon.core.domain.substitution import find_unresolved, substitute
+from recon.testing import records
+from tests.recon_fakes import collector_entry, run_for
+
+
+def _api(req: Any, env: dict[str, str]) -> ApiCollector:
+    return ApiCollector(requester=req, credentials=Credentials(env), user_agent=DEFAULT_USER_AGENT)
+
+
+def _run(
+    collector: ApiCollector, entry: CollectorEntry, source: SourceEntry, captures: Any = None
+) -> list[dict[str, Any]]:
+    """The records recon makes of the run, as an act does."""
+    return records(collector, run_for(entry, source), captures=captures)
 
 
 class _FakeRequester:
@@ -155,7 +167,7 @@ class TestResolveAuth:
         req = _FakeRequester(_ok_response('{"data": []}'))
         src = SourceEntry(name="s", url="https://x", auth=auth)
         entry = collector_entry(name="t", type="api", source="s", endpoint="/q", params={"q": "a"})
-        list(ApiCollector(req, Credentials(env), user_agent=DEFAULT_USER_AGENT).collect(entry, src))
+        _run(_api(req, env), entry, src)
         return req.calls[0]
 
     def test_header_no_prefix(self) -> None:
@@ -206,11 +218,7 @@ class TestResolveAuth:
         )
         entry = collector_entry(name="t", type="api", source="s", endpoint="/q")
         log = FilesystemCaptureLog(tmp_path, SystemClock())
-        list(
-            ApiCollector(
-                req, Credentials({"K": "k-SECRET"}), user_agent=DEFAULT_USER_AGENT
-            ).collect(entry, src, captures=log)
-        )
+        _run(_api(req, {"K": "k-SECRET"}), entry, src, captures=log)
 
         import json
         from urllib.parse import parse_qs, urlsplit
@@ -225,11 +233,11 @@ class TestCollectThroughRequester:
     def test_basic_get_yields_records(self) -> None:
         resp = _ok_response('{"data": [{"title": "A"}, {"title": "B"}]}')
         req = _FakeRequester(resp)
-        col = ApiCollector(req, Credentials({}), user_agent=DEFAULT_USER_AGENT)
+        col = _api(req, {})
 
         source = SourceEntry(name="s", url="https://x")
         entry = collector_entry(name="t", type="api", source="s", endpoint="/q", extract="data")
-        records = list(col.collect(entry, source))
+        records = _run(col, entry, source)
         assert [r["title"] for r in records] == ["A", "B"]
 
         # Requester was called exactly once with GET
@@ -240,7 +248,7 @@ class TestCollectThroughRequester:
     def test_post_with_body(self) -> None:
         resp = _ok_response('{"results": [{"ok": true}]}')
         req = _FakeRequester(resp)
-        col = ApiCollector(req, Credentials({}), user_agent=DEFAULT_USER_AGENT)
+        col = _api(req, {})
 
         source = SourceEntry(name="exa", url="https://api.exa.ai")
         entry = collector_entry(
@@ -252,24 +260,24 @@ class TestCollectThroughRequester:
             body={"query": "transformer attention", "numResults": 5},
             extract="results",
         )
-        list(col.collect(entry, source))
+        _run(col, entry, source)
         assert req.calls[0]["method"] == "POST"
         assert req.calls[0]["json_body"] == {"query": "transformer attention", "numResults": 5}
 
     def test_get_without_body(self) -> None:
         resp = _ok_response('{"data": [{"x": 1}]}')
         req = _FakeRequester(resp)
-        col = ApiCollector(req, Credentials({}), user_agent=DEFAULT_USER_AGENT)
+        col = _api(req, {})
 
         source = SourceEntry(name="s", url="https://x")
         entry = collector_entry(name="g", type="api", source="s", endpoint="/q", extract="data")
-        list(col.collect(entry, source))
+        _run(col, entry, source)
         assert req.calls[0]["json_body"] is None
 
     def test_templated_body_end_to_end(self) -> None:
         resp = _ok_response('{"results": [{"ok": true}]}')
         req = _FakeRequester(resp)
-        col = ApiCollector(req, Credentials({}), user_agent=DEFAULT_USER_AGENT)
+        col = _api(req, {})
 
         source = SourceEntry(name="exa", url="https://api.exa.ai")
         entry = collector_entry(
@@ -282,7 +290,7 @@ class TestCollectThroughRequester:
             body={"query": "{topic}", "numResults": 10},
             extract="results",
         )
-        list(col.collect(entry, source))
+        _run(col, entry, source)
         assert req.calls[0]["json_body"] == {"query": "state space models", "numResults": 10}
         assert req.calls[0]["params"] == {}, "a value that fills the body is not a query too"
 
@@ -294,9 +302,7 @@ class TestUserAgent:
         req = _FakeRequester(_ok_response("[]"))
         source = SourceEntry(name="s", url="https://x", **source_fields)
         entry = collector_entry(name="c", type="api", source="s", endpoint="/q")
-        list(
-            ApiCollector(req, Credentials({}), user_agent=DEFAULT_USER_AGENT).collect(entry, source)
-        )
+        _run(_api(req, {}), entry, source)
         return str(req.calls[0]["headers"]["User-Agent"])
 
     def test_the_default_names_recon_its_version_and_where_to_find_it(self) -> None:
@@ -326,9 +332,7 @@ class TestParams:
         req = _FakeRequester(_ok_response("[]"))
         source = SourceEntry(name="s", url="https://x")
         entry = collector_entry(name="c", type="api", source="s", endpoint="/q", params=params)
-        list(
-            ApiCollector(req, Credentials({}), user_agent=DEFAULT_USER_AGENT).collect(entry, source)
-        )
+        _run(_api(req, {}), entry, source)
         return req
 
     def test_a_value_containing_braces_is_sent(self) -> None:
@@ -338,8 +342,8 @@ class TestParams:
     def test_an_unresolved_placeholder_is_a_plan_problem(self) -> None:
         """Changed requirement: the collector refused at run time what the plan already
         refuses, so the survey never reaches it."""
-        from recon.application.plan import build_plan
         from recon.composition import load_plugins
+        from recon.core.application.plan import build_plan
 
         raw = {
             "catalog": [{"name": "s", "url": "https://x"}],
@@ -409,9 +413,7 @@ class TestParamsAndVars:
         req = _FakeRequester(_ok_response("[]"))
         source = SourceEntry(name="s", url="https://x.test")
         entry = CollectorEntry(name="c", type="api", source="s", **settings)
-        list(
-            ApiCollector(req, Credentials({}), user_agent=DEFAULT_USER_AGENT).collect(entry, source)
-        )
+        _run(_api(req, {}), entry, source)
         return req.calls[0]
 
     def test_vars_fill_the_endpoint_and_the_body_and_are_sent_nowhere_else(self) -> None:
@@ -427,8 +429,8 @@ class TestParamsAndVars:
         assert sent["params"] == {"per_page": "5"}
 
     def test_a_placeholder_vars_does_not_fill_is_a_plan_problem(self) -> None:
-        from recon.application.plan import build_plan
         from recon.composition import load_plugins
+        from recon.core.application.plan import build_plan
 
         raw = {
             "catalog": [{"name": "s", "url": "https://x.test"}],
@@ -446,8 +448,8 @@ class TestALiteralBrace:
     ``unresolved {login}``. ``{{`` and ``}}`` are a literal brace, as in Python's format."""
 
     def _plan(self, collector: dict[str, Any]) -> Any:
-        from recon.application.plan import build_plan
         from recon.composition import load_plugins
+        from recon.core.application.plan import build_plan
 
         raw = {
             "catalog": [{"name": "s", "url": "https://x.test"}],
@@ -471,23 +473,10 @@ class TestALiteralBrace:
         assert sent["url"] == "https://x.test/r/{id}/1"
         assert sent["params"] == {"q": "{x}"}
 
-    def test_a_web_endpoint_s_escaped_brace_is_fetched_as_one_brace(self) -> None:
-        from recon.adapters._out.web_collector import _url
-
-        assert self._plan({"type": "web", "endpoint": "/p/{{slug}}"}).valid
-        entry = CollectorEntry.model_validate(
-            {"name": "c", "type": "web", "source": "s", "endpoint": "/p/{{slug}}"}
-        )
-        assert _url(entry, SourceEntry(name="s", type="web", url="https://x.test")) == (
-            "https://x.test/p/{slug}"
-        )
-
     def test_a_command_s_double_braces_are_its_own(self) -> None:
         """A shell command's braces are the command's (``docker inspect --format
         '{{.Name}}'``): in ``run:`` only ``{url}`` and ``{pattern}`` are recon's."""
         from recon.adapters._out.cli_collector import _commands
 
-        entry = CollectorEntry.model_validate(
-            {"name": "c", "type": "cli", "run": "docker inspect -f '{{.Name}}' {{x}}"}
-        )
-        assert _commands(entry, None) == [(None, "docker inspect -f '{{.Name}}' {{x}}")]
+        run = run_for({"name": "c", "type": "cli", "run": "docker inspect -f '{{.Name}}' {{x}}"})
+        assert _commands(run) == [(None, "docker inspect -f '{{.Name}}' {{x}}")]

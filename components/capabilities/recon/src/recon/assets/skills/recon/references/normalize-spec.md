@@ -64,7 +64,7 @@ The pipe is always `|` (no spaces required). Transform names start with `$`.
 
 **An unknown transform is a plan problem.** `recon survey --dry-run` (and every survey, which plans first) reports it at `collectors.<i>.normalize.<column>` with the installed transforms, and exits 3 before anything runs. So is a path with two `*` (`a.*.b.*.c`) or a pipe without a `$name`.
 
-Transforms are extensions: each is registered under the entry-point group `recon.transforms`, and `recon status --json` lists what is installed (`plugins.transforms`). A package installed alongside recon can add its own.
+Transforms are extensions: each is registered at the `recon.transform` point of matrix's registry (a built-in by its short name, any other by its type URL, written `$acme.v1.transform.redact`), and `recon types --json` lists what is installed (`transforms`). A package installed alongside recon, or code using it (`recon.open(extensions=...)`), can add its own.
 
 ## Built-in transforms
 
@@ -128,7 +128,7 @@ full_text: "pdf_path|$markitdown"
 
 The path comes from collected data, so it is confined to what the mission declares: the file must be under the mission directory (`.recon/<mission>/`) or under a catalog source with `type: local`. A relative path is resolved against the directory its record came from: for a `cli` collector, the directory its command ran in (its `local` source's, so a path `rg --files` or `find .` printed names the file it found); otherwise the directory `recon` runs in. A path outside those directories fails the table with a `config` error whose `fix` says to add the directory as a `local` source.
 
-`$markitdown` never fetches. A value that is a URL (`http:`, `https:`, `file:`, `data:`) fails the table the same way. To fetch and convert a remote document, use a `web` collector instead: it converts by content type, through the rate limiter and the capture log.
+`$markitdown` never fetches. A value that is a URL (`http:`, `https:`, `file:`, `data:`) fails the table the same way. To fetch and convert a remote document, use an `api` collector with `response_format: document` instead: it converts by content type, through the rate limiter and the capture log.
 
 ## Capture collectors: `_capture`
 
@@ -146,14 +146,16 @@ normalize:
 
 ## Response formats
 
-An `api` collector parses its body as `response_format`:
+An `api` collector has its body converted as `response_format` says:
 
-| Format | Parser | Use case |
+| Format | Converter | Use case |
 |--------|--------|----------|
 | `json` (default) | JSON | most REST APIs |
 | `xml` | xmltodict, with namespace handling | arXiv, PubMed |
+| `text` | line by line: a JSON object, else `{line_number, line}` | an endpoint that answers ndjson or plain lines |
+| `document` | markdown by its content type (HTML, PDF, DOCX, ...): one `{url, title, content, content_type}` | a page, a report |
 
-`html` and `text` are a plan problem on an `api` collector, since they would give a table with no records; convert a page with a `web` collector instead. A `capture` collector takes all four: `html` and `text` bodies are read line by line, as a `cli` collector reads stdout.
+`extract:` then finds the records in what the converter gave, for every collector type. A `capture` collector takes `json`, `xml`, `text` and `html`: `html` and `text` bodies are read line by line, as a `cli` collector's stdout is.
 
 ### XML Namespace Handling
 

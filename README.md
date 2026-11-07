@@ -38,6 +38,7 @@ plus a `bundles.yaml` entry.
 | `hardline` | one port for every model family — local MLX, ollama, Gemini, Claude — tagged with the family that answered | [README](components/capabilities/hardline/README.md) · [SECURITY](components/capabilities/hardline/SECURITY.md) |
 | `matrix` | runs components wired by the kinds of data they exchange, records every row as a run goes, and composes agents from a definition plus a runtime | [README](components/capabilities/matrix/README.md) · [SECURITY](components/capabilities/matrix/SECURITY.md) |
 | `ix` | decides a question about an AI agent or a service by experiment — an agent evaluation, a service comparison — written as one file with a genre: validated, planned, registered before it runs, and reported as a verdict | [README](components/capabilities/ix/README.md) · [SECURITY](components/capabilities/ix/SECURITY.md) |
+| `ix-cosmic-ray` | cosmic-ray's mutation operators as ix's mutant source, for `ix mutants sample`: whether a test suite fails when the code is wrong | [README](components/capabilities/ix-cosmic-ray/README.md) · [SECURITY](components/capabilities/ix-cosmic-ray/SECURITY.md) |
 | `recon` | heterogeneous sources in, structured JSONL out, queried with SQL | [README](components/capabilities/recon/README.md) · [SECURITY](components/capabilities/recon/SECURITY.md) |
 | `dao` | stands up and audits a project's agent organization | [README](components/capabilities/dao/README.md) · [SECURITY](components/capabilities/dao/SECURITY.md) |
 
@@ -50,13 +51,21 @@ A capability is installed from this repository at its release's tag; none is on 
 index, where the names `matrix` and `ix` belong to other projects:
 
 ```
-uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.8.0#subdirectory=components/capabilities/matrix"
-uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.7.0#subdirectory=components/capabilities/ix"
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.16.0#subdirectory=components/capabilities/recon"
-uv tool install "git+https://github.com/mox-labs/gnx@hardline-v0.2.0#subdirectory=components/capabilities/hardline"
+uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.10.0#subdirectory=components/capabilities/matrix"
+uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.9.0#subdirectory=components/capabilities/ix"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.19.1#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@hardline-v0.3.1#subdirectory=components/capabilities/hardline"
 ```
 
-`ix` depends on `matrix`, and `matrix` on `hardline`; installed from the git URL, uv takes each from the same repository.
+`ix` depends on `matrix` and `matrix-hardline`, the bridge that makes hardline a matrix model
+runtime; `matrix-hardline` depends on `matrix` and `hardline`, and `matrix` on no model
+runtime. `ix-cosmic-ray` depends on `ix` and cosmic-ray; `ix` does not depend on it. For mutation
+testing, install it beside `ix`:
+
+```
+uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.9.0#subdirectory=components/capabilities/ix" --with "git+https://github.com/mox-labs/gnx@ix-cosmic-ray-v0.1.0#subdirectory=components/capabilities/ix-cosmic-ray"
+```
+ Installed from the git URL, uv takes each from the same repository.
 Each package's README has its library install line. No package has extras: each brings every runtime and telemetry it uses.
 
 ## Stack placement
