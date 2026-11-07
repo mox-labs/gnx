@@ -12,7 +12,7 @@ design:
   order: sequential
   calibration: none
   estimator: mean
-  note: "estimates only: a Wilson score interval for the share of the sampled mutants the suite killed, each applied once, a kill counted only when the killing tests pass without it (ix design record, 2026-10-19, §32)"
+  note: "estimates only: a Wilson score interval for the share of the sampled mutants the suite killed, each applied once, a kill counted only when the killing tests fail again on it and pass without it (ix design record, 2026-10-19, §32)"
 analysis: {id: ix.v1.analysis.characterize}
 verdict_form: none
 report: [question, design, estimates, failures, raw]

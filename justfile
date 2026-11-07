@@ -153,9 +153,9 @@ lab:
 # declare, and HOME is a fresh directory, so no user config reaches a command.
 #
 # Every capability installed alone from its wheel, then driven through a smoke test.
-# matrix-hardline depends on matrix and hardline, and ix on matrix and matrix-hardline: PyPI
-# has unrelated packages of those names, so each is installed with this repository's wheels of
-# what it depends on.
+# recon depends on matrix, matrix-hardline on matrix and hardline, and ix on matrix and
+# matrix-hardline: PyPI has unrelated packages of those names, so each is installed with this
+# repository's wheels of what it depends on.
 capabilities-standalone:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -284,6 +284,7 @@ capabilities-standalone:
       work="$tmp/$p"; mkdir -p "$work/home"
       wheels=("$tmp/dist/${p//-/_}"-*.whl)
       if [ "$p" = matrix-hardline ]; then wheels+=("$tmp/dist"/matrix-*.whl "$tmp/dist"/hardline-*.whl); fi
+      if [ "$p" = recon ]; then wheels+=("$tmp/dist"/matrix-*.whl); fi
       if [ "$p" = ix ]; then
         wheels+=("$tmp/dist"/matrix-*.whl "$tmp/dist"/matrix_hardline-*.whl "$tmp/dist"/hardline-*.whl)
       fi

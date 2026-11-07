@@ -1671,7 +1671,9 @@ What `ix mutants sample` needs, and refuses without:
   these.
 - `confirm` says which survivors run again against every test:
   - `uncovered` (the default): only those no test ran;
-  - `all`: every survivor, which calibrates the selection;
+  - `all`: every survivor, which calibrates the selection. Use it when tests drive the
+    scope's code in child processes (a CLI test that starts the tool): coverage records no
+    test against a line a child process runs, so such a test is never selected;
   - `none`: never.
 - Each run of the suite may take `timeout_factor` (3) times its tests' baseline time, and
   never less than `timeout_floor` (10s).

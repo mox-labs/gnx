@@ -508,6 +508,9 @@ file is the boundary any generator speaks, and it runs with no source installed.
   has a temporary directory of its own.
 - A survivor no test ran is run against every test (`confirm: uncovered`, the default). A run
   past its time limit is unread (`timeout`), never killed.
+- Coverage records no test against a line a child process runs, so a test that drives the
+  scope's code through a subprocess (a CLI test starting the tool) is never selected for it.
+  For such a suite set `confirm: all`: every survivor then runs against every test.
 
 **`ix mutants read`** names each survivor as an assertion gap (the tests that ran its statement
 are listed) or a coverage gap. It also gives the **pruning candidates**: the tests a greedy keep
