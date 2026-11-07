@@ -122,7 +122,11 @@ jobs:
       - name: install docsite deps
         run: cd docs/experience && bun install --frozen-lockfile
 
+      # docs-sync's CHANGELOG check reads the commits since the merge-base with the branch this
+      # merges into; the checkout's fetch-depth: 0 is what gives it that history.
       - name: just ci
+        env:
+          DOCS_SYNC_BASE: origin/${{ github.base_ref || 'main' }}
         run: just ci
 
   commit-lint:

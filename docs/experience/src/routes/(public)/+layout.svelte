@@ -37,6 +37,12 @@
 	);
 
 	const isDoc = (slug: string) => page.url.pathname === `${base}/docs/${slug}`;
+	// A component or plugin page is a page of the catalog, so the catalog link stays lit there.
+	const inCatalog = $derived(
+		[`${base}/catalog`, `${base}/components/`, `${base}/plugins/`].some((p) =>
+			page.url.pathname.startsWith(p)
+		)
+	);
 </script>
 
 <svelte:head>
@@ -46,13 +52,11 @@
 {#if isImmersive}
 	{@render children()}
 {:else}
-	<!-- Site-wide, not per-page: gnx is pre-generation-0, the catalog was deliberately cut
-	     back to what has been evaluated, and the docs are being rebuilt around it. A reader
-	     should know that before they read anything else, not after. -->
+	<!-- Site-wide, not per-page: gnx is pre-generation-0 and the catalog holds only what has
+	     been evaluated. A reader should know that before they read anything else, not after. -->
 	<div class="uc" role="note">
-		<b>Under construction.</b> gnx is pre-generation-0. The catalog is small on purpose —
-		most components sit in <code>incubator/</code> until they are evaluated — and these docs
-		are being rebuilt alongside it.
+		<b>Early.</b> gnx is pre-generation-0. The catalog is small on purpose: a component enters
+		it when a measurement says it works.
 	</div>
 
 	<div class="shell">
@@ -68,7 +72,11 @@
 					<div class="section-label">Catalog</div>
 					<ol>
 						<li>
-							<a href="{base}/catalog" class:active={page.url.pathname === `${base}/catalog`}>
+							<a
+								href="{base}/catalog"
+								class:active={inCatalog}
+								aria-current={inCatalog ? 'page' : undefined}
+							>
 								<span class="t">Browse the catalog</span>
 							</a>
 						</li>
@@ -79,7 +87,11 @@
 						<ol>
 							{#each g.docs as doc (doc.slug)}
 								<li>
-									<a href="{base}/docs/{doc.slug}" class:active={isDoc(doc.slug)}>
+									<a
+										href="{base}/docs/{doc.slug}"
+										class:active={isDoc(doc.slug)}
+										aria-current={isDoc(doc.slug) ? 'page' : undefined}
+									>
 										<span class="t">{doc.title}</span>
 										<!-- badge "shipped" only: most docs are planned, and badging every nav item
 										     announces construction everywhere. The status page carries the full picture. -->
@@ -157,8 +169,5 @@
 	}
 	.uc b {
 		color: var(--fg);
-	}
-	.uc code {
-		font-size: 0.75rem;
 	}
 </style>

@@ -616,6 +616,18 @@ async def test_pydantic_ai_records_no_content_even_when_instrumented_process_wid
     assert exporter.get_finished_spans() == ()
 
 
+async def test_a_session_turns_pydantic_ais_banner_off() -> None:
+    """Regression: pydantic-ai 2.6x prints a first-run banner on a terminal's stderr for a run
+    it cannot attribute to an installed package, which a run through matrix's executor is
+    not, so `matrix run --json` carried it. Under pytest pydantic-ai suppresses it itself, so
+    what is checked is the flag it reads."""
+    import pydantic_ai
+
+    pydantic_ai.BANNER_ENABLED = True  # type: ignore[attr-defined,unused-ignore]
+    await _runtime(ASKS, "an answer").run(_agent(), "a question")
+    assert pydantic_ai.BANNER_ENABLED is False  # type: ignore[attr-defined,unused-ignore]
+
+
 async def test_connections_close_once_the_last_session_in_a_loop_ends() -> None:
     """Sessions share the model runtime's connections within an event loop: they are closed
     when the last session running in that loop ends, never under one still running."""

@@ -1,54 +1,45 @@
 # matrix
 
-matrix runs components wired by the kind of data they exchange, composes agents from config,
-and runs what a config declares from the command line: `matrix plan`, then `matrix run`.
+matrix runs components wired by the kinds of data they exchange, and records every row as the
+run goes. It also composes agents and model calls from config, so they run as components too.
 
-- A **component** declares the kinds of data it requires and the kinds it provides. A **kind**
-  is a type URL (`acme.v1.review`). Nobody draws an edge: a component waits for the provider
-  of each kind it requires. matrix checks that wiring before anything runs, reports every
-  problem at once, starts each component as soon as what it requires is ready, and records
-  every row in a **Construct**, one table per kind.
-- A run is **recorded as it goes**. A component can hand a row over while it is still
-  running, and the row is on disk before that call returns. A run that is killed leaves
-  everything it had recorded, readable, with a status.
-- An **agent** is a definition (prompt, tools, model) bound to an agent runtime: a session
-  with a loop and tools (the Claude Agent SDK; pydantic-ai, whose model calls are made on a
-  model runtime; or a mock). The binding is checked when it is
-  made, and `matrix.v1.agent-step` runs an agent as an ordinary component.
-- A **model call** is one request to one model (its turns, the tools offered, an output type;
-  no loop), on a model runtime. `matrix.v1.model-step` makes one an ordinary component, and
-  records the model that answered, its usage, its request id and the runtime's own record of
-  the call. matrix ships no model runtime that calls a model, and depends on none: one is an
-  extension, as [matrix-hardline](../matrix-hardline/README.md) is (hardline, any model
-  family it has a row for). `matrix.pydantic_ai_model` makes any model runtime a pydantic-ai
-  `Model`.
-- One **registry** holds every extension: agent and model runtimes, components, payload
-  types, observers, stores. matrix's built-ins arrive through the same `matrix.extensions` entry point as
-  anyone else's.
-- One **loader** reads every document matrix reads, and any YAML or markdown document you
-  name a pydantic type for, reporting every problem with its key path and its file.
+## Install
+
+matrix is not on a package index, and `pip install matrix` installs an unrelated project.
+Install it from this repository:
 
 ```bash
-# the library, in a project
-uv add "matrix @ git+https://github.com/mox-labs/gnx@matrix-v0.10.0#subdirectory=components/capabilities/matrix"
-# the matrix command
+# the matrix command, at the release's tag
 uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.10.0#subdirectory=components/capabilities/matrix"
+# the library, in a uv project
+uv add "matrix @ git+https://github.com/mox-labs/gnx@matrix-v0.10.0#subdirectory=components/capabilities/matrix"
 ```
 
-matrix is installed from its repository at the release's tag; it is not on a package index,
-and `pip install matrix` installs an unrelated project. Every runtime and telemetry comes
-with it: the Claude Agent SDK, pydantic-ai, and the OpenTelemetry SDK with its OTLP
-exporters, each imported only when what uses it is built. There are no extras. A model
-runtime that calls a model is installed with the package that registers it:
+From a clone:
 
 ```bash
-uv add "matrix-hardline @ git+https://github.com/mox-labs/gnx@matrix-hardline-v0.1.0#subdirectory=components/capabilities/matrix-hardline"
+git clone https://github.com/mox-labs/gnx && cd gnx
+uv tool install ./components/capabilities/matrix
 ```
 
-Without one, a config that names `matrix-hardline.v1.model-runtime` is refused when it is
-composed (`matrix check`, `matrix plan`), and the fix says what to install.
+Every agent runtime and the telemetry come with it; there are no extras. matrix makes no
+model call by itself: to call models through hardline, install
+[matrix-hardline](../matrix-hardline/README.md#install) beside it.
 
-## Components, wired by kind
+## Terms
+
+| term | what it means here |
+|---|---|
+| **kind** | the type of some data, named by a type URL: `acme.v1.review` |
+| **component** | a class that declares the kinds it `requires` and `provides`, and does its work in an async `run` |
+| **run**, **Construct** | one execution of wired components; its record, one table of rows per kind, written as the run goes |
+| **model runtime** | where one model call is made: one request, one reply, no loop. matrix's own is the `mock` |
+| **agent runtime** | where an agent session runs: a loop of model calls and tool calls. matrix's own: `claude-sdk` (the Claude Agent SDK), `pydantic-ai` (the pydantic-ai library's agent loop, its calls made on a model runtime), `mock` |
+| **extension** | an installed package that registers components, runtimes, stores or observers through the `matrix.extensions` entry point |
+| **config tier** | one of the config files matrix reads, lowest first: `~/.matrix/config.yaml`, then `./matrix.yaml`, and others ([the list](docs/reference/api.md#tiers)) |
+| **skill** | the guide an AI agent reads to use a tool; `matrix --skill` prints matrix's, for the version installed |
+
+## A first run
 
 ```python
 import asyncio
@@ -83,470 +74,68 @@ print(run.rows(SHOUT))  # ('HELLO', 'WORLD')
 print(run.rows(COUNT))  # (10,)
 ```
 
-A component is structural: a class with `requires`, `provides` and an async
-`run(inputs, ctx)` is one, without importing matrix. Its **name** is the name it is given in
-the run, so one class can be used twice.
+Nobody drew an edge: `count` requires what `upper` provides, so it waits for it. Remove
+`Upper` and `wire` refuses before anything runs:
 
-- `inputs` holds the rows of the kinds the component requires, by kind, and nothing else. It
-  never sees the Construct or another component's rows.
-- `run` returns a mapping of kind to one row, or to a list of rows. It may return nothing.
-- matrix holds it to what it declared: a row of a kind it does not provide, or one that fails
-  the kind's schema (when the wiring carries one), is a `ContractError`. A row of a kind with
-  a schema is recorded as an instance of it, so a dict handed over reaches the components
-  that require the kind as that model, on a fresh run and on one that reuses the rows.
-
-`wire` raises one `CompilationError` listing every problem: a required kind that nothing
-provides and that is not a run input, a kind with two providers, a cycle. Each kind has
-exactly one provider; two streams of the same shape are two kinds. The kinds the caller
-supplies when the run starts are declared as `inputs`. A wiring runs any number of times.
-
-## A record that survives the run
-
-```python
-import asyncio
-
-from matrix import Executor, JsonlConstructStore, Limits, wire
-
-TRIAL = "demo.v1.trial"
-
-
-async def one_trial(seq):  # stands for minutes of work
-    await asyncio.sleep(1)
-    return {"ok": True}
-
-
-class Trials:
-    requires = set()
-    provides = {TRIAL}
-
-    async def run(self, inputs, ctx):
-        for seq in range(1000):
-            if ctx.stopping.is_set():
-                break
-            result = await one_trial(seq)
-            ctx.provide(TRIAL, {"seq": seq, **result})  # recorded and on disk, now
-
-
-store = JsonlConstructStore("runs")
-soak = Limits(deadline_s=None)  # a soak run: no deadline (unset, each component has an hour)
-run = asyncio.run(
-    Executor().run(wire({"trials": Trials()}), store=store, run_id="soak-1", limits=soak)
-)
+```
+the components cannot be wired (1 problem):
+  components.count.requires: nothing provides 'demo.v1.shout' and it is not a run input
 ```
 
-`ctx.provide(kind, row)` hands over one row while the component is still running. When it
-returns, the row has been checked against the kind's schema, is part of the run's record, and
-is durable in the store. Kill the process at trial 700 and 700 trials are there:
+## A first config
 
-```python
-store.describe("soak-1")["status"]  # 'interrupted' (it was 'running' while it ran)
-store.load("soak-1").rows(TRIAL)  # the 700 rows
-```
-
-On disk a run is a directory: `run.json`, one JSONL file per kind whose lines are the rows
-themselves (readable with `jq` or DuckDB without matrix), and the `writer.lock` its writer
-holds while it lives. Provenance is one more table,
-the ledger (`matrix.v1.ledger`): which component handed each row over, when, and in what
-order. A ledger entry is written before its row, so a kill can leave an entry with no row but
-never a row nothing accounts for; a reader reports such an entry as torn. Every agent session
-and model call a component runs, a failed one included, is a row of one more table,
-`matrix.v1.session`: whether it failed and why, the runtime, the model that answered, why it
-stopped, usage, ids (the runtime's, and the
-OpenTelemetry trace and span it ended in), fallback and attempts, and a digest of what was
-sent; a failed or cancelled one keeps the task or prompt as sent, in the record only. A step's reply row points at it (`session`), and the ledger entry of every row a
-component hands over names the sessions behind it. `docs/explanation/data-model.md` joins the
-three in DuckDB.
-
-A store that cannot keep the record fails the run (error kind `store`). A value too large to
-be a row (a sample series, a capture) stays where it is and the row carries a
-`matrix.v1.ref` to it.
-
-## Stopping, and cleaning up
-
-A run ends `completed`, `failed` or `cancelled`, and every component in it ends `completed`,
-`stopped`, `failed`, `cancelled`, `skipped` or `reused` (`run.components`). However a component
-comes to be stopped (its deadline passed, another component failed, the caller cancelled, the
-process got SIGTERM or Ctrl-C), it is stopped the same way: `ctx.stopping` is set, it has
-`grace_s` to return what it has, then it is cancelled. What it returns is recorded, and it
-ends `stopped` (`failed` past its deadline): the rows may be partial, so `matrix run --from`
-runs it again rather than reuse them. When the run ends, everything components handed to
-`ctx.defer` is called, last first.
-
-```python
-from matrix import ComponentLimits, Limits, Retry, process
-
-
-class Load:
-    requires = set()
-    provides = {"demo.v1.report"}
-
-    async def run(self, inputs, ctx):
-        server = await process.spawn(ctx, ["my-server", "--port", "8080"])  # its kill is deferred
-        ctx.defer(lambda: print("released"))  # runs on success, failure and cancel alike
-        while not ctx.stopping.is_set():
-            ctx.measure("demo.requests", await poke(), kind="counter")
-        return {"demo.v1.report": "stopped when asked"}
-
-
-limits = Limits(
-    deadline_s=60,  # each component, from when it starts; unset, an hour; None, no deadline
-    on_failure="fast",  # or "isolate": only dependents are skipped
-    retry=Retry(attempts=3, errors=("transient",)),  # rate limits, timeouts, outages
-    components={"soak": ComponentLimits(deadline_s=4 * 3600)},  # None: this one has none
-)
-```
-
-A component past its deadline is stopped through the stop path and fails, and its failure
-names the key that set the deadline (`matrix.limits.deadline_s`, or the component's own
-`matrix.limits.components.<name>.deadline_s`) to raise, or to set to null.
-
-A retry runs a failed component again when its error is transient (or the reason the policy
-names), after a backoff or the `Retry-After` the backend reported, capped. A component that
-already handed rows over is not retried: its rows are part of the record.
-
-A failed run raises `RunError` and a cancelled one `RunCancelled` (a `CancelledError`); both
-carry the partial `Run`, and both are raised only after the components stopped and the
-releases ran. `run.releases` says what became of each release; one that raises or overruns
-`cleanup_s` is reported there and does not stop the others. A component that swallows
-cancellation is abandoned after `cleanup_s` and marked so. `process.spawn` starts a child in
-its own process group and defers killing the group, so a tool that forks leaves nothing
-behind. A component that starts a child per repetition of its work uses `process.start` and
-`process.kill_group` around each one instead, and defers nothing per child.
-
-Two things this cannot do: stop a component that blocks the event loop with synchronous work,
-and run a release after `kill -9` of the run itself. What `kill -9` does not take is the
-record.
-
-## Watching a run
-
-Runs narrate themselves as events (`matrix.run.start`, `matrix.component.end`,
-`matrix.row.append`, ...), and a component adds its own with `ctx.emit`, `ctx.measure` and
-`ctx.span`, under its own root. A run kept by the JSONL store writes them into its record,
-`events.jsonl`, with nothing configured. The built-in observers are `console` (progress on
-stderr), `jsonl` (one JSON document per event, to a file or stderr) and `otel` (spans and
-metrics on the OpenTelemetry GenAI conventions: `invoke_workflow`, `invoke_agent`,
-`execute_tool`). Its spans are current in the task doing the work, so a span a library opens
-inside a component, an agent session or a model call nests under matrix's.
-
-For OpenTelemetry, set the standard variables: an
-`OTEL_EXPORTER_OTLP_ENDPOINT`, or `OTEL_TRACES_EXPORTER=console`, is enough for `matrix run`
-to export. matrix as a library only uses the API and installs no provider: a program calls
-`matrix.configure_telemetry()` once (and `.shutdown()` on what it returns), or configures
-OpenTelemetry itself. Export asked for in an install that lacks the SDK is a warning in every
-`--json` document, never silence. Spans carry no task, tool arguments, error message or component
-text unless the config sets `observers: [{type: otel, capture_content: true}]`.
-
-```python
-from matrix import Executor, default_registry
-
-events = default_registry().create(
-    "observer", "matrix.v1.observer.jsonl", {"path": "run.events.jsonl"}
-)
-run = asyncio.run(Executor([events]).run(wiring, {TEXT: ["hello"]}))  # the wiring above
-```
-
-In config they go under `matrix.observers`, and `compose(...).executor()` has them attached.
-
-Events are telemetry, not data: **lossy by design**. They pass through a bounded queue, so an
-observer that is slow, stuck or broken cannot hold a run up; when the queue is full events are
-dropped and counted (`run.events_dropped`, `events_dropped` in `run.json`, and a
-`matrix.events.dropped` event, which can itself be lost). So `events.jsonl` may be incomplete.
-Read every fact from the `Run` or the store (its tables, `run.json`), never from the stream.
-An observer's optional `around`, entered in the task doing the work, is the one part that
-can slow a run, so it must not block.
-
-## Agents
-
-```python
-import asyncio
-
-from matrix import MatrixConfig, compose
-
-config = MatrixConfig.model_validate(
-    {
-        "agent_runtimes": {"offline": {"type": "mock", "default": '{"verdict": "ok"}'}},
-        "agents": {
-            "reviewer": {"runtime": "offline", "system_prompt": "Review the change."},
-        },
-    }
-)
-container = compose(config)
-
-# An agent on its own.
-response = asyncio.run(container.agent("reviewer").run("Review: rename x to y"))
-print(response.content, response.stop, response.family)  # {"verdict": "ok"} completed mock
-
-# The same agent as a component, through matrix.v1.agent-step.
-wiring = container.wire(
-    [
-        {
-            "name": "review",
-            "type": "matrix.v1.agent-step",
-            "config": {
-                "agent": "reviewer",
-                "inputs": {"diff": "acme.v1.diff"},  # it requires acme.v1.diff
-                "task": "Review this change:\n{diff}",
-                "output": "acme.v1.review",  # and provides acme.v1.review
-            },
-        }
-    ],
-    inputs=["acme.v1.diff"],
-)
-run = asyncio.run(container.executor().run(wiring, {"acme.v1.diff": "- x\n+ y"}))
-print(run.rows("acme.v1.review"))  # ({'verdict': 'ok'},)
-```
-
-`Container.wire` takes a list of `{name, type, config}` entries, builds each through the
-registry, and wires them. In a project the list, like the rest of the composition, usually
-comes from `./matrix.yaml` (or the `matrix:` section of any tool's config), read by
-`load_config`:
+A config (`matrix.yaml`) declares a run: its runtimes, its components, the kinds it takes as
+input. It names each component by type URL. matrix's own are `matrix.v1.model-step` and
+`matrix.v1.agent-step`; one you wrote must first be packaged as an extension and installed
+([the guide](docs/guide.md#your-own-component-in-a-config)). This one makes one model call on the `mock` model runtime, which replies from config,
+so it runs with no model server and no key:
 
 ```yaml
 matrix:
-  definitions: [agents/]                 # *.md agent files, Claude Code format
-  model_runtimes:                        # one model call each; matrix-hardline installed
-    local:
-      type: matrix-hardline.v1.model-runtime
-      models:                            # its own registry; unset, hardline's own tiers
-        default: qwen3-8b
-        models:
-          qwen3-8b: {backend: openai-compat, base_url: "http://127.0.0.1:8080/v1",
-                     model: mlx-community/Qwen3-8B-4bit, family: qwen, local: true}
-  agent_runtimes:                        # sessions, with a loop and tools
-    sdk:     {type: claude-sdk, permission_mode: default, setting_sources: []}
-    loop:    {type: pydantic-ai, model_runtime: local,      # its calls are made on `local`
-              tools: {lookup: acme.tools:lookup}}           # module:function
-    offline: {type: mock}
-  observers:                             # optional
-    - console
-    - {type: jsonl, path: runs/events.jsonl}
-  agents:
-    reviewer: {runtime: sdk}                                    # agents/reviewer.md
-    greeter:  {runtime: offline, system_prompt: "Say hello."}   # fully inline
-  inputs: [acme.v1.diff]                 # the kinds whoever runs this supplies
-  components:                            # wired by what they require and provide
-    - name: review
-      type: matrix.v1.agent-step
-      config: {agent: reviewer, inputs: {diff: acme.v1.diff}, output: acme.v1.review}
-    - name: triage                       # one call, no tools
+  model_runtimes:
+    offline: {type: mock, default: "no"}   # a stand-in: replies from config, no server
+  inputs: [acme.v1.diff]
+  components:
+    - name: triage
       type: matrix.v1.model-step
-      config: {runtime: local, model: qwen3-8b, inputs: {diff: acme.v1.diff},
-               prompt: "Is this change risky? Answer yes or no.\n{diff}"}
+      config:
+        runtime: offline
+        inputs: {diff: acme.v1.diff}
+        prompt: "Is this change risky? Answer yes or no.\n{diff}"
 ```
-
-`container.wire()` with no arguments wires what the config lists.
-
-Two steps in one run each name their own `response` kind: a kind has one provider, and each
-default (`matrix.v1.agent-response`, `matrix.v1.model-call`) serves one step. An agent step
-with `output` needs the reply to be one JSON document, so say so in the agent's prompt or the
-task; a model step asks its runtime for the kind's registered schema when there is one. An
-agent's `model` is its runtime's to read: on `claude-sdk` an alias (`haiku`, `sonnet`,
-`opus`) or a full model id, on `pydantic-ai` a name its model runtime resolves, and the reply records
-the model that answered, which may not be the one asked for. An agent's reply is its session's final result; what it wrote along the
-way is the reply's `transcript`. A model step's `model` is a name its model runtime resolves,
-checked when the step is built. A model step never provides a reply that is not a whole answer: one cut at
-`max_tokens`, refused, withheld or empty fails the step, naming its `finish_reason`. The `mock` runtimes are stand-ins (`stand_in` in the catalog and the
-plan); the agent one replies by the whole task as sent (`responses`), then by agent name
-(`by_agent`), then `default` (`matrix --skill -r agents` has the detail).
-
-Each runtime refuses what it cannot play before anything runs (`matrix check` and `matrix
-plan` say so), with the fix: an agent bound
-to a model runtime (a call has no loop), a model name its model runtime cannot resolve, a
-`claude-sdk` agent whose tools leave out `Skill` when the runtime gives it skills, an option
-the installed SDK lacks, a `pydantic-ai` agent that names a tool its runtime does not have or
-is given tools on a model its model runtime cannot offer them to, a pydantic-ai setting a
-model call cannot carry. Nothing is quietly downgraded or dropped.
-
-### The `pydantic-ai` agent runtime
-
-A session is pydantic-ai's agent loop, and every model call in it is one call on the model
-runtime its `model_runtime` names, through matrix's `ModelRuntime` port: the session runs on
-whatever that runtime resolves a name to, with its retries, fallbacks, record and telemetry.
-The port carries `max_tokens` and `temperature`; any other pydantic-ai setting is refused,
-never dropped. The runtime's `tools` are Python
-functions named `module:function`: each module is found when the runtime is built, without
-running it, and imported when a session first offers the tool. A module whose import fails
-fails that session and every later one that offers the tool, without being imported again.
-Naming a tool in config is a grant to run that code with the process's authority (owner
-ruling 2026-10-22; [SECURITY.md](SECURITY.md)). A function's typed parameters and docstring are what the model is told of it. An agent's `tools` choose from them
-(unset: all of them; `[]`: none), and `max_turns` bounds its model calls: a session that
-reaches it ends with `stop: max_turns`. Its reply is the run's output; its session row names
-the model that answered last, its finish reason, the usage summed over every call and
-pydantic-ai's run id. Its tokens are counted once, by its model runtime, which counts every
-call it makes; composition knows (the runtime needs `model_runtimes`), and matrix counts none
-of them. pydantic-ai's own instrumentation is switched off on every agent, so it records no
-prompt or reply (`docs/design/2026-10-19-record.md` §18).
-
-## Extending
-
-An extension is a package with entry points in the `matrix.extensions` group: each entry
-point's name is a point its extension registers at, and its value the extension's
-`register(registry) -> None`. A session loads only the extensions that declare a point it
-reads, so a package that registers only collectors is never imported to plan a run:
-
-```toml
-[project.entry-points."matrix.extensions"]
-component = "acme.matrix_ext:register"
-payload-type = "acme.matrix_ext:register"
-```
-
-```python
-def register(registry):
-    registry.register(
-        "component",
-        "acme.v1.scorer",
-        Scorer,  # called as Scorer(validated_config, **needs)
-        config=ScorerConfig,  # a pydantic model the config is validated against
-        summary="Scores a diff by length",
-        stability="experimental",
-    )
-    registry.register_payload("acme.v1.review", Review)  # rows of this kind are validated
-```
-
-The [API reference](docs/reference/api.md#the-registry) has the complete extension, with
-`Scorer`, its config and the `Review` payload. An extension that fails to import or register
-is quarantined: its entries are dropped, the failure is recorded, and the others load. So is
-one that registers at a point its entry points do not name, the message saying which line to
-add. A
-package owns the type URLs under its own name (`acme`
-owns `acme.*`): when two extensions register the same type URL, the owner keeps it and the
-other is quarantined, so nothing can replace a built-in by loading first.
-
-A runtime, store or observer is held to its point's port when it is registered and when it
-is built. What only some implementations do is a protocol of its own (`SupportsWarnings`,
-`SupportsAclose`, `SupportsLocation`, `SupportsAround`, ...), which matrix checks with
-`isinstance`, so nothing is found by its name. `matrix.testing` has a conformance suite for
-each port; run the one for yours:
-
-```python
-from matrix.testing import ConstructStoreConformance
-
-
-class TestMyStore(ConstructStoreConformance):
-    def store(self):
-        return MyStore()
-```
-
-## Running a config
-
-The config declares a run: its `components`, its `inputs`, where it is recorded (`store`,
-default JSONL under `.matrix/runs`) and its `limits` (deadlines, concurrency, retries).
-Plan it, then run it:
 
 ```bash
-matrix plan --json                                  # order of work, agents, calls; runs nothing
-matrix run --input acme.v1.diff=diffs.jsonl --json  # one JSON row a line; - is standard input
-matrix runs                                         # every recorded run: id, status, start, where
-matrix run --from 20261019T101500Z-3f2a             # its inputs, reusing what completed unchanged
-matrix plan live.yaml --only                        # one config on its own, none of the tiers
-matrix run live.yaml --only --input acme.v1.diff=diffs.jsonl  # recorded in its store, .matrix/runs by default
+printf '%s\n' '"- x\n+ y"' > diffs.jsonl         # one JSON row a line
+matrix check                                        # composes and wires; calls nothing
+matrix plan                                         # the order of work, and every setting with who set it
+matrix run --input acme.v1.diff=diffs.jsonl
 ```
 
-`plan` composes and wires and reports every problem at once, each with its key path and the
-file that set it, and how many agent sessions and model calls a run makes
-(`agent_calls_min`, `agent_calls_max`, `model_calls_min`, `model_calls_max`; a maximum is
-null when a component other than an agent or a model step needs `agents` or
-`model_runtimes`, and so may make sessions of its own). Its `settings` are the effective
-value of every key the run is made from, each with who set it: a config file (named), an
-agent definition, an extension's own default, or matrix's. A default is listed as one, so a
-plan of a config that sets no `deadline_s` shows matrix's hour for each component, and one
-that writes `deadline_s: null` says the run has no deadline. matrix states no cost and keeps no spending ceiling: a run's cost is not
-something it can measure, so it does not pretend to. The per-call token cap stays (owner ruling
-2026-10-22): `max_tokens` bounds each reply, not a run's cost. `run` prints the run id, where the record is, and its
-files: `run.json`, one `<kind>.jsonl` per kind (an agent step's reply row carries the task as
-sent, a model step's the prompt), `matrix.v1.session.jsonl`, `matrix.v1.ledger.jsonl` and
-`events.jsonl` (telemetry: lossy, never the result). Each session row keeps its tokens, and the cost the runtime reported when it
-reported one (`cost_usd`), as facts of that session. From
-Python it is `compose(load_config()).run(inputs)`, and
-`plan_config(tool="matrix", config=None, *, only=False)` the plan: the first argument is the
-tool, a path goes in `config`.
-
-## Loading documents as your own types
-
-```python
-from typing import Annotated
-
-from pydantic import BaseModel, Field
-
-import matrix
-
-
-class Probe(BaseModel):
-    id: str
-    prompt: str = Field("", alias="body")  # a markdown file's text arrives as `body`
-
-
-class Experiment(BaseModel):
-    name: str
-    probes: Annotated[str, matrix.BesideFile()]  # a relative path is read from beside the file
-
-
-experiment = matrix.load(Experiment, "lab/experiment.yaml")
-probes = matrix.load_each(Probe, experiment.probes, key="id", name_from_file=True)
+```
+run 20261107T211803Z-c76c completed: .matrix/runs/20261107T211803Z-c76c
+  run.json                    the run: status, how each component ended, failures
+  acme.v1.diff.jsonl          1 row of acme.v1.diff
+  matrix.v1.model-call.jsonl  1 row of matrix.v1.model-call
+  matrix.v1.session.jsonl     1 row of matrix.v1.session
+  …
 ```
 
-A YAML file is its mapping; a markdown file is its frontmatter with its text under `body`; a
-folder is one document per file, in name order, a name defined twice refused. Every problem
-in every file arrives at once, as `matrix.Problem` records (`path`, `kind`, `message`, `fix`,
-`allowed`, `got`, `source`) in one `ConfigError`. `load_config` reads the config tiers the
-same way.
+The step makes one call for the run, every row of `acme.v1.diff` rendered into its prompt
+(one call per row is a component of your own: [the guide](docs/guide.md#one-call-per-row)).
+`check` and `plan` call nothing, so they need no model server either.
+[Model calls](docs/guide.md#model-calls) swaps the mock for a local model, and
+[running a config](docs/guide.md#running-a-config) names a config other than `./matrix.yaml`.
 
-## The `matrix` command
+## Next
 
-```bash
-matrix --skill [-r NAME]                      # the skill an agent reads, or one of its references
-matrix catalog [--point P] [--json]           # every registered extension, and any that failed
-matrix describe TYPE_URL [--json]             # config schema, needs, origin
-matrix config [CONFIG]... [--sources] [--json]  # the merged config and the files it came from
-matrix check [CONFIG]... [--json]           # compose runtimes and agents, wire the components; call nothing
-matrix agents [CONFIG]... [--json]          # the agents a config defines
-matrix plan [CONFIG]... [--json]            # what a run would do; runs nothing
-matrix run [CONFIG]... [--input KIND=PATH]... [--run-id ID] [--from RUN_ID] [--json]
-matrix runs [CONFIG]... [--json]            # the recorded runs, oldest first
-```
-
-Each reads the tiers of `--tool T` (default `matrix`) with each `CONFIG` above them, in order
-(`-` is standard input); `--only` reads the `CONFIG` files alone. Mappings merge across tiers
-and `definitions` directories accumulate, so a second config read on top of a project's
-shares its runtimes, agents and definitions; `--only` keeps it to itself. Exit codes, as the capability tools agree: 0 ok, 1 a bug in matrix, 2 usage,
-3 config, 4 not found, 5 transient, 6 auth, 8 a run failed, 9 store, 130 interrupted.
-`matrix --help` lists each with what to do next. Under `--json` a failure is one
-`matrix.v1.error` envelope on stderr, its problems structured.
-
-## What is promised
-
-One surface is stable: **the component-author contract**, what a component and its
-registration are written against.
-
-- `Component`, `Context` and `Inputs`, as their protocols and `Inputs` declare them;
-  `Attribution`, which `Context.attributed()` gives.
-- The kind grammar (`<namespace>.v<N>.<name>`, checked by `check_type_url`) and the rule that
-  each kind has one provider.
-- `Registry.register` and `Registry.register_payload`, with their options.
-- The `matrix.extensions` entry-point group, whose entries are `register(registry) -> None`.
-- `NEEDS`: the needs marked `stable`, their names and types.
-- The stop protocol: `ctx.stopping`, then `grace_s`, then cancellation; `ctx.defer`, called
-  once at the end of every run, last first.
-- `ContractError`, what breaking that contract raises.
-
-It changes only by addition. A break needs a major release, or, before 1.0, a minor release
-whose changelog says so and that carries the migration of every consumer in this repository.
-`tests/test_contract.py` pins each of these, so a change to one is deliberate.
-[CONTRACT.md](CONTRACT.md) states each.
-
-Everything else exported from `matrix` is public and may change in a minor release, said in
-the changelog, when matrix and its consumers in this repository change together: the
-executor and its records, the ports, their optional protocols and their stores, runtimes
-and observers, the conformance suites (`matrix.testing`), the session table, composition and
-config, the loader, the documents the command prints, and telemetry. Names under
-`matrix.domain`, `matrix.adapters` and `matrix.composition` are internal.
-
-## Documentation
-
-| Document | What it covers |
-|----------|----------------|
-| [What is matrix?](docs/explanation/what-is-matrix.md) | The model: components, kinds, wiring, runs, agents, the registry |
-| [The data model](docs/explanation/data-model.md) | Construct, ledger, Run, and how a run is kept on disk |
-| [API reference](docs/reference/api.md) | Every public name, config key, error kind, exit code and CLI command |
-| [SECURITY.md](SECURITY.md) | Agent authority, config as a capability grant, findings |
-| [Design record](docs/design/2026-10-19-record.md) | The judgments behind 0.6.0 and 0.7.0, and matrix's claims, each with its test and evidence |
+| | |
+|---|---|
+| [Overview](docs/explanation/overview.md) | what matrix is for, and what it gives an agent |
+| [Using matrix](docs/guide.md) | the record, stopping, agents, model calls, extensions, the `matrix` command |
+| [How matrix works](docs/explanation/how-matrix-works.md) | the model behind it: kinds, wiring, runs, the two runtime ports, the registry |
+| [The data model](docs/explanation/data-model.md) | the Construct, the ledger and the session table, and how a run is kept on disk |
+| [API reference](docs/reference/api.md) | every public name, config key, error kind, exit code and command |
+| [CONTRACT.md](CONTRACT.md) | what is promised: the component-author contract, and how far each surface is |
+| [SECURITY.md](SECURITY.md) | agent authority, config as a capability grant, findings |
+| [CHANGELOG.md](CHANGELOG.md) | what changed in each release |
+| `matrix --skill` | the guide an agent reads, for the installed version |

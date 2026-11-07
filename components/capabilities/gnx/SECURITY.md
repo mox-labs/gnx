@@ -76,4 +76,5 @@ None. No security-relevant defect was found in gnx during the 2026-08 pass.
 
 ## Reporting
 
-Open an issue on the gnx repository. Pre-gen-0 component; no embargo channel.
+Report a vulnerability privately, through GitHub's private vulnerability reporting: see the
+repository's [SECURITY.md](../../../SECURITY.md). Do not open a public issue for one.

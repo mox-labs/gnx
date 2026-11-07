@@ -177,6 +177,13 @@ class Work(Record):
     #: not say how many)``.
     uncounted: tuple[str, ...] = ()
 
+    @property
+    def stood_in(self) -> tuple[str, ...]:
+        """The entries that may call a model and start none: each is on a stand-in (a mock
+        runtime), so a run held to a registration would measure the harness and exit
+        ``simulated``, never with a verdict."""
+        return tuple(count.entry for count in self.entries if count.total == 0)
+
     def text(self) -> str:
         """The work in one line."""
         if not self.entries and not self.uncounted:

@@ -1,8 +1,20 @@
 # Contributing to gnx
 
-gnx is the open-source component of the mox stack — a registry, a Claude Code
-marketplace, and an agentic CLI for composable components. This file is the
-contract for working in the repo.
+gnx is a set of Python tools and libraries for working with agents (ix, recon, matrix,
+hardline, matrix-hardline, ix-cosmic-ray, dao), the `gnx` CLI that builds its Claude Code
+plugins, and the skills those plugins ship. [README.md](README.md) says what each is. This file
+is the contract for working in the repository; [AGENTS.md](AGENTS.md) is its short form for an
+agent.
+
+## Who reviews, and how to contribute
+
+yzavyas owns the project, reviews every pull request, and merges to `main`. Most changes are
+written by Claude under the owner's rulings ([how gnx is
+built](docs/content/start/2-how-gnx-is-built.md)).
+
+From outside the project, **open an issue first**: describe the problem or the change, and wait
+for a reply before writing a pull request. There are no issue templates, no CLA and no DCO
+sign-off. A vulnerability goes through [SECURITY.md](SECURITY.md), never an issue.
 
 ## Workflow: GitHub Flow
 
@@ -17,10 +29,13 @@ contract for working in the repo.
 Every commit message follows `<type>(<scope>): <description>`:
 
 ```
-docs(start): re-register the Start pages to pragmatics
-feat(cli): scaffold gnx component init
-fix(content): correct the slick manifest field count
+feat(recon): recon 0.16.0 — a crawl that resumes
+fix(gnx): a skill's overview.md stays out of its plugin, like its manifest
+docs(ix): name the child-process selection gap
 ```
+
+The scope is the package or area the change is in. A commit Claude wrote ends with
+`Co-Authored-By: Claude …` and a `Claude-Session:` link to the session.
 
 Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `ci`,
 `build`, `style`, `revert`. The `commit-msg` hook and the CI `commit-lint` job
@@ -33,12 +48,14 @@ and the CI check cannot drift.
 
 ```sh
 just              # list every gate
-just check        # what every commit must pass: the docsite, a staged secret scan,
-                  # the identity grammar, component payloads, the plugin projection,
-                  # and the capability packages' lint and format
-just ci           # the full CI gate: also the capability packages' tests, their strict
-                  # typecheck, each installed alone from its wheel and smoke-tested,
-                  # and the lab
+just check        # what every commit must pass: the docsite, the docs' shape, versions
+                  # and links, a staged secret scan, the identity grammar, component
+                  # payloads, the plugin projection, and the capability packages' lint
+                  # and format
+just ci           # the full CI gate: also the CHANGELOG check, the capability packages'
+                  # tests, their strict typecheck, each installed alone from its wheel and
+                  # smoke-tested, and the lab
+just docs-sync    # the docs gate alone (below)
 just lab          # validate and plan the lab's experiments; nothing is run
 ```
 
@@ -65,6 +82,50 @@ conftest.py's `EXPECTED_SKIPS` does not name: a test that cannot run here is eit
 run or named there with why. So it fails on a machine without `k6` on `PATH`, or without a
 docker daemon running with `alpine:3.20` pulled: ix's end-to-end k6 tests and its live
 compose test need them (see Tools).
+
+## Docs ship with the code
+
+Each component owns its docs, in its own directory, so they change in the same commit as its
+code.
+
+| File | What it holds |
+|---|---|
+| `README.md` | the entry: what it is, install, a first run, where next |
+| `docs/explanation/overview.md` | the explanation the docsite renders at `/components/<name>`; a skill's or an agent's sits beside its `SKILL.md` or `agent.md` as `overview.md` |
+| `CHANGELOG.md` | what changed and why, per release |
+
+An overview opens with front matter: `title` (the component's directory name), `summary` (one
+sentence) and `kind` (`capability`, `skill`, `agent` or `plugin`). Its `##` sections are these,
+in order: What it is, The problem, How it works, Try it, What it gives an agent, What it does
+not do, Next. It is written to [docs/VOICE.md](docs/VOICE.md).
+
+`just docs-sync` holds all of this. Each problem it prints names the file, what is wrong, and
+the fix.
+
+| Check | Fails when |
+|---|---|
+| overviews | a component under `components/` has no overview, or one out of shape; `incubator/` is exempt |
+| versions | an install line's `gnx@<pkg>-v<version>` tag is not that package's `pyproject.toml` version |
+| links | a relative link, or its `#anchor`, does not resolve in a README, CONTRIBUTING or SECURITY file, or a page under `docs/content/` or `components/` |
+| changelog | a package's surface changed since the merge-base with `origin/main`, and its `CHANGELOG.md` did not |
+
+A package's surface is its `CONTRACT.md`, the tests that pin it (those its `CONTRACT.md` cites,
+and any `test_*contract*`, `test_*layering*`, `test_extension*` or `test_surface*`), and the
+skill text `<tool> --skill` prints. CHANGELOGs and `docs/design/` records are history and are
+not read.
+
+`just check` runs the first three. The changelog check reads the branch's commits, which a
+pre-commit hook has not got yet, so `just ci` runs it; set `DOCS_SYNC_BASE` to compare with a
+branch other than `origin/main`.
+
+When a surface change needs no entry, say why in a `Docs-Unchanged:` trailer on any commit in
+the branch, with the message's other trailers. The gate prints each one it honours.
+
+```
+test(ix): name the layering test's fixture
+
+Docs-Unchanged: renames a helper in a pinned test; no guarantee moved
+```
 
 ## One-time setup: wire the hooks
 

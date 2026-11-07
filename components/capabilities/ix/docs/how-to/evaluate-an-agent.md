@@ -190,8 +190,12 @@ Requires:     yes  the files the session names are there (fixtures, skills, plug
 ```
 
 The control also runs against itself in every block (the A/A check), so the trials are 60,
-not 40: 60 sessions, each a call to a paid model on `claude-sdk`. A plan that cannot run here ends with `Runnable: no` and says
-why, with the fix: a runtime that cannot start, a file the subject names that is not there.
+not 40: 60 sessions, each a call to a paid model on `claude-sdk`. `Model calls` says how
+many the run starts at most, as work and never as a price: each agent session (each round of
+a loop), model call and judge's reading counted once however many requests it makes, none on
+a stand-in (`work` in `--json`). A requirement that does not hold here reads `NO` under
+`Requires`, and the plan ends with `Runnable: no` and the fix: a runtime that cannot start, a
+file the subject names that is not there.
 
 `ix validate` also refuses a session its sensors could not see into (`unobservable`): a
 skill whose `tools` leave out the tool the runtime says fires one (claude-sdk's `Skill`),
@@ -247,6 +251,12 @@ neither a verdict nor an indication, and exits 0; `ix runs` lists it as `dry`. T
 reports no cost, so there is no `cost` reading. Its report has no probe screen: canned
 replies read every probe at its floor or ceiling, which says nothing. It replies with text
 only, so a dry run cannot show a skill firing or a tool call.
+
+`examples/harness-integrity` is a dry run as checked in: four probes with canned answers of
+known worth, graded by `function-test` and by `outcome` with the experiment's own graders,
+and its header states the readings it should give. The repository's `lab/catalog-routing`
+asks whether the right skill fires for a real ask and stays quiet for a decoy, with its
+probes as files in `probes/`.
 
 ## 7. A pilot
 
@@ -316,6 +326,42 @@ keeps each trial's prompt, reply, tool calls, each round's transcript, the files
 how the session stopped, and its turns, tokens, cost and duration; `ix.v1.reading.jsonl`
 holds each reading with the sensor's detail. Each interaction names its rows of
 `matrix.v1.session.jsonl` (`sessions`), which hold the model that answered each session.
+
+## Two prompts
+
+To ask which of two system prompts does better, keep everything else the same: two
+subjects that differ only in `system_prompt`, compared with `superiority`. The probes in
+`probes/` are put to both, in an order drawn from the seed, and the control (the first
+subject) also runs against itself as the A/A check.
+
+```yaml
+name: parse-duration-prompts
+question: Does asking for input validation make the agent's parse_duration correct more often?
+genre: compare
+subjects:
+  plain:
+    kind: agent-session
+    runtime: claude-sdk
+    model: haiku
+    tools: []
+    system_prompt: You write Python functions.
+  validating:
+    kind: agent-session
+    runtime: claude-sdk
+    model: haiku
+    tools: []
+    system_prompt: You write Python functions. Validate every input and raise ValueError on bad input.
+primary: {metric: tests_passed}
+comparison: superiority
+metrics: [tests_score, cost]
+```
+
+`system_prompt` is the prompt's text, written inline; it is not read as a path. To keep each
+prompt in a file, name a Claude Code agent file with `definition` instead: its body is the
+system prompt, and its tools, model and `maxTurns` apply unless the options beside it say
+otherwise. A registration digests the definition, so editing the prompt after registering is
+a deviation. A dry run (`ix run <path> --dry-run`) checks the grading as in section 6; which
+prompt is better takes the real runtime.
 
 ## Whether a skill fires
 

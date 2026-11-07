@@ -1,10 +1,10 @@
 # ix's contracts
 
 What each published surface of ix that 0.8 or a later release changed hides, what it consists
-of, its defaults, how it fails, and how far it is promised. The [README](README.md) shows each
-in use; this file is what a change to one of them must keep. The surfaces none of them changed
-(the experiment file, the report and the run's tables) are described in the README and are not
-repeated here; a surface snapshot test of the whole package comes once its
+of, its defaults, how it fails, and how far it is promised. The [README](README.md) and the
+[how-to pages](docs/index.md#how-to) show each in use; this file is what a change to one of them
+must keep. The surfaces none of them changed (the experiment file, the report and the run's
+tables) are described in the [reference pages](docs/index.md#reference) and are not repeated here; a surface snapshot test of the whole package comes once its
 refactor is done.
 
 Stability is one of two words. **Stable**: changes only by addition; a break needs a major
@@ -420,5 +420,5 @@ report again), and its standard error is appended to `<runs directory>/<run id>.
 - `stop` on a run that has ended does nothing; on a process it may not signal, `config`. A
   run still releasing after `STOP_WAIT_S` is returned `running`: ask again.
 - What a SIGKILLed run started (a subject, a probe) is not released: as for a run in the
-  foreground, nothing reaps it later (README, Not built).
+  foreground, nothing reaps it later ([Not built](docs/reference/runs.md#not-built)).
 

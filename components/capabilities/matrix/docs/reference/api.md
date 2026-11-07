@@ -1106,55 +1106,8 @@ Matrix's own entries:
 | `store` | `matrix.v1.store.jsonl` | |
 | `store` | `matrix.v1.store.memory` | |
 
-A third-party extension, one entry point per point it registers at:
-
-```toml
-[project.entry-points."matrix.extensions"]
-component = "acme.matrix_ext:register"
-payload-type = "acme.matrix_ext:register"
-```
-
-```python
-from pydantic import BaseModel, ConfigDict
-
-
-class Review(BaseModel):
-    """A review verdict."""
-
-    verdict: str
-    score: int
-
-
-class ScorerConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")  # an unknown key is refused, by its path
-
-    threshold: int = 3
-
-
-class Scorer:
-    requires = {"acme.v1.diff"}
-    provides = {"acme.v1.review"}
-
-    def __init__(self, config: ScorerConfig) -> None:
-        self.threshold = config.threshold
-
-    async def run(self, inputs, ctx):
-        n = len(inputs.one("acme.v1.diff"))
-        verdict = "ok" if n < self.threshold else "long"
-        return {"acme.v1.review": {"verdict": verdict, "score": n}}
-
-
-def register(registry):
-    registry.register(
-        "component",
-        "acme.v1.scorer",
-        Scorer,
-        config=ScorerConfig,
-        summary="Scores a diff by length",
-        stability="experimental",
-    )
-    registry.register_payload("acme.v1.review", Review)
-```
+A third-party extension, whole: its `pyproject.toml`, its `register`, installed and named in
+a config, is the guide's [your own component in a config](../guide.md#your-own-component-in-a-config).
 
 ### Optional members
 

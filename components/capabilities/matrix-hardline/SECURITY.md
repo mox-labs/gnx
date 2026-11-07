@@ -25,3 +25,8 @@ hardline's record of a call (`hardline.v1.call`) and what a failed call carried
 and where each of its values came from, the turns' digest. No prompt or reply text is in
 either document; the session row keeps a failed call's prompt as matrix keeps it, in the local
 record only.
+
+## Reporting
+
+Report a vulnerability as the repository's [SECURITY.md](../../../SECURITY.md) says. It
+covers every package in this repository, this one included.

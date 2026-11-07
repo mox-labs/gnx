@@ -536,6 +536,20 @@ class TestDryRun:
         assert result.exit_code == 0
         assert "hello" in result.stdout and "nothing was fetched" in result.stdout
 
+    def test_human_plan_ends_with_the_runs_and_its_summary(self, project: Path) -> None:
+        """Every setting and its origin is shown, as a table before the runs, so what will
+        run and the summary line are the end of the output, not buried under the defaults."""
+        _mission(project, "m", OK_CONFIG)
+        result = _invoke("survey", "m", "-n")
+        assert result.exit_code == 0
+        lines = result.stdout.splitlines()
+        settings = next(i for i, line in enumerate(lines) if "each value and its origin" in line)
+        plan = next(i for i, line in enumerate(lines) if "recon survey m: plan" in line)
+        retain = next(i for i, line in enumerate(lines) if "collectors.0.retain" in line)
+        assert settings < retain < plan
+        assert "recon" in lines[retain] and "no archive is removed" in lines[retain]
+        assert "nothing was fetched" in lines[-1]
+
 
 # --- status ---------------------------------------------------------------------------
 
@@ -1128,6 +1142,15 @@ class TestTemplatesAndInit:
         third.write_text(yaml.safe_dump({"collectors": [{"name": "x", "type": "cli", "run": ":"}]}))
         assert "Replaced:" in _invoke("init", "m", "-c", str(third), "--replace").stderr
         assert "Unchanged:" in _invoke("init", "m", "-c", str(third)).stderr
+
+    def test_init_says_edit_only_for_a_template(self, project: Path) -> None:
+        """Regression: init -c said "Edit it, then: ..." of a config the caller wrote, which
+        has no placeholders to set; a template does."""
+        cfg = project / "mission.yaml"
+        cfg.write_text(yaml.safe_dump(OK_CONFIG))
+        given = _invoke("init", "m", "-c", str(cfg)).stderr
+        assert "Next: recon survey m --dry-run" in given and "Edit it" not in given
+        assert "Edit it, then: recon survey t --dry-run" in _invoke("init", "t").stderr
 
     def test_init_takes_a_template_or_a_config_not_both(self, project: Path) -> None:
         cfg = project / "mission.yaml"

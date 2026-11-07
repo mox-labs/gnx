@@ -5,15 +5,26 @@
 
 ix measures whether a test suite fails when the code is wrong, as an estimate over sampled
 mutants (the `mutation-score` and `mutation-regress` genres). It makes no mutant itself: a mutant
-source does, at ix's `ix.mutant-source` extension point. This package is one. Install it beside
-ix, and `ix mutants sample` draws its mutants from cosmic-ray's operators:
+source does, at ix's `ix.mutant-source` extension point. This package is one.
+
+## Install
+
+Install it beside ix, and `ix mutants sample` draws its mutants from cosmic-ray's operators.
+With `uv tool install`, run ix's install again with `--with`:
 
 ```sh
 uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.9.0#subdirectory=components/capabilities/ix" --with "git+https://github.com/mox-labs/gnx@ix-cosmic-ray-v0.1.0#subdirectory=components/capabilities/ix-cosmic-ray"
-ix mutants sample lab/mutation/recon-items --n 100 --seed 1
 ```
 
-It is on no package index: a package named `ix-cosmic-ray` there is not this one.
+It is on no package index: a package named `ix-cosmic-ray` there is not this one. From a
+clone, the capabilities workspace has it with ix:
+
+```sh
+uv --project components/capabilities run ix mutants sample <experiment> --n 100 --seed 1
+```
+
+[Testing a test suite](../ix/docs/how-to/test-a-test-suite.md) walks through a first run on
+a small package, offline, and reading its survivors.
 
 cosmic-ray is used as a generator library only: its operators say where they can change a file,
 and `mutate_code` makes one mutant as text. Its `init`, its work database, its runner and its
@@ -42,5 +53,11 @@ change only a type annotation.
 itself does. Nothing defines that name in the code under test, so the handler raises `NameError`
 when an exception reaches it.
 
-[CONTRACT.md](CONTRACT.md) states what each surface hides, its defaults and its failures;
-[CHANGELOG.md](CHANGELOG.md) what changed; [SECURITY.md](SECURITY.md) what it runs.
+## Next
+
+| Page | For |
+|---|---|
+| [What ix-cosmic-ray is](docs/explanation/overview.md) | the mental model, and what it gives an agent |
+| [Testing a test suite](../ix/docs/how-to/test-a-test-suite.md) | the flow, from sampling to the survivors |
+| [CONTRACT.md](CONTRACT.md) | what each surface hides, its defaults and its failures |
+| [CHANGELOG.md](CHANGELOG.md), [SECURITY.md](SECURITY.md) | what changed; what it runs |

@@ -9,6 +9,10 @@ release, or, before 1.0, a minor release whose changelog says so and that migrat
 consumer in this repository in the same change. **Public**: may change in a minor release,
 said in the changelog, when matrix and its consumers in this repository change together.
 
+One surface is stable: the component-author contract, below. Everything else exported from
+`matrix` is public. Names under `matrix.domain`, `matrix.adapters` and `matrix.composition`
+are internal.
+
 ## The component-author contract
 
 **Stability: stable.** Pinned by `tests/test_contract.py`.

@@ -260,8 +260,8 @@ class _CountingStore(JsonlConstructStore):
 
 
 class TestWhatCallersRelyOn:
-    """The observable behaviours README's "What a caller may rely on" lists as contract,
-    pinned. The exit kinds and codes are pinned in ``test_ix_cli.py``
+    """The observable behaviours the library reference's "What a caller may rely on" lists as
+    contract, pinned. The exit kinds and codes are pinned in ``test_ix_cli.py``
     (``test_the_agreed_kinds_keep_their_agreed_codes``,
     ``test_the_exit_codes_of_a_run_are_in_the_one_table``). The progress events are checked
     here, and the span names in ``test_agent_runs.py::TestTelemetry``, as what ix does now:
@@ -270,12 +270,15 @@ class TestWhatCallersRelyOn:
     def test_telemetry_names_are_listed_as_not_contract(self) -> None:
         """Changed requirement (owner ruling 2026-10-22): span names, event names, their
         attributes and fields, and metric names are telemetry, not contract. The README's
-        table said span names and the progress events' names and fields were."""
-        readme = (Path(ix.__file__).parents[2] / "README.md").read_text(encoding="utf-8")
-        start = readme.index("### What a caller may rely on")
+        table (now the library reference's) said span names and the progress events' names
+        and fields were."""
+        library = Path(ix.__file__).parents[2] / "docs" / "reference" / "library.md"
+        readme = library.read_text(encoding="utf-8")
+        start = readme.index("## What a caller may rely on")
+        end = readme.find("\n## ", start + 1)
         rows = [
             [cell.strip() for cell in line.strip("|").split("|")]
-            for line in readme[start : readme.index("## Output", start)].splitlines()
+            for line in readme[start : end if end >= 0 else None].splitlines()
             if line.startswith("| ") and not line.startswith("| behaviour")
         ]
         telemetry = [row for row in rows if "span" in row[0] or "on_event" in row[0]]

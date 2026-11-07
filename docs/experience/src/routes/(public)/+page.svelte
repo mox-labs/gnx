@@ -10,15 +10,17 @@
 </script>
 
 <svelte:head>
-	<title>gnx — a mech suit for agents</title>
+	<title>gnx: components that make agents more effective</title>
 	<meta
 		name="description"
-		content="A component registry, Claude Code marketplace, and CLI of composable components. Your agent composes capability from the catalog; you govern what it composes from."
+		content="gnx: components that make agents more effective, and their work inspectable. Python packages installed with uv (hardline, matrix, ix, recon, dao) and skills installed into Claude Code as plugins."
 	/>
 </svelte:head>
 
 <LandingComposition>
-	{#snippet north()}<BrandHero />{/snippet}
+	{#snippet north()}<BrandHero
+			tagline="components that make agents more effective, and their work inspectable"
+		/>{/snippet}
 	{#snippet west()}<Philosophy />{/snippet}
 	{#snippet center()}<Sigil maxSize="clamp(180px, 30vh, 300px)" genesis />{/snippet}
 	{#snippet east()}<NavigationCTA />{/snippet}

@@ -27,7 +27,9 @@ holds or there is none to give, and a code of its own for ``fails``, ``inconclus
 interrupted run, a failed one, one that is still running, one whose experiment had changed
 since its registration (``deviations``), and a registered run a stand-in answered
 (``simulated``): neither of the last two is ever 0, so no gate passes on it.
-``exit`` is the same with what it means and what to do next, as :data:`EXIT_NEXT` says.
+``exit`` is the same with what it means and what to do next, as :data:`EXIT_NEXT` says;
+for a report that exits 0, the next step is the report's own (:func:`next_step`): what a
+holding verdict, an indication, a dry run, or a genre that gives estimates calls for.
 """
 
 from __future__ import annotations
@@ -56,6 +58,9 @@ if TYPE_CHECKING:
 
 #: What a dry run's report says in place of a verdict.
 DRY_RUN = "Dry run on mock replies: checks the harness, not the agent"
+
+#: The sensor of mutation testing: a run that used it is read by ``ix mutants read``.
+MUTANT_KILL = "ix.v1.sensor.mutant-kill"
 
 
 class TrialCounts(Record):
@@ -167,6 +172,9 @@ class Report(Record):
     started_at: str = ""
     ended_at: str = ""
     ix_version: str = ""
+    #: What to do next when the report exits 0 (:func:`next_step`); ``exit.next`` carries
+    #: it, so it is not written on its own. Empty: :data:`EXIT_NEXT`'s.
+    next_step: str = Field(default="", exclude=True)
 
     @property
     def exit_kind(self) -> str:
@@ -196,9 +204,40 @@ class Report(Record):
     def exit(self) -> Exit:
         """The exit code, what it means and what to do next."""
         kind = self.exit_kind
-        return Exit(
-            code=EXIT_CODES[kind], kind=kind, meaning=EXIT_MEANINGS[kind], next=EXIT_NEXT[kind]
+        step = self.next_step if kind == "ok" and self.next_step else EXIT_NEXT[kind]
+        return Exit(code=EXIT_CODES[kind], kind=kind, meaning=EXIT_MEANINGS[kind], next=step)
+
+
+def next_step(design: Design, *, verdict: Outcome | None, stood_in: bool) -> str:
+    """What to do after a report that exits 0, by what it gave: a genre that gives estimates
+    (a mutation run's survivors are read with ``ix mutants read``), a dry run, an indication,
+    or a verdict that holds. ``<path>`` is the experiment and ``<run directory>`` the run, as
+    in :data:`EXIT_NEXT`."""
+    if design.verdict_form == "none":
+        if any(sensor.kind == MUTANT_KILL for sensor in design.sensors):
+            return (
+                "this genre gives estimates, not a verdict: `ix mutants read <run directory>` "
+                "names each survivor and the tests to strengthen"
+            )
+        return (
+            "this genre gives estimates, not a verdict: read each estimate with its "
+            "interval; `ix report <run directory>` prints them again"
         )
+    if stood_in:
+        return (
+            "this checked the harness on canned replies: if each estimate is the grade its "
+            "reply should get, pilot on the real runtime (`ix run <path> --exploratory "
+            "--repeats N`), then `ix register <path>` and `ix run <path>` for a verdict"
+        )
+    if verdict is None:
+        return (
+            "this is an indication, not a verdict: `ix register <path>`, then `ix run <path>` "
+            "for one"
+        )
+    return (
+        "the claim holds as registered: act on it within what the findings and the warrant "
+        "state; `ix report <run directory>` prints it again"
+    )
 
 
 def design_of(record: RunRecord) -> Design:
@@ -315,6 +354,7 @@ def report(
         started_at=manifest.started_at,
         ended_at=record.ended_at,
         ix_version=manifest.ix_version,
+        next_step=next_step(design, verdict=verdict, stood_in=bool(stood_in)),
     )
 
 

@@ -2,7 +2,7 @@
 
 All notable changes to matrix. Versions follow semver; before 1.0 a minor may break.
 
-## 0.10.0 — 2026-11-06
+## 0.10.0 — 2026-11-07
 
 matrix depends on no model runtime (owner ruling HO1, 2026-11-06), and the model-runtime port
 is one call in full. Each entry compares with 0.9.0. The hardline model runtime moves to a
@@ -112,6 +112,30 @@ bridge distribution of its own, `matrix-hardline` 0.1.0.
   declares nothing and is trusted.
 - New exports: `Turn`, `Role`, `ToolSpec`, `ToolCall`, `Use`, `pydantic_ai_model`,
   `MATRIX_POINTS`, `ModelRuntimes`.
+
+### Fixed
+
+- **pydantic-ai's first-run banner no longer lands in a run's output.** pydantic-ai 2.6x prints
+  an advert on a terminal's stderr for an agent run it cannot attribute to an installed
+  package, which a session started through the executor's tasks is not, so `matrix run --json`
+  carried it. The `pydantic-ai` runtime sets `pydantic_ai.BANNER_ENABLED = False`, the flag
+  pydantic-ai gives a library that runs agents on its users' behalf, when a session starts.
+- **The fix for a missing model runtime names where to install it.** It said `pip install
+  matrix-hardline`, a name on no index this project publishes to; it names the repository.
+
+### Documentation
+
+- The README is the entry: install, terms, a first run, a first config. The rest is
+  `docs/guide.md`, now with the whole path from a component you wrote to a config that names
+  it, and model calls on the mock, ollama and hardline. `docs/explanation/overview.md` says
+  what matrix is for; `what-is-matrix.md` is `how-matrix-works.md`. The promised surface is
+  stated once, in `CONTRACT.md`.
+- The guide says that a row of a kind with a payload type reaches a component as that
+  model's instance (a field is `review.verdict`, never `review["verdict"]`), and its
+  walk-through now has a component that reads one. It adds how to publish an extension (a git
+  tag, `matrix>=0.10,<0.11` with matrix's source in `[tool.uv.sources]`), says that a model or
+  agent step makes one call for all its rows and how a component makes one per row, and that
+  a config file is named positionally.
 
 ## 0.9.0 — 2026-11-06
 

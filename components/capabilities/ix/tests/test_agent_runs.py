@@ -154,13 +154,18 @@ def _fires(cost: float | None = 0.1) -> Callable[[str], matrix.AgentResponse]:
     return answer
 
 
+# A copy of the example leaves out what running it in place leaves beside it (its run
+# records, bytecode), so a developer who tried the example does not change these tests.
+_RECORDS = shutil.ignore_patterns(".ix", "__pycache__")
+
+
 class TestTheHarnessIntegrityCheck:
     """The earlier ix's sensor-integrity: canned answers through the real sensors on
     matrix's mock runtime, each grade held to what it must be."""
 
     def test_the_canned_answers_grade_as_they_must(self, tmp_path: Path) -> None:
         lab = tmp_path / "harness-integrity"
-        shutil.copytree(EXAMPLE, lab)
+        shutil.copytree(EXAMPLE, lab, ignore=_RECORDS)
         report = Root(settings=_settings()).run(lab, exploratory=True)
         assert report.status == "completed" and report.simulated == "all"
         assert report.verdict is None and report.indication is None
@@ -207,7 +212,7 @@ class TestTheHarnessIntegrityCheck:
         says "holds": a gate reading the exit code passed a run in which nothing under test
         was measured. It is not gated, and it exits ``simulated``."""
         lab = tmp_path / "harness-integrity"
-        shutil.copytree(EXAMPLE, lab)
+        shutil.copytree(EXAMPLE, lab, ignore=_RECORDS)
         root = Root(settings=_settings())
         root.register(lab)
         report = root.run(lab)
@@ -222,7 +227,7 @@ class TestTheHarnessIntegrityCheck:
         """A dry run is asked for, as an exploratory run is: it gives no gate result and
         none was wanted."""
         lab = tmp_path / "harness-integrity"
-        shutil.copytree(EXAMPLE, lab)
+        shutil.copytree(EXAMPLE, lab, ignore=_RECORDS)
         root = Root(settings=_settings())
         root.register(lab)
         report = root.run(lab, dry_run=True)
@@ -540,7 +545,7 @@ class TestAVerdictIsTiedToWhatItJudged:
 
     def test_a_sensors_file_edited_after_registration_is_a_deviation(self, tmp_path: Path) -> None:
         lab = tmp_path / "harness-integrity"
-        shutil.copytree(EXAMPLE, lab)
+        shutil.copytree(EXAMPLE, lab, ignore=_RECORDS)
         root = Root(settings=_settings())
         root.register(lab)
         with (lab / "graders.py").open("a") as file:
@@ -573,7 +578,7 @@ class TestAVerdictIsTiedToWhatItJudged:
         self, tmp_path: Path
     ) -> None:
         lab = tmp_path / "harness-integrity"
-        shutil.copytree(EXAMPLE, lab)
+        shutil.copytree(EXAMPLE, lab, ignore=_RECORDS)
         provenance = Root(settings=_settings()).run(lab, exploratory=True).provenance
         assert provenance is not None
         mock = next(r for r in provenance.runtimes if r.type_url == "matrix.v1.agent-runtime.mock")
@@ -1411,7 +1416,12 @@ class TestADryRun:
         result = CliRunner(env={"COLUMNS": "200"}).invoke(main, ["run", str(lab), "--dry-run"])
         assert result.exit_code == 0, result.output
         assert f"none: {DRY_RUN}" in result.stdout
-        assert "Findings on mock replies (the harness, not the agent)" in result.stdout
+        # Cold read 2026-11-07: a dry run's "fails" read as alarming with no word of what
+        # to compare it with; the heading says to hold each estimate to its canned grade.
+        assert (
+            "Findings on mock replies (the harness, not the agent: hold each estimate to the "
+            "grade its canned reply should get)"
+        ) in result.stdout
         assert "Indication" not in result.stdout
 
 
@@ -1900,9 +1910,9 @@ class TestAVerdictTracesToTheModelThatAnswered:
 
     def test_the_readmes_join_reads_a_readings_model_without_ix(self, tmp_path: Path) -> None:
         duckdb = pytest.importorskip("duckdb")
-        readme = (PACKAGE / "README.md").read_text()
-        found = re.search(r"<!-- reading-to-session -->\s*```sql\n(.*?)```", readme, re.S)
-        assert found, "the README shows the join from a reading to its session"
+        page = (PACKAGE / "docs" / "reference" / "runs.md").read_text()
+        found = re.search(r"<!-- reading-to-session -->\s*```sql\n(.*?)```", page, re.S)
+        assert found, "the record's reference shows the join from a reading to its session"
         report = _judged_calls(tmp_path)
         run = str(Path(report.tables["ix.v1.reading"]).parent)
         rows = duckdb.sql(found.group(1).replace("RUN", run)).fetchall()
@@ -2339,6 +2349,31 @@ class TestTheSecondDrive:
         }  # fmt: skip
         again = runner.invoke(main, ["report", str(lab)])
         assert again.exit_code == 11 and "Exit 11 (inconclusive)" in again.stderr
+
+    def test_a_run_that_exits_0_says_the_next_step_that_run_calls_for(
+        self, tmp_path: Path, commands_on: CommandsOn
+    ) -> None:
+        """Cold read 2026-11-07: every run that exited 0 printed the same next step ("register
+        and run it for one ... `ix report` gives its verdict"), after an indication, a dry run
+        and a verdict that held alike."""
+        root = Root(registry=_registry(_fires()), settings=_settings())
+        commands_on(root)
+        lab = _routing(tmp_path, threshold={"op": ">=", "value": 0.2})
+        runner = CliRunner(env={"COLUMNS": "200"})
+        pilot = runner.invoke(main, ["run", str(lab), "--exploratory"])
+        assert pilot.exit_code == 0, pilot.output
+        assert f"Next: this is an indication, not a verdict: `ix register {lab}`" in pilot.stderr
+        dry = runner.invoke(main, ["run", str(lab), "--dry-run"])
+        assert dry.exit_code == 0, dry.output
+        assert "Next: this checked the harness on canned replies" in dry.stderr
+        root.register(lab)
+        gated = runner.invoke(main, ["run", str(lab), "--json"])
+        document = json.loads(gated.stdout)
+        assert (gated.exit_code, document["verdict"]) == (0, "holds"), gated.output
+        assert document["exit"]["next"].startswith("the claim holds as registered")
+        assert "next_step" not in document  # carried by exit.next alone
+        status = runner.invoke(main, ["status", document["location"], "--json"])
+        assert json.loads(status.stdout)["exit"]["next"] == ix.EXIT_NEXT["ok"]
 
     def test_the_report_says_what_the_evidence_shows_in_plain_words(
         self, tmp_path: Path, commands_on: CommandsOn

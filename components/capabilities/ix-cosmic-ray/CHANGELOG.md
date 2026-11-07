@@ -16,3 +16,8 @@ is the one to install for `ix mutants sample`.
   database, runner and distributors are not used.
 - **The registration imports no cosmic-ray**, so a session that asks only which sources are installed
   (`ix plan`) loads none of its dependencies.
+
+### Documentation
+
+- `docs/explanation/overview.md` explains the source and what it gives an agent; `SECURITY.md`
+  has a Reporting section that points to the repository's private vulnerability reporting.

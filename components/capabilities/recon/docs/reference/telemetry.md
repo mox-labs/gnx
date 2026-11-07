@@ -28,6 +28,8 @@ The `recon` command installs the OpenTelemetry SDK and its OTLP exporter, both i
 
 recon exports over http/protobuf only: `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` is refused with an `otel_unavailable` warning naming what to set. An install without the SDK gives an `otel_unavailable` warning in the document instead of an export. A provider the program installed is kept. A Python program that imports recon gets no SDK installed: it configures OpenTelemetry itself, or calls `recon.configure_telemetry()`, which does what the command does.
 
+The HTTP span attributes are OpenTelemetry's HTTP client attributes, [semantic conventions v1.44.0](https://github.com/open-telemetry/semantic-conventions/blob/v1.44.0/docs/http/http-spans.md#http-client-span) (stable). Everything else the SDK reads itself: headers, timeouts, `OTEL_SERVICE_NAME` (default `recon`), `OTEL_RESOURCE_ATTRIBUTES`. A sink that fails is dropped for the rest of the operation (a `telemetry_failed` warning), and the OpenTelemetry spans it held open are ended as failed rather than lost. The event log is written either way: an archive's contents do not depend on the environment it was surveyed in.
+
 ## What never slows a survey
 
 OpenTelemetry and a program's `on_event` callback receive a survey's events through a bounded queue (4096 events) that a thread of its own drains, so neither slows the writing of the archive nor changes a byte of it; the event log alone is written as each event happens. At the survey's end the receivers get up to 10 seconds to catch up.

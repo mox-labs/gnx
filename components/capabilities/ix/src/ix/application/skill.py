@@ -53,6 +53,14 @@ DESCRIPTION = (
 #: package index, and the project of that name on PyPI is another.
 SOURCE = "git+https://github.com/mox-labs/gnx@ix-v{version}#subdirectory=components/capabilities/ix"
 
+#: Where ix-cosmic-ray, the mutant source this repository ships, is installed from: its
+#: release's tag, as the mutation adapters' ``COSMIC_RAY_SOURCE`` names it (a test holds the
+#: two to ix-cosmic-ray's version).
+MUTANT_SOURCE = (
+    "git+https://github.com/mox-labs/gnx@ix-cosmic-ray-v0.1.0"
+    "#subdirectory=components/capabilities/ix-cosmic-ray"
+)
+
 #: The commands ix has, in the order an author uses them.
 COMMANDS: tuple[tuple[str, str], ...] = (
     ("ix validate <path>", "every problem at once, each with path, kind, message, fix"),
@@ -1615,8 +1623,13 @@ allows. Telemetry: with `OTEL_EXPORTER_OTLP_ENDPOINT` set, ix exports `ix.plan`,
 """
 
 
-def _mutation() -> str:
-    return """\
+def _mutation(version: str) -> str:
+    return _MUTATION.replace("@IX_SOURCE@", SOURCE.format(version=version)).replace(
+        "@MUTANT_SOURCE@", MUTANT_SOURCE
+    )
+
+
+_MUTATION = """\
 ## Testing a test suite: mutation
 
 A mutant is a small fault seeded in the code (`<` for `<=`, `and` for `or`, a constant moved
@@ -1648,14 +1661,21 @@ That share is the suite's power to show these faults, never that the code is cor
 
 What `ix mutants sample` needs, and refuses without:
 
-- **A mutant source.** `ix-cosmic-ray` provides cosmic-ray's operators. Install it beside
-  ix as ix was installed, from this repository at its release's tag
-  (`components/capabilities/ix-cosmic-ray`; it is on no package index): with `uv tool
-  install`, add `--with "<its git URL>"`. Probe
-  files of kind `mutant` that any other tool wrote run without one: put them in `probes/`
-  and run `ix mutants map <path>`, which makes the selection maps alone.
-- **coverage.py and pytest-cov in the suite's environment**, not ix's:
-  `<suite python> -m pip install pytest-cov`.
+- **A mutant source.** `ix-cosmic-ray` provides cosmic-ray's operators. It is on no package
+  index: install it beside ix, from this repository at its release's tag. Installed with
+  `uv tool install`, run it again with `--with`:
+
+  ```bash
+  uv tool install "@IX_SOURCE@" --with "@MUTANT_SOURCE@"
+  ```
+
+  In a project, `uv add "ix-cosmic-ray @ @MUTANT_SOURCE@"`. `ix mutants sample` with no
+  source installed refuses and names this source. Probe files of kind `mutant` that any
+  other tool wrote run without one: put them in `probes/` and run `ix mutants map <path>`,
+  which makes the selection maps alone.
+- **coverage.py and pytest-cov in the suite's environment**, not ix's. In an environment
+  `uv venv` made, which has no pip: `uv pip install --python <suite python> pytest-cov`.
+  Otherwise `<suite python> -m pip install pytest-cov`, or the suite's own dev dependencies.
 - **A baseline that passes.** Deselect a test that fails, or fix it.
 - **An empty `probes/`.** Sample into a new experiment.
 
@@ -1679,8 +1699,10 @@ What `ix mutants sample` needs, and refuses without:
   never less than `timeout_floor` (10s).
 
 The copy is put first on `PYTHONPATH`, so the suite imports the copy, not an editable
-install of the tree. Every run checks this. A trial that imported a scope module from
-anywhere else is the harness's failure (`not_the_mutant`), never a survivor.
+install of the tree. The package under test need not be installed (its dependencies must
+be, in the suite's environment): the folder its scope files import from (`src/` in a src
+layout) is on the path in every run. Every run checks this. A trial that imported a scope
+module from anywhere else is the harness's failure (`not_the_mutant`), never a survivor.
 
 ### A trial
 
@@ -1798,7 +1820,7 @@ def render(
         case "agents":
             body = _agents(kinds)
         case "mutation":
-            body = _mutation()
+            body = _mutation(version)
         case _:
             body = _problems()
     return f"# ix {version} reference: {reference}\n\n{body}"

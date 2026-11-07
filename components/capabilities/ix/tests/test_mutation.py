@@ -251,6 +251,40 @@ def test_a_mutant_a_test_asserts_is_killed_from_the_copy_and_the_tree_is_untouch
     assert _digest(tree) == before
 
 
+def test_after_a_mutation_run_the_next_step_reads_its_survivors(tmp_path: Path) -> None:
+    """Cold read 2026-11-07: after a mutation-score run the next step said `ix report` gives
+    its verdict, where the genre gives estimates and the survivors are what to read next."""
+    tree = _tree(tmp_path)
+    root = _root(**{"acme.v1.mutant-source": lambda: Swaps(NEGATE)})
+    experiment = _experiment(tmp_path, tree)
+    root.mutants_sample(experiment)
+    report = root.run(experiment, exploratory=True)
+    assert report.exit.kind == "ok" and report.verdict is None
+    assert report.exit.next.startswith(
+        "this genre gives estimates, not a verdict: `ix mutants read <run directory>`"
+    )
+    assert "verdict" not in report.exit.next.split(":", 1)[1]
+
+
+def test_the_mutant_source_ix_names_is_ix_cosmic_ray_at_its_release_tag() -> None:
+    """Cold read 2026-11-07: `ix --skill -r mutation` said to add `--with "<its git URL>"` and
+    never gave the URL, so an agent with only the skill had to guess the tag."""
+    import tomllib
+
+    from ix.adapters._out.mutation.suite import COSMIC_RAY_SOURCE, SOURCE_INSTALL
+    from ix.application.skill import MUTANT_SOURCE
+
+    assert COSMIC_RAY_SOURCE == MUTANT_SOURCE and COSMIC_RAY_SOURCE in SOURCE_INSTALL
+    pyproject = Path(__file__).resolve().parents[2] / "ix-cosmic-ray" / "pyproject.toml"
+    if pyproject.is_file():  # in the repository's workspace
+        version = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
+        assert f"@ix-cosmic-ray-v{version}#" in MUTANT_SOURCE
+    reference = ix.skill("mutation")
+    assert f'--with "{MUTANT_SOURCE}"' in reference and "<its git URL>" not in reference
+    # A uv environment has no pip: the uv form comes first.
+    assert "uv pip install --python <suite python> pytest-cov" in reference
+
+
 def _site(where: Path, line: str) -> Path:
     """A site folder whose ``.pth`` holds ``line``, as an editable install's does."""
     site = where / "site"
@@ -667,6 +701,8 @@ def test_without_coverage_in_the_suite_environment_sampling_and_the_plan_say_so(
     with pytest.raises(ix.ConfigError) as refused:
         root.mutants_map(experiment)
     assert "pip install pytest-cov" in (refused.value.fix or "")
+    # Cold read 2026-11-07: an environment `uv venv` made has no pip, so the fix names uv's.
+    assert f"uv pip install --python {bare} pytest-cov" in (refused.value.fix or "")
     (mapped,) = [r for r in root.plan(experiment).requirements if "selection map" in r.need]
     assert not mapped.holds and "pip install pytest-cov" in mapped.fix
 

@@ -1,9 +1,12 @@
 [project]
 name = "gnx"
 version = "0.1.0"
-description = "gnx — the catalog: component registry, Claude Code marketplace, and agentic CLI for composable components"
+description = "The gnx catalog CLI: list the components and project them into Claude Code plugins"
+readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
+# A copy of the repository's LICENSE: a package built from this directory alone carries it.
+license-files = ["LICENSE"]
 authors = [
     { name = "yzavyas", email = "yza.vyas@gmail.com" }
 ]

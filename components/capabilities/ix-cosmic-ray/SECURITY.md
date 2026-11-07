@@ -20,3 +20,8 @@ A mutant is a change to a copy of your code, which ix's trial then runs under yo
 suite runs mutated code with whatever access the suite has. cosmic-ray's operators change operators,
 constants, conditions, decorators and loops; they add no import and no call of their own, except
 `core/ExceptionReplacer`'s name `CosmicRayTestingException`, which nothing defines.
+
+## Reporting
+
+Report a vulnerability privately, through GitHub's private vulnerability reporting, as the
+repository's [SECURITY.md](../../../SECURITY.md) says. Do not open a public issue for one.

@@ -14,7 +14,7 @@
    version), and nothing outside ``ids`` splits a string on ``/``.
 3. **The command line** reaches matrix through ``import matrix`` and the names in
    ``matrix.__all__`` alone, so what it can do, a program can do with the declared names.
-4. The API reference, and the names the README promises, agree with ``matrix.__all__``.
+4. The API reference, and the names CONTRACT.md promises, agree with ``matrix.__all__``.
 
 What these cannot see, so review still reads for it (the design record keeps the list): a
 module reached by ``importlib`` or through an alias, a use that is not an import, an adapter's
@@ -222,10 +222,14 @@ def test_the_api_reference_lists_every_exported_name_and_no_other() -> None:
     assert listed == set(matrix.__all__), listed ^ set(matrix.__all__)
 
 
-def test_the_names_the_readme_promises_are_exported() -> None:
-    text = (PACKAGE / "README.md").read_text()
-    section = text[text.index("## What is promised") : text.index("## Documentation")]
-    stable = section[: section.index("Everything else exported")]
-    # A config key and a stability, which are quoted words but not names.
-    named = set(re.findall(r"`([A-Za-z_]+)`", stable)) - {"grace_s", "stable"}
-    assert named and named <= set(matrix.__all__), named - set(matrix.__all__)
+def test_the_names_the_contract_promises_are_exported() -> None:
+    # The stable surface is stated once, in CONTRACT.md's member table: each name in its
+    # first column, a dotted one by the name before the dot, is exported.
+    text = (PACKAGE / "CONTRACT.md").read_text()
+    start = text.index("## The component-author contract")
+    section = text[start : text.index("\n## ", start + 1)]
+    named = {
+        name.split(".")[0] for name in re.findall(r"^\| `([A-Za-z_.]+)` \|", section, re.M)
+    } - {"matrix"}  # `matrix.extensions`, the entry-point group, is no name
+    assert {"Component", "Context", "Inputs", "Registry", "NEEDS"} <= named, named
+    assert named <= set(matrix.__all__), named - set(matrix.__all__)

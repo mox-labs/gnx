@@ -1,6 +1,6 @@
 # Security — dao
 
-dao is the smallest surface of the four capabilities: it reads a corpus catalog, reads a
+dao's surface is small: it reads a corpus catalog, reads a
 project's `.claude/` directory, and prints a report. It executes nothing, fetches nothing,
 and writes nothing.
 
@@ -63,4 +63,5 @@ reversed:
 
 ## Reporting
 
-Open an issue on the gnx repository. Pre-gen-0 component; no embargo channel.
+Report a vulnerability privately, through GitHub's private vulnerability reporting: see the
+repository's [SECURITY.md](../../../SECURITY.md). Do not open a public issue for one.

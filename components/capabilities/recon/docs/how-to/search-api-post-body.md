@@ -330,4 +330,4 @@ You converted a POST-body search API into a queryable structured dataset with th
 - `recon --skill` — the full skill Claude loads to author configs
 - `recon --skill -r config-patterns` — broader config patterns, including the full "Modern Search APIs (POST body)" section with Perplexity and the composed Exa→Firecrawl pattern
 - `recon --skill -r normalize-spec` — normalize spec syntax and built-in transforms
-- [capability.md](../explanation/capability.md) — the deeper "why" behind the tool
+- [overview.md](../explanation/overview.md) — what recon is for, and what it does not do

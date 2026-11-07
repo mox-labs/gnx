@@ -142,6 +142,56 @@ mutants. Each entry compares with 0.8.0.
   hour unless told otherwise, and ix now says `deadline_s=None` for the one matrix run an
   experiment run is.
 
+### Fixed
+
+From a cold read of the docs and the skill by first users (2026-11-07):
+
+- **The next step after a run that exits 0 is that run's own.** Every such run printed one
+  hint, "register and run it for one; ... `ix report` gives its verdict", after a verdict
+  that held, an indication, a dry run and a mutation run alike. Now `exit.next` (and the
+  `Next:` line) says: after a genre that gives estimates, that it gives no verdict, and for a
+  mutation run `ix mutants read <run directory>`; after a dry run, to hold each estimate to
+  its canned grade and then pilot; after an indication, to register and run; after a verdict
+  that holds, to act on it within the warrant. `EXIT_NEXT["ok"]`, which `ix status`, `ix
+  validate` and the skill's exit table read, says `ix report` "reads what it found" in place
+  of "gives its verdict".
+- **A dry run's findings are not marked as a verdict.** Their heading says to hold each
+  estimate to the grade its canned reply should get, and their outcome is printed plain.
+  `examples/harness-integrity` states the readings it should give (`tests_passed` 0.25,
+  `tests_score` 0.375), so its `fails` reads as the grading working.
+- **`ix --skill -r mutation` gives ix-cosmic-ray's install line** in full, at its release's
+  tag, where it said `--with "<its git URL>"`; so does the refusal when no mutant source is
+  installed. It also says the package under test need not be installed.
+- **pytest-cov's install names uv's form first**: `uv pip install --python <suite python>
+  pytest-cov`, since an environment `uv venv` made has no pip. The refusal's fix and the
+  skill both give it.
+- **`ix mutants sample` names the five operators that made the most mutants** and how many
+  more, where it listed every operator on one line; `--json` keeps every one. A label of 13
+  characters (`Subject tests:`) is followed by a space.
+- **`ix plan` of an experiment a stand-in answers points to `ix run <path> --exploratory`**
+  (cold read, round 2), where it said `ix register`, whose run would exit `simulated` (16)
+  with no verdict. `Plan.work.stood_in` names the entries on a mock runtime.
+- **The plan's Design table never breaks a setting's path** (cold read, round 2): at the
+  default width it wrapped `probes.<id>.collect_limit` mid-word. The path column is as wide
+  as its longest path and the value folds; where even a narrow value cannot fit beside it,
+  each setting is a `path: value (from)` line of its own.
+
+### Documentation
+
+- **The README is the entry**: what ix is, install (and the route from a clone), a first run
+  that calls no model, reading a result, your own experiment. Its reference sections moved,
+  whole, into `docs/`: `reference/` (terms and commands, genres, kinds, registration and
+  runs, settings, the library, output), `explanation/` (what ix is, the verdict's method)
+  and `how-to/` (comparing two services, testing a test suite). `docs/index.md` lists them.
+- The README's agent example gives its probe a `mock_response`, so its dry run reads as it
+  says; the plan's `Runnable` line is described as it is printed (only when a requirement
+  does not hold).
+- `SECURITY.md` points vulnerability reports to the repository's private reporting, where it
+  said to open a public issue.
+- `docs/how-to/evaluate-an-agent.md` has a two-prompts comparison (two subjects that differ
+  only in `system_prompt`, which is inline text; `definition` takes a prompt kept in a file).
+  The README says where a run's record lands and where the clone's environment is built.
+
 ## 0.8.0 — 2026-11-06
 
 `docs/design/2026-10-19-record.md` has the reasons for this release's changes, in §28 and §29, and

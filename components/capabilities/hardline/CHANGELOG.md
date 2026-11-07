@@ -1,10 +1,23 @@
 # Changelog — hardline
 
-## 0.3.1 — 2026-11-06
+## 0.3.1 — 2026-11-07
 
 ### Fixed
 
 - **A failed tool's result is no longer sent as a success on `openai-compat`.** The chat-completions `tool` role has no error flag, and `Message.is_error` was dropped there, so a model was told a tool that failed had answered. The result's content is now marked, `[tool error] <content>`, the one encoding `CONTRACT.md` declares (ruling HO7: what a backend cannot carry is never dropped silently). `anthropic` already sent the Messages API's own `is_error`.
+- **A refused connection says where to look.** A row whose server is not running (a local
+  ollama or mlx_lm.server not started) failed with the transient kind's "retry later", which no
+  wait fixes. A `ConnectError` now carries a fix naming the row's `base_url` and the key that
+  sets it, and the error a caller sees once retries are spent keeps the last failure's fix: the
+  `hardline` command prints it, and so does a matrix run through matrix-hardline.
+  `BackendError` takes `fix=`, as every `HardlineError` does.
+- **A wheel built from this directory carries the license.** `LICENSE` is a copy of the
+  repository's, named by `license-files`; the package metadata gains its README and project URLs.
+
+### Documentation
+
+- The README is the entry: install, a first call offline, from Python. Everything else it held
+  is in `docs/guide.md`, and `docs/explanation/overview.md` says what hardline is for.
 
 ## 0.3.0 — 2026-11-06
 

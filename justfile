@@ -7,15 +7,18 @@ set shell := ["bash", "-uc"]
 # The pre-commit hook calls this. Its lint and format gates are CI's own, so a line CI would
 # refuse cannot be committed.
 #
+# docs-sync runs here with `--tree`, without its CHANGELOG check: that one reads the branch's
+# commits and their `Docs-Unchanged:` trailers, and the commit this hook checks has none yet.
+#
 # Everything a commit must pass.
-check: docs-check secrets grammar payloads projection capabilities-lint
+check: docs-check (docs-sync "--tree") secrets grammar payloads projection capabilities-lint
 
 # The hook's gates, the secret scan over all of history, and the slow ones. The capability
 # tests need k6 on PATH and a docker daemon with alpine:3.20 pulled; without them, the tests
 # that use them skip and the run fails.
 #
 # The CI gate: CI runs this recipe as it stands.
-ci: docs-check secrets-all grammar payloads projection recon-skill capabilities-test capabilities-lint capabilities-typecheck capabilities-standalone lab
+ci: docs-check docs-sync harness-test secrets-all grammar payloads projection recon-skill capabilities-test capabilities-lint capabilities-typecheck capabilities-standalone lab
 
 # `--project` not `--directory`: build reads ./components from the CWD, and
 # --directory would move the CWD into the workspace.
@@ -32,6 +35,27 @@ recon-skill:
 recon-live:
     RECON_LIVE=1 uv --directory components/capabilities run --group dev \
         python -m pytest recon/tests/test_integration.py -q
+
+# Each check prints the file, what is wrong, and the fix (CONTRIBUTING.md, "Docs ship with the
+# code"): every catalog component has its overview, every install line names its package's
+# version, every relative link resolves, and a package whose surface changed since the
+# merge-base with DOCS_SYNC_BASE (default origin/main) changed its CHANGELOG.md, or a commit
+# says why not. `--tree` leaves out the last, which reads commits.
+#
+# Docs that change with the code.
+docs-sync *flags:
+    uv --directory components/capabilities run --group dev \
+        python {{justfile_directory()}}/harness/docs_sync.py {{justfile_directory()}} {{flags}}
+
+# Its tests run over the fixture trees in harness/tests/fixtures.
+#
+# The docs-sync checker's tests, lint, format and strict types.
+harness-test:
+    uv --directory components/capabilities run --group dev \
+        python -m pytest {{justfile_directory()}}/harness/tests -q -p no:cacheprovider
+    cd components/capabilities && uv run ruff check ../../harness/docs_sync.py ../../harness/tests
+    cd components/capabilities && uv run ruff format --check ../../harness/docs_sync.py ../../harness/tests
+    cd components/capabilities && .venv/bin/mypy --strict ../../harness/docs_sync.py ../../harness/tests
 
 # The gnx identity grammar over every manifest (GEP-0001/0002/0003).
 grammar:

@@ -127,7 +127,11 @@ def test_unknown_model_runtime_type_lists_the_registered_model_runtimes() -> Non
         "claude-sdk",
     )
     assert set(found.allowed) == {"mock"}
-    assert "pip install matrix-hardline" in (found.fix or "")
+    fix = found.fix or ""
+    assert "matrix-hardline.v1.model-runtime" in fix
+    # Regression: the fix said `pip install matrix-hardline`, a name on no index this project
+    # publishes to. It names the repository instead.
+    assert "github.com/mox-labs/gnx" in fix and "pip install" not in fix
 
 
 def test_runtime_option_typo_names_runtime_and_key() -> None:

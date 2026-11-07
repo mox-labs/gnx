@@ -660,6 +660,11 @@ def build_runtimes(
 #: What to install for a model runtime that calls a model, which matrix does not ship: matrix
 #: privileges none, and this is a pointer, not a default (owner ruling HO1, 2026-11-06).
 MODEL_RUNTIME_PACKAGE = "matrix-hardline"
+#: Where it is installed from: the name on a package index is not this project's.
+MODEL_RUNTIME_SOURCE = (
+    "https://github.com/mox-labs/gnx (components/capabilities/matrix-hardline, whose README "
+    "has the install line)"
+)
 
 
 def _install_fix(point: str, registry: Registry) -> str:
@@ -672,8 +677,9 @@ def _install_fix(point: str, registry: Registry) -> str:
     if point == MODEL_RUNTIME and all(e.stand_in for e in registry.entries(point)):
         fix += (
             f". No model runtime that calls a model is installed: matrix ships only `mock`. "
-            f"Install one, as `{MODEL_RUNTIME_PACKAGE}` (`pip install {MODEL_RUNTIME_PACKAGE}`, "
-            "which registers `matrix-hardline.v1.model-runtime`)"
+            f"Install one, as `{MODEL_RUNTIME_PACKAGE}`, which registers "
+            "`matrix-hardline.v1.model-runtime`, into the environment matrix runs in. It is on "
+            f"no package index: install it from {MODEL_RUNTIME_SOURCE}"
         )
     return fix
 
