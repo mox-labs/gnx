@@ -28,7 +28,7 @@ from matrix.composition.effective import SourcedValue, settings
 from matrix.domain.agent_step import AGENT_STEP
 from matrix.domain.errors import ConfigError, NotFoundError, UsageError, invalid
 from matrix.domain.model_step import MODEL_STEP
-from matrix.domain.needs import described
+from matrix.domain.needs import described, model_runtime_named
 from matrix.domain.ports._out.construct_store import damaged_of, location_of
 from matrix.domain.problems import Problem, problem, sourced
 
@@ -535,7 +535,9 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
             used[agent] = runtime
             agent_min, agent_max = agent_min + 1, agent_max + attempts
         elif entry.type == MODEL_STEP:
-            runtime = str(entry.config.get("runtime"))
+            runtime = model_runtime_named(
+                entry.config.get("runtime"), container.model_runtimes, key="runtime"
+            )
             model = entry.config.get("model")
             models_used.add(runtime)
             model_min, model_max = model_min + 1, model_max + attempts

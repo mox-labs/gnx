@@ -154,6 +154,39 @@ def test_an_unknown_model_runtime_names_the_composed_ones() -> None:
         ModelStep(ModelStepConfig(runtime="ghost"), model_runtimes={"m": MockModelRuntime()})
 
 
+async def test_a_step_that_names_no_runtime_runs_on_the_only_one_composed() -> None:
+    """Ruling M-RT: unset, ``runtime`` is the one model runtime the config composes, resolved
+    when the step is built; its session row names that runtime as a named one's would."""
+    box = container(reply="ok")
+    wiring = box.wire([{"name": "ask", "type": MODEL_STEP, "config": {}}], inputs=[PROMPT])
+    run = await box.executor().run(wiring, {PROMPT: "hello"})
+    (session,) = run.rows("matrix.v1.session")
+    assert (run.rows(MODEL_CALL)[0].text, session.runtime) == ("ok", "matrix.v1.model-runtime.mock")
+
+
+@pytest.mark.parametrize(("names", "said"), [((), "none is composed"), (("a", "b"), "2 are")])
+def test_a_step_that_names_no_runtime_is_refused_unless_exactly_one_is_composed(
+    names: tuple[str, ...], said: str
+) -> None:
+    """With none composed, or several, a step that names none is a config problem at its
+    ``runtime``, listing the ones there are: adding a second runtime never changes which one
+    answers."""
+    box = compose(
+        MatrixConfig.model_validate({"model_runtimes": {n: {"type": "mock"} for n in names}}),
+        registry=default_registry(discover=False),
+    )
+    with pytest.raises(CompilationError) as raised:
+        box.wire([{"name": "ask", "type": MODEL_STEP, "config": {}}], inputs=[PROMPT])
+    (found,) = raised.value.problems
+    assert (found.path, found.kind, found.allowed) == (
+        "components.ask.config.runtime", "missing_key", names,
+    )  # fmt: skip
+    assert said in found.message
+    # A runtime named explicitly is held to the composed ones, as it always was.
+    with pytest.raises(NotFoundError, match="no model runtime named 'm'"):
+        ModelStep(ModelStepConfig(runtime="m"), model_runtimes={})
+
+
 def test_several_inputs_need_a_prompt_template() -> None:
     with pytest.raises(ConfigError, match="no prompt template"):
         ModelStep(

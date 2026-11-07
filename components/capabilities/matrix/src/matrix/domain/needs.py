@@ -11,6 +11,11 @@ are the host's to declare, and a build that names one the host did not give is a
 
 A host that hands over one of matrix's needs itself, building through the registry rather than
 through ``compose``, hands it as its type says: ``model_runtimes`` is a :class:`ModelRuntimes`.
+
+A key that names one of them defaults to the only one composed (:func:`model_runtime_named`):
+a model step's ``runtime``, the pydantic-ai runtime's ``model_runtime``. It is resolved when
+the extension is built, from the runtimes it is handed, and never at a call. Such a key carries
+:data:`ONLY_COMPOSED` in its annotation, so the plan reports the runtime it resolves to.
 """
 
 from __future__ import annotations
@@ -20,8 +25,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from matrix.domain.errors import invalid
+from matrix.domain.problems import problem
+
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Collection, Iterable
 
     from matrix.domain.ports._out.model_runtime import ModelRuntime
 
@@ -62,6 +70,46 @@ class ModelRuntimes(Mapping[str, "ModelRuntime"]):
 
     @abstractmethod
     def drives(self, name: str) -> tuple[str, ...]: ...
+
+
+@dataclass(frozen=True)
+class OnlyComposed:
+    """The marker of a key that names a model runtime and, unset, is the only one composed:
+    ``Annotated[str | None, ONLY_COMPOSED] = None``."""
+
+    #: What the plan says of the key when it was left to the default.
+    note: str = "the only model runtime composed"
+
+
+ONLY_COMPOSED = OnlyComposed()
+
+
+def model_runtime_named(name: str | None, composed: Collection[str], *, key: str) -> str:
+    """``name`` when it is given, as it stands; unset, the only model runtime ``composed``
+    holds. A ConfigError at ``key`` when none is composed, or several are and none is named,
+    listing them: a second runtime added to a config never changes which one answers."""
+    if name is not None:
+        return name
+    names = sorted(composed)
+    if len(names) == 1:
+        return names[0]
+    if not names:
+        found = problem(
+            key,
+            "missing_key",
+            "no model runtime is named, and none is composed to be the default",
+            fix="define one under matrix.model_runtimes",
+        )
+    else:
+        found = problem(
+            key,
+            "missing_key",
+            f"no model runtime is named, and {len(names)} are composed: "
+            f"{', '.join(names)}; the default is the only one",
+            fix=f"name one of {', '.join(names)}",
+            allowed=names,
+        )
+    raise invalid("no model runtime is named", [found])
 
 
 #: matrix's needs, by name.

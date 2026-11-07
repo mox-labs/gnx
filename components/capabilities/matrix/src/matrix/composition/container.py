@@ -70,7 +70,7 @@ from matrix.domain.errors import (
 )
 from matrix.domain.executor import Executor, Limits, Reuse
 from matrix.domain.model_step import MODEL_CALL, MODEL_STEP
-from matrix.domain.needs import NEEDS, ModelRuntimes
+from matrix.domain.needs import NEEDS, ModelRuntimes, model_runtime_named
 from matrix.domain.optional import SupportsResolved, SupportsWarnings
 from matrix.domain.ports._out.construct_store import location_of
 from matrix.domain.problems import problem, sourced
@@ -316,7 +316,10 @@ class Container:
             made_of["agent"] = self._agent_made_of(str(entry.config.get("agent")))
         if entry.type == MODEL_STEP:
             needs.discard("model_runtimes")
-            made_of["model_runtime"] = self._model_runtime_made_of(str(entry.config.get("runtime")))
+            named = model_runtime_named(
+                entry.config.get("runtime"), self._model_runtimes, key="runtime"
+            )
+            made_of["model_runtime"] = self._model_runtime_made_of(named)
         made_of["needs"] = self._needs_made_of(needs)
         text = json.dumps(made_of, sort_keys=True, default=str)
         return "sha256:" + hashlib.sha256(text.encode()).hexdigest()

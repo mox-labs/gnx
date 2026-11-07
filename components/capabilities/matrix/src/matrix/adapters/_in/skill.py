@@ -668,7 +668,7 @@ def _reference_agents() -> str:
 - name: rate
   type: matrix.v1.model-step
   config:
-    runtime: fast                     # a matrix.model_runtimes name
+    runtime: fast                     # a matrix.model_runtimes name; unset, the only one
     model: haiku                      # a name the runtime resolves; unset, its default
     system: "Rate the claims 1-5."    # optional, as written
     inputs: {{claims: acme.v1.claims}}  # placeholder -> the kind whose rows fill it
@@ -721,7 +721,8 @@ Agent runtimes (`matrix.agent_runtimes`):
   that many USD (`stop: max_budget_usd`), and `cost_usd` is what the SDK reported;
   `max_turns` (on the agent) bounds its turns.
 - `pydantic-ai`: a pydantic-ai agent loop whose every model call is one call on the model
-  runtime its `model_runtime` names (one of `matrix.model_runtimes`; no default). Options:
+  runtime its `model_runtime` names (one of `matrix.model_runtimes`; unset, the only one the
+  config composes, refused when it composes none or several). Options:
   `model_runtime`, `default_model` (a name that runtime resolves; unset, its default),
   `tools` (name to `module:function`, a Python function whose module is
   found when the runtime is built and imported when a session first offers it; one whose

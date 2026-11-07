@@ -37,6 +37,7 @@ from matrix.domain.errors import missing_dependency
 from matrix.domain.ids import type_url
 from matrix.domain.model_call import ModelCall
 from matrix.domain.model_step import MODEL_CALL, MODEL_STEP, PROMPT, ModelStep, ModelStepConfig
+from matrix.domain.needs import model_runtime_named
 from matrix.domain.ref import REF, Ref
 
 if TYPE_CHECKING:
@@ -142,13 +143,14 @@ def _model_step(
 ) -> ModelStep:
     # Its rows name what its runtime was built as. A name nothing built is ModelStep's to
     # refuse, with the names that were.
-    built = config.runtime in model_runtimes
+    name = model_runtime_named(config.runtime, model_runtimes, key="runtime")
+    built = name in model_runtimes
     return ModelStep(
-        config,
+        config.model_copy(update={"runtime": name}),
         model_runtimes=model_runtimes,
         schemas=schemas,
-        runtime_url=model_runtimes.type_url(config.runtime) if built else None,
-        drives=model_runtimes.drives(config.runtime) if built else (),
+        runtime_url=model_runtimes.type_url(name) if built else None,
+        drives=model_runtimes.drives(name) if built else (),
     )
 
 

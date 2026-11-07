@@ -49,7 +49,8 @@ bridge distribution of its own, `matrix-hardline` 0.1.0.
   `temperature`. **`ModelCall` gains `tool_calls`** (`ToolCall`) and **`provenance`**. A
   `provenance` key that is not a versioned type URL is refused.
 - **The `pydantic-ai` agent runtime makes its calls on a matrix model runtime**: its config
-  names one, `model_runtime` (required), of `matrix.model_runtimes`; its `models` option is
+  names one, `model_runtime`, of `matrix.model_runtimes` (unset, the only one composed: see
+  Added); its `models` option is
   gone, it needs `model_runtimes`, and it drives `pydantic-ai-slim` alone. Composition builds
   model runtimes before agent runtimes. A pydantic-ai setting a call cannot carry (all but
   `max_tokens` and `temperature`) is a `ConfigError`, never dropped; a part it cannot send
@@ -85,6 +86,12 @@ bridge distribution of its own, `matrix-hardline` 0.1.0.
 - **`matrix.pydantic_ai_model(runtime, model=None, *, settings=None, runtime_url=None,
   drives=())`**: pydantic-ai's `Model` over any `ModelRuntime` (ruling M-O6); each call is a
   session row, as a step's is.
+- **A model step's `runtime` and the pydantic-ai runtime's `model_runtime` default to the
+  only model runtime the config composes** (ruling M-RT), resolved when the step or the
+  runtime is built and never at a call. With none composed, or several, a key left unset is a
+  `missing_key` problem at its path listing them, so adding a second model runtime never
+  changes which one answers. `matrix plan` gives the name each resolved to, origin `matrix`,
+  note `the only model runtime composed`. A name given is held to the composed ones as before.
 - **`through_model_runtime`**: composition binds an agent whose runtime needs
   `model_runtimes` so, its end event says so, and the `otel` observer counts none of its
   tokens, which its model runtime counts.

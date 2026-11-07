@@ -35,7 +35,7 @@ run's event loop, which made them.
 
 Config::
 
-    runtime: fast                         # a matrix.model_runtimes name
+    runtime: fast                         # a matrix.model_runtimes name; unset, the only one
     model: haiku                          # a name the runtime resolves; unset, its default
     system: "You extract claims."         # optional
     inputs: {diff: acme.v1.diff}          # placeholder -> the kind it stands for
@@ -49,13 +49,14 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import BaseModel, ConfigDict
 
 from matrix.domain.errors import ConfigError, ContractError, ModelRuntimeError, NotFoundError
 from matrix.domain.ids import check_type_url
 from matrix.domain.model_call import ModelRequest
+from matrix.domain.needs import ONLY_COMPOSED, model_runtime_named
 from matrix.domain.observer import (
     CURRENT_SPAN,
     MODEL_END,
@@ -89,7 +90,8 @@ PROMPT = "matrix.v1.prompt"
 
 
 class ModelStepConfig(BaseModel):
-    """A model step: one call on `runtime` (a configured model runtime) to `model` (a name it
+    """A model step: one call on `runtime` (a configured model runtime; unset, the only one the
+    config composes, and refused when it composes none or several) to `model` (a name it
     resolves; unset, its default), with `prompt`, a template whose {placeholders} `inputs`
     fill with the rows of the kinds they name, and an optional `system` prompt. `response` is
     the kind its call record is provided as; a kind has one provider, so each model step in a
@@ -99,7 +101,9 @@ class ModelStepConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    runtime: str
+    #: A name under ``matrix.model_runtimes``; unset, the only one composed, resolved when the
+    #: step is built.
+    runtime: Annotated[str | None, ONLY_COMPOSED] = None
     model: str | None = None
     system: str | None = None
     #: placeholder name -> the kind whose rows fill it
@@ -124,6 +128,8 @@ class ModelStep:
         runtime_url: str | None = None,
         drives: tuple[str, ...] = (),
     ) -> None:
+        name = model_runtime_named(config.runtime, model_runtimes, key="runtime")
+        config = config.model_copy(update={"runtime": name})
         for placeholder, kind in config.inputs.items():
             check_type_url(kind, where=f"model-step inputs.{placeholder}")
         check_type_url(config.response, where="model-step response")
@@ -131,18 +137,15 @@ class ModelStep:
             check_type_url(config.output, where="model-step output")
         if config.prompt is None and len(config.inputs) != 1:
             raise ConfigError(
-                f"model-step on {config.runtime!r} has {len(config.inputs)} inputs and no "
-                "prompt template",
+                f"model-step on {name!r} has {len(config.inputs)} inputs and no prompt template",
                 fix="give a prompt template with a {placeholder} for each input",
             )
         if config.prompt is not None:
-            check_template(
-                config.prompt, config.inputs, where=f"model-step prompt on {config.runtime!r}"
-            )
-        runtime = model_runtimes.get(config.runtime)
+            check_template(config.prompt, config.inputs, where=f"model-step prompt on {name!r}")
+        runtime = model_runtimes.get(name)
         if runtime is None:
             raise NotFoundError(
-                f"model-step: no model runtime named {config.runtime!r}. "
+                f"model-step: no model runtime named {name!r}. "
                 f"Composed: {', '.join(sorted(model_runtimes)) or '(none)'}",
                 fix="name a model runtime defined under matrix.model_runtimes",
             )
@@ -150,6 +153,7 @@ class ModelStep:
         # An unknown model, or a structure it cannot give, is refused now, not mid-run.
         runtime.check(config.model, uses=frozenset({"output"}) if self._output else frozenset())
         self._config = config
+        self._name = name
         self._runtime = runtime
         self._runtime_url = runtime_url
         self._drives = tuple(drives)
@@ -160,7 +164,7 @@ class ModelStep:
 
     def render(self, inputs: Mapping[str, tuple[Any, ...]]) -> str:
         """The prompt for these rows: one row as itself, several as a JSON list."""
-        where = f"model-step on {self._config.runtime!r}"
+        where = f"model-step on {self._name!r}"
         return render(self._config.prompt, self._config.inputs, inputs, where=where)
 
     async def run(self, inputs: Inputs, ctx: Context) -> dict[str, Any]:
@@ -184,7 +188,7 @@ class ModelStep:
         return await call_model(
             self._runtime,
             request,
-            name=self._config.runtime,
+            name=self._name,
             runtime_url=self._runtime_url,
             drives=self._drives,
         )
@@ -207,7 +211,7 @@ class ModelStep:
             why = f"{why} ({call.native_finish_reason!r})"
         model = call.name or call.model or self._config.model or "(default)"
         raise ModelRuntimeError(
-            f"the model step on {self._config.runtime!r}: model {model!r} gave no whole "
+            f"the model step on {self._name!r}: model {model!r} gave no whole "
             f"answer: {why} (finish_reason {reason!r})",
             reason="refused" if case in ("refusal", "content_filter") else "failed",
             fix=fix,
@@ -223,7 +227,7 @@ class ModelStep:
         except LookupError:
             excerpt = text.strip()[:_EXCERPT] or "(empty)"
             raise ContractError(
-                f"the model step on {self._config.runtime!r} was to reply with JSON for {kind} "
+                f"the model step on {self._name!r} was to reply with JSON for {kind} "
                 f"(the step's `output`), but its reply holds no JSON document: {excerpt!r}",
                 fix=f"ask for one JSON document for {kind} in the step's prompt or system "
                 "prompt, or register a schema for the kind so the runtime asks for it; on the "

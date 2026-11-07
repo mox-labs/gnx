@@ -194,10 +194,15 @@ deadline).
 **Defaults.** None of its own: a plan reports defaults, and makes none. Every limit is
 listed, the run's and each component's, as are every option of the store, of each runtime and
 observer, of each component's config, and each agent's `model`, `tools` and `max_turns`. The
-run's `deadline_s` defaults to null, no deadline, and the plan says so.
+run's `deadline_s` defaults to null, no deadline, and the plan says so. A model step's
+`runtime` and the pydantic-ai runtime's `model_runtime`, left unset, are the one model runtime
+the config composes (ruling M-RT): the plan gives its name, origin `matrix`, note `the only
+model runtime composed`.
 
 **Failure behaviour.** A config that does not compose or wire is the error envelope with
-every problem, and no plan; a `limits.components` name that is no component is one of them.
+every problem, and no plan; a `limits.components` name that is no component is one of them,
+and so is a model step's `runtime` or a pydantic-ai runtime's `model_runtime` left unset when
+the config composes no model runtime, or several (`missing_key`, listing them).
 Nothing is run or called. Each component's limits in `settings` are those the executor runs
 it under (`tests/test_plan_and_run.py` rebuilds them from the plan and compares).
 

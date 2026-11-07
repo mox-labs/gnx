@@ -72,13 +72,14 @@ import sys
 import time
 from dataclasses import dataclass, field
 from functools import cache
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from matrix.domain.agent import AgentCapabilities, AgentResponse
 from matrix.domain.errors import AgentRuntimeError, ConfigError, ModelRuntimeError, invalid
 from matrix.domain.model_call import ModelRequest, TokenUsage, ToolCall, ToolSpec, Turn
+from matrix.domain.needs import ONLY_COMPOSED, model_runtime_named
 from matrix.domain.optional import SupportsAclose
 from matrix.domain.problems import Problem, problem
 from matrix.domain.session import call_sent, call_session, record_cancelled, record_session
@@ -103,8 +104,9 @@ class PydanticAiRuntimeConfig(BaseModel):
     """A pydantic-ai agent loop whose model calls are made on a matrix model runtime (a config
     that reaches this is a capability grant, and naming a tool a grant to run its code, owner
     ruling 2026-10-22: see the package's SECURITY.md). `model_runtime` names one of
-    `matrix.model_runtimes`; it has no default, since which runtime answers is the operator's
-    choice. An agent's `model` on this runtime is a name that model runtime resolves; unset,
+    `matrix.model_runtimes`; unset, it is the only one the config composes, and the runtime is
+    refused when it composes none or several, so adding a second never changes which answers.
+    An agent's `model` on this runtime is a name that model runtime resolves; unset,
     `default_model`, then the model runtime's own default. `tools` are the tools an agent may be
     given, each a Python function named `module:function`: its module is found when the runtime
     is built, without running it, and imported when a session first offers the tool (a module
@@ -115,8 +117,9 @@ class PydanticAiRuntimeConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    #: The name, under ``matrix.model_runtimes``, of the model runtime every call is made on.
-    model_runtime: str = Field(min_length=1)
+    #: The name, under ``matrix.model_runtimes``, of the model runtime every call is made on;
+    #: unset, the only one composed, resolved when the runtime is built.
+    model_runtime: Annotated[str | None, ONLY_COMPOSED, Field(min_length=1)] = None
     #: Used when a definition names no model. ``None`` = the model runtime's own default.
     default_model: str | None = None
     #: Tool name → ``module:function``, a Python function pydantic-ai runs when the model asks.
@@ -173,8 +176,11 @@ class PydanticAiRuntime:
         cls, config: PydanticAiRuntimeConfig, *, model_runtimes: Mapping[str, ModelRuntime]
     ) -> PydanticAiRuntime:
         """The runtime on the model runtime ``config.model_runtime`` names among
-        ``model_runtimes``; a ConfigError at ``model_runtime`` when it names none of them."""
-        found = model_runtimes.get(config.model_runtime)
+        ``model_runtimes``, or on the only one of them when it names none; a ConfigError at
+        ``model_runtime`` when it names none of them, or names none and there are not exactly
+        one. Its ``config`` names the one it is on."""
+        name = model_runtime_named(config.model_runtime, model_runtimes, key="model_runtime")
+        found = model_runtimes.get(name)
         if found is None:
             known = sorted(model_runtimes)
             raise invalid(
@@ -183,14 +189,14 @@ class PydanticAiRuntime:
                     problem(
                         "model_runtime",
                         "name_unknown",
-                        f"{config.model_runtime!r} is not a composed model runtime",
+                        f"{name!r} is not a composed model runtime",
                         fix="name one of matrix.model_runtimes, or define it there",
                         allowed=known,
-                        got=config.model_runtime,
+                        got=name,
                     )
                 ],
             )
-        return cls(found, config)
+        return cls(found, config.model_copy(update={"model_runtime": name}))
 
     @property
     def config(self) -> PydanticAiRuntimeConfig:

@@ -253,6 +253,61 @@ def test_a_value_a_file_sets_names_the_file(
     assert (family["value"], family["origin"]) == ("mock", "extension")
 
 
+#: A config whose model step and pydantic-ai runtime name no model runtime: one is composed.
+UNNAMED = """\
+matrix:
+  model_runtimes:
+    fast: {type: mock, default: ok}
+  agent_runtimes:
+    loop: {type: pydantic-ai}
+  inputs: [matrix.v1.prompt]
+  components:
+    - {name: ask, type: matrix.v1.model-step, config: {}}
+"""
+
+
+def test_a_model_runtime_left_unnamed_is_the_only_one_composed_and_the_plan_says_so(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ruling M-RT: a model step's ``runtime`` and the pydantic-ai runtime's
+    ``model_runtime`` default to the one model runtime the config composes. The plan names it,
+    as matrix's default, and says why."""
+    (project / "matrix.yaml").write_text(UNNAMED)
+    code, plan, _ = _cli(capsys, "plan", "--json")
+    assert code == 0, plan
+    (ask,) = plan["components"]
+    assert ask["runtime"] == "fast"
+    assert [runtime["name"] for runtime in plan["model_runtimes"]] == ["fast"]
+    found = _settings(plan)
+    keys = ("matrix.components.ask.config.runtime", "matrix.agent_runtimes.loop.model_runtime")
+    for path in keys:
+        setting = found[path]
+        assert (setting["value"], setting["origin"], setting["file"]) == ("fast", "matrix", None)
+        assert setting["note"] == "the only model runtime composed"
+
+
+@pytest.mark.parametrize(
+    ("runtimes", "allowed"),
+    [("{}", []), ("{a: {type: mock}, b: {type: mock}}", ["a", "b"])],
+    ids=["none", "several"],
+)
+def test_a_model_runtime_left_unnamed_with_none_or_several_composed_is_refused(
+    project: Path, capsys: pytest.CaptureFixture[str], runtimes: str, allowed: list[str]
+) -> None:
+    """With no model runtime composed, or several, there is no default: each key left unset
+    is a config problem at its path, listing the runtimes there are, before anything runs."""
+    config = UNNAMED.replace("    fast: {type: mock, default: ok}\n", "").replace(
+        "  model_runtimes:\n", f"  model_runtimes: {runtimes}\n"
+    )
+    (project / "matrix.yaml").write_text(config)
+    code, _, err = _cli(capsys, "plan", "--json")
+    assert code == 3
+    found = {p["path"]: p for p in json.loads(err)["error"]["problems"]}
+    assert set(found) >= {"matrix.agent_runtimes.loop.model_runtime"}
+    for problem in found.values():
+        assert (problem["kind"], problem["allowed"]) == ("missing_key", allowed), problem
+
+
 def test_the_plans_limits_are_the_ones_the_run_keeps(
     project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
