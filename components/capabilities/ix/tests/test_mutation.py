@@ -399,6 +399,25 @@ def test_a_kill_that_takes_longer_on_the_mutant_is_reproduced_within_its_stages_
     assert outcome["killers"] == ["tests/test_slow.py::test_waits_until_it_is_on"]
 
 
+def test_a_line_two_tests_run_selects_both_whatever_coverage_core_is_asked_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression, found on Python 3.14 in CI: coverage's sys.monitoring core, 3.14's default,
+    records a line once and stops listening, so only the first test to run a line was mapped
+    to it; the others were never selected and a mutant they kill read as survived. The map
+    is made with the tracer core, whatever the environment asks for."""
+    monkeypatch.setenv("COVERAGE_CORE", "sysmon")
+    tree = _tree(tmp_path)
+    (tree / "tests" / "test_slow.py").write_text(SLOW)
+    experiment = _experiment(tmp_path, tree, probes=[_mutant('"on"', '"no"')])
+    root = _root()
+    root.mutants_map(experiment)
+    root.run(experiment, exploratory=True)
+    (outcome,) = _outcomes(experiment)
+    assert outcome.get("status") == "killed", outcome
+    assert "tests/test_slow.py::test_waits_until_it_is_on" in outcome["killers"], outcome
+
+
 def test_each_run_has_a_temporary_directory_of_its_own(tmp_path: Path) -> None:
     """D6, extended by the acceptance run: trials in flight shared the system's temporary
     directory, and a recon test that holds it to what it held before failed under another

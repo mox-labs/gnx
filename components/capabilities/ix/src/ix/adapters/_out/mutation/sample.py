@@ -214,7 +214,11 @@ async def _baseline(
                 select=None,
                 timeout_s=timeout_s,
                 arguments=["--cov", f"--cov-config={rc}", "--cov-context=test", "--cov-report="],
-                environment={"COVERAGE_FILE": str(data)},
+                # The tracer core, never sys.monitoring's (Python 3.14's default): that core
+                # reports a line once and stops listening, so a second test that runs it is
+                # not recorded under its own context, is never selected, and its kills read
+                # as survivors.
+                environment={"COVERAGE_FILE": str(data), "COVERAGE_CORE": "ctrace"},
             )
         except OverranError as overran:
             raise SampleRefusedError(

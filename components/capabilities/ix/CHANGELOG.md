@@ -75,7 +75,9 @@ mutants. Each entry compares with 0.8.0.
 - **`ix mutants sample|map|read`** and **`ix.mutants`** (`sample`, `map`, `read`), provisional
   (ruling R2):
   - `sample` draws the mutants and pins them as `probes/m-<id>.yaml`, and makes each suite's
-    selection map from coverage.py's per-test contexts in the suite's own environment;
+    selection map from coverage.py's per-test contexts in the suite's own environment, with
+    coverage's tracer core: sys.monitoring's (Python 3.14's default) records a line once,
+    so a second test that ran it would never be selected;
   - `map` makes the maps alone, for probe files another tool wrote;
   - `read` lists the survivors (an assertion gap, or a coverage gap) and the pruning candidates
     a greedy keep set leaves, for confirmation on a fresh, disjoint sample.
