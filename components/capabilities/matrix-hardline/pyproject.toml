@@ -35,9 +35,11 @@ Documentation = "https://mox-labs.github.io/gnx"
 Issues = "https://github.com/mox-labs/gnx/issues"
 Changelog = "https://github.com/mox-labs/gnx/blob/main/components/capabilities/matrix-hardline/CHANGELOG.md"
 
-# Registered as every matrix extension is.
+# Registered as every matrix extension is: one line per point it registers at, so a session
+# that reads neither loads none of it.
 [project.entry-points."matrix.extensions"]
-matrix-hardline = "matrix_hardline.runtime:register"
+model-runtime = "matrix_hardline.runtime:register"
+payload-type = "matrix_hardline.runtime:register"
 
 [build-system]
 requires = ["hatchling"]

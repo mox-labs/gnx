@@ -84,6 +84,7 @@ from matrix import (
     PROMPT,
     # registry
     Registry,
+    MATRIX_POINTS,
     Entry,
     Extension,
     Failure,
@@ -1003,17 +1004,21 @@ with `config` (see `AgentRuntime`), computed from the validated config without b
 `None` when it declares nothing, or when its config refuses `config`.
 
 `Failure(*, extension, origin, error)` records an extension that failed to load or a
-refused registration: `extension` is its entry point's name, `origin` its distribution.
+refused registration: `extension` is its `register`'s entry-point value
+(`acme.matrix_ext:register`), `origin` its distribution.
 
-`Extension(*, name, origin, register)` is one extension to load: `register(registry)` is
-called with the registry, and anything it raises, importing included, quarantines it.
+`Extension(*, name, origin, register, points=None)` is one extension to load:
+`register(registry)` is called with the registry, and anything it raises, importing included,
+quarantines it. `points` are the points it registers at or declares, as its entry points name
+them; registering at, or declaring, any other quarantines it whole, the message naming the
+line to add. `None`, for an extension given in code, declares nothing and is trusted.
 
 ### `Registry`
 
 | Method | Signature | Behaviour |
 |--------|-----------|-----------|
-| `add_point` | `(point, *, port=None) -> Registry` | Declares an extension point, owned by the distribution declaring it; with `port`, a Protocol whatever is registered there must keep. `ConfigError` when another distribution owns the point already |
-| `register` | `(point, type_url, build, *, config=None, needs=(), summary="", stability="beta", stand_in=False, drives=(), capabilities=None) -> Registry` | `capabilities`, for an `agent-runtime` with a `config`, is a pure function of the validated config giving its `AgentCapabilities`. `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, a class `build` that does not keep its point's port (naming each member it lacks), `capabilities` at another point or without a `config`, or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
+| `add_point` | `(point, *, port=None) -> Registry` | Declares an extension point, owned by the distribution declaring it; with `port`, a Protocol whatever is registered there must keep. `ConfigError` when another distribution owns the point already, or when the extension loading did not declare it |
+| `register` | `(point, type_url, build, *, config=None, needs=(), summary="", stability="beta", stand_in=False, drives=(), capabilities=None) -> Registry` | `capabilities`, for an `agent-runtime` with a `config`, is a pure function of the validated config giving its `AgentCapabilities`. `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, a class `build` that does not keep its point's port (naming each member it lacks), `capabilities` at another point or without a `config`, a point the extension loading did not declare, or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below). At a point outside `scope`, registers nothing |
 | `register_payload` | `(type_url, model, summary="") -> Registry` | Registers a pydantic model at `payload-type`; summary defaults to the first line of the model's docstring |
 | `entry` | `(point, type_url) -> Entry` | `NotFoundError` listing what is registered at that point |
 | `entries` | `(point=None) -> list[Entry]` | Sorted by point, then type URL |
@@ -1026,7 +1031,10 @@ Attributes: `points: set[str]`, `ports: dict[str, type]` (point to the Protocol 
 keep: `agent-runtime` to `AgentRuntime`, `model-runtime` to `ModelRuntime`, `store` to
 `ConstructStore`, `observer` to `Observer`), `owners: dict[str, str]` (point to the
 distribution that declared it: `matrix` for matrix's own, `(direct)` for one declared by the
-code composing the registry), `failures: list[Failure]`. A port is held by its required
+code composing the registry), `failures: list[Failure]`, `scope: frozenset[str] | None` (the
+points the session it serves reads: it keeps entries at those, and a registration at any
+other is ignored, so an extension serving two owners' points loads in a session of either;
+`None`, every point). A port is held by its required
 members: each must be there and callable, and one the port awaits must be a coroutine
 function; a port's [optional members](#optional-members) are not required. A point under a
 distribution's name (`ix.subject`) belongs to
@@ -1035,8 +1043,12 @@ type URLs. Any other point belongs to the distribution that declared it first. A
 declares an owned point again, with or without a port, is refused and quarantined whole; the
 owner, and code composing the registry directly, may.
 
-`load_extensions(registry, group="matrix.extensions") -> Registry` loads every entry point in
-the group into `registry`: each entry point's value is `register(registry) -> None`.
+`load_extensions(registry, group="matrix.extensions") -> Registry` loads into `registry` the
+extensions installed in the group that declare a point of its `scope` (every one, when it has
+none); one that declares none of them is not imported. An entry point's **name is a point**
+its extension registers at or declares, and its value the extension's `register(registry)`:
+an extension at three points has three entry points naming one `register`, which are one
+extension. The names are read from the installed metadata, importing nothing.
 
 `load` rules:
 
@@ -1051,9 +1063,11 @@ the group into `registry`: each entry point's value is `register(registry) -> No
   two non-owners, the first in entry-point name order keeps it and the second fails, naming
   both. Code calling `register` directly is treated as the owner.
 
-`default_registry(*, discover=True) -> Registry` returns a registry with every
-`matrix.extensions` entry point loaded. `discover=False` loads only matrix's built-ins, under
-the origin `matrix`.
+`default_registry(*, discover=True, points=None) -> Registry` returns a registry scoped to
+`points` (`None`: every point) with the `matrix.extensions` extensions loaded that declare one
+of them. `MATRIX_POINTS` are matrix's six; `compose` and the documents built on it ask for
+those, `catalog` and `describe_extension` for every point. `discover=False` loads only
+matrix's built-ins, under the origin `matrix`.
 
 `agent_runtime_type_url(name)` maps `claude-sdk` to `matrix.v1.agent-runtime.claude-sdk`;
 `model_runtime_type_url(name)` maps `mock` to `matrix.v1.model-runtime.mock`;
@@ -1082,11 +1096,12 @@ Matrix's own entries:
 | `store` | `matrix.v1.store.jsonl` | |
 | `store` | `matrix.v1.store.memory` | |
 
-A third-party extension:
+A third-party extension, one entry point per point it registers at:
 
 ```toml
 [project.entry-points."matrix.extensions"]
-acme = "acme.matrix_ext:register"
+component = "acme.matrix_ext:register"
+payload-type = "acme.matrix_ext:register"
 ```
 
 ```python
@@ -1609,14 +1624,14 @@ compose(
 ) -> Container
 ```
 
-Builds, in order: observers (and `otel` when the variables ask for export), agent runtimes
-and model runtimes (each resolved by type at its own point, options validated by its config
-model), the store, definitions (every `*.md` in each `definitions` directory, read by the
+Builds, in order: observers (and `otel` when the variables ask for export), model runtimes,
+then agent runtimes (each resolved by type at its own point, options validated by its config
+model; an agent runtime that needs `model_runtimes` is handed them), the store, definitions (every `*.md` in each `definitions` directory, read by the
 loader, plus `definitions`), and agents (each agent runtime's `check` runs here). A model
 step's model is checked by its model runtime when `Container.wire` builds the step. Makes no model or tool call,
 and installs no telemetry provider.
 
-- `registry` defaults to `default_registry()`.
+- `registry` defaults to `default_registry(points=MATRIX_POINTS)`.
 - `base_dir` anchors relative `definitions` directories that `load_config` did not already
   resolve; defaults to the working directory.
 - `source` is the key every problem's path starts with (`matrix.agents.triage.runtime`).
@@ -1669,7 +1684,8 @@ tier; `UsageError` when there are none).
 | `plan_config(tool="matrix", config=None, *, only=False)` | `Plan` (`matrix.v1.plan`): `tool`, `sources`, `inputs`, `stages` (what starts together), `components` (each `name`, `type`, `requires`, `provides`, `after`, `agent`, `runtime`, `model` (a model step's), `attempts`), `agents`, `agent_runtimes` and `model_runtimes` in use (each `name`, `type`, `stand_in`), `agent_calls_min` and `model_calls_min` (one per agent step, one per model step) and `agent_calls_max` and `model_calls_max` (one per attempt; null when a component that is neither needs `agents` or `model_runtimes`, and so may make sessions of its own), `store` (`type`, `location` with `RUN_ID` for the id), `settings` ([every effective value and its source](#the-plans-settings)), `warnings` | what `compose` and `wire` raise, and a problem for each `limits.components` name that is not a component |
 | `list_runs(tool="matrix", config=None, *, only=False)` | `Runs` (`matrix.v1.runs`): `store` (its type URL) and `runs`, oldest first, each `run_id`, `status` (`interrupted` for one whose writer is gone), `started`, `ended`, `location`; and `damaged`, each record the store skipped, `location` and `reason` (empty for a store that does not say). Builds only the store: runtimes and agents are not built | `ConfigError` when the store cannot be built, `StoreError` when it cannot be read |
 
-`registry` defaults to `default_registry()`.
+`registry` defaults to `default_registry()` for `catalog` and `describe_extension`, every
+extension; the documents that compose take `compose`'s.
 
 ### The plan's settings
 

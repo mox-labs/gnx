@@ -399,7 +399,7 @@ def test_extension_runtime_registers_by_entry_point(monkeypatch: pytest.MonkeyPa
         name = "acme-strands"
 
     class _EP:
-        name, value, dist = "strands", "pkg:register", _Dist()
+        name, value, dist = "agent-runtime", "pkg:register", _Dist()
 
         @staticmethod
         def load():  # type: ignore[no-untyped-def]

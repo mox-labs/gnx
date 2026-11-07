@@ -7,7 +7,14 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from matrix import ConfigError, NotFoundError, Registry, default_registry, load_extensions
+from matrix import (
+    MATRIX_POINTS,
+    ConfigError,
+    NotFoundError,
+    Registry,
+    default_registry,
+    load_extensions,
+)
 
 
 class Settings(BaseModel):
@@ -69,7 +76,10 @@ def test_a_lookup_miss_lists_what_is_registered() -> None:
     assert isinstance(e.value, KeyError) and e.value.kind == "not_found"
 
 
-def _entry_point(name: str, register: Any, dist: str = "pkg") -> Any:
+def _entry_point(points: Any, register: Any, dist: str = "pkg") -> list[Any]:
+    """The entry points of ``dist``'s extension: one per point it declares, each naming
+    ``<dist>:register``, as its pyproject.toml would."""
+
     class _Dist:
         pass
 
@@ -84,23 +94,28 @@ def _entry_point(name: str, register: Any, dist: str = "pkg") -> Any:
                 raise register
             return register
 
-    ep = _EP()
-    ep.name = name  # type: ignore[attr-defined]
-    ep.dist = d  # type: ignore[attr-defined]
-    return ep
+    found = []
+    for point in [points] if isinstance(points, str) else points:
+        ep = _EP()
+        ep.name = point  # type: ignore[attr-defined]
+        ep.dist = d  # type: ignore[attr-defined]
+        found.append(ep)
+    return found
 
 
 def test_a_broken_extension_is_quarantined_and_the_rest_load(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    good = _entry_point("good", lambda r: r.register("component", "good.v1.x", build), "good-pkg")
-    bad = _entry_point("bad", ImportError("no module named nope"), "bad-pkg")
-    monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: [bad, good])
+    good = _entry_point(
+        "component", lambda r: r.register("component", "good.v1.x", build), "good-pkg"
+    )
+    bad = _entry_point("component", ImportError("no module named nope"), "bad-pkg")
+    monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: bad + good)
     registry = load_extensions(Registry())
     assert ("component", "good.v1.x") in registry
     assert registry.entry("component", "good.v1.x").origin == "good-pkg"
     (failure,) = registry.failures
-    assert (failure.extension, failure.origin) == ("bad", "bad-pkg")
+    assert (failure.extension, failure.origin) == ("bad-pkg:register", "bad-pkg")
     assert "no module named nope" in failure.error
 
 
@@ -110,9 +125,9 @@ def test_a_collision_names_both_origins_whatever_the_install_order(
     def claims(registry: Registry) -> None:
         registry.register("component", "shared.v1.x", build)
 
-    first = _entry_point("a-first", claims, "pkg-a")
-    second = _entry_point("b-second", claims, "pkg-b")
-    for order in ([first, second], [second, first]):
+    first = _entry_point("component", claims, "pkg-a")
+    second = _entry_point("component", claims, "pkg-b")
+    for order in (first + second, second + first):
         monkeypatch.setattr("matrix.composition.container.entry_points", lambda group, o=order: o)
         registry = load_extensions(Registry())
         assert registry.entry("component", "shared.v1.x").origin == "pkg-a"  # name order
@@ -156,7 +171,7 @@ def test_an_extension_at_a_point_declared_later_is_retried(
     def owner(registry: Registry) -> None:
         registry.add_point("sensor")
 
-    eps = [_entry_point("acme", sensor_plugin, "acme"), _entry_point("ix", owner, "ix")]
+    eps = _entry_point("sensor", sensor_plugin, "acme") + _entry_point("sensor", owner, "ix")
     monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: eps)
     registry = load_extensions(Registry())
     assert ("sensor", "acme.v1.sensor.x") in registry
@@ -168,7 +183,7 @@ def test_a_point_nobody_declares_is_still_a_failure(monkeypatch: pytest.MonkeyPa
         registry.register("sensor", "acme.v1.sensor.x", build)
 
     monkeypatch.setattr(
-        "matrix.composition.container.entry_points", lambda group: [_entry_point("acme", orphan)]
+        "matrix.composition.container.entry_points", lambda group: _entry_point("sensor", orphan)
     )
     (failure,) = load_extensions(Registry()).failures
     assert "no extension point 'sensor'" in failure.error
@@ -180,7 +195,7 @@ def test_registration_is_all_or_nothing(monkeypatch: pytest.MonkeyPatch) -> None
         raise RuntimeError("broke half way")
 
     monkeypatch.setattr(
-        "matrix.composition.container.entry_points", lambda group: [_entry_point("acme", half)]
+        "matrix.composition.container.entry_points", lambda group: _entry_point("component", half)
     )
     registry = load_extensions(Registry())
     assert ("component", "acme.v1.first") not in registry
@@ -197,7 +212,9 @@ def test_an_extension_cannot_shadow_a_namespace_it_does_not_own(
         registry.register("agent-runtime", "aaa.v1.agent-runtime.fine", lambda: "fine")
         registry.register("agent-runtime", "matrix.v1.agent-runtime.mock", lambda: "hijacked")
 
-    eps = [_entry_point("aaa", impostor, "aaa"), _entry_point("matrix", matrix_register, "matrix")]
+    eps = _entry_point("agent-runtime", impostor, "aaa") + _entry_point(
+        MATRIX_POINTS, matrix_register, "matrix"
+    )
     monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: eps)
     registry = load_extensions(Registry())
     assert registry.entry("agent-runtime", "matrix.v1.agent-runtime.mock").origin == "matrix"
@@ -205,7 +222,7 @@ def test_an_extension_cannot_shadow_a_namespace_it_does_not_own(
         "agent-runtime",
         "aaa.v1.agent-runtime.fine",
     ) not in registry  # the impostor is dropped whole
-    assert any(f.extension == "aaa" and "namespace" in f.error for f in registry.failures)
+    assert any(f.extension == "aaa:register" and "namespace" in f.error for f in registry.failures)
 
 
 def test_a_quarantined_impostor_is_named_by_its_entry_point(
@@ -216,13 +233,87 @@ def test_a_quarantined_impostor_is_named_by_its_entry_point(
     def impostor(registry: Registry) -> None:
         registry.register("agent-runtime", "matrix.v1.agent-runtime.mock", lambda: "hijacked")
 
-    eps = [
-        _entry_point("a-mock-plugin", impostor, "aaa-dist"),
-        _entry_point("matrix", matrix_register, "matrix"),
-    ]
+    eps = _entry_point("agent-runtime", impostor, "aaa-dist") + _entry_point(
+        MATRIX_POINTS, matrix_register, "matrix"
+    )
     monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: eps)
     (failure,) = load_extensions(Registry()).failures
-    assert (failure.extension, failure.origin) == ("a-mock-plugin", "aaa-dist")
+    assert (failure.extension, failure.origin) == ("aaa-dist:register", "aaa-dist")
+
+
+def test_an_extension_is_loaded_only_for_a_session_that_needs_one_of_its_points(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M-DISC: a session loads the extensions that declare one of its points, read from their
+    entry points' names, and imports no other: a recon session never imports ix's
+    registration. A registry for every point (a catalog) loads them all."""
+    imported: list[str] = []
+
+    def at(name: str, point: str, type_url: str) -> Any:
+        def register(registry: Registry) -> None:
+            imported.append(name)
+            registry.register(point, type_url, build)
+
+        return register
+
+    eps = _entry_point("component", at("acme", "component", "acme.v1.x"), "acme") + _entry_point(
+        "store", at("other", "store", "other.v1.store"), "other"
+    )
+    monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: eps)
+    scoped = default_registry(points={"component"})
+    assert imported == ["acme"] and ("component", "acme.v1.x") in scoped
+    assert ("store", "other.v1.store") not in scoped
+    imported.clear()
+    every = default_registry()
+    assert sorted(imported) == ["acme", "other"] and ("store", "other.v1.store") in every
+
+
+def test_an_extension_that_registers_where_it_did_not_declare_is_quarantined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The declaration is held to the code: registering at, or declaring, a point the entry
+    points do not name quarantines the extension whole, with the line to add. An entry point
+    written for 0.9, named after its distribution, declares a point of that name, and so is
+    quarantined at its first registration."""
+
+    def wide(registry: Registry) -> None:
+        registry.register("component", "acme.v1.x", build)
+        registry.register("store", "acme.v1.store", build)
+
+    monkeypatch.setattr(
+        "matrix.composition.container.entry_points",
+        lambda group: (
+            _entry_point("component", wide, "acme")
+            + _entry_point("old", lambda r: r.register("component", "old.v1.x", build), "old")
+        ),
+    )
+    registry = load_extensions(Registry())
+    assert ("component", "acme.v1.x") not in registry  # all or nothing
+    acme, old = sorted(registry.failures, key=lambda f: f.origin)
+    assert "registers at 'store', which its entry points do not declare" in acme.error
+    assert '"store" = "acme:register"' in acme.error
+    assert "'component'" in old.error and ("component", "old.v1.x") not in registry
+
+
+def test_an_extension_serving_another_owner_s_point_is_not_quarantined_for_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An extension that registers at two owners' points (an ix sensor and a recon collector)
+    loads in a session of either: a registry scoped to a session's points keeps the entries at
+    them and ignores the rest, where the point's owner, not loaded, would leave it unknown."""
+
+    def both(registry: Registry) -> None:
+        registry.register("recon.collector", "acme.v1.collector.x", build)
+        registry.register("ix.sensor", "acme.v1.sensor.x", build)
+
+    eps = _entry_point(["recon.collector", "ix.sensor"], both, "acme") + _entry_point(
+        "recon.collector", lambda r: r.add_point("recon.collector"), "recon"
+    )
+    monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: eps)
+    registry = default_registry(points={"recon.collector"})
+    assert registry.failures == []
+    assert ("recon.collector", "acme.v1.collector.x") in registry
+    assert registry.entries("ix.sensor") == []
 
 
 def test_the_built_ins_alone_still_belong_to_matrix() -> None:
@@ -394,7 +485,9 @@ def test_each_point_records_its_owner_and_another_cannot_redeclare_it(
         registry.register("component", "squat.v1.x", build)
         registry.add_point("ix.subject", port=Settings)
 
-    eps = [_entry_point("ix", ix, "ix"), _entry_point("squat", squatter, "squat")]
+    eps = _entry_point("ix.subject", ix, "ix") + _entry_point(
+        ["component", "ix.subject"], squatter, "squat"
+    )
     monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: eps)
     registry = load_extensions(Registry())
     assert registry.owners["ix.subject"] == "ix"
@@ -402,7 +495,8 @@ def test_each_point_records_its_owner_and_another_cannot_redeclare_it(
     assert "ix.subject" not in registry.ports  # the squatter's port did not land
     assert ("component", "squat.v1.x") not in registry  # quarantined whole
     (failure,) = registry.failures
-    assert failure.extension == "squat" and "ix.subject" in failure.error and "ix" in failure.error
+    assert failure.extension == "squat:register" and "ix.subject" in failure.error
+    assert "ix" in failure.error
     registry.add_point("ix.subject")  # code that composes directly is trusted, as for type URLs
     assert registry.owners["ix.subject"] == "ix"
 
@@ -420,10 +514,12 @@ def test_a_point_under_a_distribution_s_name_is_its_own_whoever_declared_it_firs
     def ix(registry: Registry) -> None:
         registry.add_point("ix.subject")
 
-    eps = [_entry_point("aaa", impostor, "aaa"), _entry_point("ix", ix, "ix")]
+    eps = _entry_point(["ix.subject", "component"], impostor, "aaa") + _entry_point(
+        "ix.subject", ix, "ix"
+    )
     monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: eps)
     registry = load_extensions(Registry())
     assert registry.owners["ix.subject"] == "ix" and "ix.subject" not in registry.ports
     assert ("component", "aaa.v1.x") not in registry
     (failure,) = registry.failures
-    assert failure.extension == "aaa" and "ix.subject" in failure.error
+    assert failure.extension == "aaa:register" and "ix.subject" in failure.error

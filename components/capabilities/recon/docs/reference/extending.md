@@ -87,9 +87,11 @@ def register(registry):
 ```
 
 ```toml
-# my_package's pyproject.toml
+# my_package's pyproject.toml: one line per point it registers at, so only a session that
+# reads one of them imports it
 [project.entry-points."matrix.extensions"]
-acme = "my_package.recon_sqlite:register"
+"recon.collector" = "my_package.recon_sqlite:register"
+"recon.source" = "my_package.recon_sqlite:register"
 ```
 
 ```yaml

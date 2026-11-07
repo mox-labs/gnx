@@ -52,6 +52,17 @@ bridge distribution of its own, `matrix-hardline` 0.1.0.
   a `sent` from 0.9 does not match the same request under 0.10. A judge's call made through
   `pydantic_ai_model` digests by the same rule as a step's.
 - **`RELEASE_TAG` is `matrix-v0.10.0`**: the install lines and every repair fix name it.
+- **A `matrix.extensions` entry point's name is a point its extension registers at** (ruling
+  M-DISC), and its value the extension's `register`: an extension at three points has three
+  lines naming one `register`. Discovery reads the names from the installed metadata, without
+  importing anything, and loads only the extensions that declare a point the session reads:
+  `compose` asks for matrix's six points (`MATRIX_POINTS`), `catalog` and `describe` for every
+  one, `list_runs` for `store`. A recon session no longer imports ix's registration. An
+  extension that registers at, or declares, a point its entry points do not name is
+  quarantined whole, the message naming the line to add; an entry point written for 0.9
+  (named after its distribution) is one, at its first registration. `Failure.extension` is the
+  extension's `register` (`acme.matrix_ext:register`), where it was the entry point's name.
+  matrix's own entry points name its six points.
 
 ### Added
 
@@ -66,7 +77,13 @@ bridge distribution of its own, `matrix-hardline` 0.1.0.
   tokens, which its model runtime counts.
 - **`matrix.testing.ModelRuntimeConformance`**: the suite for the model-runtime port, run
   against the mock and every stand-in in matrix's tests and the bridge's.
-- New exports: `Turn`, `Role`, `ToolSpec`, `ToolCall`, `Use`, `pydantic_ai_model`.
+- **A registry serves a session's points**: `default_registry(points=...)` and
+  `Registry.scope` keep the entries at those points and ignore a registration at any other,
+  so an extension serving two owners' points (an ix sensor and a recon collector) loads in a
+  session of either. `Extension.points` is what an extension declares; one given in code
+  declares nothing and is trusted.
+- New exports: `Turn`, `Role`, `ToolSpec`, `ToolCall`, `Use`, `pydantic_ai_model`,
+  `MATRIX_POINTS`.
 
 ## 0.9.0 — 2026-11-06
 

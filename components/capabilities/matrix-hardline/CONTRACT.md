@@ -82,5 +82,6 @@ sent nothing (a refused name, a key that does not resolve) carries no document.
 ## The entry point and `register`
 
 **Stability: public.** `matrix_hardline.runtime:register` registers the runtime and the two payload
-schemas. Registering imports hardline's types (pydantic models; no HTTP client); building the runtime
+schemas, from two entry points named for the points it registers at, `model-runtime` and
+`payload-type`, so only a session that reads one of them imports it. Registering imports hardline's types (pydantic models; no HTTP client); building the runtime
 reads hardline's registry; nothing calls a model until `call`.

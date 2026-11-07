@@ -372,12 +372,15 @@ prompt or reply (`docs/design/2026-10-19-record.md` §18).
 
 ## Extending
 
-An extension is a package with an entry point in the `matrix.extensions` group whose value is
-`register(registry) -> None`:
+An extension is a package with entry points in the `matrix.extensions` group: each entry
+point's name is a point its extension registers at, and its value the extension's
+`register(registry) -> None`. A session loads only the extensions that declare a point it
+reads, so a package that registers only collectors is never imported to plan a run:
 
 ```toml
 [project.entry-points."matrix.extensions"]
-acme = "acme.matrix_ext:register"
+component = "acme.matrix_ext:register"
+payload-type = "acme.matrix_ext:register"
 ```
 
 ```python
@@ -395,7 +398,9 @@ def register(registry):
 
 The [API reference](docs/reference/api.md#the-registry) has the complete extension, with
 `Scorer`, its config and the `Review` payload. An extension that fails to import or register
-is quarantined: its entries are dropped, the failure is recorded, and the others load. A
+is quarantined: its entries are dropped, the failure is recorded, and the others load. So is
+one that registers at a point its entry points do not name, the message saying which line to
+add. A
 package owns the type URLs under its own name (`acme`
 owns `acme.*`): when two extensions register the same type URL, the owner keeps it and the
 other is quarantined, so nothing can replace a built-in by loading first.

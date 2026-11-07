@@ -9,7 +9,7 @@ You'll learn the **probe → normalize → survey** workflow by doing it. Total 
 Install recon from the gnx repository:
 
 ```bash
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.19.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.19.1#subdirectory=components/capabilities/recon"
 recon --version
 ```
 

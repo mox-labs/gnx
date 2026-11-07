@@ -1,8 +1,9 @@
 """matrix's own extensions, registered through the same entry point as anyone else's.
 
-``pyproject.toml`` declares ``[project.entry-points."matrix.extensions"] matrix = ...:register``,
-so :func:`~matrix.composition.container.load_extensions` finds the built-ins exactly as it
-finds a third party's: one discovery path, no special case. A runtime's or an observer's
+``pyproject.toml`` declares one ``[project.entry-points."matrix.extensions"]`` line per point
+it registers at, each naming :func:`register`, so
+:func:`~matrix.composition.container.load_extensions` finds the built-ins exactly as it finds a
+third party's: one discovery path, no special case. A runtime's or an observer's
 dependencies are imported only when an entry is built, so registering costs nothing, and an
 install that lacks one fails when it is used, saying how to repair it.
 """

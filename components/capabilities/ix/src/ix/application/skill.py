@@ -1057,13 +1057,13 @@ calls the run starts at most, as work, never a price: each agent session (one pe
 on a stand-in, with each entry that may call a model and does not say how many named under
 `uncounted`.
 
-A kind of your own is two parts, and needs no edit to ix: its declaration, a YAML file like
-these (in a lab's `kinds/` folder, or a package's at the `ix.kind` entry point), and its
-adapter, registered from the package's `matrix.extensions` entry point at
-`ix.extension.POINTS[family]` under the kind's type URL, with the needs it is built with
-(`launcher`, `runtimes`, `sessions`, `judge_models`). Everything an adapter is written
-against is in `ix.extension`: the ports, each need's Protocol, the optional roles, and what
-an adapter raises.
+A kind of your own is two parts, and needs no edit to ix: its declaration, a YAML file like these
+(in a lab's `kinds/` folder, or a package's at the `ix.kind` entry point), and its adapter,
+registered from the package's `matrix.extensions` entry point named for
+`ix.extension.POINTS[family]` (`"ix.sensor" = "acme.ix_ext:register"`) under the kind's type URL,
+with the needs it is built with (`launcher`, `runtimes`, `sessions`, `judge_models`). Everything an
+adapter is written against is in `ix.extension`: the ports, each need's Protocol, the optional
+roles, and what an adapter raises.
 
 A `process` subject is up when its `ready` URL answers an HTTP GET with a status below 500;
 without `ready`, when its `url` accepts a connection; with neither, as soon as it starts. One

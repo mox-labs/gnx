@@ -517,7 +517,7 @@ async def test_an_agent_calls_its_tool_through_hardline_end_to_end_on_the_wire()
 
     response = await runtime.run(definition, "What does ossify mean?")
 
-    assert LOOKED_UP == ["ossify", ""]
+    assert sorted(LOOKED_UP) == ["", "ossify"]  # pydantic-ai runs the two calls together
     assert response.content == "Ossify means to turn into bone."
     assert (response.model, response.family, response.provider) == (
         "qwen-served", "qwen", "openai-compat",
@@ -602,3 +602,32 @@ async def test_a_session_s_tokens_on_hardline_are_counted_once() -> None:
     assert response.tokens_input and response.tokens_output
     assert _counted(reader, "gen_ai.client.inference.usage.input_tokens") == response.tokens_input
     assert _counted(reader, "gen_ai.client.inference.usage.output_tokens") == response.tokens_output
+
+
+def test_the_published_surface_is_pinned() -> None:
+    """G6: what the bridge publishes (its names, its config, the documents it records and the
+    points its entry points declare), so that a change to any of them is deliberate."""
+    from importlib.metadata import entry_points
+
+    import matrix_hardline
+
+    assert set(matrix_hardline.__all__) == {
+        "FAILED_CALL_TYPE_URL", "TYPE_URL", "FailedCall", "HardlineModelRuntime",
+        "HardlineModelRuntimeConfig", "__version__", "reason", "register",
+    }  # fmt: skip
+    assert (TYPE_URL, FAILED_CALL_TYPE_URL) == (
+        "matrix-hardline.v1.model-runtime",
+        "matrix-hardline.v1.failed-call",
+    )
+    assert set(HardlineModelRuntimeConfig.model_fields) == {
+        "models", "default_model", "temperature", "max_tokens",
+    }  # fmt: skip
+    assert set(FailedCall.model_fields) == {"type_url", "attempts", "attempt_log", "limit"}
+    declared = {
+        point.name: point.value
+        for point in entry_points(group="matrix.extensions")
+        if point.dist is not None and point.dist.name == "matrix-hardline"
+    }
+    assert declared == dict.fromkeys(
+        ("model-runtime", "payload-type"), "matrix_hardline.runtime:register"
+    )

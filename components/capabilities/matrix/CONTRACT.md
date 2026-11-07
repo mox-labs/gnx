@@ -28,7 +28,7 @@ provides and does its work; matrix decides when, keeps what it hands over, and s
 | kinds | `<namespace>.v<N>.<name>`, checked by `check_type_url`; each kind has exactly one provider, or is a run input |
 | `Registry.register` | `(point, type_url, build, *, config=None, needs=(), summary="", stability="beta", stand_in=False, drives=(), capabilities=None)`; `capabilities` only for an agent runtime with a config |
 | `Registry.register_payload` | `(type_url, model, summary="")`: the schema rows of a kind validate against |
-| `matrix.extensions` | the entry-point group; each entry is `register(registry) -> None` |
+| `matrix.extensions` | the entry-point group: an entry point's name is a point its extension registers at or declares, and its value the extension's `register(registry) -> None`; one line per point, all naming one `register`. A session loads only the extensions that declare a point it reads |
 | `NEEDS` | the shared needs, each a `Need` with its type: `agents`, `model_runtimes`, `schemas`, `cwd`, `name` stable; `model_runtime_entries` beta. An agent runtime that declares `model_runtimes` makes its sessions' model calls on them |
 | the stop protocol | `ctx.stopping` is set; the component has `grace_s` to return; then it is cancelled. Every `ctx.defer` release is called once at the end of the run, last first |
 | `ContractError` | what breaking the contract raises (kind `contract`) |
@@ -54,7 +54,8 @@ registration is `stability="beta"`, `stand_in=False`, with no needs. `measure` r
 - After the component has ended, every context call is ignored, and the first is reported as
   `matrix.component.late`.
 - A registration at an undeclared point, under an invalid type URL, or of a class that does
-  not keep its point's port: `ConfigError`. A build that names a need nobody supplied:
+  not keep its point's port, or a registration or declaration at a point the extension's entry
+  points do not name: `ConfigError`. A build that names a need nobody supplied:
   `ConfigError` naming it. An extension whose `register` raises is quarantined whole.
 - A `compose(context=...)` key that names one of matrix's needs other than `cwd`:
   `ConfigError`, since composition supplies those.

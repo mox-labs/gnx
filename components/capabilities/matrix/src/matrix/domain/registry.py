@@ -8,6 +8,16 @@ reading anything else into it.
 Everything, built-ins included, arrives as an :class:`Extension`. One that fails to load or
 register is **quarantined**: recorded in :attr:`Registry.failures`, and the rest load.
 
+**An extension declares its points.** One discovered from an entry point names, in its entry
+points, every point it registers at or declares (:attr:`Extension.points`), read without
+importing it, so a session loads only the extensions its points need. Registering at a point it
+did not name, or declaring one, quarantines it whole, so the declaration cannot drift from what
+it does. An extension given in code names none, and is trusted.
+
+**A registry may serve some points only** (:attr:`Registry.scope`): it keeps the entries at
+those points, and a registration at any other is ignored, so an extension that serves two
+owners' points loads in a session of either without the other.
+
 **A point may have a port.** What is registered at ``agent-runtime`` must keep the
 :class:`AgentRuntime` port, at ``model-runtime`` the :class:`ModelRuntime` port, at ``store``
 the :class:`ConstructStore` port and at ``observer`` the :class:`Observer` port: a class is
@@ -197,6 +207,9 @@ class Extension:
     name: str
     origin: str
     register: Callable[[Registry], None]
+    #: The points it registers at or declares, as its entry points name them; None for one
+    #: given in code, which declares none and is trusted.
+    points: frozenset[str] | None = None
 
 
 @dataclass
@@ -208,15 +221,21 @@ class Registry:
     #: composing the registry.
     owners: dict[str, str] = field(default_factory=lambda: dict.fromkeys(MATRIX_POINTS, "matrix"))
     failures: list[Failure] = field(default_factory=list)
+    #: The points the session it serves reads; None: every point. A registration at any other
+    #: is ignored.
+    scope: frozenset[str] | None = None
     _entries: dict[tuple[str, str], Entry] = field(default_factory=dict)
     _origin: str = _DIRECT
+    #: The points the extension loading now declared; None when nothing declared any.
+    _declared: frozenset[str] | None = None
     #: The entry point name of each distribution loaded so far.
     _extensions: dict[str, str] = field(default_factory=dict)
 
     def add_point(self, point: str, *, port: type | None = None) -> Registry:
         """Declare an extension point owned by the caller; with ``port``, a Protocol that
         whatever is registered there must keep. Raises ConfigError when another distribution
-        owns the point already."""
+        owns the point already, or when the extension loading did not declare it."""
+        self._held_to_declaration(point, "declares")
         owner = self.owners.get(point)
         if owner is not None and owner not in (_DIRECT, self._origin) and self._origin != _DIRECT:
             if _owns(self._origin, point) and not _owns(owner, point):
@@ -262,9 +281,13 @@ class Registry:
         caller asks of the entry without building the runtime.
 
         Raises ConfigError for an unknown point, a type URL without a version segment, a
-        duplicate, a class that does not keep its point's port, or ``capabilities`` given at
-        another point or without a ``config``.
+        duplicate, a class that does not keep its point's port, ``capabilities`` given at
+        another point or without a ``config``, or a point the extension loading did not
+        declare. Outside :attr:`scope`, it registers nothing.
         """
+        self._held_to_declaration(point, "registers at")
+        if self.scope is not None and point not in self.scope:
+            return self  # a point the session this registry serves does not read
         if point not in self.points:
             raise _UnknownPointError(
                 f"no extension point {point!r}. Points: {', '.join(sorted(self.points))}",
@@ -317,6 +340,20 @@ class Registry:
             capabilities_of=capabilities,
         )
         return self
+
+    def _held_to_declaration(self, point: str, does: str) -> None:
+        """Raise ConfigError when the extension loading did not declare ``point``."""
+        if self._declared is None or point in self._declared:
+            return
+        name = self._extensions.get(self._origin, self._origin)
+        line = f'"{point}" = "{name}"'
+        raise ConfigError(
+            f"{self._origin} {does} {point!r}, which its entry points do not declare "
+            f"(they declare {', '.join(sorted(self._declared)) or 'none'}): add {line} to its "
+            '[project.entry-points."matrix.extensions"]',
+            fix=f'add {line} to [project.entry-points."matrix.extensions"] in {self._origin}\'s '
+            "pyproject.toml: an entry point's name is a point its extension registers at",
+        )
 
     def _quarantine(self, origin: str, why: str) -> None:
         """Drop everything ``origin`` registered or declared, and record why."""
@@ -467,6 +504,7 @@ class Registry:
         failures = len(self.failures)
         self._origin = extension.origin
         self._extensions[extension.origin] = extension.name
+        self._declared = extension.points
         try:
             extension.register(self)
         except Exception as e:
@@ -478,4 +516,5 @@ class Registry:
             return e
         finally:
             self._origin = _DIRECT
+            self._declared = None
         return None

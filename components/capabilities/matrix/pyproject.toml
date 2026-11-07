@@ -58,10 +58,17 @@ Changelog = "https://github.com/mox-labs/gnx/blob/main/components/capabilities/m
 [project.scripts]
 matrix = "matrix.adapters._in.cli:run"
 
-# Every extension, matrix's own included, registers through this one group: each entry point
-# is a callable register(registry) -> None, loaded by matrix.load_extensions().
+# Every extension, matrix's own included, registers through this one group. An entry point's
+# name is a point the extension registers at, and its value the extension's
+# register(registry) -> None: one line per point, so discovery loads an extension only for a
+# session that reads one of its points, without importing it to find out.
 [project.entry-points."matrix.extensions"]
-matrix = "matrix.composition.builtins:register"
+agent-runtime = "matrix.composition.builtins:register"
+model-runtime = "matrix.composition.builtins:register"
+component = "matrix.composition.builtins:register"
+payload-type = "matrix.composition.builtins:register"
+observer = "matrix.composition.builtins:register"
+store = "matrix.composition.builtins:register"
 
 [build-system]
 requires = ["hatchling"]

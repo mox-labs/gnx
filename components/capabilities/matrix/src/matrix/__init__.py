@@ -146,7 +146,7 @@ from .domain.ports._out.document_source import Document, DocumentSource
 from .domain.ports._out.model_runtime import ModelRuntime
 from .domain.problems import Problem
 from .domain.ref import REF, Ref
-from .domain.registry import Entry, Extension, Failure, Registry
+from .domain.registry import MATRIX_POINTS, Entry, Extension, Failure, Registry
 from .domain.session import (
     SESSION,
     Attribution,
@@ -181,6 +181,7 @@ __all__ = [
     "EXIT_MEANINGS",
     "EXIT_NEXT",
     "LEDGER",
+    "MATRIX_POINTS",
     "MODEL_CALL",
     "MODEL_STEP",
     "NEEDS",

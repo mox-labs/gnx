@@ -357,7 +357,8 @@ class _Opened:
 
 class Root:
     """The wired experiment model. Build one over another registry to bind other adapters;
-    :func:`root` is the default, over every installed ``matrix.extensions`` entry point.
+    :func:`root` is the default, over every installed ``matrix.extensions`` extension that
+    declares one of matrix's points or ix's.
     ``settings`` replaces what matrix's config tiers hold. ``run_store`` is the type URL of
     the store runs are kept in, built at matrix's ``store`` point: one whose config takes
     ``root``, the directory a run's directory is made in. ``tracer`` makes the spans of ix's
@@ -378,7 +379,11 @@ class Root:
     ) -> None:
         self._genre_files = genre_files or GenreFiles()
         self._kind_files = kind_files or KindFiles()
-        self._registry = default_registry() if registry is None else registry
+        self._registry = (
+            default_registry(points={*matrix.MATRIX_POINTS, *POINTS.values()})
+            if registry is None
+            else registry
+        )
         self._config = settings
         self._version = version
         self._clock = clock

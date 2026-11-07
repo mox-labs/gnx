@@ -116,7 +116,7 @@ def test_the_call_counts_are_open_only_for_a_component_handed_the_runtimes(
     the plan leaves the most calls open; one handed neither cannot reach a runtime."""
     from matrix.composition import container
 
-    def registry(*, discover: bool = True) -> matrix.Registry:
+    def registry(*, discover: bool = True, points: object = None) -> matrix.Registry:
         found = matrix.default_registry(discover=False)
         found.register("component", "acme.v1.tally", lambda **_: _Tally(), needs=set(needs))
         return found
@@ -570,7 +570,7 @@ class Slow:
         print("started", file=sys.stderr, flush=True)
         await asyncio.sleep(60)
 
-def registry(*, discover=True):
+def registry(*, discover=True, points=None):
     found = matrix.default_registry(discover=False)
     found.register("component", "acme.v1.slow", Slow)
     return found

@@ -74,7 +74,7 @@ from matrix.domain.needs import NEEDS
 from matrix.domain.optional import SupportsResolved, SupportsWarnings
 from matrix.domain.ports._out.construct_store import location_of
 from matrix.domain.problems import problem, sourced
-from matrix.domain.registry import Extension, Registry
+from matrix.domain.registry import MATRIX_POINTS, Extension, Registry
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -527,6 +527,9 @@ def _problems_of(error: MatrixError, where: str, entry: ComponentConfig) -> list
 
 
 #: The entry point group every extension, matrix's own built-ins included, registers through.
+#: An entry point's name is a point the extension registers at or declares, and its value the
+#: extension's ``register(registry)``: an extension at three points has three entry points,
+#: one ``register``.
 ENTRY_POINT_GROUP = "matrix.extensions"
 
 
@@ -543,28 +546,53 @@ def _registers(point: EntryPoint) -> Callable[[Registry], None]:
     return register
 
 
-def load_extensions(registry: Registry, group: str = ENTRY_POINT_GROUP) -> Registry:
-    """Load every extension installed at the ``group`` entry point into ``registry``."""
-    return registry.load(
+def installed_extensions(group: str = ENTRY_POINT_GROUP) -> list[Extension]:
+    """Every extension installed at the ``group`` entry point, with the points it declares,
+    read from the installed metadata: nothing is imported. The entry points of one
+    distribution that name one ``register`` are one extension."""
+    declared: dict[tuple[str, str], list[EntryPoint]] = {}
+    for point in entry_points(group=group):
+        origin = point.dist.name if point.dist is not None else point.value
+        declared.setdefault((origin, point.value), []).append(point)
+    return [
         Extension(
-            name=point.name,
-            origin=point.dist.name if point.dist is not None else point.value,
-            register=_registers(point),
+            name=value,
+            origin=origin,
+            register=_registers(points[0]),
+            points=frozenset(point.name for point in points),
         )
-        for point in entry_points(group=group)
-    )
+        for (origin, value), points in declared.items()
+    ]
 
 
-def default_registry(*, discover: bool = True) -> Registry:
-    """A registry with every ``matrix.extensions`` entry point loaded, matrix's built-ins
-    among them.
+def load_extensions(registry: Registry, group: str = ENTRY_POINT_GROUP) -> Registry:
+    """Load into ``registry`` every extension installed at the ``group`` entry point that
+    declares a point of its :attr:`~matrix.domain.registry.Registry.scope` (every one, when it
+    has none). An extension that declares none of them is not imported."""
+    found = installed_extensions(group)
+    scope = registry.scope
+    if scope is not None:
+        found = [extension for extension in found if (extension.points or frozenset()) & scope]
+    return registry.load(found)
+
+
+def default_registry(*, discover: bool = True, points: Iterable[str] | None = None) -> Registry:
+    """A registry with the ``matrix.extensions`` entry points loaded that declare one of
+    ``points``, the points the session it serves reads (None: every point, and every
+    extension): matrix's built-ins among them, when a point is one of matrix's.
 
     ``discover=False`` loads only matrix's built-ins, for tests and hermetic callers.
     """
+    registry = Registry(scope=None if points is None else frozenset(points))
     if discover:
-        return load_extensions(Registry())
-    builtins = Extension(name="matrix", origin="matrix", register=register_builtins)
-    return Registry().load([builtins])
+        return load_extensions(registry)
+    builtins = Extension(
+        name="matrix.composition.builtins:register",
+        origin="matrix",
+        register=register_builtins,
+        points=frozenset(MATRIX_POINTS),
+    )
+    return registry.load([builtins])
 
 
 class _Problems:
@@ -865,7 +893,7 @@ def compose(
     """
     full = config if isinstance(config, Config) else Config[Any](matrix=config, client=None)
     matrix = full.matrix
-    reg = registry if registry is not None else default_registry()
+    reg = registry if registry is not None else default_registry(points=MATRIX_POINTS)
     root = Path(base_dir) if base_dir is not None else Path.cwd()
     problems = _Problems()
     given = dict(context or {})

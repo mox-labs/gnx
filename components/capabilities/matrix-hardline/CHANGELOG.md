@@ -31,3 +31,5 @@ from matrix 0.10 (owner ruling HO1, 2026-11-06). Compared with matrix 0.9's `har
   backend cannot call them, at binding.
 - **A request carries turns, tools and the `max_tokens` and `temperature` overrides**: the whole call
   hardline's `complete` takes, as matrix 0.10's widened port does.
+- **Its entry points name its points**, `model-runtime` and `payload-type`, as matrix 0.10 reads them:
+  a session that reads neither (a recon survey) does not import the bridge or hardline.

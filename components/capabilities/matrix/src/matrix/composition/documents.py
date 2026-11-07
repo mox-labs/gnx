@@ -490,7 +490,7 @@ def list_runs(
     """
     loaded = _load(tool, config, only)
     try:
-        store = build_store(loaded.matrix, default_registry())
+        store = build_store(loaded.matrix, default_registry(points=("store",)))
     except ConfigError as e:
         raise invalid("the store cannot be built", sourced(e.problems, loaded.origins)) from None
     if store is None:  # the default registry always holds matrix's own stores

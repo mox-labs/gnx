@@ -152,8 +152,9 @@ def register(registry):
 """
 
 ENTRY_POINT = """\
+# One line per point the extension registers at: a session loads only what declares its points.
 [project.entry-points."matrix.extensions"]
-acme = "acme.matrix_extension:register"
+component = "acme.matrix_extension:register"
 """
 
 CONFIG_EXAMPLE = """\

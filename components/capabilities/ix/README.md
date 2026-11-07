@@ -355,7 +355,9 @@ adapter that skips its check on a placeholder still checks the rest.
 An adapter plugs in through matrix's registry, as every extension does. A package declares
 its kind as data at the `ix.kind` entry point, and registers the adapter from its
 `matrix.extensions` entry point at ix's point for the family (`ix.extension.POINTS`:
-`ix.subject`, `ix.probe`, `ix.sensor`, `ix.environment`) under the kind's type URL. ix
+`ix.subject`, `ix.probe`, `ix.sensor`, `ix.environment`) under the kind's type URL; the entry
+point's name is that point (`"ix.sensor" = "acme.ix_ext:register"`), so only a session that
+reads ix's points imports the package. ix
 resolves every adapter it runs that way, its own included, so a new one needs no edit to ix.
 Everything an adapter author writes against is in one public module, `ix.extension`, and
 ix's own adapters import it as a third party's do. An adapter declares what it needs built,

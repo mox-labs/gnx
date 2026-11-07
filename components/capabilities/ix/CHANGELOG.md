@@ -35,6 +35,11 @@ compares with 0.8.0.
   `matrix.SupportsAclose`; an error's `fix` and the tracer provider's span processing are read
   through declared types, not by name.
 - ix depends on `matrix>=0.10,<0.11` and `matrix-hardline>=0.1,<0.2`.
+- **ix's `matrix.extensions` entry points name its points** (`ix.subject`, `ix.probe`,
+  `ix.sensor`, `ix.environment`, `component`, `payload-type`), as matrix 0.10 reads them, so a
+  session that reads none of them (a recon survey) does not import ix. ix's root asks for
+  matrix's points and its own. A third party's adapter declares its family's point the same way
+  (`"ix.sensor" = "acme.ix_ext:register"`).
 
 ## 0.8.0 — 2026-11-06
 

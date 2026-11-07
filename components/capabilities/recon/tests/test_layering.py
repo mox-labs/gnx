@@ -459,19 +459,8 @@ class TestLibrarySurface:
 
 def test_importing_recon_loads_no_adapter_and_wires_nothing() -> None:
     """``import recon`` builds no root; building one imports neither httpx2 nor DuckDB nor
-    markitdown nor the MCP client, so planning and status never load them. The registry is
-    loaded with recon's and matrix's own registrations: matrix's discovery loads every
-    installed extension (ix's among them in this workspace), and what one of those imports is
-    its own (review C3)."""
+    markitdown nor the MCP client, so planning and status never load them."""
     code = (
-        "import importlib.metadata as md\n"
-        "every = md.entry_points\n"
-        "def ours(**kw):\n"
-        "    found = every(**kw)\n"
-        "    if kw.get('group') == 'matrix.extensions':\n"
-        "        return [e for e in found if e.name in ('recon', 'matrix')]\n"
-        "    return found\n"
-        "md.entry_points = ours\n"
         "import sys, recon\n"
         "heavy = {'httpx2', 'duckdb', 'markitdown', 'yaml', 'fastmcp', 'mcp', 'mcp_types',\n"
         "         'jsonschema', 'referencing'}\n"

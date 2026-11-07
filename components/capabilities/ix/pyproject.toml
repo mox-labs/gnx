@@ -64,7 +64,12 @@ ix = "ix.builtin.kinds"
 # ix's run path, its extension points and its adapters, registered as every matrix
 # extension is; `matrix catalog` lists them.
 [project.entry-points."matrix.extensions"]
-ix = "ix.composition.entry_point:register"
+"ix.subject" = "ix.composition.entry_point:register"
+"ix.probe" = "ix.composition.entry_point:register"
+"ix.sensor" = "ix.composition.entry_point:register"
+"ix.environment" = "ix.composition.entry_point:register"
+component = "ix.composition.entry_point:register"
+payload-type = "ix.composition.entry_point:register"
 
 [project.scripts]
 ix = "ix.adapters._in.cli:main"
