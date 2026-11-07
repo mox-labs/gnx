@@ -487,17 +487,21 @@ class TestAudioIsNeverSentAnywhere:
     requester, its rate limit, its spans and the capture log, to a third party the mission
     never named. Neither the ``document`` converter nor ``$markitdown`` may reach it.
 
-    The speech client is faked, so a call is seen rather than sent."""
+    The audio converter's transcription is faked where the converter calls it, so a call is
+    seen rather than sent, whether or not the speech client is installed: recon does not
+    install markitdown's ``audio-transcription`` extra, and an application beside it may."""
 
     @pytest.fixture
     def speech_calls(self, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+        from markitdown.converters import _audio_converter
+
         calls: list[int] = []
 
-        def recognize_google(self: Any, audio: Any, *args: Any, **kwargs: Any) -> str:
-            calls.append(len(audio.get_wav_data()))
+        def transcribe_audio(file_stream: Any, *args: Any, **kwargs: Any) -> str:
+            calls.append(len(file_stream.read()))
             return "a transcript"
 
-        monkeypatch.setattr("speech_recognition.Recognizer.recognize_google", recognize_google)
+        monkeypatch.setattr(_audio_converter, "transcribe_audio", transcribe_audio)
         return calls
 
     def test_audio_an_api_collector_fetched_as_a_document_is_not_transcribed(

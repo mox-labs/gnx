@@ -35,7 +35,11 @@ dependencies = [
     # DuckDB imports pytz to return a TIMESTAMP WITH TIME ZONE, and does not declare it.
     "pytz>=2024.1",
     "tenacity>=9.0",
-    "markitdown[all]>=0.1.0",
+    # The extras for the converters recon registers (markitdown_converter._CONVERTERS), not
+    # `[all]`: that adds audio, YouTube and Azure ones recon never registers, and from 0.1.6 a
+    # pre-release Azure dependency, which held the resolution at an onnxruntime with no
+    # Python 3.14 wheel.
+    "markitdown[docx,outlook,pdf,pptx,xls,xlsx]>=0.1.0",
     # The library writes through the API alone, a no-op until an application installs an
     # SDK. The `recon` command is such an application: it carries the SDK and the OTLP
     # exporter over http/protobuf, the one protocol it exports over (no gRPC), so the OTEL_*

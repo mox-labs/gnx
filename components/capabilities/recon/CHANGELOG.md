@@ -16,6 +16,11 @@ On matrix 0.10. Nothing of recon's own surface changes.
   `recon._matrix:register`, where one entry point was named `recon`. A third party's extension
   declares its points the same way (`docs/reference/extending.md`).
 - recon depends on `matrix>=0.10,<0.11`.
+- **recon depends on markitdown's extras for the converters it registers** (`docx`, `outlook`,
+  `pdf`, `pptx`, `xls`, `xlsx`), not on `markitdown[all]`. `[all]` added audio, YouTube and
+  Azure dependencies recon never registers, and from markitdown 0.1.6 a pre-release Azure
+  package, which held the resolution at markitdown 0.1.5 and an onnxruntime with no Python 3.14
+  wheel: recon would not install on 3.14. The converters recon offers are unchanged.
 
 ## 0.19.0 — 2026-11-06
 
