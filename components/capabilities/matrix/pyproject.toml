@@ -33,7 +33,7 @@ dependencies = [
     # The library writes through the API: spans and metrics cost nothing until an application
     # installs an SDK. >=1.23: the first release with a synchronous gauge, which a `gauge`
     # measure records to.
-    "opentelemetry-api>=1.23",
+    "opentelemetry-api>=1.45.1",
     # What `matrix run` (and `configure_telemetry()`) installs from the OTEL_* variables: the
     # SDK and the OTLP exporter over http/protobuf, the spec's default and the one protocol
     # matrix exports over (owner ruling 2026-10-22: no gRPC).

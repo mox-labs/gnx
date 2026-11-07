@@ -7,6 +7,11 @@ it works as installed. `docs/design/2026-10-19-record.md` §30 has the reasons. 
 testing (§32): whether a test suite fails when the code is wrong, estimated over sampled
 mutants. Each entry compares with 0.8.0.
 
+### Security
+
+- floors raised past known advisories: httpx2 >= 2.12 (GHSA-8xx6-hgc6-gc2m, GHSA-h4x7-gw46-3wm6, GHSA-pf96-p4fj-6566)
+- floors raised past known advisories: opentelemetry-api >= 1.45.1 (GHSA-xcq7-p3pf-p88h)
+
 ### Changed (breaking)
 
 - **`ix.v1.analysis.compare` compares two booleans paired** (ruling R1). The interval of the

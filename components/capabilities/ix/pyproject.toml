@@ -33,8 +33,8 @@ dependencies = [
     "matrix-hardline>=0.1,<0.2",
     # Pydantic's maintained continuation of httpx, the stack's one HTTP client; bounded to
     # the major tested.
-    "httpx2>=2.10,<3",
-    "opentelemetry-api>=1.20",
+    "httpx2>=2.12,<3",
+    "opentelemetry-api>=1.45.1",
     # The SDK's tracer provider, which a run whose sensors read spans installs, with no
     # exporter, when none is installed. Imported only then.
     "opentelemetry-sdk>=1.20",

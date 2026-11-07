@@ -2,6 +2,11 @@
 
 ## 0.3.1 — 2026-11-07
 
+### Security
+
+- floors raised past known advisories: httpx2 >= 2.12 (GHSA-8xx6-hgc6-gc2m, GHSA-h4x7-gw46-3wm6, GHSA-pf96-p4fj-6566)
+- floors raised past known advisories: opentelemetry-api >= 1.45.1 (GHSA-xcq7-p3pf-p88h)
+
 ### Fixed
 
 - **A failed tool's result is no longer sent as a success on `openai-compat`.** The chat-completions `tool` role has no error flag, and `Message.is_error` was dropped there, so a model was told a tool that failed had answered. The result's content is now marked, `[tool error] <content>`, the one encoding `CONTRACT.md` declares (ruling HO7: what a backend cannot carry is never dropped silently). `anthropic` already sent the Messages API's own `is_error`.

@@ -18,10 +18,10 @@ authors = [
 dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
-    "httpx2>=2.10,<3",
+    "httpx2>=2.12,<3",
     # The API: it records nothing until an application installs an SDK. 1.27 for the
     # histogram's explicit_bucket_boundaries_advisory.
-    "opentelemetry-api>=1.27",
+    "opentelemetry-api>=1.45.1",
     # The SDK and OTLP over http/protobuf, which the `hardline` command installs from the
     # OTEL_* variables. The library never imports them; the command's telemetry does,
     # only when a variable asks for export.

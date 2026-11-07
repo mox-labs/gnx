@@ -23,7 +23,7 @@ classifiers = [
 
 dependencies = [
     # Pydantic's maintained continuation of httpx; bounded to the major tested.
-    "httpx2>=2.10,<3",
+    "httpx2>=2.12,<3",
     "rich>=13.0",
     "rich-click>=1.8",
     "pydantic>=2.0",
@@ -44,7 +44,7 @@ dependencies = [
     # SDK. The `recon` command is such an application: it carries the SDK and the OTLP
     # exporter over http/protobuf, the one protocol it exports over (no gRPC), so the OTEL_*
     # variables are enough to export. They are imported only when a variable asks for one.
-    "opentelemetry-api>=1.27",
+    "opentelemetry-api>=1.45.1",
     "opentelemetry-sdk>=1.27",
     "opentelemetry-exporter-otlp-proto-http>=1.27",
     # The `mcp` collector's client: the one pydantic-ai's MCPToolset wraps, on the MCP SDK v2
