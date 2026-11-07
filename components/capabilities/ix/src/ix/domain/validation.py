@@ -785,9 +785,9 @@ def _placeholders(
     somewhere = set(factors) | (set.union(*shared) if shared else set())
     inline = bool(experiment.probes)
     for index, probe in enumerate(probes.probes if probes else ()):
-        kind = kinds.get("probe", probe.kind)
+        probe_kind = kinds.get("probe", probe.kind)
         for key, value in probe.options.items():
-            option = kind.options.get(key) if kind else None
+            option = probe_kind.options.get(key) if probe_kind else None
             found, cautions = _unbound(
                 f"probes.{index if inline else probe.id}.{key}",
                 value,
@@ -804,9 +804,9 @@ def _placeholders(
         if not key.startswith(NOTE_PREFIX):
             warnings += _unfilled(f"environment.{key}", value, filled, "an environment's")
     for index, sensor in enumerate(experiment.sensors):
-        kind = kinds.get("sensor", sensor.kind)
+        sensor_kind = kinds.get("sensor", sensor.kind)
         for key, value in sensor.options.items():
-            option = kind.options.get(key) if kind else None
+            option = sensor_kind.options.get(key) if sensor_kind else None
             if option is None or not option.text:
                 if not key.startswith(NOTE_PREFIX):
                     warnings += _unfilled(f"sensors.{index}.{key}", value, filled, "a sensor's")
@@ -851,7 +851,7 @@ def _probes(
         {
             key
             for sensor in instruments.sensors
-            if (kind := kinds.kinds.get(sensor.kind)) is not None
+            if (kind := kinds.get("sensor", sensor.kind)) is not None
             for key in kind.truth
         }
     )

@@ -25,6 +25,7 @@ import asyncio
 import logging
 import os
 import secrets
+import sys
 import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
@@ -50,6 +51,7 @@ from matrix import (
 )
 
 from ix.adapters._in.matrix_components import COMPOSITION, NEED
+from ix.adapters._out import detached
 from ix.adapters._out.matrix_agents import SessionTable
 from ix.adapters._out.matrix_documents import (
     STDIN_SOURCE,
@@ -60,8 +62,8 @@ from ix.adapters._out.matrix_documents import (
 )
 from ix.adapters._out.matrix_errors import carried_over, converted
 from ix.adapters._out.matrix_process import MatrixLauncher
+from ix.adapters._out.matrix_runs import EVENT_LOG, execute
 from ix.adapters._out.matrix_runs import Runs as RunRecords
-from ix.adapters._out.matrix_runs import execute
 from ix.adapters._out.otel_tracing import OtelTracer, keep_spans
 from ix.adapters._out.provenance import checkout, contents, installed
 from ix.adapters._out.registration_file import RegistrationFile
@@ -81,7 +83,7 @@ from ix.domain.plan import Work, required, work
 from ix.domain.ports import ModelCalls, Preflight, Requirement, SpanReader, Traced
 from ix.domain.problem import InvalidExperimentError
 from ix.domain.provenance import Provenance, RuntimeOrigin, named_files
-from ix.domain.report import Report, Runs
+from ix.domain.report import Report, Runs, Status
 from ix.domain.report import report as build_report
 from ix.domain.report import summary as summarize
 from ix.domain.run import cell_key, schedule
@@ -108,7 +110,7 @@ if TYPE_CHECKING:
     from ix.domain.problem import Problem, Validation
     from ix.domain.registration import Deviations, Registered, Registration
     from ix.domain.report import RunSummary
-    from ix.domain.run import Reading, RunRecord
+    from ix.domain.run import Reading, RunManifest, RunRecord
 
 try:
     VERSION = _installed_version("ix")
@@ -363,6 +365,22 @@ class _Opened:
     registration: RegistrationFile | None
     #: The directory the experiment's relative paths resolve against, and its runs live in.
     base: str
+
+
+@dataclass(frozen=True)
+class _Ready:
+    """A run as it is about to start: where it is recorded, its prepared design and trials,
+    the adapters that carry it out, and its manifest."""
+
+    records: RunRecords
+    prepared: running.Prepared
+    kit: Kit
+    manifest: RunManifest
+
+
+#: How long ``ix stop`` waits for the run to end before it says the run is still stopping:
+#: a trial in flight has ``GRACE_S`` to end, and most runs release what they started at once.
+STOP_WAIT_S = 30.0
 
 
 class Root:
@@ -879,6 +897,7 @@ class Root:
         trials_in_flight: int | None = None,
         base: PathLike | None = None,
         registration: PathLike | None = None,
+        run_id: str | None = None,
         on_event: Callable[[str, Mapping[str, Any]], None] | None = None,
     ) -> Report:
         """Run the experiment and report what it found.
@@ -889,15 +908,112 @@ class Root:
         (:class:`UsageError`, from :func:`~ix.application.running.prepare`, which holds that
         rule), since a gated run is held to the design its registration froze.
         ``trials_in_flight`` is refused too where the experiment's kinds, metrics or genre
-        refuse overlap (its validation problem). Once it has started, whatever happens
-        is in the record: a run that was stopped or that failed still returns its report,
-        which says so.
+        refuse overlap (its validation problem); ``run_id`` where a run of that id is kept
+        already. Once it has started, whatever happens is in the record: a run that was
+        stopped or that failed still returns its report, which says so.
         """
+        ready = self._ready(
+            source,
+            exploratory=exploratory,
+            dry_run=dry_run,
+            repeats=repeats,
+            trials_in_flight=trials_in_flight,
+            base=base,
+            registration=registration,
+            run_id=run_id,
+        )
+        observers = self._settings().matrix.observers
+        if _reads_spans(ready.prepared.design, ready.kit):
+            observers = _with_otel(observers)
+            keep_spans()
+        # A stop request (Ctrl-C, SIGTERM) arrives here as the cancellation it is, after
+        # matrix stopped the trial in flight, released what was started and finished the
+        # record. The report then says how far the run got.
+        with suppress(KeyboardInterrupt, asyncio.CancelledError):
+            asyncio.run(
+                execute(
+                    store=ready.records.store,
+                    registry=self._registry,
+                    config=MatrixConfig.model_validate({**COMPOSITION, "observers": observers}),
+                    needs={NEED: ready.kit},
+                    manifest=ready.manifest,
+                    trials=ready.prepared.trials,
+                    on_event=on_event,
+                    tracer=self._tracer,
+                )
+            )
+        return self._report(ready.records.record(ready.manifest.run))
+
+    def start(
+        self,
+        path: PathLike,
+        *,
+        exploratory: bool = False,
+        dry_run: bool = False,
+        repeats: int | None = None,
+        trials_in_flight: int | None = None,
+        run_id: str | None = None,
+    ) -> Status:
+        """Start the run of the experiment at ``path`` as a process of its own and return
+        its status once it has opened its record, without waiting for it to end. It is
+        refused before anything starts exactly as :meth:`run` refuses it, and the child is
+        an ``ix run`` of the same experiment under the same id, so it records, stops and
+        reports as one in the foreground does."""
+        if os.fspath(path) == "-":
+            raise UsageError(
+                "a detached run cannot read its experiment from standard input",
+                fix="write the experiment to a file and start that",
+                details={"path": "-"},
+            )
+        ready = self._ready(
+            path,
+            exploratory=exploratory,
+            dry_run=dry_run,
+            repeats=repeats,
+            trials_in_flight=trials_in_flight,
+            run_id=run_id,
+        )
+        run = ready.manifest.run
+        flags = [
+            *(["--exploratory"] if exploratory else []),
+            *(["--dry-run"] if dry_run else []),
+            *(["--repeats", str(repeats)] if repeats is not None else []),
+            *(["--trials-in-flight", str(trials_in_flight)] if trials_in_flight else []),
+        ]
+        argv = [sys.executable, "-m", "ix", "run", str(Path(os.fspath(path)).resolve())]
+        detached.start(
+            [*argv, *flags, "--run-id", run, "--json"],
+            log=ready.records.log(run),
+            opened=lambda: ready.records.recorded(run),
+        )
+        return self._status(ready.records, run)
+
+    def _ready(
+        self,
+        source: Source,
+        *,
+        exploratory: bool,
+        dry_run: bool,
+        repeats: int | None,
+        trials_in_flight: int | None,
+        base: PathLike | None = None,
+        registration: PathLike | None = None,
+        run_id: str | None = None,
+    ) -> _Ready:
+        """Everything a run checks and computes before it starts: every refusal it makes,
+        the design it carries out, the adapters it carries it out with, and its manifest."""
         _require_width(trials_in_flight)
         opened = self._open(source, base=base, registration=registration)
         use_cases.require_valid(opened.examined, "run")
         directory = str(Path(opened.base).resolve())
         records = self._records(directory)
+        if run_id is not None and records.taken(run_id):
+            raise UsageError(
+                f"a run {run_id!r} is kept already, in {records.root}; a run's record is never "
+                "reopened",
+                fix="give another --run-id, or leave it out for a new one",
+                details={"path": records.root, "value": run_id},
+            )
         stored, notes = self._stored(opened), None
         # The changes are computed here and judged by `prepare`, which holds the rule that a
         # run giving a verdict refuses them.
@@ -929,7 +1045,7 @@ class Root:
             self._digested(examined, opened.vocabulary, directory),
             opened.vocabulary,
             stored,
-            run=self._run_id(examined.name),
+            run=run_id or self._run_id(examined.name),
             base=directory,
             now=self._clock(),
             version=self._version,
@@ -938,10 +1054,6 @@ class Root:
             overridden=tuple(overridden),
         )
         kit = self._kit(prepared.kinds, opened.vocabulary.kinds)
-        observers = self._settings().matrix.observers
-        if _reads_spans(prepared.design, kit):
-            observers = _with_otel(observers)
-            keep_spans()
         requirements, cautions = self._preflight(
             prepared.experiment,
             prepared.design,
@@ -954,23 +1066,7 @@ class Root:
         manifest = prepared.manifest.model_copy(
             update={"warnings": warned, "provenance": self._provenance(directory)}
         )
-        # A stop request (Ctrl-C, SIGTERM) arrives here as the cancellation it is, after
-        # matrix stopped the trial in flight, released what was started and finished the
-        # record. The report then says how far the run got.
-        with suppress(KeyboardInterrupt, asyncio.CancelledError):
-            asyncio.run(
-                execute(
-                    store=records.store,
-                    registry=self._registry,
-                    config=MatrixConfig.model_validate({**COMPOSITION, "observers": observers}),
-                    needs={NEED: kit},
-                    manifest=manifest,
-                    trials=prepared.trials,
-                    on_event=on_event,
-                    tracer=self._tracer,
-                )
-            )
-        return self._report(records.record(manifest.run))
+        return _Ready(records=records, prepared=prepared, kit=kit, manifest=manifest)
 
     def _report(self, record: RunRecord) -> Report:
         readings, unread = self._derived_readings(record)
@@ -1038,16 +1134,66 @@ class Root:
     def report(self, target: PathLike) -> Report:
         """The report of a run: ``target`` is a run's directory, or an experiment (its file
         or directory), meaning its latest run."""
+        records, run, record = self._run_of(target)
+        return self._report(record or records.record(run))
+
+    def status(self, target: PathLike) -> Status:
+        """Where a run stands, read from its record alone: ``target`` is as :meth:`report`
+        takes it."""
+        records, run, _ = self._run_of(target)
+        return self._status(records, run)
+
+    def events(self, target: PathLike, *, follow: bool = False) -> Iterator[dict[str, Any]]:
+        """A run's events, oldest first; with ``follow``, each as it is written, until the
+        run ends however it ends. ``target`` is as :meth:`report` takes it."""
+        records, run, _ = self._run_of(target)
+        return records.events(run, follow=follow)
+
+    def stop(self, target: PathLike) -> Status:
+        """Ask a running run to stop, as Ctrl-C does, and return its status once it ended,
+        or after :data:`STOP_WAIT_S` while it is still releasing what it started. A run that
+        has ended is left as it is."""
+        records, run, _ = self._run_of(target)
+        records.stop(run, wait_s=STOP_WAIT_S)
+        return self._status(records, run)
+
+    def _run_of(self, target: PathLike) -> tuple[RunRecords, str, RunRecord | None]:
+        """The runs ``target`` names a run of, that run's id, and its record where finding
+        the run read it (an experiment's latest run), so it is read once: ``target`` is a
+        run's directory, or an experiment, meaning its latest run."""
         records, run, experiment = self._locate(target)
         if run is not None:
-            return self._report(records.record(run))
+            return records, run, None
         for record in records.records(latest_first=True):
             if not experiment or record.manifest.experiment == experiment:
-                return self._report(record)
+                return records, record.run, record
         raise NotFoundError(
             f"{os.fspath(target)} has no runs in {records.root}",
             fix=f"ix run {os.fspath(target)}",
             details={"path": os.fspath(target)},
+        )
+
+    def _status(self, records: RunRecords, run: str) -> Status:
+        # The writer first: reading it finishes the record of a run whose writer is gone, so
+        # the record read after it says how that run ended.
+        host, pid = records.writer(run)
+        record = records.record(run)
+        listed = RunRecords.summary(record)
+        log = records.log(run)
+        return Status(
+            run=run,
+            location=record.location,
+            experiment=listed.experiment,
+            status=record.status,
+            mode=listed.mode,
+            started_at=listed.started_at,
+            ended_at=record.ended_at,
+            planned=listed.planned,
+            carried_out=listed.carried_out,
+            pid=pid,
+            host=host,
+            events=f"{record.location}/{EVENT_LOG}",
+            log=str(log) if log.is_file() else "",
         )
 
     def runs(self, target: PathLike | None = None) -> Runs:

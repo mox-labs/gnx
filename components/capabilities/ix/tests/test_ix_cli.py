@@ -255,9 +255,11 @@ class TestFixesNameRealCommands:
         assert mentioned <= set(main.commands), mentioned - set(main.commands)
 
     def test_the_commands_are_these(self) -> None:
+        # Changed requirement (ruling Q5): a long run is followed and stopped by status,
+        # events and stop.
         assert sorted(main.commands) == [
-            "deviations", "genres", "kinds", "plan", "register", "report", "run", "runs",
-            "validate",
+            "deviations", "events", "genres", "kinds", "plan", "register", "report", "run",
+            "runs", "status", "stop", "validate",
         ]  # fmt: skip
         assert {command.split()[1] for command, _ in COMMANDS} == set(main.commands)
         result = _run("results", "x", "--json")
@@ -740,9 +742,15 @@ class TestGenresAndKindsCommands:
         # Owner ruling 2026-10-22: an environment's keys are its service_keys; no binds.
         process = document["kinds"]["ix.v1.environment.process"]
         assert process["service_keys"] == ["host", "port", "url"] and "binds" not in process
-        for name, kind in ix.kinds().kinds.items():
+        # Review D5: a kind's document holds its own family's fields and no other's.
+        subject = document["kinds"]["ix.v1.subject.process"]
+        assert not {"metrics", "truth", "duration", "confusion", "service_keys"} & set(subject)
+        found = ix.kinds()
+        for name, kind in found.kinds.items():
             assert document["kinds"][name]["overlap"] == kind.overlap
-            for shown, metric in zip(document["kinds"][name]["metrics"], kind.metrics, strict=True):
+        for sensor in found.of("sensor"):
+            shown_metrics = document["kinds"][sensor.name]["metrics"]
+            for shown, metric in zip(shown_metrics, sensor.metrics, strict=True):
                 assert (shown["name"], shown["contended"]) == (metric.name, metric.contended)
 
     def test_kinds_shows_each_kinds_overlap_and_each_metrics_contended(self) -> None:
@@ -756,11 +764,13 @@ class TestGenresAndKindsCommands:
             assert header[-2:] == ["overlap", "runs"], header
         header, metrics = tables["Metrics"]
         assert header[-2:] == ["judged", "contended"]
-        for kind in ix.kinds().kinds.values():
+        found = ix.kinds()
+        for kind in found.kinds.values():
             _, rows = tables[f"{kind.family.capitalize()} kinds"]
             (row,) = [row for row in rows if row[0] == kind.label]
             assert row[-2] == kind.overlap, (kind.label, row)
-            for metric in kind.metrics:
+        for sensor in found.of("sensor"):
+            for metric in sensor.metrics:
                 (row,) = [row for row in metrics if row[0] == metric.name]
                 expected = ["yes" if metric.judged else "no", "yes" if metric.contended else "no"]
                 assert row[-2:] == expected, (metric.name, row)
@@ -778,7 +788,10 @@ class TestGenresAndKindsCommands:
         genres = _json(_run("genres", "--lab", lab, "--json"))
         assert [p["kind"] for p in genres["rejected"]["lab.v1.genre.loose"]] == ["genre_narrowing"]
         kinds = _json(_run("kinds", "--lab", lab, "--json"))
-        assert [p["kind"] for p in kinds["rejected"]["lab.v1.sensor.bad"]] == ["kind_invalid"]
+        # Changed requirement (review D5): a sensor kind's metrics are a key its record
+        # requires, so a file without them is refused as any missing key is.
+        refused = kinds["rejected"]["lab.v1.sensor.bad"]
+        assert [(p["kind"], p["path"]) for p in refused] == [("missing_key", "metrics")]
         assert "refused lab.v1.genre.loose" in " ".join(_run("genres", "--lab", lab).stdout.split())
 
     def test_a_kind_named_with_a_segment_the_registry_forbids_is_refused(

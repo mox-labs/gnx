@@ -219,6 +219,26 @@ class TestEveryClaimHolds:
         assert {"--skill", "-r", "--version"} <= top
         assert {command.split()[1] for command, _ in COMMANDS} == set(main.commands)
 
+    def test_every_flag_it_writes_after_a_command_is_one_that_command_takes(self) -> None:
+        """Review D8: a flag the skill tells an agent to pass (``ix run <path> --detach``,
+        ``ix events <run> --follow``) is one the command has, so following the skill never
+        meets a usage error. Each code span or block line ``ix <command> ...`` is read."""
+        spans = re.findall(r"`(ix [a-z][a-z-]* [^`\n]*)`", _everything())
+        blocks = [line.strip() for block in re.findall(r"```\w*\n(.*?)```", _everything(), re.S)
+                  for line in block.splitlines() if line.strip().startswith("ix ")]  # fmt: skip
+        checked = 0
+        for snippet in [*spans, *blocks]:
+            command, *words = snippet.split("#", 1)[0].split()[1:]
+            if command not in main.commands:
+                continue  # a command that does not exist is the test above's
+            takes = {option for param in main.commands[command].params for option in param.opts}
+            for word in words:
+                flag = word.split("=", 1)[0].strip("`,;:.()")
+                if flag.startswith("-") and flag != "-":
+                    assert flag in takes, (snippet, flag)
+                    checked += 1
+        assert checked > 10
+
     def test_the_exit_table_is_the_one_table(self) -> None:
         rows = re.findall(r"^\| (\d+) \| `([a-z_]+)` \| (.*?) \| (.*?) \|$", _skill(), re.M)
         assert [(kind, int(code)) for code, kind, _, _ in rows] == list(EXIT_CODES.items())
@@ -375,16 +395,20 @@ class TestTheReferencesTeachFromTheRecords:
 
     def test_every_kind_from_its_declaration(self) -> None:
         text = _reference("kinds")
-        for kind in ix.kinds().kinds.values():
+        found = ix.kinds()
+        for kind in found.kinds.values():
             assert f"**`{kind.label}`**: {kind.summary}" in text
             for name, option in kind.options.items():
                 assert f"`{name}`{'*' if option.required else ''}" in text, (kind.label, name)
-            for metric in kind.metrics:
+        for sensor in found.of("sensor"):
+            for metric in sensor.metrics:
                 assert f"metric `{metric.name}`" in text
-            if kind.service_keys:
-                keys = ", ".join(f"`{{<service>.{key}}}`" for key in kind.service_keys)
-                assert f"**`{kind.label}`**" in text and f"binds each service as {keys}" in text
-        judged = [m for k in ix.kinds().kinds.values() for m in k.metrics if m.judged]
+        for environment in found.of("environment"):
+            if environment.service_keys:
+                keys = ", ".join(f"`{{<service>.{key}}}`" for key in environment.service_keys)
+                assert f"**`{environment.label}`**" in text
+                assert f"binds each service as {keys}" in text
+        judged = [m for k in found.of("sensor") for m in k.metrics if m.judged]
         assert text.count("JUDGED by a model") == len(judged) == 6  # judge 4, evaluator 2
 
     def test_the_kinds_it_says_forbid_overlap_are_the_ones_declared(self) -> None:
@@ -422,7 +446,7 @@ class TestTheReferencesTeachFromTheRecords:
         }
         declared = {
             (kind.label, metric.name)
-            for kind in ix.kinds().kinds.values()
+            for kind in ix.kinds().of("sensor")
             for metric in kind.metrics
             if metric.contended
         }

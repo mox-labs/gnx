@@ -17,6 +17,7 @@ from importlib.metadata import PackageNotFoundError, version
 from ix.api import (
     configure_telemetry,
     deviations,
+    events,
     genres,
     kinds,
     load,
@@ -27,6 +28,9 @@ from ix.api import (
     run,
     runs,
     skill,
+    start,
+    status,
+    stop,
     validate,
 )
 from ix.domain.design import Design
@@ -53,7 +57,7 @@ from ix.domain.problem import (
     error_document,
 )
 from ix.domain.registration import Deviations, Registered, RegistrationConflictError
-from ix.domain.report import Report, Runs
+from ix.domain.report import Report, Runs, Status
 
 try:
     __version__ = version("ix")
@@ -83,6 +87,7 @@ __all__ = [
     "RegistrationConflictError",
     "Report",
     "Runs",
+    "Status",
     "UnregisteredError",
     "UsageError",
     "Validation",
@@ -90,6 +95,7 @@ __all__ = [
     "configure_telemetry",
     "deviations",
     "error_document",
+    "events",
     "genres",
     "kinds",
     "load",
@@ -100,5 +106,8 @@ __all__ = [
     "run",
     "runs",
     "skill",
+    "start",
+    "status",
+    "stop",
     "validate",
 ]

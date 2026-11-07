@@ -23,6 +23,34 @@ compares with 0.8.0.
 - **A `model-call` subject's usage facet** keeps the neutral reply's facts: `backend`,
   `attempts`, `retries` and `fallback_from` are gone from it (they are the model runtime's own
   record, the session row's `provenance`).
+- **`ix.Kind` is the union of four records, one per family** (review D5, ruling Q7):
+  `SubjectKind`, `ProbeKind` (adds `duration`), `SensorKind` (adds `metrics`, at least one,
+  `truth` and `confusion`) and `EnvironmentKind` (adds `service_keys`), each exported from
+  `ix.domain`; which one a declaration is comes from the family segment of its `name`. **Kind
+  files are unchanged.** Code that built `ix.Kind(...)` names its family's record; code that
+  called `ix.Kind.model_validate(data)` calls `pydantic.TypeAdapter(ix.Kind).validate_python`.
+  `ix kinds --json` shows each kind with its own family's keys alone: a subject kind has no
+  `metrics`, `truth`, `duration`, `confusion` or `service_keys`. A kind file that holds a key
+  of another family's is refused `kind_invalid` at that key, naming the family that declares
+  it; a sensor kind file with no `metrics` is `missing_key` at `metrics`, where it was
+  `kind_invalid`.
+
+### Added
+
+- **Long runs outlast a tool call** (owner ruling, panel 10-09 §6, reaffirmed as Q5):
+  `ix run <path> --detach` starts the run in a process of its own and returns once it has
+  opened its record, with its status; `ix status <run>` says where a run stands (running or
+  how it ended, trials carried out of those planned, the process writing it); `ix events
+  <run> --follow` prints its events until it ends, however it ends; `ix stop <run>` stops it
+  as Ctrl-C does. Each prints `ix.v1.status` and exits as it says: 13 while the run runs, 0
+  once it completed (no verdict: `ix report` gives that), 12 stopped or its process gone, 8
+  failed. No new exit code. In the library: `ix.start`, `ix.status`, `ix.events`, `ix.stop`
+  and `ix.Status`. `CONTRACT.md` has what each promises. `--follow` and `stop` refuse a run
+  still written on another host (`usage`), whose end this host cannot see, so a follower
+  always ends.
+- **`ix run --run-id ID`** (`ix.run(run_id=)`) names the run; an id a run is kept under
+  already, or one that is no safe directory name, is refused (`usage`).
+- `python -m ix` runs the command line.
 
 ### Removed (breaking)
 
@@ -35,6 +63,13 @@ compares with 0.8.0.
   `matrix.SupportsAclose`; an error's `fix` and the tracer provider's span processing are read
   through declared types, not by name.
 - ix depends on `matrix>=0.10,<0.11` and `matrix-hardline>=0.1,<0.2`.
+- `ix --skill -r kinds` says which keys every kind declares and which each family adds, read
+  from the records.
+- **The skill no longer hand-lists a runtime's config keys** (review D8): `runtime_options`
+  points to `matrix describe <the runtime's type URL>`, which lists them from the runtime's
+  own declaration. The lists for `claude-sdk` and hardline's model runtime had already
+  drifted from it. `ix --skill -r running` has a **Long runs** section: `--detach`,
+  `status`, `events --follow` and `stop`, with their exit codes.
 - **ix's `matrix.extensions` entry points name its points** (`ix.subject`, `ix.probe`,
   `ix.sensor`, `ix.environment`, `component`, `payload-type`), as matrix 0.10 reads them, so a
   session that reads none of them (a recon survey) does not import ix. ix's root asks for

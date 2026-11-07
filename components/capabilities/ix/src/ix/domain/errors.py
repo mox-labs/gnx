@@ -46,7 +46,8 @@ EXIT_CODES: dict[str, int] = {
 #: What each kind in :data:`EXIT_CODES` means.
 EXIT_MEANINGS: dict[str, str] = {
     "ok": "done; for validate, the experiment is valid; for run and report, the verdict "
-    "holds, or there is no verdict to give and none was asked for (exploratory or dry)",
+    "holds, or there is no verdict to give and none was asked for (exploratory or dry); for "
+    "status, events and stop, the run completed, which is no verdict",
     "unknown": "a failure ix did not classify",
     "usage": "a bad flag or argument",
     "config": "the experiment is invalid, or it cannot be carried out here as written (a kind "
@@ -63,14 +64,15 @@ EXIT_MEANINGS: dict[str, str] = {
     "inconclusive": "the verdict is inconclusive",
     "run_interrupted": "the run stopped before it finished; the record is kept and it gives no "
     "verdict",
-    "running": "the run has not finished yet",
+    "running": "the run has not finished yet; from stop, it is still releasing what it started",
     "interrupted": "the command itself was interrupted (Ctrl-C) before it finished",
 }
 
 #: What to do next on each kind in :data:`EXIT_CODES`.
 EXIT_NEXT: dict[str, str] = {
     "ok": "go on: validate, plan, register, run, in that order; after a run with no verdict "
-    "(exploratory or dry), register and run it for one",
+    "(exploratory or dry), register and run it for one; once `ix status` says a run "
+    "completed, `ix report <run directory>` gives its verdict",
     "unknown": "report it as a bug in ix, with the command that raised it",
     "usage": "correct the command; `ix <command> --help` lists its arguments",
     "config": "fix each problem at its `path` as its `fix` says, then validate again; for a "
@@ -93,7 +95,8 @@ EXIT_NEXT: dict[str, str] = {
     "inconclusive; extend the experiment only if the person decides to, amending with a reason "
     "that names this result",
     "run_interrupted": "run again; `ix report <run directory>` reads what was kept",
-    "running": "wait, then run `ix report` again",
+    "running": "wait, then ask again (`ix status <run directory>`); `ix events <run directory> "
+    "--follow` returns when it ends, and `ix stop <run directory>` stops it",
     "interrupted": "run the command again",
 }
 

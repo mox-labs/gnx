@@ -40,7 +40,7 @@ from ix.domain.analysis import ANALYSES, analysis_unsupported
 from ix.domain.design import Design, carried_out, kinds_in_use, missing_adapters
 from ix.domain.errors import ConfigError, UnregisteredError, UsageError
 from ix.domain.experiment import Experiment, ProbeConfig, SubjectConfig
-from ix.domain.kind import fill_options, placed, placeholders
+from ix.domain.kind import EnvironmentKind, fill_options, placed, placeholders
 from ix.domain.ports import Liveness, Recorded, Sensed, StandIn, Traced
 from ix.domain.registration import deviations
 from ix.domain.run import (
@@ -860,7 +860,7 @@ def _unbound(setup: Setup, kit: Kit, bindings: Bindings) -> tuple[str, ...]:
     them only to the services an environment's options list."""
     environment = schema.url("environment", setup.experiment.environment.kind)
     declared = kit.kinds.get(environment)
-    keys = set(declared.service_keys) if declared is not None else set()
+    keys = set(declared.service_keys) if isinstance(declared, EnvironmentKind) else set()
     services = bound(bindings)
     factors = set(setup.experiment.factors)
     written = [subject.options for subject in setup.experiment.subjects.values()]

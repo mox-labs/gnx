@@ -350,7 +350,9 @@ def _genre_narrowing(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
 def _kind_invalid(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     file = write(c)
     (file.parent / "kinds").mkdir()
-    (file.parent / "kinds" / "bad.yaml").write_text("name: lab.v1.sensor.bad\nsummary: s\n")
+    # A probe whose duration names no duration option breaks a rule of the declaration.
+    bad = {"name": "lab.v1.probe.bad", "summary": "s", "duration": ["length"]}
+    (file.parent / "kinds" / "bad.yaml").write_text(yaml.safe_dump(bad))
     rejected = ix.kinds(file.parent).rejected
     return {(p.path, p.kind) for problems in rejected.values() for p in problems}
 

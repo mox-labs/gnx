@@ -449,6 +449,61 @@ def summary(report: Report) -> RunSummary:
     )
 
 
+#: The exit kind of each way a run stands, where no verdict is read: a completed run's
+#: verdict is :class:`Report`'s to give.
+_STANDING: dict[RunStatus, str] = {
+    "running": "running",
+    "completed": "ok",
+    "interrupted": "run_interrupted",
+    "failed": "run_failed",
+}
+
+
+class Status(Record):
+    """Where one run stands: running or how it ended, how far it got, which process writes
+    it, and where its events are. Read from the record and nothing computed from its
+    readings, so it is cheap to ask again and again, and gives no verdict: ``ix report``
+    does, once the run has ended."""
+
+    schema_: Literal["ix.v1.status"] = Field(default=schema.STATUS, alias="schema")
+    run: str
+    location: str
+    experiment: str
+    status: RunStatus
+    mode: RunMode = "exploratory"
+    started_at: str = ""
+    ended_at: str = ""
+    planned: int = 0
+    carried_out: int = 0
+    #: The process writing the run, while it runs on this host; None once it has ended, and
+    #: for a run written on another host.
+    pid: int | None = None
+    #: The host the run is written on.
+    host: str = ""
+    #: The run's events, one ``matrix.v1.event`` a line (``ix events``): telemetry, lossy.
+    events: str = ""
+    #: What the process of a run started with ``--detach`` wrote to its standard error;
+    #: empty for a run started otherwise.
+    log: str = ""
+
+    @property
+    def exit_code(self) -> int:
+        """What a command that printed this status exits with (``ix status``, ``ix stop``,
+        ``ix events`` when it ends, ``ix run --detach``): 13 while the run runs, 0 once it
+        completed, and as ``ix report`` would for a run that was stopped (12) or that failed
+        (8)."""
+        return EXIT_CODES[_STANDING[self.status]]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def exit(self) -> Exit:
+        """The exit code, what it means and what to do next."""
+        kind = _STANDING[self.status]
+        return Exit(
+            code=EXIT_CODES[kind], kind=kind, meaning=EXIT_MEANINGS[kind], next=EXIT_NEXT[kind]
+        )
+
+
 class Runs(Record):
     """The runs kept beside an experiment, oldest first."""
 

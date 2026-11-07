@@ -52,6 +52,7 @@ DEVIATIONS: Final = "ix.v1.deviations"
 ERROR: Final = "ix.v1.error"
 REPORT: Final = "ix.v1.report"
 RUNS: Final = "ix.v1.runs"
+STATUS: Final = "ix.v1.status"
 
 #: The kinds of the rows a run records, one table each. ``RUN`` and ``TRIAL`` are computed
 #: before the run starts and supplied to it; the others are provided by components.

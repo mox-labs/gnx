@@ -71,7 +71,7 @@
       "name": "adapters_out",
       "files": ["src/ix/adapters/__init__.py", "src/ix/adapters/_out/__init__.py",
                 "src/ix/adapters/_out/agent_sensors.py", "src/ix/adapters/_out/commands.py",
-                "src/ix/adapters/_out/compose.py",
+                "src/ix/adapters/_out/compose.py", "src/ix/adapters/_out/detached.py",
                 "src/ix/adapters/_out/environments.py", "src/ix/adapters/_out/evaluators.py",
                 "src/ix/adapters/_out/k6_load.py",
                 "src/ix/adapters/_out/processes.py", "src/ix/adapters/_out/provenance.py",
@@ -81,7 +81,7 @@
       "allow": ["*", "ix.domain", "ix.extension", "ix.adapters._out"],
       "forbid": ["matrix", "opentelemetry", "hardline", "matrix_hardline"],
       "why": {
-        "*": "one technology each: k6, ps, httpx2, child Python, docker compose, git and file digests, the registration file, pydantic-evals",
+        "*": "one technology each: k6, ps, httpx2, child Python, docker compose, git and file digests, the registration file, pydantic-evals, a detached ix run",
         "ix.domain": "the ports they implement and the types they speak in",
         "ix.extension": "what an adapter is handed (a Launcher, Runtimes, Sessions, JudgeModels) is the published contract a third party writes against too",
         "ix.adapters._out": "one adapter may build on another, a subject or the compose environment on the launcher's processes module; a deviation from the four places that test_layering allows on purpose",
@@ -119,11 +119,11 @@
     },
     {
       "name": "adapters_in_cli",
-      "files": ["src/ix/adapters/_in/cli.py"],
+      "files": ["src/ix/adapters/_in/cli.py", "src/ix/__main__.py"],
       "allow": ["*", "ix"],
       "forbid": ["matrix", "opentelemetry", "hardline", "matrix_hardline"],
       "why": {
-        "*": "rich-click and rich",
+        "*": "rich-click and rich; __main__ is the command run as python -m ix, which a detached run starts",
         "ix": "the command reaches ix through 'import ix' alone. The entry admits every ix.* path, since an allowance is a prefix; test_layering holds the command to ix.__all__"
       }
     },
