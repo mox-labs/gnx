@@ -52,10 +52,12 @@ just check        # what every commit must pass: the docsite, the docs' shape, v
                   # and links, a staged secret scan, the identity grammar, component
                   # payloads, the plugin projection, and the capability packages' lint
                   # and format
-just ci           # the full CI gate: also the CHANGELOG check, the capability packages'
-                  # tests, their strict typecheck, each installed alone from its wheel and
-                  # smoke-tested, and the lab
+just ci           # the full CI gate: also the CHANGELOG check, the known-vulnerability
+                  # audit, the workflow lint, the capability packages' tests, their strict
+                  # typecheck, each installed alone from its wheel and smoke-tested, and the lab
 just docs-sync    # the docs gate alone (below)
+just audit        # every locked dependency with a known vulnerability (below); needs the network
+just workflows-lint  # zizmor over .github: the workflows and dependabot.yml
 just lab          # validate and plan the lab's experiments; nothing is run
 ```
 
@@ -82,6 +84,41 @@ conftest.py's `EXPECTED_SKIPS` does not name: a test that cannot run here is eit
 run or named there with why. So it fails on a machine without `k6` on `PATH`, or without a
 docker daemon running with `alpine:3.20` pulled: ix's end-to-end k6 tests and its live
 compose test need them (see Tools).
+
+## Known vulnerabilities
+
+`just audit` runs osv-scanner over both lockfiles, `components/capabilities/uv.lock` and
+`docs/experience/bun.lock`, and fails on every locked version with a published vulnerability
+(GitHub's, PyPA's and npm's advisories, through the OSV database). Each finding prints the
+package, the locked version, the advisory, the version that fixes it and the command that
+applies the fix:
+
+```
+docs/experience/bun.lock: vite 8.0.16
+  GHSA-587h-7wmj-h5pm  fixed in 8.1.6  …
+  fix (to 8.1.6): (cd docs/experience && bun update vite)
+```
+
+CI runs it on every push and pull request, inside `just ci`, and
+[audit.yml](.github/workflows/audit.yml) runs it against `main` every Monday, so an advisory
+published after the lock last changed is caught too. A failure there is a finding on `main`.
+
+Fix a finding by upgrading inside the declared range: `uv lock --upgrade-package <pkg>` in
+`components/capabilities`, `bun update <pkg>` in `docs/experience` for a direct dependency.
+Then run the tests of the packages the upgrade touches. Only when no fix exists inside the
+range does a finding go into [audit-allow.toml](audit-allow.toml), with its advisory `id`, its
+`package`, the `reason` it does not apply or cannot be fixed yet, and the date it `expires`. An
+expired entry fails the gate, and so does one that no longer matches a finding.
+
+Dependabot ([dependabot.yml](.github/dependabot.yml)) proposes version updates weekly, one
+pull request per ecosystem (uv, bun, GitHub Actions). The toolchain pins in the workflows'
+`env:` blocks are not in its reach and are bumped by hand, version and SHA-256 together.
+
+## Releases
+
+A release tag (`<pkg>-v<version>`) is cut only from a commit on `main` where `just audit`
+passes, run at that commit just before tagging: CI's pass on the commit may predate an
+advisory.
 
 ## Docs ship with the code
 
@@ -145,6 +182,10 @@ message on every commit. CI mirrors both.
 - [bun](https://bun.com) — the docsite (`docs/experience`) runs on it.
 - [just](https://just.systems) — the gate runner.
 - [gitleaks](https://github.com/gitleaks/gitleaks) — the secret scanner.
+- [osv-scanner](https://github.com/google/osv-scanner) — `just audit`. Install the release
+  binary CI pins (`OSV_SCANNER_VERSION` in [ci.yml](.github/workflows/ci.yml)) and check it
+  against the release's `osv-scanner_SHA256SUMS`.
+- [zizmor](https://docs.zizmor.sh) — `just workflows-lint`, at the version CI pins.
 - [uv](https://docs.astral.sh/uv/) — the capability packages' workspace.
 - [k6](https://k6.io) — ix's service experiments (`ix run` on an `http-load` probe), and
   ix's end-to-end tests in `just ci`.

@@ -18,7 +18,7 @@ check: docs-check (docs-sync "--tree") secrets grammar payloads projection capab
 # that use them skip and the run fails.
 #
 # The CI gate: CI runs this recipe as it stands.
-ci: docs-check docs-sync harness-test secrets-all grammar payloads projection recon-skill capabilities-test capabilities-lint capabilities-typecheck capabilities-standalone lab
+ci: docs-check docs-sync harness-test secrets-all audit workflows-lint grammar payloads projection recon-skill capabilities-test capabilities-lint capabilities-typecheck capabilities-standalone lab
 
 # `--project` not `--directory`: build reads ./components from the CWD, and
 # --directory would move the CWD into the workspace.
@@ -49,13 +49,13 @@ docs-sync *flags:
 
 # Its tests run over the fixture trees in harness/tests/fixtures.
 #
-# The docs-sync checker's tests, lint, format and strict types.
+# The harness's own checkers (docs-sync, audit): their tests, lint, format and strict types.
 harness-test:
     uv --directory components/capabilities run --group dev \
         python -m pytest {{justfile_directory()}}/harness/tests -q -p no:cacheprovider
-    cd components/capabilities && uv run ruff check ../../harness/docs_sync.py ../../harness/tests
-    cd components/capabilities && uv run ruff format --check ../../harness/docs_sync.py ../../harness/tests
-    cd components/capabilities && .venv/bin/mypy --strict ../../harness/docs_sync.py ../../harness/tests
+    cd components/capabilities && uv run ruff check ../../harness/docs_sync.py ../../harness/audit.py ../../harness/tests
+    cd components/capabilities && uv run ruff format --check ../../harness/docs_sync.py ../../harness/audit.py ../../harness/tests
+    cd components/capabilities && .venv/bin/mypy --strict ../../harness/docs_sync.py ../../harness/audit.py ../../harness/tests
 
 # The gnx identity grammar over every manifest (GEP-0001/0002/0003).
 grammar:
@@ -131,6 +131,28 @@ secrets:
 # Full-history secret scan — run in CI and on demand.
 secrets-all:
     gitleaks detect --no-banner --redact
+
+# osv-scanner reads both lockfiles and asks the OSV database (api.osv.dev, so it needs the
+# network) which locked versions have a published vulnerability: GitHub's advisories, PyPA's
+# and npm's. Every finding fails, printed with the version that fixes it and the command that
+# applies the fix, unless audit-allow.toml accepts it, with a reason, until a date. An expired
+# entry fails too. CI runs it on every push and pull request, and weekly against main
+# (.github/workflows/audit.yml), so an advisory published against an unchanged lock is caught.
+#
+# Every locked dependency with a known vulnerability, unless accepted until a date.
+audit:
+    uv run --no-project --python 3.12 python harness/audit.py --allow audit-allow.toml \
+        components/capabilities/uv.lock docs/experience/bun.lock
+
+# zizmor's audits of every workflow and of dependabot.yml: template injection, credentials left
+# in a checkout, permissions wider than a job needs, risky triggers. Offline unless GH_TOKEN is
+# set; the weekly scan sets it, which adds the audits that ask GitHub, such as a pinned action
+# with a known vulnerability or a SHA that is no commit of the action's repository. A finding
+# that is not real is ignored on its line (`# zizmor: ignore[<audit>]`), the reason beside it.
+#
+# The GitHub Actions workflows and Dependabot config under zizmor's audits.
+workflows-lint:
+    zizmor .github
 
 # Validate and plan every experiment in the lab. Nothing runs: this checks that each
 # experiment is well-formed against the installed genres and kinds and that the installed

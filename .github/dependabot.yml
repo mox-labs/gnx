@@ -1,0 +1,57 @@
+# Version updates: Dependabot proposes newer versions, a week at a time, one pull request per
+# ecosystem. Each goes through ci like any other change, `just audit` included.
+#
+# Security updates (a pull request for each Dependabot alert, outside this schedule) are a
+# repository setting, not this file: Settings, Code security, Dependabot security updates.
+#
+# A release must be a week old before it is proposed (cooldown), so one published by a hijacked
+# account has time to be found and pulled first. Security updates do not wait.
+
+version: 2
+
+updates:
+  # The capability packages' uv workspace: every package, one lock.
+  - package-ecosystem: uv
+    directory: /components/capabilities
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        patterns: ["*"]
+    commit-message:
+      prefix: build
+      include: scope
+
+  # The docsite (docs/experience).
+  - package-ecosystem: bun
+    directory: /docs/experience
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      docsite:
+        patterns: ["*"]
+    commit-message:
+      prefix: build
+      include: scope
+
+  # Every `uses:` in .github/workflows. Dependabot keeps the full-SHA pins and their `# vN`
+  # comments in step. The toolchain pins in the workflows' env blocks are URLs and checksums,
+  # which it does not read: those are bumped by hand.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
