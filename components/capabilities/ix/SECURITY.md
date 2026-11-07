@@ -267,7 +267,7 @@ write.
 
 Until a naming decision is made, a package extending ix should depend on it by git URL at
 a release's tag
-(`ix @ git+https://github.com/mox-labs/gnx@ix-v0.8.0#subdirectory=components/capabilities/ix`),
+(`ix @ git+https://github.com/mox-labs/gnx@ix-v0.9.0#subdirectory=components/capabilities/ix`),
 not by bare name.
 
 ### Earlier findings

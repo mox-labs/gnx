@@ -384,7 +384,7 @@ class TestWhereEachSettingCameFrom:
         assert report.provenance.settings == {
             "ix.runs": str(yours),
             "matrix.observers": str(project),
-            "matrix.models": "default",
+            "matrix.model_runtimes": "default",
         }
 
     def test_settings_given_in_code_say_so(self, write_experiment: Write) -> None:

@@ -45,10 +45,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from matrix.domain.model_call import (  # noqa: TC001 -- pydantic reads them at runtime
-    CallAttempt,
     FinishReason,
-    RegistryRow,
-    RequestParams,
     TokenUsage,
 )
 
@@ -96,8 +93,6 @@ class Session(BaseModel):
     family: str | None = None
     #: Who served it, as the GenAI conventions name providers.
     provider: str | None = None
-    #: The backend that served a model call (hardline's ``anthropic``, ``openai-compat``).
-    backend: str | None = None
     #: How an agent session ended: ``completed``, or the limit it reached.
     stop: str | None = None
     #: Why the (last) reply ended, in one vocabulary; the provider's own value beside it.
@@ -119,18 +114,12 @@ class Session(BaseModel):
     #: The OpenTelemetry trace and span the session ended in, as hex; None outside one.
     trace_id: str | None = None
     span_id: str | None = None
-    #: The model asked for, when a fallback answered instead.
-    fallback_from: str | None = None
-    attempts: int | None = None
-    retries: int | None = None
-    attempt_log: tuple[CallAttempt, ...] | None = None
-    params: RequestParams | None = None
-    #: The digest of the turns the answering call was sent, as the runtime computed it.
-    turns_digest: str | None = None
-    row: RegistryRow | None = None
+    #: What only the model runtime that made a call knows of it, by type URL
+    #: (:attr:`ModelCall.provenance`); for a failed call, what its error carried.
+    provenance: dict[str, dict[str, Any]] = {}
     #: The digest of what matrix sent the runtime (:func:`digest`): for an agent session its
-    #: definition and task, for a model call its prompt, system prompt, model and output
-    #: schema. Equal digests, equal requests.
+    #: definition and task, for a model call its request (:func:`call_sent`). Equal digests,
+    #: equal requests.
     sent: str
     #: The task as sent, for an agent session that failed or was cancelled; a completed
     #: session's reply row keeps it (``AgentResponse.task``). Content: local record only.
@@ -142,22 +131,25 @@ class Session(BaseModel):
 
 def digest(value: Any) -> str:
     """``sha256:<hex>`` over canonical JSON (keys sorted, no whitespace, UTF-8), so a reader
-    can recompute one without matrix. hardline's digests are the same."""
+    can recompute one without matrix."""
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
 
 
 def call_sent(request: ModelRequest) -> str:
-    """The ``sent`` digest of a model call's request: of its prompt, system prompt, model
-    and output schema. A caller that records a call it made itself digests its request with
-    this, as a model step does, so equal requests have equal digests whoever made them."""
+    """The ``sent`` digest of a model call's request: of its turns, the tools it offered,
+    its model, its output schema and its overrides. A caller that records a call it made
+    itself digests its request with this, as a model step does, so equal requests have equal
+    digests whoever made them."""
     output = request.output
     return digest(
         {
-            "prompt": request.prompt,
-            "system": request.system,
+            "turns": [turn.model_dump(mode="json") for turn in request.turns],
+            "tools": [tool.model_dump(mode="json") for tool in request.tools],
             "model": request.model,
             "output": None if output is None else output.model_json_schema(),
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
         }
     )
 
@@ -239,10 +231,10 @@ def call_session(
     ``CancelledError`` that cancelled it (see :func:`agent_session`).
 
     For a call that failed, pass the ``error`` and what the runtime knew of the call (the
-    error's ``call``, when it is a :class:`ModelRuntimeError` that carries one: for hardline,
-    every attempt made and the usage they reported; else None): the row says it failed, and
-    why. A failed or cancelled call's row keeps the ``prompt`` as sent; a completed one's
-    does not, since its reply row does."""
+    error's ``call``, when it is a :class:`ModelRuntimeError` that carries one: the usage
+    the failed call reported, and its runtime's own record in ``provenance``; else None): the
+    row says it failed, and why. A failed or cancelled call's row keeps the ``prompt`` as
+    sent; a completed one's does not, since its reply row does."""
     kept = None if error is None else prompt
     if call is None:
         return Session(
@@ -261,20 +253,13 @@ def call_session(
         model=call.model,
         family=call.family,
         provider=call.provider,
-        backend=call.backend,
         finish_reason=call.finish_reason,
         native_finish_reason=call.native_finish_reason,
         refusal=call.refusal,
         usage=call.usage,
         duration_ms=call.latency_ms,
         request_id=call.request_id,
-        fallback_from=call.fallback_from,
-        attempts=call.attempts,
-        retries=call.retries,
-        attempt_log=call.attempt_log,
-        params=call.params,
-        turns_digest=call.turns_digest,
-        row=call.row,
+        provenance=call.provenance,
         sent=sent,
         prompt=kept,
         **_failure(error),

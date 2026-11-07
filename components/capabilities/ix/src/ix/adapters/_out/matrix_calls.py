@@ -8,12 +8,12 @@ its prompt, and the call makes one request through :meth:`matrix.ModelRuntime.ca
 Leaving the subject closes the handle.
 
 **What makes the call is matrix's.** The call builds its runtime from the registry's
-``model-runtime`` point by name (``hardline``, ``mock``, or any model runtime installed).
-The subject must name it: there is no default, because a runtime may call a model provider,
-which is never implicit. The runtime takes the subject's ``runtime_options`` as its config,
-as written, and its ``check`` resolves the subject's ``model`` before anything starts. A
-runtime registered as a stand-in (``stand_in``: matrix's ``mock``) gives canned replies:
-its trials are marked ``simulated``.
+``model-runtime`` point by name (``matrix-hardline.v1.model-runtime``, ``mock``, or any model
+runtime installed). The subject must name it: there is no default, because a runtime may call a
+model provider, which is never implicit. The runtime takes the subject's ``runtime_options`` as its
+config, as written, and its ``check`` resolves the subject's ``model`` before anything starts. A
+runtime registered as a stand-in (``stand_in``: matrix's ``mock``) gives canned replies: its trials
+are marked ``simulated``.
 
 **What is recorded.** Each call goes through matrix's own call path
 (:func:`matrix.call_model`), as a model step's does: a ``matrix.model`` span of work, under
@@ -74,12 +74,10 @@ if TYPE_CHECKING:
 
 FUNCTION_TEST = "ix.v1.sensor.function-test"
 
-#: What a call carries of how it was made (what was sent, each attempt, the registry row,
-#: its session row) that no sensor reads: the usage facet keeps the facts sensors measure and
-#: report.
-_RECORD = frozenset(
-    {"native_finish_reason", "params", "attempt_log", "turns_digest", "row", "session"}
-)
+#: What a call carries that no sensor reads: the runtime's own record of how it was made
+#: (``provenance``), the tools a call that offers none asked for, and its session row. The
+#: usage facet keeps the facts sensors measure and report.
+_RECORD = frozenset({"native_finish_reason", "provenance", "tool_calls", "session"})
 
 #: The sensors a model call leaves nothing to read for, and what each would read.
 NO_TOOLS = {ACTIVATION: "whether a skill fires", TOOL_USAGE: "whether a tool is called"}
@@ -94,7 +92,7 @@ class CallOptions(BaseModel):
     #: Required, with no default: a runtime may call a model provider, so a subject names
     #: its own.
     runtime: str
-    #: A name the runtime resolves (a hardline registry name); None: its default.
+    #: A name the runtime resolves; None: its default.
     model: str | None = None
     system_prompt: str | None = None
     #: The runtime's own config, passed through as written.
@@ -121,8 +119,8 @@ class Call:
         with built():
             runtime = self.runtimes.build(MODEL_RUNTIME, self.options.runtime, config)
             runtime.check(self.options.model)
-        request = matrix.ModelRequest(
-            prompt=prompt, model=self.options.model, system=self.options.system_prompt
+        request = matrix.ModelRequest.from_prompt(
+            prompt, model=self.options.model, system=self.options.system_prompt
         )
         url = matrix.model_runtime_type_url(self.options.runtime)
         drives = tuple(self.runtimes.drives(MODEL_RUNTIME, self.options.runtime))

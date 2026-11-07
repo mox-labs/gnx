@@ -460,8 +460,9 @@ class TestOptions:
         """Regression: ``runtime`` defaulted to claude-sdk, and an experiment and a test
         fixture that named none started paid Claude sessions. A model is never called
         implicitly."""
-        for label, choices in [("agent-session", ("claude-sdk (", "pydantic-ai (", "mock (")),
-                               ("model-call", ("hardline (", "mock ("))]:  # fmt: skip
+        agents = ("claude-sdk (", "pydantic-ai (", "mock (")
+        models = ("matrix-hardline.v1.model-runtime (", "mock (")
+        for label, choices in [("agent-session", agents), ("model-call", models)]:
             session = builtin_kinds.get("subject", label)
             assert session is not None and session.options["runtime"].required
             (problem,) = check_options(session, {}, "subjects.agent")
@@ -483,7 +484,7 @@ class TestOptions:
         judge = builtin_kinds.get("sensor", "judge")
         assert judge is not None and "runtime" not in judge.options
         agents = {"claude-sdk", "pydantic-ai", "mock"}
-        for option, choices in [("model_runtime", {"hardline", "mock"}),
+        for option, choices in [("model_runtime", {"matrix-hardline.v1.model-runtime", "mock"}),
                                 ("agent_runtime", agents)]:  # fmt: skip
             assert set(judge.options[option].choices) == choices
             assert not judge.options[option].required

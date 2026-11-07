@@ -26,6 +26,7 @@ import logging
 import os
 import secrets
 import time
+from collections.abc import Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -97,7 +98,7 @@ from ix.extension import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Collection, Iterator, Sequence
 
     from matrix import ConstructStore, Entry
 
@@ -125,12 +126,13 @@ RUNS_DIRECTORY = ".ix/runs"
 #: directory>`` and ``ix runs`` read.
 RUN_STORE = store_type_url("jsonl")
 
-#: The distributions whose installed versions each run records.
-RECORDED_VERSIONS = ("ix", "matrix", "hardline")
+#: The distributions whose installed versions each run records, besides those each installed
+#: runtime declares it drives (its registry entry's ``drives``): ix names no runtime here.
+RECORDED_VERSIONS = ("ix", "matrix")
 
 #: The settings a run reads, whose rungs it records: where runs are kept, the observers of a
-#: run, and the models a model runtime is handed.
-READ_SETTINGS = ("ix.runs", "matrix.observers", "matrix.models")
+#: run, and the named model runtimes an agent runtime that needs them is handed.
+READ_SETTINGS = ("ix.runs", "matrix.observers", "matrix.model_runtimes")
 
 
 def type_url_problem(name: str) -> str | None:
@@ -202,8 +204,9 @@ _RUNTIME_NOUNS = {AGENT_RUNTIME: "agent runtime", MODEL_RUNTIME: "model runtime"
 class _Runtimes:
     """matrix's runtimes, built from the registry by name at its two points: an agent
     runtime is what a session and an agent judge run on, a model runtime what a model call
-    and a model judge make their call on. Each is handed the ``models`` of matrix's config
-    and the ``cwd`` it runs in, as it declares it needs them.
+    and a model judge make their call on. Each is handed the ``cwd`` it runs in and, when it
+    declares it needs them (``pydantic-ai`` does), the model runtimes matrix's config names
+    under ``matrix.model_runtimes``, each built the first time one is asked for.
 
     ix says a runtime's ``warnings`` itself, once, in the plan and the report: while
     :meth:`listening`, those of each runtime built are kept. What a runtime logs on
@@ -211,10 +214,10 @@ class _Runtimes:
     twenty sessions does not log the same warning twenty times, and ``--json`` keeps stderr
     to the error envelope."""
 
-    def __init__(self, registry: Registry, models: Callable[[], dict[str, Any] | None]) -> None:
+    def __init__(self, registry: Registry, settings: Callable[[], MatrixConfig]) -> None:
         self._registry = registry
-        self._models = models
         self._heard: list[matrix.Problem] | None = None
+        self._named = _NamedModelRuntimes(self, settings)
 
     @contextmanager
     def listening(self) -> Iterator[list[matrix.Problem]]:
@@ -240,7 +243,7 @@ class _Runtimes:
         quiet.addFilter(_unsaid)
         try:
             runtime = self._registry.create(
-                point, url, config, needs={"cwd": cwd, "models": self._models()}
+                point, url, config, needs={"cwd": cwd, "model_runtimes": self._named}
             )
         finally:
             quiet.removeFilter(_unsaid)
@@ -273,30 +276,47 @@ class _Runtimes:
         return entry.capabilities(config)
 
 
+class _NamedModelRuntimes(Mapping[str, Any]):
+    """The model runtimes matrix's config names (``matrix.model_runtimes``), by name: the
+    ``model_runtimes`` need, as composition hands it. Each is built through the registry when
+    it is asked for, afresh each time, as every runtime ix builds is built per trial and not
+    used again: an agent runtime built for one trial shares no model runtime with another's.
+    Reading the names builds none."""
+
+    def __init__(self, runtimes: _Runtimes, settings: Callable[[], MatrixConfig]) -> None:
+        self._runtimes = runtimes
+        self._settings = settings
+
+    def __getitem__(self, name: str) -> Any:
+        spec = self._settings().model_runtimes[name]  # KeyError: no such name
+        return self._runtimes.build(MODEL_RUNTIME, spec.type, spec.options())
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._settings().model_runtimes)
+
+    def __len__(self) -> int:
+        return len(self._settings().model_runtimes)
+
+
 class _JudgeModels:
-    """Where a pydantic-evals judge evaluator's model comes from: the pydantic-ai ``Model``
-    the matrix model runtime the experiment names gives (its optional
-    ``pydantic_ai_model``), built from the experiment's ``runtime_options`` and matrix's
-    ``models``, so the judge's calls go where every other model call of ix goes, under the
-    same config, and never to pydantic-evals' default model. A runtime that gives none cannot
-    judge: the plan says so, and nothing is called. A stand-in runtime (``mock``) needs none
-    of this: the sensor judges on pydantic-ai's ``TestModel``."""
+    """Where a pydantic-evals judge evaluator's model comes from: pydantic-ai's ``Model`` over
+    the matrix model runtime the experiment names (``matrix.pydantic_ai_model``), built from
+    the experiment's ``runtime_options``, so the judge's calls go where every other model call
+    of ix goes, under the same config, and never to pydantic-evals' default model; each is a
+    row of the run's session table. Any model runtime serves. A stand-in runtime (``mock``)
+    needs none of this: the sensor judges on pydantic-ai's ``TestModel``."""
 
     def __init__(self, runtimes: _Runtimes) -> None:
         self._runtimes = runtimes
 
     def model(self, runtime: str, model: str | None, config: Mapping[str, Any]) -> Any:
         built = self._runtimes.build(MODEL_RUNTIME, runtime, config)
-        give = getattr(built, "pydantic_ai_model", None)
-        if not callable(give):
-            raise ConfigError(
-                f"model runtime {runtime!r} gives no pydantic-ai Model, which a pydantic-evals "
-                "judge calls its model through",
-                fix="name a model runtime that gives one (hardline; a third party's that "
-                "defines pydantic_ai_model), or score the reply with the judge sensor "
-                f"(kind: judge, model_runtime: {runtime})",
-            )
-        return give(model)
+        url = model_runtime_type_url(runtime)
+        drives = tuple(self._runtimes.drives(MODEL_RUNTIME, runtime))
+        try:
+            return matrix.pydantic_ai_model(built, model, runtime_url=url, drives=drives)
+        except MatrixError as error:
+            raise carried_over(f"model runtime {runtime!r} cannot judge", error) from error
 
 
 @dataclass(frozen=True)
@@ -365,7 +385,7 @@ class Root:
         self._run_id = run_id
         self._run_store = run_store
         self._tracer: Traced = OtelTracer(version) if tracer is None else tracer
-        self._runtimes = _Runtimes(self._registry, lambda: self._settings().matrix.models)
+        self._runtimes = _Runtimes(self._registry, lambda: self._settings().matrix)
         self._supplies = {
             LAUNCHER: MatrixLauncher(),
             SESSIONS: SessionTable(),
@@ -572,10 +592,10 @@ class Root:
         return replace(examined, contents=contents(named, str(Path(base).resolve())))
 
     def _provenance(self, directory: str) -> Provenance:
-        """Where a run in ``directory`` runs from: the commit, the installed versions of
-        matrix, ix and hardline, every runtime installed at matrix's two runtime points
-        with the distribution that registered it and those it drives, and the rung of each
-        setting the run read."""
+        """Where a run in ``directory`` runs from: the commit, the installed versions of ix,
+        matrix and every distribution an installed runtime drives, every runtime installed at
+        matrix's two runtime points with the distribution that registered it and those it
+        drives, and the rung of each setting the run read."""
         runtimes = tuple(
             RuntimeOrigin(
                 type_url=entry.type_url,
@@ -588,7 +608,12 @@ class Root:
         )
         return checkout(directory).model_copy(
             update={
-                "versions": {name: installed(name) for name in RECORDED_VERSIONS},
+                "versions": {
+                    name: installed(name)
+                    for name in sorted(
+                        {*RECORDED_VERSIONS, *(d for r in runtimes for d in r.drives)}
+                    )
+                },
                 "runtimes": runtimes,
                 "settings": _rungs(self._settings()),
             }

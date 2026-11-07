@@ -25,7 +25,7 @@ channel that closes before it drained, leaves no span open. An event a component
   one logical call, which may span retries and fallbacks), with ``gen_ai.request.model``,
   ``gen_ai.response.model``, ``gen_ai.provider.name``, ``matrix.finish_reason`` and
   ``error.type``. It carries no usage: the inference spans and counters of each attempt are
-  the model runtime's (hardline's ``chat`` spans), which nest under it;
+  the model runtime's (its own spans), which nest under it;
 * a tool call the runtime timed is ``execute_tool {tool}``, with ``gen_ai.tool.name``,
   ``gen_ai.tool.call.id`` and, with ``capture_content``, ``gen_ai.tool.call.arguments``
   (the arguments as a JSON object, as the runtime reported them);
@@ -50,13 +50,12 @@ exporter saw. The conventions' names where they define one: ``gen_ai.invoke_work
 ``gen_ai.token.modality: unknown``, since a session's total mixes whatever it exchanged).
 
 **One owner per token.** These counters count agent sessions only, whose tokens no model
-runtime's call carries. A model call's tokens are counted by the model runtime that made it
-(hardline counts each attempt, on the same instruments), never here: matrix keeps them on the
-call's session row, and its ``matrix.model`` span carries no usage. An agent runtime whose
-model calls something else counts already (the ``pydantic-ai`` runtime's go through hardline)
-declares it, ``usage_counted_by``, which the session's end event carries; such a session's
-tokens are not added here, and stay on its span and its session row. So nothing is counted
-twice, and no runtime is told apart by its name.
+runtime's call carries. A model call's tokens are counted by the model runtime that made it,
+never here: matrix keeps them on the call's session row, and its ``matrix.model`` span
+carries no usage. An agent session whose model calls went through a matrix model runtime (the
+``pydantic-ai`` runtime's do) is marked so on its end event, ``through_model_runtime``, by
+composition; such a session's tokens are not added here, and stay on its span and its session
+row. So nothing is counted twice, and no runtime is told apart by its name.
 matrix's own where they define none: ``matrix.component.duration``,
 ``matrix.component.count``, ``matrix.component.retries``, ``matrix.agent.cost_usd`` and
 ``matrix.events.dropped``; and every ``ctx.measure`` as an instrument of its own name.
@@ -242,7 +241,7 @@ class OtelObserver:
             self._agent_tool_calls.record(fields["tool_calls"], about)
         if fields.get("cost_usd"):
             self._agent_cost.add(fields["cost_usd"], about)
-        if fields.get("usage_counted_by"):
+        if fields.get("through_model_runtime"):
             return  # its model calls' tokens are counted where they were made
         tokens = {**about, "gen_ai.token.modality": "unknown"}
         if fields.get("tokens_input"):
@@ -335,7 +334,7 @@ _MATRIX = frozenset(
         "runtime",
         "name",
         "finish_reason",
-        "usage_counted_by",
+        "through_model_runtime",
     }
 )
 #: The statuses matrix gives a component's ``ctx.span`` at its end.

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from matrix import (
     AGENT_RESPONSE,
@@ -30,13 +30,19 @@ from matrix import (
     BoundAgent,
     CompilationError,
     Context,
+    ContractError,
     Executor,
     Limits,
     MatrixConfig,
+    ModelCall,
     ModelRequest,
+    ModelRuntimeError,
+    ModelStep,
+    ModelStepConfig,
     RunContext,
     RunError,
     Session,
+    TokenUsage,
     call_sent,
     compose,
     default_registry,
@@ -79,18 +85,29 @@ async def test_a_model_call_is_a_session_row_its_reply_points_at_and_its_rows_na
     (session,) = run.rows(SESSION)
     assert isinstance(session, Session)
     assert (session.port, session.runtime) == ("model-runtime", "matrix.v1.model-runtime.mock")
-    assert (session.family, session.backend, session.finish_reason) == ("mock", "mock", "stop")
-    assert (session.attempts, session.retries, session.turns) == (1, 0, None)
+    assert (session.family, session.finish_reason, session.turns) == ("mock", "stop", None)
+    assert session.provenance == {}  # the mock knows nothing beyond the reply
     assert (session.status, session.reason, session.error) == ("completed", None, None)
+    turn: dict[str, Any] = {"tool_calls": [], "tool_call_id": None, "is_error": False}
     assert session.sent == digest(
-        {"prompt": "rate it", "system": "Be fair.", "model": None, "output": None}
+        {
+            "turns": [
+                {"role": "system", "content": "Be fair.", **turn},
+                {"role": "user", "content": "rate it", **turn},
+            ],
+            "tools": [],
+            "model": None,
+            "output": None,
+            "max_tokens": None,
+            "temperature": None,
+        }
     )
-    assert session.sent == call_sent(ModelRequest(prompt="rate it", system="Be fair."))
+    assert session.sent == call_sent(ModelRequest.from_prompt("rate it", system="Be fair."))
     assert (session.trace_id, session.span_id) == (None, None)  # no OTel span was current
     (reply,) = run.rows(MODEL_CALL)
     assert (reply.session, reply.text, reply.finish_reason) == (0, '{"score": 4}', "stop")
     # What the session row holds is not repeated on the reply.
-    assert (reply.usage, reply.attempts, reply.latency_ms, reply.backend) == (None,) * 4
+    assert (reply.usage, reply.latency_ms, reply.name, reply.provenance) == (None, None, None, {})
     behind = {e.kind: e.sessions for e in run.construct.ledger if e.kind != SESSION}
     assert behind == {PROMPT: (), MODEL_CALL: (0,), RATING: (0,)}
 
@@ -379,7 +396,7 @@ async def test_a_trial_cancelled_mid_session_names_its_own_sessions_the_cancelle
     started, after = asyncio.Event(), asyncio.Event()
 
     class _Holds:
-        def check(self, _: Any) -> None:
+        def check(self, _: Any, *, uses: frozenset[str] = frozenset()) -> None:
             return None
 
         async def run(self, definition: Any, task: str) -> Any:
@@ -473,32 +490,36 @@ class _Rating(BaseModel):
     score: int
 
 
-async def test_a_failed_model_call_is_still_a_session_row_with_what_it_cost() -> None:
-    """A call that failed (here: its repair was rate limited, with no retries left) spent
-    tokens and made attempts. Its row says it failed, why, and what each attempt cost."""
-    hardline = pytest.importorskip("hardline")
-    from hardline.adapters._out.mock import MockBackend
+class _Spent:
+    """A model runtime whose call fails having spent tokens, saying so in its error, with its
+    own record of the attempts under a type URL of its own."""
 
-    from matrix import ModelStep, ModelStepConfig
-    from matrix.adapters._out.runtime.model import HardlineModelRuntime
+    def __init__(self, record: dict[str, Any]) -> None:
+        self._record = record
 
-    row = {
-        "backend": "mock",
-        "model": "q-1",
-        "family": "q",
-        "retries": 0,
-        "options": {"script": ["not a rating", {"error": "rate_limit"}]},
-    }
-    runtime = HardlineModelRuntime(
-        hardline.build_runtime(
-            config={"default": "q", "models": {"q": row}}, backends={"mock": MockBackend()}
+    def check(self, _: Any, *, uses: frozenset[str] = frozenset()) -> None:
+        pass
+
+    async def call(self, request: ModelRequest) -> ModelCall:
+        spent = ModelCall(
+            usage=TokenUsage(input_tokens=7, output_tokens=2),
+            provenance={"acme.v1.attempts": self._record},
         )
-    )
-    step = ModelStep(
-        ModelStepConfig(runtime="m", output=RATING),
-        model_runtimes={"m": runtime},
-        schemas={RATING: _Rating},
-    )
+        raise ModelRuntimeError("rate_limit: slow down", reason="rate_limited", call=spent)
+
+
+class _Attempts(BaseModel):
+    """What ``_Spent`` records of its attempts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tries: int
+
+
+async def test_a_failed_model_call_is_still_a_session_row_with_what_it_cost() -> None:
+    """A call that failed spent tokens and made attempts. Its row says it failed, why, and
+    what its runtime's error carried: the usage, and the runtime's own record of the call."""
+    step = ModelStep(ModelStepConfig(runtime="m"), model_runtimes={"m": _Spent({"tries": 2})})
     with pytest.raises(RunError) as e:
         await Executor().run(wire({"rate": step}, inputs=[PROMPT]), {PROMPT: "rate it"})
     run = e.value.run
@@ -509,16 +530,34 @@ async def test_a_failed_model_call_is_still_a_session_row_with_what_it_cost() ->
         "rate_limited",
     )
     assert session.error is not None and "rate_limit" in session.error
-    assert session.attempt_log is not None
-    assert [(a.name, a.reason) for a in session.attempt_log] == [("q", None), ("q", "rate_limit")]
-    assert session.usage is not None and session.usage == session.attempt_log[0].usage
-    assert session.usage.input_tokens > 0
-    assert session.sent == digest(
-        {"prompt": "rate it", "system": None, "model": None, "output": _Rating.model_json_schema()}
-    )
+    assert session.usage == TokenUsage(input_tokens=7, output_tokens=2)
+    assert session.provenance == {"acme.v1.attempts": {"tries": 2}}
     # Linkage is unchanged: the row is the failed component's, and no entry names it.
     assert run.construct.provenance(SESSION)[0].component == "rate"
     assert all(entry.sessions == () for entry in run.construct.ledger)
+
+
+async def test_a_session_s_provenance_is_held_to_the_schema_registered_for_its_type_url() -> None:
+    """A runtime's own record of a call is typed: a document under a type URL whose schema its
+    package registered is validated when the row is recorded, and one the schema refuses is a
+    ContractError, the row not recorded."""
+    schemas = {"acme.v1.attempts": _Attempts}
+    cases: list[tuple[dict[str, Any], bool]] = [
+        ({"tries": 2}, True),
+        ({"tries": "many", "odd": 1}, False),
+    ]
+    for record, kept in cases:
+        step = ModelStep(ModelStepConfig(runtime="m"), model_runtimes={"m": _Spent(record)})
+        wiring = wire({"rate": step}, inputs=[PROMPT], schemas=schemas)
+        with pytest.raises(RunError) as e:
+            await Executor().run(wiring, {PROMPT: "rate it"})
+        recorded = e.value.run.rows(SESSION)
+        if kept:
+            assert [row.provenance for row in recorded] == [{"acme.v1.attempts": record}]
+        else:
+            assert recorded == ()
+            assert isinstance(e.value.__cause__, ContractError)
+            assert "acme.v1.attempts" in str(e.value.__cause__)
 
 
 class _Failing:
@@ -594,7 +633,7 @@ async def test_a_failed_agent_session_is_still_a_session_row(
 class _Hangs:
     """An agent runtime and a model runtime whose session or call never returns."""
 
-    def check(self, _: Any) -> None:
+    def check(self, _: Any, *, uses: frozenset[str] = frozenset()) -> None:
         return None
 
     async def run(self, definition: Any, task: str) -> Any:
@@ -667,13 +706,13 @@ async def test_a_cancelled_model_call_is_a_session_row_that_says_so() -> None:
         "cancelled",
         "cancelled",
     )
-    assert session.sent == call_sent(ModelRequest(prompt="rate it"))
+    assert session.sent == call_sent(ModelRequest.from_prompt("rate it"))
 
 
 class _Down:
     """A model runtime whose calls fail, classified."""
 
-    def check(self, _: Any) -> None:
+    def check(self, _: Any, *, uses: frozenset[str] = frozenset()) -> None:
         return None
 
     async def call(self, request: Any) -> Any:
@@ -829,7 +868,9 @@ async def test_the_documented_duckdb_join_reads_a_reply_s_sessions_without_matri
     await box.run({PROMPT: "rate it"}, run_id="r1")
     sql = _documented_sql().replace("RUN", str(tmp_path / "r1")).replace("KIND", RATING)
     rows = duckdb.sql(sql).fetchall()
-    assert rows == [(0, '{"score": 4}', "matrix.v1.model-runtime.mock", "mock", "stop", 1)]
+    assert rows == [
+        (0, '{"score": 4}', "matrix.v1.model-runtime.mock", "mock", "stop", "completed")
+    ]
 
 
 async def test_every_run_has_a_session_table_as_it_has_a_ledger() -> None:

@@ -108,11 +108,13 @@ def test_unknown_runtime_type_lists_registered() -> None:
         "name_unknown",
         "strands",
     )
-    assert {"claude-sdk", "mock"} <= set(found.allowed)
-    assert "hardline" not in found.allowed  # a model runtime is no agent runtime
+    assert set(found.allowed) == {"claude-sdk", "mock", "pydantic-ai"}  # agent runtimes only
 
 
 def test_unknown_model_runtime_type_lists_the_registered_model_runtimes() -> None:
+    """matrix ships no model runtime that calls a model (owner ruling HO1): with only its
+    stand-in installed, a model runtime's type nothing registered is refused when composed,
+    and the fix names what to install."""
     with pytest.raises(ConfigError) as e:
         compose(
             _config(model_runtimes={"x": {"type": "claude-sdk"}}),
@@ -124,7 +126,8 @@ def test_unknown_model_runtime_type_lists_the_registered_model_runtimes() -> Non
         "name_unknown",
         "claude-sdk",
     )
-    assert set(found.allowed) == {"hardline", "mock"}
+    assert set(found.allowed) == {"mock"}
+    assert "pip install matrix-hardline" in (found.fix or "")
 
 
 def test_runtime_option_typo_names_runtime_and_key() -> None:
@@ -242,32 +245,7 @@ def test_a_definition_in_two_tiers_is_one_problem_at_the_key_that_read_both(
     assert e.value.complete is False  # the agent that uses it was not checked
 
 
-def test_top_level_models_reach_model_runtimes() -> None:
-    container = compose(
-        _config(
-            models={"models": {"q": {"backend": "mock", "model": "m", "family": "qwen"}}},
-            model_runtimes={"local": {"type": "hardline"}},
-        )
-    )
-    runtime = container.model_runtime("local")
-    assert runtime.models.registry.names() == ("q",)  # type: ignore[attr-defined]
-
-
 # --- the reuse fingerprint covers every need a component is handed ------------------------
-
-
-def _step_print(models: object = None) -> str:
-    """The fingerprint of a model step on a hardline model runtime."""
-    container = compose(
-        _config(
-            models=models,
-            model_runtimes={"m": {"type": "hardline"}},
-            components=[{"name": "s", "type": "matrix.v1.model-step", "config": {"runtime": "m"}}],
-            inputs=["matrix.v1.prompt"],
-        ),
-        registry=default_registry(discover=False),
-    )
-    return container.wire().fingerprints["s"]
 
 
 def _agent_step_print(runtime: object, **context: object) -> str:
@@ -284,35 +262,57 @@ def _agent_step_print(runtime: object, **context: object) -> str:
     return container.wire().fingerprints["s"]
 
 
-def _row(model: str, base_url: str) -> dict[str, object]:
-    return {"backend": "openai-compat", "model": model, "base_url": base_url, "family": "q"}
+class _Resolving:
+    """A model runtime that settles, when it is built, what decides how it answers: here
+    whatever ``SETTLED`` holds then, as a registry read from a file would be."""
+
+    SETTLED: dict[str, object] = {}
+
+    def __init__(self) -> None:
+        self._resolved = dict(self.SETTLED)
+
+    @property
+    def resolved(self) -> dict[str, object]:
+        return self._resolved
+
+    def check(self, model: str | None, *, uses: frozenset[str] = frozenset()) -> None:
+        pass
+
+    async def call(self, request: object) -> object:
+        raise AssertionError("never called")
 
 
-def test_a_model_step_s_fingerprint_follows_matrix_models() -> None:
-    one = _step_print({"default": "x", "models": {"x": _row("m1", "http://a/v1")}})
-    two = _step_print({"default": "x", "models": {"x": _row("m2", "http://b/v1")}})
-    assert one != two
-    assert one == _step_print({"default": "x", "models": {"x": _row("m1", "http://a/v1")}})
-
-
-def test_a_model_step_s_fingerprint_follows_the_tiers_hardline_discovers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_model_step_s_fingerprint_follows_what_its_model_runtime_resolved(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With no ``matrix.models``, hardline reads its own tiers; they decide the model too."""
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    tier = tmp_path / "tier.yaml"
-    monkeypatch.setenv("HARDLINE_CONFIG", str(tier))
-    tier.write_text(
-        "default: x\nmodels:\n  x: {backend: openai-compat, model: m1, family: q,"
-        " base_url: 'http://a/v1'}\n"
-    )
-    one = _step_print()
-    tier.write_text(
-        "default: x\nmodels:\n  x: {backend: openai-compat, model: m2, family: q,"
-        " base_url: 'http://b/v1'}\n"
-    )
-    assert _step_print() != one
+    """A model runtime that settles more than its config when it is built (a model registry
+    it reads from its own tiers) says so (``SupportsResolved``), and that decides the
+    fingerprint of a step that calls it, so a run from a record does not reuse a call made
+    on another model."""
+    registry = default_registry(discover=False)
+    registry.register("model-runtime", "acme.v1.model-runtime.resolving", _Resolving)
+
+    def printed() -> str:
+        return (
+            compose(
+                _config(
+                    model_runtimes={"m": {"type": "acme.v1.model-runtime.resolving"}},
+                    components=[
+                        {"name": "s", "type": "matrix.v1.model-step", "config": {"runtime": "m"}}
+                    ],
+                    inputs=["matrix.v1.prompt"],
+                ),
+                registry=registry,
+            )
+            .wire()
+            .fingerprints["s"]
+        )
+
+    monkeypatch.setattr(_Resolving, "SETTLED", {"x": "m1"})
+    one = printed()
+    assert printed() == one
+    monkeypatch.setattr(_Resolving, "SETTLED", {"x": "m2"})
+    assert printed() != one
 
 
 def test_an_agent_step_s_fingerprint_follows_the_working_directory_it_is_handed() -> None:
@@ -385,7 +385,7 @@ def test_a_need_the_host_does_not_hand_over_is_refused_naming_it() -> None:
     assert "hands over acme_kit, with compose(context=...)" in str(found.fix)
 
 
-@pytest.mark.parametrize("taken", ["agents", "model_runtimes", "schemas", "models"])
+@pytest.mark.parametrize("taken", ["agents", "model_runtimes", "schemas"])
 def test_a_host_cannot_hand_over_a_need_composition_supplies(taken: str) -> None:
     with pytest.raises(ConfigError, match=f"context names {taken}") as raised:
         compose(_config(), registry=default_registry(discover=False), context={taken: {}})
@@ -445,10 +445,7 @@ def test_bound_agent_keeps_definition_immutable() -> None:
 
 @pytest.mark.parametrize(
     ("module", "config"),
-    [
-        ("claude_agent_sdk", {"agent_runtimes": {"r": {"type": "claude-sdk"}}}),
-        ("hardline", {"model_runtimes": {"r": {"type": "hardline"}}}),
-    ],
+    [("claude_agent_sdk", {"agent_runtimes": {"r": {"type": "claude-sdk"}}})],
 )
 def test_selecting_what_an_incomplete_install_lacks_is_a_config_error_saying_how_to_repair(
     monkeypatch: pytest.MonkeyPatch, module: str, config: dict[str, object]

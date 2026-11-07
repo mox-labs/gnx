@@ -29,7 +29,7 @@ provides and does its work; matrix decides when, keeps what it hands over, and s
 | `Registry.register` | `(point, type_url, build, *, config=None, needs=(), summary="", stability="beta", stand_in=False, drives=(), capabilities=None)`; `capabilities` only for an agent runtime with a config |
 | `Registry.register_payload` | `(type_url, model, summary="")`: the schema rows of a kind validate against |
 | `matrix.extensions` | the entry-point group; each entry is `register(registry) -> None` |
-| `NEEDS` | the shared needs, each a `Need` with its type: `agents`, `model_runtimes`, `schemas`, `cwd`, `name` stable; `models`, `model_runtime_entries` beta |
+| `NEEDS` | the shared needs, each a `Need` with its type: `agents`, `model_runtimes`, `schemas`, `cwd`, `name` stable; `model_runtime_entries` beta. An agent runtime that declares `model_runtimes` makes its sessions' model calls on them |
 | the stop protocol | `ctx.stopping` is set; the component has `grace_s` to return; then it is cancelled. Every `ctx.defer` release is called once at the end of the run, last first |
 | `ContractError` | what breaking the contract raises (kind `contract`) |
 
@@ -69,12 +69,15 @@ when it registers and when it is built.
 | Port | Decision it hides | Required members |
 |------|-------------------|------------------|
 | `AgentRuntime` | which agent framework runs a session, and how | `check(definition)`, `async run(definition, task)` |
+| `ModelRuntime` | who makes a model call (which provider, endpoint, retries, fallbacks) | `check(model, *, uses=frozenset())`, `async call(request)` |
 | `ConstructStore`, `RunWriter` | where a run's record is kept, and in what form | `open`, `load`, `describe`, `runs`; `append`, `finish` |
 | `Observer` | what is done with a run's events | `on_event(event)` |
 | `DocumentSource` | where documents are read from, and their formats | `document`, `documents`, `beside` |
 
 Each port module states its failure behaviour: an agent session ends in a response whose
-`stop` says why, or an `AgentRuntimeError` with a `reason`; a store's missing run is a
+`stop` says why, or an `AgentRuntimeError` with a `reason`; a model call ends in a `ModelCall`,
+or a `ModelRuntimeError` with a `reason`, and a part of the request the runtime cannot carry
+is refused (`incapable`), never dropped; a store's missing run is a
 `NotFoundError` and anything it cannot keep a `StoreError`; an observer that raises is logged
 and skipped, and cannot stall a run; a document that cannot be read is a `Document` with its
 `problem`, a location that cannot be read at all a `ConfigError`.
@@ -102,11 +105,49 @@ runtime's `capabilities`, a pure function of its validated config giving
 Code's mechanics, and a runtime without skills answers `False` or None. `capabilities` at
 another point, or without a config, is a `ConfigError`.
 
-**Read by name.** Two members are not declared protocols: an agent runtime's
-`usage_counted_by` (who counts its model calls' tokens) and a model runtime's
-`pydantic_ai_model`. Both belong to the seam between agent runtimes and model runtimes, which
-this release does not change; the `ModelRuntime` port has no conformance suite for the same
-reason.
+**Nothing is read by name.** Who counts an agent session's tokens is composition's to know:
+an agent runtime that declares the need `model_runtimes` makes its calls on them, and matrix
+counts none of its sessions' tokens (the model runtime counts its calls).
+
+## The model call: `ModelRequest`, `ModelCall`, `ModelRuntime`, `pydantic_ai_model`
+
+**Stability: public.** Every implementor is in this repository (matrix's mock, the bridge's
+hardline runtime, the tests' stand-ins), so the port is not frozen; it is the last cheap
+moment to change it, and a change is said in the changelog with every implementor migrated.
+
+**The decision it hides.** Who makes a model call, and how: the provider, the endpoint, the
+retries and fallbacks, how a structure is asked for. A caller (a model step, an agent
+framework, a judge) names a model and sends one call in full; it never learns which runtime
+answered beyond what the reply says.
+
+**Members.** `ModelRequest`: `turns` (`Turn`: `role`, `content`, `tool_calls`,
+`tool_call_id`, `is_error`), `model`, `tools` (`ToolSpec`), `output`, `max_tokens`,
+`temperature`; `from_prompt(...)`, and the derived `prompt` and `uses`. `ModelCall`: `text`,
+`value`, `tool_calls`, `finish_reason` (matrix's vocabulary), `native_finish_reason`,
+`refusal`, `name`, `model`, `family`, `provider`, `usage`, `request_id`, `latency_ms`,
+`provenance`, `prompt`, `session`. `ModelRuntime`: `check(model, *, uses)`, `call(request)`.
+`pydantic_ai_model(runtime, model=None, *, settings=None, runtime_url=None, drives=())`:
+pydantic-ai's `Model` over any `ModelRuntime`.
+
+**Defaults.** A request's `max_tokens` and `temperature` unset are the runtime's. `uses` empty
+is a plain call. `provenance` empty is a runtime that knows nothing beyond the reply.
+
+**Failure behaviour.** `check` raises `ConfigError` for a name the runtime cannot resolve, and
+for a use it cannot honour on that model. A `provenance` key that is not a versioned type URL
+is refused when the call is built; a document its registered schema refuses is a
+`ContractError` when the session row is recorded. `pydantic_ai_model` refuses, as a
+`ConfigError`, any pydantic-ai setting but `max_tokens` and `temperature`: when given to it,
+else at the request that carries it, before anything is sent.
+
+**The typed provenance slot.** What only one runtime knows of a call is a document keyed by a
+type URL of its own (`hardline.v1.call`), never a column of `ModelCall` or `Session`: a new
+fact a runtime records grows its own document, not matrix's record. The runtime's package
+registers the document's schema (`register_payload`), and matrix validates against it.
+
+**matrix privileges no model runtime** (owner ruling HO1, 2026-11-06). It depends on none,
+ships only the `mock` stand-in, and names none in its code (`tests/test_architecture.py`). A
+config that names a model runtime nobody registered is refused when it is composed, and the
+fix says what to install.
 
 ## Conformance suites: `matrix.testing`
 
@@ -115,7 +156,8 @@ reason.
 **The decision it hides.** How each port's promises are checked: a third party runs the
 suite for its port and learns whether it keeps it, without reading matrix.
 
-**Members.** `AgentRuntimeConformance` (define `runtime()`), `ConstructStoreConformance`
+**Members.** `AgentRuntimeConformance` (define `runtime()`), `ModelRuntimeConformance`
+(`runtime()`; `model`, `prompt`, `unknown` say what it is asked), `ConstructStoreConformance`
 (`store()`, empty), `ObserverConformance` (`observer()`), `DocumentSourceConformance`
 (`source()`, `present()`, `absent()`), `ContextConformance` (`async within(check)`),
 `ComponentConformance` (`component()`, and `inputs()` when it requires kinds). Each is a mixin
@@ -160,5 +202,6 @@ it under (`tests/test_plan_and_run.py` rebuilds them from the plan and compares)
 
 **What it cannot say.** The model an agent's runtime picks when the agent names none: the
 plan reports the agent's `model` as unset, left to the runtime, and the runtime's own options
-(its `default_model`, where it has one) with their sources. A hardline runtime's registry
-default is hardline's to resolve.
+(its `default_model`, where it has one) with their sources. A model runtime's registry
+default is its own to resolve; what it warns of (a fallback sharing its primary's fate) is in
+`warnings`.

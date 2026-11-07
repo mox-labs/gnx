@@ -201,12 +201,12 @@ class Provenance(Stored):
     #: Why there is no commit: ``not a repository``, ``no commit yet``, ``git is not
     #: installed``, or what git said.
     no_commit: str = ""
-    #: The installed versions of matrix, ix and hardline, by distribution; ``not installed``
-    #: for one that is not.
+    #: The installed versions of ix, matrix and each distribution an installed runtime drives,
+    #: by distribution; ``not installed`` for one that is not.
     versions: dict[str, str] = {}
     #: Every runtime installed at matrix's agent-runtime and model-runtime points.
     runtimes: tuple[RuntimeOrigin, ...] = ()
-    #: Each setting the run read (``ix.runs``, ``matrix.observers``, ``matrix.models``) and
+    #: Each setting the run read (``ix.runs``, ``matrix.observers``, ``matrix.model_runtimes``) and
     #: the rung that set it: the config file (several, comma-separated, when tiers merged a
     #: mapping), ``default`` when no tier set it, or ``given in code`` when the caller passed
     #: the settings. Never the value.

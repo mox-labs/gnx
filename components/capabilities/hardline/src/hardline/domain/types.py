@@ -382,7 +382,8 @@ class RowRecord(BaseModel):
     ``digest`` is that of the row's whole spec (``ModelSpec.model_dump(mode="json")``); see
     ``domain/digests.py``. ``rungs`` names, for every field of the row but its name, where its
     value came from: the tier that set it, a file with how it was found (``cwd
-    ./hardline.yaml``) or a host's section (``matrix.models``); ``default of backend <name>``
+    ./hardline.yaml``) or a host's section, by the label the host gave it (matrix-hardline's
+    ``matrix-hardline models``); ``default of backend <name>``
     for a location the backend supplied; or ``default`` when no tier set it.
     """
 

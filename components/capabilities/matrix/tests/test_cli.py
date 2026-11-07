@@ -141,7 +141,7 @@ def test_a_runtime_says_which_distribution_it_drives(capsys: pytest.CaptureFixtu
     code, data, _ = _cli(capsys, "catalog", "--json")
     drives = {e["type_url"]: e["drives"] for e in data["entries"]}
     assert drives["matrix.v1.agent-runtime.claude-sdk"] == ["claude-agent-sdk"]
-    assert drives["matrix.v1.model-runtime.hardline"] == ["hardline"]
+    assert drives["matrix.v1.agent-runtime.pydantic-ai"] == ["pydantic-ai-slim"]
     assert drives["matrix.v1.agent-runtime.mock"] == []
     code, data, _ = _cli(capsys, "describe", "matrix.v1.agent-runtime.claude-sdk", "--json")
     assert data["entries"][0]["drives"] == ["claude-agent-sdk"]
@@ -226,47 +226,6 @@ def test_a_bad_config_exits_3_with_the_key_path(
         "nope",
     )
     assert "mock" in found["allowed"] and found["source"].endswith("matrix.yaml")
-
-
-def test_a_malformed_model_registry_is_a_config_problem_where_it_was_written(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Regression: hardline's ConfigError escaped both runtimes built on it, so a typo in
-    ``matrix.models`` exited 1 as kind ``unknown``, "report this as a bug in matrix". It is
-    a config problem (exit 3) at the key that was written, said once however many runtimes
-    read it."""
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-    (tmp_path / "matrix.yaml").write_text(
-        "matrix:\n"
-        "  models: {models: {m: {backend: mock, model: m-1}}}\n"
-        "  model_runtimes:\n    h: {type: hardline}\n"
-        "  agent_runtimes:\n    p: {type: pydantic-ai}\n"
-    )
-    code, _, err = _cli(capsys, "check", "--json")
-    assert code == 3, err
-    error = json.loads(err)["error"]
-    assert error["kind"] == "config" and "bug" not in error["fix"]
-    (found,) = error["problems"]
-    assert (found["path"], found["kind"]) == ("matrix.models.models.m.family", "missing_key")
-    assert found["source"].endswith("matrix.yaml")
-
-
-def test_a_runtime_s_own_malformed_registry_is_a_problem_at_its_own_key(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A registry given in a runtime's own config is reported at that runtime's key."""
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-    (tmp_path / "matrix.yaml").write_text(
-        "matrix:\n  model_runtimes:\n"
-        "    h: {type: hardline, models: {models: {m: {backend: mock, model: m-1}}}}\n"
-    )
-    code, _, err = _cli(capsys, "check", "--json")
-    assert code == 3, err
-    (found,) = json.loads(err)["error"]["problems"]
-    assert found["path"] == "matrix.model_runtimes.h.models.models.m.family"
-    assert found["source"].endswith("matrix.yaml")
 
 
 def test_no_command_prints_help_and_a_usage_error_exits_2(

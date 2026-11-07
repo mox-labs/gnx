@@ -53,7 +53,7 @@ dependencies = [
     # The registry recon's extension points are on, and the component contract recon's flow
     # members keep: reached through recon/_matrix.py alone (owner ruling, REQ §2). Bounded to
     # the minor recon is built against: before 1.0 a matrix minor may break.
-    "matrix>=0.9,<0.10",
+    "matrix>=0.10,<0.11",
 ]
 
 [project.urls]

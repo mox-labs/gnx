@@ -1,5 +1,41 @@
 # Changelog — ix
 
+## 0.9.0 — 2026-11-06
+
+On matrix 0.10, which depends on no model runtime; ix depends on the `matrix-hardline` bridge so
+it works as installed. `docs/design/2026-10-19-record.md` §30 has the reasons. Each entry
+compares with 0.8.0.
+
+### Changed (breaking)
+
+- **hardline is named by the bridge's type URL**: `runtime: matrix-hardline.v1.model-runtime`
+  (a `model-call` subject), `model_runtime: matrix-hardline.v1.model-runtime` (a judge, a judge
+  evaluator), where `hardline` was the short name. The kinds' `choices` say so. ix's code names
+  no model runtime: its layer map forbids `hardline` and `matrix_hardline` in every layer.
+- **`matrix.models` is no setting ix reads.** A model runtime's registry is its own config: a
+  subject's or a judge's `runtime_options.models` for hardline, or hardline's own tiers.
+  `provenance.settings` records `matrix.model_runtimes` in its place.
+- **A `pydantic-ai` session names its model runtime**: `runtime_options.model_runtime`, one of
+  `matrix.model_runtimes`, built afresh for each trial; its `models` option is gone. Its
+  sessions' rows drive `pydantic-ai-slim` alone.
+- **The versions a run records** are ix's, matrix's and each distribution an installed runtime
+  declares it drives, where they were ix's, matrix's and hardline's.
+- **A `model-call` subject's usage facet** keeps the neutral reply's facts: `backend`,
+  `attempts`, `retries` and `fallback_from` are gone from it (they are the model runtime's own
+  record, the session row's `provenance`).
+
+### Removed (breaking)
+
+- **A model runtime that "gives no pydantic-ai Model" is no longer `Runnable: no` for a judge
+  evaluator**: every model runtime can judge, through `matrix.pydantic_ai_model`.
+
+### Changed
+
+- The judge's model is built by matrix (`pydantic_ai_model`), and closed through
+  `matrix.SupportsAclose`; an error's `fix` and the tracer provider's span processing are read
+  through declared types, not by name.
+- ix depends on `matrix>=0.10,<0.11` and `matrix-hardline>=0.1,<0.2`.
+
 ## 0.8.0 — 2026-11-06
 
 `docs/design/2026-10-19-record.md` has the reasons for this release's changes, in §28 and §29, and

@@ -1,0 +1,32 @@
+{
+  "language": "python",
+  "about": "matrix-hardline's layers, checked by tests/test_bridge_layering.py on every test run with the shared checker (components/capabilities/_testing/layers.py). Two files: the adapter, the one module that imports hardline and matrix both, and the package surface over it. 'why' keys are read by neither checker.",
+  "scan": ["src/matrix_hardline/**/*.py"],
+  "scan_why": "Every Python file in the package. Tests are out of scan: a test builds hardline runtimes on its mock backend by design.",
+  "layers": [
+    {
+      "name": "adapter",
+      "files": ["src/matrix_hardline/runtime.py"],
+      "allow": ["__future__", "collections", "typing", "pydantic", "hardline", "matrix"],
+      "forbid": ["opentelemetry", "pydantic_ai", "claude_agent_sdk", "os", "open"],
+      "why": {
+        "hardline, matrix": "the two packages it bridges, each through its public surface (tests/test_bridge_layering.py holds it to each __all__)",
+        "pydantic": "its config and the failed call's record are pydantic models, as matrix's typed configs are",
+        "forbid": "hardline traces its own calls, an agent framework is matrix's to run over the port, and the adapter reads no environment and no file: hardline finds its own tiers"
+      }
+    },
+    {
+      "name": "surface",
+      "files": ["src/matrix_hardline/__init__.py"],
+      "allow": ["importlib", "matrix_hardline.runtime"],
+      "forbid": ["hardline", "matrix", "opentelemetry"],
+      "why": {
+        "matrix_hardline.runtime": "re-exports the adapter's names; importlib.metadata reads the installed version"
+      }
+    }
+  ],
+  "single_importer": [
+    {"name": "hardline", "only": "src/matrix_hardline/runtime.py"}
+  ],
+  "single_importer_why": "the adapter is the one module that speaks hardline, so a change of hardline's reply or runtime is one file"
+}

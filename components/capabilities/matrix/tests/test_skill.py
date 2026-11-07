@@ -303,7 +303,7 @@ def test_every_max_option_the_skill_names_exists() -> None:
     """Moved from the spend tests when spend was removed: each ``max_*`` option the config and
     agents references name is a field of a runtime, an agent, the limits or a retry."""
     from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntimeConfig, SubagentConfig
-    from matrix.adapters._out.runtime.model import HardlineModelRuntimeConfig
+    from matrix.adapters._out.runtime.pydantic_ai import PydanticAiRuntimeConfig
     from matrix.domain.config import AgentConfig
 
     text = matrix.skill("config") + matrix.skill("agents")
@@ -311,7 +311,7 @@ def test_every_max_option_the_skill_names_exists() -> None:
     fields = {
         *ClaudeSdkRuntimeConfig.model_fields,
         *SubagentConfig.model_fields,
-        *HardlineModelRuntimeConfig.model_fields,
+        *PydanticAiRuntimeConfig.model_fields,
         *AgentConfig.model_fields,
         *matrix.Limits.model_fields,
         *matrix.Retry.model_fields,

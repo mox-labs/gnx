@@ -17,7 +17,7 @@
       "allow": ["__future__", "collections", "contextlib", "dataclasses", "difflib", "hashlib",
                 "itertools", "json", "math", "re", "statistics", "string", "typing",
                 "pydantic", "pydantic_core", "ix.domain"],
-      "forbid": ["matrix", "opentelemetry", "open"],
+      "forbid": ["matrix", "opentelemetry", "open", "hardline", "matrix_hardline"],
       "why": {
         "stdlib": "pure computation only (test_layering's PURE_STDLIB): no clock, random source, filesystem or network",
         "pydantic, pydantic_core": "every record is a pydantic model, and PydanticCustomError is how a validator names the shape it refused",
@@ -30,7 +30,7 @@
       "name": "ports",
       "files": ["src/ix/domain/ports.py"],
       "allow": ["__future__", "collections", "contextlib", "dataclasses", "typing", "ix.domain"],
-      "forbid": ["matrix", "opentelemetry", "open"],
+      "forbid": ["matrix", "opentelemetry", "open", "hardline", "matrix_hardline"],
       "why": {
         "ix.domain": "a port is stated in the domain's types: Subject, Probe, Sensor, Environment, Scope and the optional Traced, Review, StandIn, Preflight and Liveness speak in experiments, runs and problems",
         "nothing else": "ix keeps its ports inside the domain package, so this layer is a file, not a folder"
@@ -42,7 +42,7 @@
       "allow": ["__future__", "asyncio", "collections", "contextlib", "dataclasses", "difflib",
                 "hashlib", "itertools", "json", "math", "re", "statistics", "string", "typing",
                 "pydantic", "pydantic_core", "ix.domain", "ix.application"],
-      "forbid": ["matrix", "opentelemetry", "open"],
+      "forbid": ["matrix", "opentelemetry", "open", "hardline", "matrix_hardline"],
       "why": {
         "asyncio": "carrying a trial out waits, times out and races a stop flag (test_layering's LAYER_STDLIB); the domain has none",
         "ix.domain, ix.application": "the use cases run over the ports, in the domain's types"
@@ -52,7 +52,7 @@
       "name": "extension",
       "files": ["src/ix/extension.py"],
       "allow": ["__future__", "asyncio", "collections", "typing", "matrix", "ix.domain"],
-      "forbid": ["opentelemetry", "open"],
+      "forbid": ["opentelemetry", "open", "hardline", "matrix_hardline"],
       "why": {
         "ix.domain": "the ports, records and errors an adapter speaks in are the domain's, published here under the one name an extension author imports",
         "asyncio, matrix": "type-only: a Launcher starts an asyncio subprocess, and Runtimes answers with matrix's AgentCapabilities, which ix does not wrap",
@@ -79,7 +79,7 @@
                 "src/ix/adapters/_out/registration_file.py", "src/ix/adapters/_out/sensors.py",
                 "src/ix/adapters/_out/subjects.py"],
       "allow": ["*", "ix.domain", "ix.extension", "ix.adapters._out"],
-      "forbid": ["matrix", "opentelemetry"],
+      "forbid": ["matrix", "opentelemetry", "hardline", "matrix_hardline"],
       "why": {
         "*": "one technology each: k6, ps, httpx2, child Python, docker compose, git and file digests, the registration file, pydantic-evals",
         "ix.domain": "the ports they implement and the types they speak in",
@@ -92,7 +92,7 @@
       "name": "adapters_out_matrix",
       "files": ["src/ix/adapters/_out/matrix_*.py"],
       "allow": ["*", "ix.domain", "ix.extension", "ix.adapters._out"],
-      "forbid": ["opentelemetry"],
+      "forbid": ["opentelemetry", "hardline", "matrix_hardline"],
       "why": {
         "*": "matrix is their technology: agent runtimes and sessions (matrix_agents, matrix_calls, matrix_judge), the loader (matrix_documents), errors (matrix_errors), process groups (matrix_process), the run store and executor (matrix_runs)",
         "ix.adapters._out": "matrix_judge builds on matrix_agents and matrix_calls; matrix_runs brings the compose environment down with the run"
@@ -111,7 +111,7 @@
       "files": ["src/ix/adapters/_in/__init__.py", "src/ix/adapters/_in/matrix_components.py"],
       "allow": ["__future__", "collections", "contextlib", "typing", "matrix",
                 "ix.domain", "ix.application"],
-      "forbid": ["opentelemetry"],
+      "forbid": ["opentelemetry", "hardline", "matrix_hardline"],
       "why": {
         "matrix": "matrix drives ix's run path through these components, and hands them its Inputs and RunContext",
         "ix.domain, ix.application": "a driving adapter calls the use cases, in the domain's types"
@@ -121,7 +121,7 @@
       "name": "adapters_in_cli",
       "files": ["src/ix/adapters/_in/cli.py"],
       "allow": ["*", "ix"],
-      "forbid": ["matrix", "opentelemetry"],
+      "forbid": ["matrix", "opentelemetry", "hardline", "matrix_hardline"],
       "why": {
         "*": "rich-click and rich",
         "ix": "the command reaches ix through 'import ix' alone. The entry admits every ix.* path, since an allowance is a prefix; test_layering holds the command to ix.__all__"
@@ -132,7 +132,7 @@
       "files": ["src/ix/__init__.py", "src/ix/api.py"],
       "allow": ["__future__", "collections", "importlib", "os", "typing",
                 "ix.api", "ix.domain", "ix.composition"],
-      "forbid": ["matrix", "opentelemetry"],
+      "forbid": ["matrix", "opentelemetry", "hardline", "matrix_hardline"],
       "why": {
         "ix.composition, ix.domain": "the library surface names the root and the domain, never an adapter or a use case: which adapters are bound is not its decision",
         "importlib, os": "the version from the installed distribution; the run directory's environment default"
@@ -142,8 +142,10 @@
       "name": "composition",
       "files": ["src/ix/composition/*.py"],
       "allow": ["*", "ix"],
+      "forbid": ["hardline", "matrix_hardline"],
       "why": {
-        "*, ix": "the root chooses adapters through matrix's registry, wires ports and holds settings: the one layer that reaches everything"
+        "*, ix": "the root chooses adapters through matrix's registry, wires ports and holds settings: the one layer that reaches everything",
+        "forbid hardline, matrix_hardline": "ix names no model runtime, in any layer (owner ruling HO1, review I-3): an experiment names one by type URL, matrix's registry builds it, and its versions are recorded from what each runtime declares it drives"
       }
     }
   ],

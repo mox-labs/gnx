@@ -5,8 +5,11 @@
   row in a :class:`Construct`: a table per kind, kept in a store as the run goes.
 * **Agents**: an :class:`AgentDefinition` (what) bound to an :class:`AgentRuntime` (where),
   checked at binding. ``matrix.v1.agent-step`` makes an agent an ordinary component.
-* **Model calls**: one call on a :class:`ModelRuntime`, with no loop or tools, recorded as a
-  :class:`ModelCall`. ``matrix.v1.model-step`` makes one an ordinary component.
+* **Model calls**: one call on a :class:`ModelRuntime` (turns, tools offered, an output type;
+  no loop), recorded as a :class:`ModelCall`. ``matrix.v1.model-step`` makes one an ordinary
+  component, and :func:`pydantic_ai_model` makes any model runtime a pydantic-ai ``Model``.
+  matrix ships no model runtime that calls a model: one is installed with the package that
+  registers it (``matrix-hardline``).
 * **Composition**: ``load_config`` reads the shared config tiers, ``compose`` builds runtimes,
   agents, observers and the store from them, and the registry finds every extension
   (built-ins too) through the ``matrix.extensions`` entry point. ``plan_config`` says what a
@@ -26,6 +29,7 @@ from importlib.metadata import PackageNotFoundError, version
 from . import process
 from .adapters._in.signals import cancel_on_signals
 from .adapters._in.skill import render as _render_skill
+from .adapters._out.runtime.pydantic_ai import pydantic_ai_model
 from .adapters._out.stores.jsonl import JsonlConstructStore, MemoryConstructStore
 from .composition.builtins import (
     agent_runtime_type_url,
@@ -102,13 +106,15 @@ from .domain.executor import (
 from .domain.ids import TypeUrl, check_type_url, is_type_url, parse_type_url, type_url
 from .domain.loading import Accumulate, BesideFile, Loader
 from .domain.model_call import (
-    CallAttempt,
     FinishReason,
     ModelCall,
     ModelRequest,
-    RegistryRow,
-    RequestParams,
+    Role,
     TokenUsage,
+    ToolCall,
+    ToolSpec,
+    Turn,
+    Use,
 )
 from .domain.model_step import (
     MODEL_CALL,
@@ -197,7 +203,6 @@ __all__ = [
     "Attribution",
     "BesideFile",
     "BoundAgent",
-    "CallAttempt",
     "Catalog",
     "CheckReport",
     "CompilationError",
@@ -251,10 +256,9 @@ __all__ = [
     "RecordingObserver",
     "Ref",
     "Registry",
-    "RegistryRow",
     "ReleaseOutcome",
-    "RequestParams",
     "Retry",
+    "Role",
     "Reuse",
     "Run",
     "RunCancelled",
@@ -277,7 +281,11 @@ __all__ = [
     "SupportsWarnings",
     "Telemetry",
     "TokenUsage",
+    "ToolCall",
+    "ToolSpec",
+    "Turn",
     "TypeUrl",
+    "Use",
     "UsageError",
     "Wiring",
     "__version__",
@@ -310,6 +318,7 @@ __all__ = [
     "parse_type_url",
     "plan_config",
     "process",
+    "pydantic_ai_model",
     "record_session",
     "skill",
     "store_type_url",

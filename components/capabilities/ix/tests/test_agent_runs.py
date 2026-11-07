@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import matrix
+import matrix_hardline
 import pytest
 import yaml
 from click.testing import CliRunner
@@ -52,6 +53,10 @@ type CommandsOn = Callable[[Root], Root]
 def commands_on() -> Iterator[CommandsOn]:
     with ExitStack() as stack:
         yield lambda root: stack.enter_context(using(root))
+
+
+#: The model runtime that calls a model, as an experiment names it: the bridge's type URL.
+HARDLINE = matrix_hardline.TYPE_URL
 
 
 def _settings(**fields: Any) -> matrix.Config[IxSettings]:
@@ -558,7 +563,9 @@ class TestAVerdictIsTiedToWhatItJudged:
         dirty = root.run(lab, exploratory=True).provenance
         assert dirty is not None and (dirty.commit, dirty.dirty) == (commit, True)
         assert dirty.checkout() == f"commit {commit[:12]} (dirty)"
-        assert set(dirty.versions) == {"ix", "matrix", "hardline"}
+        # Changed requirement (I-3): ix named hardline among the versions it records; it now
+        # records its own, matrix's, and those each installed runtime declares it drives.
+        assert set(dirty.versions) == {"ix", "matrix", "claude-agent-sdk", "pydantic-ai-slim"}
         assert dirty.versions["matrix"] == importlib.metadata.version("matrix")
         assert MOUNTING in {runtime.type_url for runtime in dirty.runtimes}
 
@@ -635,13 +642,13 @@ class Oneshot:
 
     answer: Callable[[str], str]
 
-    def check(self, model: str | None) -> None:
+    def check(self, model: str | None, *, uses: frozenset[str] = frozenset()) -> None:
         if model not in (None, "one-1"):
             raise matrix.ConfigError(f"oneshot has no model {model!r}", fix="model: one-1")
 
     async def call(self, request: matrix.ModelRequest) -> matrix.ModelCall:
         return matrix.ModelCall(
-            text=self.answer(request.prompt), name="one-1", model="one-1", family="acme",
+            text=self.answer(request.prompt or ""), name="one-1", model="one-1", family="acme",
             usage=matrix.TokenUsage(input_tokens=12, output_tokens=3), request_id="r-1",
             latency_ms=40,
         )  # fmt: skip
@@ -1009,7 +1016,8 @@ class TestCapabilitiesAreAsked:
     def test_the_pydantic_ai_runtime_loads_no_skills_and_says_so(self, tmp_path: Path) -> None:
         """pydantic-ai has no skills: skills given to a session on it can never fire, and an
         activation sensor on it has none to see, whatever its options are called."""
-        session = {"kind": "agent-session", "runtime": "pydantic-ai"}
+        session = {"kind": "agent-session", "runtime": "pydantic-ai",
+                   "runtime_options": {"model_runtime": "m"}}  # fmt: skip
         skilled = {**session, "skills": ["skills/review"]}
         assert self._validated(tmp_path / "a", skilled) == {("subjects.it.skills", "unobservable")}
         assert self._validated(tmp_path / "b", session, sensors=[{"kind": "activation"}]) == {
@@ -1175,22 +1183,31 @@ PYDANTIC_AI = "matrix.v1.agent-runtime.pydantic-ai"
 class TestASecondRealAgentRuntime:
     """matrix's ``pydantic-ai`` runtime is the second agent runtime that runs a model's loop,
     and ix names it in an ``agent-session`` subject as it names ``claude-sdk``: by
-    its registered name, its options declared by its config. Here its model is hardline's
-    mock backend, a stand-in row, and its tool a function in this module: no model is
+    its registered name, its options declared by its config. Its calls are made on a model
+    runtime matrix's config names (``matrix.model_runtimes``), here hardline through the bridge
+    on its mock backend, a stand-in row, and its tool a function in this module: no model is
     called, and the session's loop, tool call included, runs for real."""
 
     def test_an_agent_session_runs_on_it_with_its_tools_and_its_facts(self, tmp_path: Path) -> None:
         registry = matrix.default_registry(discover=False)
         register(registry)
-        root = Root(registry=registry, settings=_settings())
+        matrix_hardline.register(registry)
         asks = {"tool_calls": [{"name": "lookup", "arguments": '{"word": "banana"}'}]}
         row = {"backend": "mock", "model": "m-1", "family": "stand",
                "options": {"script": [asks, "BANANA, a long yellow fruit"]}}  # fmt: skip
+        named = {"q": {"type": HARDLINE, "models": {"models": {"q": row}}}}
+        root = Root(
+            registry=registry,
+            settings=matrix.Config[IxSettings](
+                client=IxSettings(),
+                matrix=matrix.MatrixConfig.model_validate({"model_runtimes": named}),
+            ),
+        )
         session = {
             "kind": "agent-session",
             "runtime": "pydantic-ai",
             "runtime_options": {
-                "models": {"models": {"q": row}},
+                "model_runtime": "q",
                 "default_model": "q",
                 "tools": {"lookup": f"{__name__}:lookup"},
             },
@@ -1209,7 +1226,9 @@ class TestASecondRealAgentRuntime:
         assert {(u["runtime"], u["family"]) for u in usage} == {(PYDANTIC_AI, "stand")}
         sessions = _session_rows(report)
         assert {(s["runtime"], s["turns"]) for s in sessions} == {(PYDANTIC_AI, 2)}
-        assert {tuple(s["drives"]) for s in sessions} == {("pydantic-ai-slim", "hardline")}
+        # Changed requirement: the session's runtime drives pydantic-ai alone; hardline is driven
+        # by the model runtime its calls are made on, which records its own calls.
+        assert {tuple(s["drives"]) for s in sessions} == {("pydantic-ai-slim",)}
 
 
 class Hanging(Scripted):
@@ -1280,7 +1299,7 @@ class TestADryRun:
         )
         data = yaml.safe_load((lab / "experiment.yaml").read_text())
         data["sensors"] = [
-            {"kind": "judge", "model_runtime": "hardline", "rubric": "Did it review the diff?"}
+            {"kind": "judge", "model_runtime": HARDLINE, "rubric": "Did it review the diff?"}
         ]
         data["metrics"] = ["judged_score"]
         (lab / "experiment.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
@@ -1307,7 +1326,7 @@ class TestADryRun:
         model-runtime point: no hardline model is resolved or called."""
         lab = _either(
             tmp_path,
-            {"kind": "model-call", "runtime": "hardline", "model": "nowhere",
+            {"kind": "model-call", "runtime": HARDLINE, "model": "nowhere",
              "runtime_options": {"temperature": 0}},
         )  # fmt: skip
         data = yaml.safe_load((lab / "experiment.yaml").read_text())
@@ -1322,7 +1341,7 @@ class TestADryRun:
         (estimate,) = [e for e in report.analysis.estimates if e.metric == "text_matched"]
         assert estimate.value == pytest.approx(0.5)
         usage = [row["observations"]["usage"] for row in _rows(report, "ix.v1.interaction")]
-        assert {(row["runtime"], row["backend"], row["simulated"]) for row in usage} == {
+        assert {(row["runtime"], row["family"], row["simulated"]) for row in usage} == {
             ("matrix.v1.model-runtime.mock", "mock", True)
         }
 
@@ -1655,11 +1674,10 @@ class TestTheLiveGuardIsOnIxsPath:
     ) -> None:
         row = {"backend": "openai-compat", "model": "q-1", "family": "q",
                "base_url": "http://127.0.0.1:9/v1"}  # fmt: skip
-        settings = matrix.Config[IxSettings](
-            client=IxSettings(), matrix=matrix.MatrixConfig(models={"models": {"q": row}})
-        )
-        lab = _either(tmp_path, {"kind": "model-call", "runtime": "hardline", "model": "q"})
-        report = Root(settings=settings).run(lab, exploratory=True)
+        options = {"models": {"models": {"q": row}}}
+        call = {"kind": "model-call", "runtime": HARDLINE, "model": "q", "runtime_options": options}
+        lab = _either(tmp_path, call)
+        report = Root(settings=_settings()).run(lab, exploratory=True)
         refused = list(refused_live_calls)
         refused_live_calls.clear()  # before anything can fail: what is left fails the test
         assert report.trials.carried_out == 10
@@ -1745,7 +1763,7 @@ class Throttled:
     """A model runtime whose every call is rate limited after one attempt that answered:
     what a provider out of quota looks like, with what the attempts cost."""
 
-    def check(self, model: str | None) -> None:
+    def check(self, model: str | None, *, uses: frozenset[str] = frozenset()) -> None:
         return None
 
     async def call(self, request: matrix.ModelRequest) -> matrix.ModelCall:
@@ -1755,10 +1773,7 @@ class Throttled:
             reason="rate_limited",
             call=matrix.ModelCall(
                 usage=spent,
-                attempt_log=(
-                    matrix.CallAttempt(name="t", usage=spent, latency_ms=5),
-                    matrix.CallAttempt(name="t", reason="rate_limit", latency_ms=1),
-                ),
+                provenance={"acme.v1.attempts": {"attempts": [{"ok": True}, {"ok": False}]}},
             ),
         )
 
@@ -1771,8 +1786,8 @@ def _judged_calls(tmp_path: Path) -> ix.Report:
     """A dry run of a model-call subject judged by a model judge: both on matrix's mock."""
     lab = _either(
         tmp_path,
-        {"kind": "model-call", "runtime": "hardline", "model": "nowhere"},
-        sensors=[{"kind": "judge", "model_runtime": "hardline", "rubric": "Helpful."}],
+        {"kind": "model-call", "runtime": HARDLINE, "model": "nowhere"},
+        sensors=[{"kind": "judge", "model_runtime": HARDLINE, "rubric": "Helpful."}],
         metrics=["judged_score"],
     )
     return Root(settings=_settings()).run(lab, dry_run=True)
@@ -1805,9 +1820,8 @@ class TestAVerdictTracesToTheModelThatAnswered:
                 mock, "mock", "stop",
             )  # fmt: skip
             prompt = interaction["observations"]["response"]["prompt"]
-            assert subject["sent"] == matrix.digest(
-                {"prompt": prompt, "system": None, "model": "nowhere", "output": None}
-            )
+            asked = matrix.ModelRequest.from_prompt(prompt, model="nowhere")
+            assert subject["sent"] == matrix.call_sent(asked)  # matrix's one digest rule
             assert by != answered
 
     def test_each_rows_ledger_entry_names_the_sessions_the_row_names(self, tmp_path: Path) -> None:
@@ -1873,7 +1887,8 @@ class TestAVerdictTracesToTheModelThatAnswered:
             (behind,) = interaction["sessions"]
             failed = sessions[behind]
             assert (failed["status"], failed["reason"]) == ("failed", "rate_limited")
-            assert failed["usage"]["input_tokens"] == 9 and len(failed["attempt_log"]) == 2
+            assert failed["usage"]["input_tokens"] == 9
+            assert len(failed["provenance"]["acme.v1.attempts"]["attempts"]) == 2
 
 
 class _RecorderConfig(BaseModel):

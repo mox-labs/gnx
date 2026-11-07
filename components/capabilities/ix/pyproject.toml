@@ -1,6 +1,6 @@
 [project]
 name = "ix"
-version = "0.8.0"
+version = "0.9.0"
 description = "Experiments on agents and services: one file with a genre, validated, planned, registered, run and reported"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -24,9 +24,13 @@ classifiers = [
 dependencies = [
     # This repository's matrix, not PyPI's project of that name: the workspace's
     # [tool.uv.sources] resolves it, from a checkout and from a git URL alike. Bounded to the
-    # minor ix is built against: before 1.0 a matrix minor may break. matrix brings every agent
-    # and model runtime, and the OpenTelemetry SDK and OTLP exporters: there are no extras.
-    "matrix>=0.9,<0.10",
+    # minor ix is built against: before 1.0 a matrix minor may break. matrix brings its agent
+    # runtimes, and the OpenTelemetry SDK and OTLP exporters: there are no extras.
+    "matrix>=0.10,<0.11",
+    # A model runtime that calls a model, which matrix does not ship (owner ruling HO1): hardline,
+    # through the bridge, so `ix` works as installed. ix names it nowhere in its code; its
+    # experiments name it by type URL. Bounded to the minor ix is built against.
+    "matrix-hardline>=0.1,<0.2",
     # Pydantic's maintained continuation of httpx, the stack's one HTTP client; bounded to
     # the major tested.
     "httpx2>=2.10,<3",

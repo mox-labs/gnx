@@ -71,7 +71,12 @@ class TestTheCount:
         data = _session()
         data["sensors"] = [
             {"kind": "text-match", "contains": "hello"},
-            {"kind": "judge", "rubric": "Polite.", "model_runtime": "hardline", "repeats": 2},
+            {
+                "kind": "judge",
+                "rubric": "Polite.",
+                "model_runtime": "matrix-hardline.v1.model-runtime",
+                "repeats": 2,
+            },
         ]
         data["metrics"] = ["judged_score"]
         made = ix.plan(write_experiment(data))

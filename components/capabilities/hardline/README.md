@@ -167,7 +167,7 @@ Its `record`, `hardline.v1.call`, is how hardline made the call, which only hard
 | `params` | what the answering row was sent: `max_tokens`, `temperature` (`provider_default` when none was sent), the structured mode (`None` for `complete`), the names of the `tools` offered |
 | `attempt_log` | every backend call, in order: the row asked, why it failed (`None` for the answer), the usage it reported, its latency |
 | `turns_digest` | the digest of the turns the answering call was sent, `extract`'s schema instruction and repair turns included |
-| `row` | the answering row's digest, and for every field of the row, where its value came from: the tier that set it (`cwd ./hardline.yaml`, `matrix.models`), `default of backend openai-compat`, or `default` |
+| `row` | the answering row's digest, and for every field of the row, where its value came from: the tier that set it (`cwd ./hardline.yaml`, or a host's label for its section, as `matrix-hardline models`), `default of backend openai-compat`, or `default` |
 
 The two grow apart. The reply refuses a key it does not know, so a reader of stored replies
 upgrades hardline before any writer does. The record ignores one, so a record a newer 0.x wrote,

@@ -96,11 +96,14 @@ REFERENCES: dict[str, str] = {
 #: to a kind this ix can run, and ``http-load`` to the program its adapter starts.
 PREREQUISITES: dict[str, str] = {
     "agent-session": "runs on one of matrix's agent runtimes: `claude-sdk` needs the Claude "
-    "Code CLI and its credentials; `pydantic-ai` needs a hardline model (its "
-    "`models` or matrix's) and makes every model call through hardline; `mock` needs nothing "
-    "and calls no model. `ix plan` lists one that cannot start under `Runnable: no`",
-    "model-call": "runs on one of matrix's model runtimes: `hardline` needs a hardline model; "
-    "`mock` needs nothing and calls no model. `ix plan` lists a runtime that cannot start, or "
+    "Code CLI and its credentials; `pydantic-ai` needs a model runtime named in "
+    "`matrix.model_runtimes` (its `runtime_options.model_runtime`) and makes every model call "
+    "on it; `mock` needs nothing and calls no model. `ix plan` lists one that cannot start "
+    "under `Runnable: no`",
+    "model-call": "runs on one of matrix's model runtimes: `matrix-hardline.v1.model-runtime` "
+    "needs a hardline model (its `runtime_options.models`, or hardline's tiers); `mock` needs "
+    "nothing and calls "
+    "no model. `ix plan` lists a runtime that cannot start, or "
     "a model it cannot resolve, under `Runnable: no`",
     "function-test": "and `outcome` run Python in a child process with a time limit and no "
     "credentials in its environment; it is not a sandbox, so test code from a subject you "
@@ -508,8 +511,9 @@ def _install(version: str, kinds: Kinds) -> str:
             "",
             "ix is on no package index: it is installed from its repository at the release's "
             "tag, and uv takes matrix, which ix runs on, from the same repository. Every agent "
-            "and model runtime comes with it (`claude-sdk`, `pydantic-ai`, `hardline`), and "
-            "the OpenTelemetry SDK that exports spans over OTLP: there are no extras.",
+            "and model runtime comes with it (`claude-sdk`, `pydantic-ai`, and "
+            "`matrix-hardline.v1.model-runtime` from the matrix-hardline bridge), and the "
+            "OpenTelemetry SDK that exports spans over OTLP: there are no extras.",
             "",
             "What the runnable kinds need on the host:",
             "",
@@ -1155,7 +1159,8 @@ experiment writes `trials_in_flight`. It prints progress on stderr and then the 
   of each file the subjects and sensors name (`contents`: paths and digests, never what
   the files hold), the git commit and whether a tracked file differed from it
   (`provenance.commit`, `provenance.dirty`; `not a repository` outside one), the versions
-  of ix, matrix and hardline, and each runtime installed with the distribution that
+  of ix, matrix and what each installed runtime drives, and each runtime installed with
+  the distribution that
   registered it and the versions of what it drives (`claude-agent-sdk` for `claude-sdk`).
   `ix report` prints them under `Contents`, `Ran from` and `Versions`; `ix runs` gives each
   run's commit.
@@ -1247,13 +1252,13 @@ probes and a metric. What makes it one is the kinds.
   `matrix describe matrix.v1.agent-runtime.claude-sdk` lists them. A key the runtime's
   config does not declare is `option_unknown`; `plugins` on a runtime that takes none are
   `option_inapplicable`.
-- **To measure a model rather than an agent, the subject is `model-call`.** Each trial is
-  one call on the matrix model runtime its `runtime` names (`hardline`, `mock`, or any
-  installed): no turns, no tools, no working directory. Options: `model` (a name the
-  runtime resolves, checked by `ix plan`), `system_prompt` and `runtime_options` (the
-  runtime's config: `temperature`, `max_tokens` for `hardline`). The `prompt` probe
-  applies, without `collect`; `activation` and `tool-usage` read tool calls a call never
-  makes, so validate refuses them on it (`unobservable`), and a `function-test` `file`.
+- **To measure a model rather than an agent, the subject is `model-call`.** Each trial is one call
+  on the matrix model runtime its `runtime` names (`matrix-hardline.v1.model-runtime`, `mock`, or
+  any installed): no turns, no tools, no working directory. Options: `model` (a name the runtime
+  resolves, checked by `ix plan`), `system_prompt` and `runtime_options` (the runtime's config:
+  `models`, `temperature`, `max_tokens` for hardline's). The `prompt` probe applies, without
+  `collect`; `activation` and `tool-usage` read tool calls a call never makes, so validate refuses
+  them on it (`unobservable`), and a `function-test` `file`.
 - **The probe is `prompt`.** Write one file per probe in a `probes/` folder beside the
   experiment and leave `probes:` out: the markdown body is the prompt, and every
   frontmatter key but `id`, `kind` and `options` is the truth sensors read
@@ -1385,10 +1390,11 @@ have written it anyway. Two things show more.
 
 `judge` asks a model to score a reply against your `rubric` from 0 to 1. It names its
 runtime with one of two options, and has no default: `model_runtime` (one model call per
-reading: `hardline` calls a model provider, `mock` does not) or `agent_runtime` (a one-turn
-session with no tools per reading: `claude-sdk` calls a model provider, `mock` does not).
+reading: the hardline bridge's calls a model provider, `mock` does not) or `agent_runtime`
+(a one-turn session with no tools per reading: `claude-sdk` calls a model provider, `mock`
+does not).
 Validate refuses a judge that names neither, or both:
-`{{kind: judge, model_runtime: hardline, rubric: rubric.md}}`. Its readings
+`{{kind: judge, model_runtime: matrix-hardline.v1.model-runtime, rubric: rubric.md}}`. Its readings
 are judged: they are reported and **never decide** a verdict. `repeats: 3` asks it three
 times per reply: `judge_agreement` is how often it agreed with itself. Two flags are
 printed whenever a trial raises one: `judge_inconsistent` (its repeats split on pass or
@@ -1431,9 +1437,9 @@ are in the reading's detail. One `evaluator` entry per experiment: a second is
   `model_runtime` names (with `model`, `runtime_options`), never from `arguments` and never
   from pydantic-evals' default; validate refuses one with no `model_runtime`
   (`option_missing`) or a `model` in its arguments. A dry run judges on pydantic-ai's
-  `TestModel`, which calls no model. On `hardline` it judges on the registry row `model`
-  names, each request a hardline call; a model runtime that gives no pydantic-ai model is
-  `Runnable: no` in `ix plan`, and the `judge` sensor scores there.
+  `TestModel`, which calls no model. On any other it judges on pydantic-ai's model over
+  that runtime (on hardline's, the registry row `model` names), each request a call and a
+  row of the run's session table.
 
 ## Reading the report
 

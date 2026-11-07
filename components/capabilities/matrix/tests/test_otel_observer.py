@@ -184,7 +184,7 @@ class _TracedModel:
     """A model runtime whose call opens a span of its own, as hardline's ``chat`` span per
     attempt does."""
 
-    def check(self, model: str | None) -> None:
+    def check(self, model: str | None, *, uses: frozenset[str] = frozenset()) -> None:
         return None
 
     async def call(self, request: Any) -> Any:
@@ -223,7 +223,7 @@ async def test_a_model_call_is_a_span_of_its_own_under_its_component() -> None:
 class _Counted:
     """A model runtime that reports usage, as hardline does for each call."""
 
-    def check(self, model: str | None) -> None:
+    def check(self, model: str | None, *, uses: frozenset[str] = frozenset()) -> None:
         return None
 
     async def call(self, request: Any) -> Any:
@@ -686,7 +686,7 @@ async def test_a_failed_session_keeps_its_task_in_the_record_and_on_no_span_or_m
     )
 
     class Down:
-        def check(self, _: Any) -> None:
+        def check(self, _: Any, *, uses: frozenset[str] = frozenset()) -> None:
             return None
 
         async def call(self, request: Any) -> Any:

@@ -262,7 +262,7 @@ class _NoRun:
 class _SyncCall:
     """A third party's model runtime whose ``call`` is not awaitable."""
 
-    def check(self, model: str | None) -> None: ...
+    def check(self, model: str | None, *, uses: frozenset[str] = frozenset()) -> None: ...
 
     def call(self, request: object) -> object: ...
 
@@ -310,21 +310,20 @@ def test_a_broken_runtime_fails_composition_at_its_key() -> None:
 
 def test_every_built_in_runtime_keeps_its_port() -> None:
     """Built through the registry, which holds each to its port as it builds it."""
-    pytest.importorskip("hardline")
     pytest.importorskip("claude_agent_sdk")
     from matrix import AgentRuntime, ModelRuntime
+    from matrix.adapters._out.runtime.mock import MockModelRuntime
 
     registry = default_registry(discover=False)
     ports = {"agent-runtime": AgentRuntime, "model-runtime": ModelRuntime}
-    needs = {
-        "cwd": None,
-        "models": {"models": {"q": {"backend": "mock", "model": "q", "family": "q"}}},
-    }
+    needs = {"cwd": None, "model_runtimes": {"m": MockModelRuntime()}}
+    configs = {"matrix.v1.agent-runtime.pydantic-ai": {"model_runtime": "m"}}
     for point, port in ports.items():
         entries = registry.entries(point)
         assert entries
         for entry in entries:
-            assert isinstance(registry.create(point, entry.type_url, needs=needs), port)
+            built = registry.create(point, entry.type_url, configs.get(entry.type_url), needs=needs)
+            assert isinstance(built, port)
 
 
 # --- stores and observers are held to their ports; points have owners ----------------------

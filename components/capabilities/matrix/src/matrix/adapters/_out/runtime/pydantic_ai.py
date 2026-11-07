@@ -1,40 +1,44 @@
-"""PydanticAiRuntime — a pydantic-ai ``Agent`` as an AgentRuntime, its model calls made by hardline.
+"""PydanticAiRuntime — a pydantic-ai ``Agent`` as an AgentRuntime, its model calls made on a
+matrix model runtime.
 
 An agent session here is pydantic-ai's loop: the model asks for tools, pydantic-ai validates
 the arguments and runs them, and sends the results back, until the model answers or the
-definition's ``max_turns`` is reached. Every model call goes through hardline, so a session
-runs on hardline's registry rows, retries, fallbacks, call limits, record and telemetry, in any
-model family hardline has a row for.
+definition's ``max_turns`` is reached. Every model call is one call on the
+:class:`~matrix.domain.ports._out.model_runtime.ModelRuntime` its config names
+(``model_runtime``), so a session runs on whatever that runtime resolves a model name to, with
+its retries, fallbacks, record and telemetry. Nothing here knows which runtime that is.
 
 **The model.** pydantic-ai reaches a model through its ``Model`` class; the one here is backed
-by a hardline runtime and one registry row. It is the adapter between the two message shapes:
-pydantic-ai's requests and responses to hardline's turns and ``Completion``, and pydantic-ai's
-tool definitions to hardline's ``ToolSpec``. It lives in this file, not in hardline: hardline
-knows no agent framework, and pydantic-ai knows no hardline, so the one module that depends on
-both, matrix's adapter, translates between them. Nothing points back: hardline stays one layer down.
+by a model runtime and a model name it resolves. It is the adapter between pydantic-ai's
+shapes and the port's: pydantic-ai's requests and responses to turns and a ``ModelCall``,
+its tool definitions to ``ToolSpec``s, and its model settings to the request's two overrides.
+It lives in this file, the one that imports pydantic-ai; the port knows no agent framework.
+
+**Settings it cannot carry are refused.** The port carries ``max_tokens`` and ``temperature``
+and nothing else. Any other pydantic-ai setting (``top_p``, ``seed``, ``stop_sequences``, ...)
+is a ``ConfigError``: when the ``Model`` is built with it (:func:`pydantic_ai_model`), else when
+a request carries it, before anything is sent. It is never dropped. A provider's native tool,
+or a prompt that is not text, is refused the same way.
 
 **What a session can be given** is declared by :class:`PydanticAiRuntimeConfig` and nowhere
-else (``matrix describe`` prints it): the hardline registry (``models``), the row used when a
-definition names none (``default_model``), the tools a definition may choose from (``tools``),
+else (``matrix describe`` prints it): the model runtime (``model_runtime``), the model used when
+a definition names none (``default_model``), the tools a definition may choose from (``tools``),
 and the model settings. ``check`` refuses, at binding, a definition that names a tool the
-runtime does not have, a model the registry cannot resolve, or tools for a row whose backend
-cannot call them. A definition's ``tools`` choose from the runtime's: ``None`` is all of them,
-``()`` none.
+runtime does not have, or a model, or tools on a model, that its model runtime refuses. A
+definition's ``tools`` choose from the runtime's: ``None`` is all of them, ``()`` none.
 
 **What a response carries.** The reply (``content``) is the run's output; every text the model
 wrote along the way is the ``transcript``; each tool call is timed from the response that asked
 for it to the request that carried its result, and ``error`` when the tool failed or its
 arguments were refused. ``model``, ``family``, ``provider``, ``finish_reason`` and
-``native_finish_reason`` are those of the call that answered last, hardline's ``Completion``
-(``provider`` its row's ``provider:``, else its backend's name); usage is summed over every call
-of the session, each already summed over its attempts; ``num_turns`` counts the calls;
-``session_id`` is pydantic-ai's run id. No cost: hardline reports tokens, and pydantic-ai's own
-price estimate is not a provider's report (owner ruling 2026-10-22: a cost is kept only as the
-provider's own report).
+``native_finish_reason`` are those of the call that answered last, as the model runtime reported
+it; usage is summed over every call of the session; ``num_turns`` counts the calls;
+``session_id`` is pydantic-ai's run id. No cost: pydantic-ai's own price estimate is not a
+provider's report (owner ruling 2026-10-22: a cost is kept only as the provider's own report).
 
-**Counted once.** hardline counts the inference tokens of every call it makes. So this runtime
-declares ``usage_counted_by = "hardline"``, and matrix's agent-session counters leave its
-sessions to hardline; the session row keeps the usage.
+**Counted once.** The runtime registers with the need ``model_runtimes``, so composition marks
+its sessions as made through a model runtime, which counts their calls' tokens; matrix's
+agent-session counters leave them alone, and the session row keeps the usage.
 
 **No content in telemetry.** pydantic-ai's instrumentation is off by default
 (``Agent._instrument_default = False``, ``pydantic_ai/agent/__init__.py:549``, read by
@@ -43,21 +47,21 @@ sessions to hardline; the session row keeps the usage.
 has not chosen, and its ``InstrumentationSettings`` record prompts, replies and tool arguments
 unless told not to (``include_content: bool = True``, ``pydantic_ai/models/instrumented.py:85``,
 ``:96``). Each agent here sets ``instrument = False`` (``:1199-1201``), so nothing in the process
-can turn it on: hardline's ``chat`` spans and matrix's ``invoke_agent`` span trace a session,
+can turn it on: the model runtime's spans and matrix's ``invoke_agent`` span trace a session,
 without content.
 
-**Connections.** hardline's connections belong to the event loop that opened them. Sessions in
-one loop share them, and they are closed when the last session running in that loop ends.
+**Connections.** A model runtime that holds connections (``SupportsAclose``) holds them per
+event loop. Sessions in one loop share them, and they are closed when the last session running
+in that loop ends.
 
-**The model alone.** :func:`hardline_model` is the same ``Model`` for a caller that runs
-pydantic-ai itself: the ``hardline`` model runtime hands it out (``pydantic_ai_model``), so an
-evaluator's judge calls its model on a row its config names, and nothing else. Handed out, each
-call it makes is recorded by the runtime as a row of the run's session table (``record``),
-replied, failed or cancelled: what was sent is digested as the call's turns, tools and row.
-Inside an agent session nothing records the calls one by one: the session is the row.
+**The model alone.** :func:`pydantic_ai_model` is the same ``Model`` for a caller that runs
+pydantic-ai itself (an evaluator's judge), over any model runtime. Each call it makes is a row
+of the run's session table, as a model step's call is (replied, failed or cancelled), under the
+``runtime_url`` and ``drives`` its caller gives. Inside an agent session nothing records the
+calls one by one: the session is the row.
 
-``pydantic_ai`` and ``hardline`` are imported inside the methods that use them, so importing
-matrix loads neither. Type URL: ``matrix.v1.agent-runtime.pydantic-ai``.
+``pydantic_ai`` is imported inside the functions that use it, so importing matrix loads none of
+it. Type URL: ``matrix.v1.agent-runtime.pydantic-ai``.
 """
 
 from __future__ import annotations
@@ -72,48 +76,48 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from matrix.adapters._out.runtime._hardline import build, served_by
 from matrix.domain.agent import AgentCapabilities, AgentResponse
-from matrix.domain.errors import AgentRuntimeError, ConfigError, RuntimeReason, invalid
+from matrix.domain.errors import AgentRuntimeError, ConfigError, ModelRuntimeError, invalid
+from matrix.domain.model_call import ModelRequest, TokenUsage, ToolCall, ToolSpec, Turn
+from matrix.domain.optional import SupportsAclose
 from matrix.domain.problems import Problem, problem
-from matrix.domain.session import digest
+from matrix.domain.session import call_sent, call_session, record_cancelled, record_session
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
-    from hardline import Completion, HardlineError
-    from hardline import Message as Turn
-    from hardline import ModelRuntime as Hardline
     from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
     from pydantic_ai.models import Model, ModelRequestParameters
     from pydantic_ai.settings import ModelSettings
 
     from matrix.domain.agent import AgentDefinition
+    from matrix.domain.model_call import ModelCall, Use
+    from matrix.domain.ports._out.model_runtime import ModelRuntime
+    from matrix.domain.session import Session
 
-    #: Records one call a hardline Model made: its row, the digest of what it sent, and its
-    #: Completion, or the error it raised.
-    type Recorder = Callable[[str, str, Completion | None, BaseException | None], None]
+#: The pydantic-ai settings a model call carries, as the port's overrides: no other.
+CARRIED = frozenset({"max_tokens", "temperature"})
 
 
 class PydanticAiRuntimeConfig(BaseModel):
-    """A pydantic-ai agent loop whose model calls go through hardline (a config that reaches
-    this is a capability grant, and naming a tool a grant to run its code, owner ruling
-    2026-10-22: see the package's SECURITY.md). An agent's `model` on this
-    runtime is a model name in the hardline registry (`models`, `matrix.models`, or hardline's
-    own tiers); unset, `default_model`, then the registry's default. `tools` are the tools an
-    agent may be given, each a Python function named `module:function`: its module is found
-    when the runtime is built, without running it, and imported when a session first offers
-    the tool (a module whose import fails is not imported again: every session that offers
-    the tool fails); an agent's `tools` choose from them (unset: all; `[]`: none). The row an
-    agent runs on must be served by a hardline backend that can call tools when it is given
-    any. `max_turns` bounds the model calls of a session. Calls report tokens, not cost."""
+    """A pydantic-ai agent loop whose model calls are made on a matrix model runtime (a config
+    that reaches this is a capability grant, and naming a tool a grant to run its code, owner
+    ruling 2026-10-22: see the package's SECURITY.md). `model_runtime` names one of
+    `matrix.model_runtimes`; it has no default, since which runtime answers is the operator's
+    choice. An agent's `model` on this runtime is a name that model runtime resolves; unset,
+    `default_model`, then the model runtime's own default. `tools` are the tools an agent may be
+    given, each a Python function named `module:function`: its module is found when the runtime
+    is built, without running it, and imported when a session first offers the tool (a module
+    whose import fails is not imported again: every session that offers the tool fails); an
+    agent's `tools` choose from them (unset: all; `[]`: none). The model runtime must be able
+    to call tools on an agent's model when the agent is given any. `max_turns` bounds the model
+    calls of a session. Calls report tokens, not cost."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    #: A hardline registry section. Composition fills this from the top-level ``matrix.models``
-    #: when absent; ``None`` all the way down means hardline discovers its own tiers.
-    models: dict[str, Any] | None = None
-    #: Used when a definition names no model. ``None`` = the registry's own default.
+    #: The name, under ``matrix.model_runtimes``, of the model runtime every call is made on.
+    model_runtime: str = Field(min_length=1)
+    #: Used when a definition names no model. ``None`` = the model runtime's own default.
     default_model: str | None = None
     #: Tool name → ``module:function``, a Python function pydantic-ai runs when the model asks.
     #: Its parameters' types and its docstring are what the model is told of it.
@@ -130,22 +134,18 @@ class PydanticAiRuntimeConfig(BaseModel):
 
 
 class PydanticAiRuntime:
-    """Runs AgentDefinitions as pydantic-ai agent sessions on hardline. ``tools`` adds tools
-    given as functions in code to those the config names."""
-
-    #: Whose counters count this runtime's model calls: hardline's, per call. matrix's
-    #: agent-session counters leave its sessions alone, so no token is counted twice.
-    usage_counted_by = "hardline"
+    """Runs AgentDefinitions as pydantic-ai agent sessions on a model runtime. ``tools`` adds
+    tools given as functions in code to those the config names."""
 
     def __init__(
         self,
-        models: Hardline,
-        config: PydanticAiRuntimeConfig | None = None,
+        model_runtime: ModelRuntime,
+        config: PydanticAiRuntimeConfig,
         *,
         tools: Mapping[str, Callable[..., Any]] | None = None,
     ) -> None:
-        self._models = models
-        self._config = config or PydanticAiRuntimeConfig()
+        self._model_runtime = model_runtime
+        self._config = config
         unfound = [
             found
             for name, ref in self._config.tools.items()
@@ -169,30 +169,44 @@ class PydanticAiRuntime:
         self._sessions: dict[asyncio.AbstractEventLoop, int] = {}
 
     @classmethod
-    def from_config(cls, config: PydanticAiRuntimeConfig) -> PydanticAiRuntime:
-        return cls(build(config.models, needed_by="the pydantic-ai agent runtime"), config)
+    def from_config(
+        cls, config: PydanticAiRuntimeConfig, *, model_runtimes: Mapping[str, ModelRuntime]
+    ) -> PydanticAiRuntime:
+        """The runtime on the model runtime ``config.model_runtime`` names among
+        ``model_runtimes``; a ConfigError at ``model_runtime`` when it names none of them."""
+        found = model_runtimes.get(config.model_runtime)
+        if found is None:
+            known = sorted(model_runtimes)
+            raise invalid(
+                "the pydantic-ai runtime's model runtime is not composed",
+                [
+                    problem(
+                        "model_runtime",
+                        "name_unknown",
+                        f"{config.model_runtime!r} is not a composed model runtime",
+                        fix="name one of matrix.model_runtimes, or define it there",
+                        allowed=known,
+                        got=config.model_runtime,
+                    )
+                ],
+            )
+        return cls(found, config)
 
     @property
     def config(self) -> PydanticAiRuntimeConfig:
         return self._config
 
     @property
-    def models(self) -> Hardline:
-        return self._models
+    def model_runtime(self) -> ModelRuntime:
+        return self._model_runtime
 
     @property
     def resolved(self) -> dict[str, Any]:
-        """What decides how a session answers, beyond the config: the registry resolved, from
-        ``models`` or hardline's own tiers (keys left out), and each tool's function, as the
-        config names it or, for one given in code, as ``module:qualname``. Nothing is
-        imported for it."""
-        registry = self._models.registry
+        """What decides how a session answers, beyond the config and its needs (the model
+        runtimes, which the fingerprint holds already): each tool's function, as the config
+        names it or, for one given in code, as ``module:qualname``. Nothing is imported for
+        it."""
         return {
-            "default": registry.default,
-            "models": {
-                name: registry.get(name).model_dump(mode="json", exclude={"api_key"})
-                for name in registry.names()
-            },
             "tools": {
                 name: self._config.tools.get(name)
                 or f"{self._functions[name].__module__}:{self._functions[name].__qualname__}"
@@ -202,9 +216,7 @@ class PydanticAiRuntime:
 
     def check(self, definition: AgentDefinition) -> None:
         """Refuse, at binding, what a session could not play: a tool the runtime does not
-        have, a model the registry cannot resolve, and tools for a row that cannot call them."""
-        from hardline import HardlineError
-
+        have, and a model, or tools on it, that the model runtime refuses."""
         unknown = [name for name in definition.tools or () if name not in self._tools]
         if unknown:
             known = ", ".join(self._tools) or "(none)"
@@ -215,23 +227,15 @@ class PydanticAiRuntime:
                 got=unknown[0],
             )
         model = definition.model or self._config.default_model
+        uses: frozenset[Use] = frozenset({"tools"}) if self._offered(definition) else frozenset()
         try:
-            self._models.registry.get(model)
-        except HardlineError as e:
-            known = ", ".join(self._models.registry.names()) or "(none)"
+            self._model_runtime.check(model, uses=uses)
+        except ConfigError as e:
             raise ConfigError(
-                f"agent {definition.name!r}: the pydantic-ai runtime cannot resolve the model: {e}",
-                fix=f"name one of its models ({known}), or add a row for it to `matrix.models` "
-                "or a hardline config tier",
+                f"agent {definition.name!r} on the pydantic-ai runtime: {e.message}",
+                fix=e.fix,
                 got=model,
             ) from e
-        if self._offered(definition):
-            try:
-                self._models.check_tools(model)
-            except HardlineError as e:
-                raise ConfigError(
-                    f"agent {definition.name!r} is given tools, and {e}", fix=e.fix, got=model
-                ) from e
 
     def _offered(self, definition: AgentDefinition) -> list[str]:
         return list(self._tools) if definition.tools is None else list(definition.tools)
@@ -261,20 +265,24 @@ class PydanticAiRuntime:
         ) from failed
 
     async def aclose(self) -> None:
-        """Close the connections hardline opened in the running event loop."""
-        await self._models.aclose()
+        """Close the connections the model runtime opened in the running event loop."""
+        if isinstance(self._model_runtime, SupportsAclose):
+            await self._model_runtime.aclose()
 
     async def run(self, definition: AgentDefinition, task: str) -> AgentResponse:
-        """One pydantic-ai session, its model calls through hardline. A limit reached
+        """One pydantic-ai session, its model calls on the model runtime. A limit reached
         (``max_turns``) ends it; anything else that stops it is an AgentRuntimeError carrying
         what the session had done (``response``)."""
-        from hardline import HardlineError
         from pydantic_ai import Agent, Tool, UsageLimitExceeded, capture_run_messages
         from pydantic_ai.usage import UsageLimits
 
         offered = {name: self._function(name, definition) for name in self._offered(definition)}
         model = _model_class()(
-            self._models, definition.model or self._config.default_model, _Session(), None
+            self._model_runtime,
+            definition.model or self._config.default_model,
+            _Session(),
+            None,
+            None,
         )
         agent: Agent[None, str] = Agent(
             model,
@@ -296,12 +304,21 @@ class PydanticAiRuntime:
                     result = await agent.run(task, usage_limits=limits)
                 except UsageLimitExceeded:
                     return session.response(messages, started, stop="max_turns")
-                except HardlineError as e:
+                except ModelRuntimeError as e:
                     raise AgentRuntimeError(
-                        f"agent {definition.name!r}: {e}",
-                        reason=_reason(e),
-                        retry_after_s=getattr(e, "retry_after", None),
+                        f"agent {definition.name!r}: {e.message}",
+                        reason=e.reason,
+                        fix=e.fix,
+                        retry_after_s=e.retry_after_s,
                         response=session.response(messages, started, failed=e),
+                        agent=definition.name,
+                    ) from e
+                except ConfigError as e:  # a setting or a part the port cannot carry
+                    raise AgentRuntimeError(
+                        f"agent {definition.name!r}: {e.message}",
+                        reason="incapable",
+                        fix=e.fix,
+                        response=session.response(messages, started),
                         agent=definition.name,
                     ) from e
                 except Exception as e:  # the port promises a response or a classified error
@@ -322,7 +339,7 @@ class PydanticAiRuntime:
             self._sessions[loop] -= 1
             if not self._sessions[loop]:
                 del self._sessions[loop]
-                await self._models.aclose()
+                await self.aclose()
 
     def _settings(self) -> ModelSettings | None:
         settings: dict[str, Any] = {}
@@ -333,20 +350,42 @@ class PydanticAiRuntime:
         return cast("ModelSettings", settings) if settings else None
 
 
-def hardline_model(
-    models: Hardline,
-    row: str | None,
+def pydantic_ai_model(
+    runtime: ModelRuntime,
+    model: str | None = None,
     *,
     settings: Mapping[str, Any] | None = None,
-    record: Recorder | None = None,
-) -> _HardlineModel:
-    """pydantic-ai's ``Model`` over ``row`` of the hardline runtime ``models`` (None: its
-    default), each request one hardline call, for a caller that runs pydantic-ai itself.
-    ``settings`` are its default model settings (``max_tokens``, ``temperature``), which a
-    request's own override. ``record`` is called once a call has answered or raised, with
-    what it sent. Its ``aclose()`` closes the connections its calls opened in the running event
-    loop. Raises hardline's ``UnknownModelError`` for a row it cannot resolve."""
-    return _model_class()(models, row, _Session(record=record), dict(settings or {}) or None)
+    runtime_url: str | None = None,
+    drives: tuple[str, ...] = (),
+) -> Model:
+    """pydantic-ai's ``Model`` over any model runtime: each request it makes is one
+    ``runtime.call`` on ``model`` (None: the runtime's default), for a caller that runs
+    pydantic-ai itself (an evaluator's judge).
+
+    ``settings`` are its default model settings, which a request's own override; only
+    ``max_tokens`` and ``temperature`` are carried, and any other key is a ConfigError, here,
+    or at the request that carries it. Inside a run, each call is a row of the run's session
+    table, replied, failed or cancelled, under ``runtime_url`` and the distributions the
+    runtime ``drives`` (its registry entry's). Its ``aclose()`` closes the connections its
+    calls opened in the running event loop, when the runtime holds any. Raises ConfigError for
+    a model the runtime does not resolve, as its ``check`` does."""
+    given = dict(settings or {})
+    _carried(given, where="the settings given")
+    runtime.check(model)
+    recording = _Recording(runtime_url, drives)
+    return _model_class()(runtime, model, _Session(), given or None, recording)
+
+
+def _carried(settings: Mapping[str, Any], *, where: str) -> None:
+    """Raise ConfigError for each setting in ``settings`` a model call cannot carry."""
+    refused = sorted(set(settings) - CARRIED)
+    if refused:
+        raise ConfigError(
+            f"{where} hold {', '.join(refused)}, which a matrix model runtime's call cannot "
+            "carry: it carries max_tokens and temperature, and no other setting",
+            fix=f"drop {', '.join(refused)}: a setting is refused rather than ignored",
+            got=refused[0],
+        )
 
 
 def _unfound(name: str, reference: str) -> Problem | None:
@@ -428,14 +467,20 @@ def _imported(name: str, reference: str) -> Callable[..., Any]:
     )
 
 
+@dataclass(frozen=True)
+class _Recording:
+    """Where a handed-out ``Model``'s calls are recorded: the session rows' runtime and the
+    distributions it drives."""
+
+    runtime_url: str | None
+    drives: tuple[str, ...]
+
+
 @dataclass
 class _Session:
-    """What one session's model calls answered, in order: hardline's Completions, and who
-    served the last of them. ``record``, when set, records each call as it ends."""
+    """What one session's model calls answered, in order."""
 
-    calls: list[Completion] = field(default_factory=list)
-    provider: str | None = None
-    record: Recorder | None = None
+    calls: list[ModelCall] = field(default_factory=list)
 
     def response(
         self,
@@ -445,19 +490,22 @@ class _Session:
         stop: str | None = None,
         output: Any = None,
         run_id: str | None = None,
-        failed: HardlineError | None = None,
+        failed: ModelRuntimeError | None = None,
     ) -> AgentResponse:
         """The session as an AgentResponse: its reply, transcript and tool calls from the
-        messages, its facts from hardline's calls (and the usage a failed call reported)."""
-        from hardline import Usage
+        messages, its facts from the model runtime's calls (and the usage a failed call
+        reported)."""
         from pydantic_ai.messages import ModelResponse, TextPart
 
-        usage = Usage()
-        for call in self.calls:
-            usage = usage + call.usage
-        spent = getattr(failed, "usage", None)
-        if spent is not None:
-            usage = usage + spent
+        spent = [call.usage for call in self.calls if call.usage is not None]
+        if failed is not None and failed.call is not None and failed.call.usage is not None:
+            spent.append(failed.call.usage)
+        usage = TokenUsage(
+            input_tokens=sum(u.input_tokens for u in spent),
+            output_tokens=sum(u.output_tokens for u in spent),
+            cache_read_tokens=sum(u.cache_read_tokens for u in spent),
+            cache_write_tokens=sum(u.cache_write_tokens for u in spent),
+        )
         last = self.calls[-1] if self.calls else None
         texts = tuple(
             part.content
@@ -477,7 +525,7 @@ class _Session:
             native_finish_reason=None if last is None else last.native_finish_reason,
             family=None if last is None else last.family,
             model=None if last is None else last.model,
-            provider=self.provider,
+            provider=None if last is None else last.provider,
             tokens_input=usage.input_tokens,
             tokens_output=usage.output_tokens,
             cache_read_tokens=usage.cache_read_tokens,
@@ -524,29 +572,7 @@ def _tool_calls(messages: Sequence[ModelMessage]) -> tuple[dict[str, Any], ...]:
     return tuple(calls)
 
 
-_BACKEND_REASONS: dict[str, RuntimeReason] = {
-    "rate_limit": "rate_limited",
-    "timeout": "timeout",
-    "unavailable": "unavailable",
-    "auth": "auth",
-    "bad_request": "incapable",
-}
-
-
-def _reason(error: HardlineError) -> RuntimeReason:
-    """hardline's classification, in the runtime port's vocabulary."""
-    from hardline import BackendError, ConfigError, SecretError, UnknownModelError
-
-    if isinstance(error, BackendError):
-        return _BACKEND_REASONS.get(error.reason, "failed")
-    if isinstance(error, SecretError):
-        return "auth"
-    if isinstance(error, UnknownModelError | ConfigError):  # what check() would have refused
-        return "incapable"
-    return "failed"
-
-
-#: hardline's finish reasons in pydantic-ai's vocabulary. A refusal is the provider withholding
+#: The port's finish reasons in pydantic-ai's vocabulary. A refusal is the provider withholding
 #: an answer; ``other`` has no name there.
 _FINISH: dict[str, str] = {
     "stop": "stop",
@@ -559,14 +585,14 @@ _FINISH: dict[str, str] = {
 
 @cache
 def _model_class() -> Callable[
-    [Hardline, str | None, _Session, dict[str, Any] | None], _HardlineModel
+    [ModelRuntime, str | None, _Session, dict[str, Any] | None, _Recording | None], _PortModel
 ]:
-    """pydantic-ai's ``Model`` backed by a hardline runtime and one registry row: defined when
-    a session first needs it, so importing this module imports no pydantic-ai."""
-    from hardline import Message, ToolCall, ToolSpec
-    from pydantic_ai.exceptions import UserError
+    """pydantic-ai's ``Model`` backed by a model runtime and one model name: defined when a
+    session first needs it, so importing this module imports no pydantic-ai."""
     from pydantic_ai.messages import (
-        ModelRequest,
+        ModelRequest as Request,
+    )
+    from pydantic_ai.messages import (
         ModelResponse,
         RetryPromptPart,
         SystemPromptPart,
@@ -578,33 +604,37 @@ def _model_class() -> Callable[
     from pydantic_ai.models import Model
     from pydantic_ai.usage import RequestUsage
 
-    class HardlineModel(Model):
-        """One hardline registry row as a pydantic-ai model. Each response it gives is one
-        hardline call; the call's Completion is kept on ``session``."""
+    class PortModel(Model):
+        """One model name on a model runtime, as a pydantic-ai model. Each response it gives
+        is one call on the port; the call is kept on ``session``, and, handed out, recorded
+        as a session row."""
 
         def __init__(
             self,
-            models: Hardline,
-            row: str | None,
+            runtime: ModelRuntime,
+            model: str | None,
             session: _Session,
             settings: dict[str, Any] | None,
+            recording: _Recording | None,
         ) -> None:
             super().__init__(settings=cast("ModelSettings | None", settings))
-            self._hardline = models
-            self._row = models.registry.get(row).name
+            self._runtime = runtime
+            self._model = model
+            self._recording = recording
             self.session = session
 
         async def aclose(self) -> None:
             """Close the connections this model's calls opened in the running event loop."""
-            await self._hardline.aclose()
+            if isinstance(self._runtime, SupportsAclose):
+                await self._runtime.aclose()
 
         @property
         def model_name(self) -> str:
-            return self._row
+            return self._model or "default"
 
         @property
         def system(self) -> str:
-            return self._hardline.registry.get(self._row).backend
+            return "matrix"
 
         async def request(
             self,
@@ -613,47 +643,40 @@ def _model_class() -> Callable[
             model_request_parameters: ModelRequestParameters,
         ) -> ModelResponse:
             settings, params = self.prepare_request(model_settings, model_request_parameters)
+            given: dict[str, Any] = dict(settings or {})
+            _carried(given, where="the model settings of this request")
             if params.native_tools:
-                raise UserError(
-                    "a hardline model offers function tools only, not a provider's native tools"
+                raise ConfigError(
+                    "a matrix model runtime offers function tools only, not a provider's "
+                    "native tools",
+                    fix="give the agent function tools",
                 )
             instructions = self._get_instruction_parts(messages, params) or []
-            turns: list[Turn] = [Message(role="system", content=i.content) for i in instructions]
+            turns: list[Turn] = [Turn(role="system", content=i.content) for i in instructions]
             for message in messages:
                 turns.extend(_turns(message))
-            tools = [
-                ToolSpec(
-                    name=tool.name,
-                    description=tool.description or "",
-                    parameters=dict(tool.parameters_json_schema),
-                )
-                for tool in (*params.declared_function_tools, *params.output_tools)
-            ]
-            given = settings or {}
-            record = self.session.record
-            sent = "" if record is None else _sent(self._row, turns, tools)
-            try:
-                completion = await self._hardline.complete(
-                    self._row,
-                    turns,
-                    max_tokens=given.get("max_tokens"),
-                    temperature=given.get("temperature"),
-                    tools=tools,
-                )
-            except (asyncio.CancelledError, Exception) as error:
-                if record is not None:
-                    record(self._row, sent, None, error)
-                raise
-            self.session.calls.append(completion)
-            if record is not None:
-                record(self._row, sent, completion, None)
-            provider = self.session.provider = served_by(self._hardline, completion)
-            parts: list[Any] = [TextPart(completion.text)] if completion.text else []
-            parts.extend(
-                ToolCallPart(call.name, call.arguments, tool_call_id=call.id)
-                for call in completion.tool_calls
+            request = ModelRequest(
+                turns=tuple(turns),
+                model=self._model,
+                tools=tuple(
+                    ToolSpec(
+                        name=tool.name,
+                        description=tool.description or "",
+                        parameters=dict(tool.parameters_json_schema),
+                    )
+                    for tool in (*params.declared_function_tools, *params.output_tools)
+                ),
+                max_tokens=given.get("max_tokens"),
+                temperature=given.get("temperature"),
             )
-            usage = completion.usage
+            call = await self._call(request)
+            self.session.calls.append(call)
+            parts: list[Any] = [TextPart(call.text)] if call.text else []
+            parts.extend(
+                ToolCallPart(asked.name, asked.arguments, tool_call_id=asked.id)
+                for asked in call.tool_calls
+            )
+            usage = call.usage or TokenUsage()
             return ModelResponse(
                 parts=parts,
                 usage=RequestUsage(
@@ -662,14 +685,41 @@ def _model_class() -> Callable[
                     cache_read_tokens=usage.cache_read_tokens,
                     cache_write_tokens=usage.cache_write_tokens,
                 ),
-                model_name=completion.model,
-                provider_name=provider,
-                provider_response_id=completion.request_id,
-                finish_reason=cast("Any", _FINISH.get(completion.finish_reason or "")),
+                model_name=call.model or call.name,
+                provider_name=call.provider,
+                provider_response_id=call.request_id,
+                finish_reason=cast("Any", _FINISH.get(call.finish_reason or "")),
             )
 
+        async def _call(self, request: ModelRequest) -> ModelCall:
+            """The call on the port; handed out, recorded as a model step's call is."""
+            if self._recording is None:
+                return await self._runtime.call(request)
+            recording = self._recording
+
+            def row(call: ModelCall | None, error: BaseException | None = None) -> Session:
+                return call_session(
+                    call,
+                    sent=call_sent(request),
+                    runtime=recording.runtime_url,
+                    drives=recording.drives,
+                    error=error,
+                    prompt=request.prompt,
+                )
+
+            try:
+                call = await self._runtime.call(request)
+            except asyncio.CancelledError as e:
+                record_cancelled(row(None, e))
+                raise
+            except Exception as e:
+                record_session(row(e.call if isinstance(e, ModelRuntimeError) else None, e))
+                raise
+            session = record_session(row(call))
+            return call if session is None else call.model_copy(update={"session": session})
+
     def _turns(message: ModelMessage) -> list[Turn]:
-        """One pydantic-ai message as hardline turns."""
+        """One pydantic-ai message as the port's turns."""
         if isinstance(message, ModelResponse):
             text = "".join(p.content for p in message.parts if isinstance(p, TextPart))
             calls = tuple(
@@ -677,19 +727,22 @@ def _model_class() -> Callable[
                 for p in message.parts
                 if isinstance(p, ToolCallPart)
             )
-            return [Message(role="assistant", content=text, tool_calls=calls)]
-        assert isinstance(message, ModelRequest)
+            return [Turn(role="assistant", content=text, tool_calls=calls)]
+        assert isinstance(message, Request)
         turns: list[Turn] = []
         for part in message.parts:
             if isinstance(part, SystemPromptPart):
-                turns.append(Message(role="system", content=part.content))
+                turns.append(Turn(role="system", content=part.content))
             elif isinstance(part, UserPromptPart):
                 if not isinstance(part.content, str):
-                    raise UserError("a hardline model takes text prompts only")
-                turns.append(Message(role="user", content=part.content))
+                    raise ConfigError(
+                        "a matrix model runtime takes text prompts only",
+                        fix="give the agent its prompt as text",
+                    )
+                turns.append(Turn(role="user", content=part.content))
             elif isinstance(part, ToolReturnPart):
                 turns.append(
-                    Message(
+                    Turn(
                         role="tool",
                         tool_call_id=part.tool_call_id,
                         content=part.model_response_str(),
@@ -698,10 +751,10 @@ def _model_class() -> Callable[
                 )
             elif isinstance(part, RetryPromptPart):
                 if part.tool_name is None:
-                    turns.append(Message(role="user", content=part.model_response()))
+                    turns.append(Turn(role="user", content=part.model_response()))
                 else:
                     turns.append(
-                        Message(
+                        Turn(
                             role="tool",
                             tool_call_id=part.tool_call_id,
                             content=part.model_response(),
@@ -709,29 +762,21 @@ def _model_class() -> Callable[
                         )
                     )
             else:
-                raise UserError(f"a hardline model cannot send a {type(part).__name__}")
+                raise ConfigError(
+                    f"a matrix model runtime cannot send a {type(part).__name__}",
+                    fix="give the agent text and function tools only",
+                )
         return turns
 
     return cast(
-        "Callable[[Hardline, str | None, _Session, dict[str, Any] | None], _HardlineModel]",
-        HardlineModel,
-    )
-
-
-def _sent(row: str, turns: Sequence[Turn], tools: Sequence[Any]) -> str:
-    """The digest of what one call sent (:func:`~matrix.domain.session.digest`): its row, its
-    turns and the tools it offered. Equal digests, equal requests."""
-    return digest(
-        {
-            "model": row,
-            "turns": [turn.model_dump(mode="json") for turn in turns],
-            "tools": [tool.model_dump(mode="json") for tool in tools],
-        }
+        "Callable[[ModelRuntime, str | None, _Session, dict[str, Any] | None, "
+        "_Recording | None], _PortModel]",
+        PortModel,
     )
 
 
 def _arguments(call: ToolCallPart) -> str:
-    """A call's arguments as the JSON text hardline carries: as the model wrote them, when it
+    """A call's arguments as the JSON text the port carries: as the model wrote them, when it
     wrote text."""
     if call.args is None:
         return "{}"
@@ -740,7 +785,7 @@ def _arguments(call: ToolCallPart) -> str:
 
 if TYPE_CHECKING:
 
-    class _HardlineModel(Model):
+    class _PortModel(Model):
         session: _Session
 
         async def aclose(self) -> None: ...

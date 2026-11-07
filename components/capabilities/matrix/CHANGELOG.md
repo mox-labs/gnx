@@ -2,6 +2,72 @@
 
 All notable changes to matrix. Versions follow semver; before 1.0 a minor may break.
 
+## 0.10.0 — 2026-11-06
+
+matrix depends on no model runtime (owner ruling HO1, 2026-11-06), and the model-runtime port
+is one call in full. Each entry compares with 0.9.0. The hardline model runtime moves to a
+bridge distribution of its own, `matrix-hardline` 0.1.0.
+
+### Removed (breaking)
+
+- **hardline is no dependency of matrix**, and no module of matrix imports it
+  (`tests/test_architecture.py`). The `hardline` model runtime (`matrix.v1.model-runtime.hardline`,
+  `matrix.adapters._out.runtime.model`, `HardlineModelRuntime`) is gone from matrix: install
+  `matrix-hardline`, which registers `matrix-hardline.v1.model-runtime` from its own entry
+  point. A config that names a model runtime nobody registered is refused when it is composed,
+  and with only the `mock` installed the fix says what to install.
+- **`matrix.models` is gone**, with the `models` need and its re-rooting of problems. A model
+  runtime's registry is its own config's (`model_runtimes.local: {type:
+  matrix-hardline.v1.model-runtime, models: {...}}`), or its own tiers. `models` leaves the
+  plan's settings, the reuse fingerprint and `NEEDS`.
+- **`ModelCall` and the session row keep runtime-neutral facts only.** `backend`, `attempts`,
+  `retries`, `fallback_from`, `params`, `attempt_log`, `turns_digest` and `row` are gone, and
+  the types `RequestParams`, `CallAttempt` and `RegistryRow` with them. What only one runtime
+  knows is in `provenance` (below): hardline's, whole, under `hardline.v1.call`.
+- **`pydantic_ai_model` is no member of a model runtime**, and **`usage_counted_by` no member
+  of an agent runtime**: nothing of any port is read by its name. The `matrix.agent.end` field
+  `usage_counted_by` is gone too (`through_model_runtime`, below).
+- **`ModelRequest(prompt=..., system=...)` is gone**: a request is its `turns`
+  (`ModelRequest.from_prompt(prompt, system=...)` makes a prompt's), and `prompt` is a derived
+  read, the one user turn's text.
+
+### Changed (breaking)
+
+- **`ModelRuntime.check(model, *, uses=frozenset())`**: `uses` is a set of `tools` and
+  `output`, what a call will ask of the model, so a runtime refuses at binding what it cannot
+  do on it. A model step checks `output` when its kind has a registered schema; the pydantic-ai
+  runtime checks `tools` when an agent is offered any. A runtime written for 0.9 takes `uses`.
+- **`ModelRequest` is one call in full**: `turns` (`Turn`: `role`, `content`, `tool_calls`,
+  `tool_call_id`, `is_error`), `model`, `tools` (`ToolSpec`), `output`, `max_tokens`,
+  `temperature`. **`ModelCall` gains `tool_calls`** (`ToolCall`) and **`provenance`**. A
+  `provenance` key that is not a versioned type URL is refused.
+- **The `pydantic-ai` agent runtime makes its calls on a matrix model runtime**: its config
+  names one, `model_runtime` (required), of `matrix.model_runtimes`; its `models` option is
+  gone, it needs `model_runtimes`, and it drives `pydantic-ai-slim` alone. Composition builds
+  model runtimes before agent runtimes. A pydantic-ai setting a call cannot carry (all but
+  `max_tokens` and `temperature`) is a `ConfigError`, never dropped; a part it cannot send
+  (an image prompt, a provider's native tool) is refused too. Its tool failures reach the
+  model runtime as tool turns with `is_error`.
+- **`call_sent` digests the request's turns, tools, model, output schema and overrides**, so
+  a `sent` from 0.9 does not match the same request under 0.10. A judge's call made through
+  `pydantic_ai_model` digests by the same rule as a step's.
+- **`RELEASE_TAG` is `matrix-v0.10.0`**: the install lines and every repair fix name it.
+
+### Added
+
+- **`provenance`**, on `ModelCall` and the session row: what only the runtime that made a
+  call knows, documents keyed by type URL, each validated against the schema its package
+  registered when the session row is recorded (`ContractError` when refused).
+- **`matrix.pydantic_ai_model(runtime, model=None, *, settings=None, runtime_url=None,
+  drives=())`**: pydantic-ai's `Model` over any `ModelRuntime` (ruling M-O6); each call is a
+  session row, as a step's is.
+- **`through_model_runtime`**: composition binds an agent whose runtime needs
+  `model_runtimes` so, its end event says so, and the `otel` observer counts none of its
+  tokens, which its model runtime counts.
+- **`matrix.testing.ModelRuntimeConformance`**: the suite for the model-runtime port, run
+  against the mock and every stand-in in matrix's tests and the bridge's.
+- New exports: `Turn`, `Role`, `ToolSpec`, `ToolCall`, `Use`, `pydantic_ai_model`.
+
 ## 0.9.0 — 2026-11-06
 
 ### Changed (breaking)

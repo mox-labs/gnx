@@ -9,14 +9,14 @@ options:
     type: string
     description: "the matrix model runtime the judge calls, once per reading: one of the choices, or any model runtime installed. Give this or agent_runtime, not both; there is no default, so a model provider is never called implicitly"
     choices:
-      hardline: one call through hardline's model registry; calls a model provider
+      matrix-hardline.v1.model-runtime: one call through hardline's model registry; calls a model provider
       mock: a canned reply; calls no model
   agent_runtime:
     type: string
     description: "the matrix agent runtime the judge runs on, a one-turn session with no tools per reading, in a fresh temporary directory; given the config its runtime declares keeps the machine out (claude-sdk: setting_sources: []) under its own runtime_options. Give this or model_runtime, not both"
     choices:
       claude-sdk: a one-turn Claude Agent SDK session; calls a model provider
-      pydantic-ai: a one-turn pydantic-ai session, its model call through hardline; calls a model provider
+      pydantic-ai: a one-turn pydantic-ai session, its model call on the model runtime its runtime_options.model_runtime names; calls a model provider
       mock: a canned reply; calls no model
   model: {type: string, default_from: [model_runtime, agent_runtime], description: "the model that judges; left out, the judge runtime's own"}
   runtime_options: {type: mapping, description: "the judge runtime's own config, passed through as written"}

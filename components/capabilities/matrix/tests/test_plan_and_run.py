@@ -378,14 +378,14 @@ def test_describe_says_which_models_each_runtime_takes(
         for url in (
             "agent-runtime.claude-sdk",
             "agent-runtime.mock",
-            "model-runtime.hardline",
+            "agent-runtime.pydantic-ai",
             "model-runtime.mock",
         )
     }
     claude = described["agent-runtime.claude-sdk"]
     assert all(alias in claude["description"] for alias in ("`haiku`", "`sonnet`", "`opus`"))
     assert "max_budget_usd" in claude["properties"]
-    assert "hardline registry" in described["model-runtime.hardline"]["description"]
+    assert "model_runtime" in described["agent-runtime.pydantic-ai"]["properties"]
     assert "by_agent" in described["agent-runtime.mock"]["properties"]
     assert "by_model" in described["model-runtime.mock"]["properties"]
     assert "`sonnet`" in matrix.skill() and "`sonnet`" in matrix.skill("agents")

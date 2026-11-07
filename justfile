@@ -53,8 +53,8 @@ payloads:
 # Lint the capability packages (the puma/x.uma house set: + B, SIM, TC) and check their
 # formatting, the Python blocks in their Markdown included.
 capabilities-lint:
-    uv --directory components/capabilities run ruff check hardline matrix ix recon dao gnx _testing conftest.py
-    uv --directory components/capabilities run ruff format --check hardline matrix ix recon dao gnx _testing conftest.py
+    uv --directory components/capabilities run ruff check hardline matrix matrix-hardline ix recon dao gnx _testing conftest.py
+    uv --directory components/capabilities run ruff format --check hardline matrix matrix-hardline ix recon dao gnx _testing conftest.py
 
 # Typecheck each capability FROM ITS OWN DIRECTORY. mypy resolves config from the
 # invocation rootdir, so running it from the workspace root silently applies the root
@@ -74,9 +74,9 @@ capabilities-typecheck:
     #!/usr/bin/env bash
     set -uo pipefail
     fail=0
-    for p in hardline matrix ix recon dao gnx; do
-      paths=(src/$p)
-      case " hardline matrix ix recon dao " in *" $p "*) paths+=(tests) ;; esac
+    for p in hardline matrix matrix-hardline ix recon dao gnx; do
+      paths=(src/${p//-/_})
+      case " hardline matrix matrix-hardline ix recon dao " in *" $p "*) paths+=(tests) ;; esac
       ( cd components/capabilities/$p && \
         MYPYPATH=.. ../.venv/bin/mypy --strict "${paths[@]}" ) || fail=1
     done
@@ -92,7 +92,8 @@ capabilities-typecheck:
 # The capability packages' tests, each skip listed with its reason.
 capabilities-test:
     uv --directory components/capabilities run --group dev \
-        python -m pytest hardline/tests matrix/tests ix/tests recon/tests dao/tests _testing \
+        python -m pytest hardline/tests matrix/tests matrix-hardline/tests ix/tests recon/tests \
+        dao/tests _testing \
         -q -rs --strict-skips
 
 # The docsite: svelte-kit sync + svelte-check + tsc --noEmit.
@@ -130,11 +131,14 @@ lab:
 #   hardline  `models` and `check` of a registry with a local and a hosted row; `complete` of
 #             a row on the mock backend, a real call through the runtime that calls no model
 #   matrix    `check` and `plan` of a config with a mock agent and an agent step; `check` of
-#             one with every runtime (claude-sdk, pydantic-ai, hardline), asked for OTLP export;
-#             a `run` of a model step on hardline's mock backend, read back from the store
+#             one with every runtime it ships (claude-sdk, pydantic-ai on the mock model
+#             runtime), asked for OTLP export; a `run` of a model step on the mock model
+#             runtime, read back from the store
+#   matrix-hardline  `check` of a config naming its runtime, asked for OTLP export; a `run`
+#             of a model step on hardline's mock backend, its record read back from the store
 #   ix        `validate`, `plan` and a dry run of examples/harness-integrity; `plan` of an
 #             agent session on claude-sdk, asked for console export; an exploratory `run` of a
-#             model-call experiment on a hardline row of the mock backend
+#             model-call experiment on a hardline row of the mock backend, through the bridge
 #   recon     a survey of a cli collector, then a query of the timestamp it collected, as
 #             a TIMESTAMP WITH TIME ZONE (which needs pytz)
 #   gnx, dao  `--help`: their commands read this repository
@@ -145,14 +149,15 @@ lab:
 # declare, and HOME is a fresh directory, so no user config reaches a command.
 #
 # Every capability installed alone from its wheel, then driven through a smoke test.
-# matrix depends on hardline and ix on matrix: PyPI has unrelated packages of both names, so
-# each is installed with this repository's wheels of what it depends on.
+# matrix-hardline depends on matrix and hardline, and ix on matrix and matrix-hardline: PyPI
+# has unrelated packages of those names, so each is installed with this repository's wheels of
+# what it depends on.
 capabilities-standalone:
     #!/usr/bin/env bash
     set -uo pipefail
     tmp="$(mktemp -d)"; trap 'rip "$tmp" 2>/dev/null || true' EXIT
     examples="$PWD/components/capabilities/ix/examples"
-    packages=(hardline matrix ix recon gnx dao)
+    packages=(hardline matrix matrix-hardline ix recon gnx dao)
     # expect EXPRESSION: the JSON document on stdin makes EXPRESSION (over `d`) true.
     expect() { python -c 'import json, sys; d = json.load(sys.stdin); assert eval(sys.argv[1]), d' "$1"; }
     smoke_hardline() {
@@ -177,14 +182,32 @@ capabilities-standalone:
       matrix check --only matrix.yaml --json | expect 'd["ok"]'
       matrix plan --only matrix.yaml --json | expect 'd["ok"] and d["stages"] == [["greet"]]'
       printf '%s\n' 'matrix:' \
-        '  agent_runtimes: {claude: {type: claude-sdk}, loop: {type: pydantic-ai}}' \
-        '  model_runtimes: {calls: {type: hardline}}' \
-        '  models: {models: {local: {backend: openai-compat, base_url: "http://127.0.0.1:9/v1", model: m, family: qwen}}}' \
+        '  agent_runtimes: {claude: {type: claude-sdk}, loop: {type: pydantic-ai, model_runtime: calls}}' \
+        '  model_runtimes: {calls: {type: mock}}' \
         > runtimes.yaml
       OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:9 matrix check --only runtimes.yaml --json \
         | expect 'd["ok"] and d["warnings"] == [] and d["agent_runtimes"] == ["claude", "loop"]'
-      printf '%s\n' 'matrix:' '  model_runtimes: {calls: {type: hardline}}' \
-        '  models: {models: {echo: {backend: mock, model: m, family: mock, options: {default: hello}}}}' \
+      printf '%s\n' 'matrix:' '  model_runtimes: {calls: {type: mock, default: hello}}' \
+        '  inputs: [smoke.v1.name]' '  components:' \
+        '    - {name: greet, type: matrix.v1.model-step,' \
+        '       config: {runtime: calls, inputs: {name: smoke.v1.name}, prompt: "Greet {name}."}}' \
+        > model.yaml
+      echo '"Ada"' > names.jsonl
+      matrix run --only model.yaml --input smoke.v1.name=names.jsonl --json > run.json
+      expect 'd["status"] == "completed" and d["tables"]["matrix.v1.model-call"]["rows"] == 1' < run.json
+      # The row the step recorded, read back from the run's store.
+      expect '[json.loads(row)["text"] for row in open(d["location"] + "/matrix.v1.model-call.jsonl")] == ["hello"]' < run.json
+    }
+    smoke_matrix-hardline() {
+      printf '%s\n' 'matrix:' '  model_runtimes:' '    calls:' \
+        '      type: matrix-hardline.v1.model-runtime' \
+        '      models: {models: {local: {backend: openai-compat, base_url: "http://127.0.0.1:9/v1", model: m, family: qwen}}}' \
+        > runtimes.yaml
+      OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:9 matrix check --only runtimes.yaml --json \
+        | expect 'd["ok"] and d["warnings"] == [] and d["model_runtimes"] == ["calls"]'
+      printf '%s\n' 'matrix:' '  model_runtimes:' '    calls:' \
+        '      type: matrix-hardline.v1.model-runtime' \
+        '      models: {models: {echo: {backend: mock, model: m, family: mock, options: {default: hello}}}}' \
         '  inputs: [smoke.v1.name]' '  components:' \
         '    - {name: greet, type: matrix.v1.model-step,' \
         '       config: {runtime: calls, model: echo, inputs: {name: smoke.v1.name}, prompt: "Greet {name}."}}' \
@@ -192,8 +215,8 @@ capabilities-standalone:
       echo '"Ada"' > names.jsonl
       matrix run --only model.yaml --input smoke.v1.name=names.jsonl --json > run.json
       expect 'd["status"] == "completed" and d["tables"]["matrix.v1.model-call"]["rows"] == 1' < run.json
-      # The row the step recorded, read back from the run's store.
-      expect '[json.loads(row)["text"] for row in open(d["location"] + "/matrix.v1.model-call.jsonl")] == ["hello"]' < run.json
+      # hardline's own record of the call, in the session row the step recorded.
+      expect '[json.loads(row)["provenance"]["hardline.v1.call"]["backend"] for row in open(d["location"] + "/matrix.v1.session.jsonl")] == ["mock"]' < run.json
     }
     smoke_ix() {
       cp -R "$examples/harness-integrity" .
@@ -212,7 +235,7 @@ capabilities-standalone:
         > hardline.yaml
       mkdir on-model
       printf '%s\n' 'name: on-model' 'question: Does the model say hello?' 'genre: evaluate' \
-        'subjects:' '  it: {kind: model-call, runtime: hardline, model: echo}' \
+        'subjects:' '  it: {kind: model-call, runtime: matrix-hardline.v1.model-runtime, model: echo}' \
         'probes:' '  - {id: ask, kind: prompt, prompt: "Say hello."}' \
         'sensors:' '  - {kind: text-match, contains: hello}' \
         'primary: {metric: text_matched}' 'threshold: {op: ">=", value: 0.5}' > on-model/experiment.yaml
@@ -237,9 +260,11 @@ capabilities-standalone:
     fail=0
     for p in "${packages[@]}"; do
       work="$tmp/$p"; mkdir -p "$work/home"
-      wheels=("$tmp/dist/$p"-*.whl)
-      if [ "$p" = matrix ]; then wheels+=("$tmp/dist"/hardline-*.whl); fi
-      if [ "$p" = ix ]; then wheels+=("$tmp/dist"/matrix-*.whl "$tmp/dist"/hardline-*.whl); fi
+      wheels=("$tmp/dist/${p//-/_}"-*.whl)
+      if [ "$p" = matrix-hardline ]; then wheels+=("$tmp/dist"/matrix-*.whl "$tmp/dist"/hardline-*.whl); fi
+      if [ "$p" = ix ]; then
+        wheels+=("$tmp/dist"/matrix-*.whl "$tmp/dist"/matrix_hardline-*.whl "$tmp/dist"/hardline-*.whl)
+      fi
       # Not under `if`: there bash ignores the subshell's `set -e`, and a failed step goes on.
       ( set -euo pipefail
         uv venv --quiet --python 3.12 "$work/venv"

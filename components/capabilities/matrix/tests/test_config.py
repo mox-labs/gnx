@@ -32,8 +32,8 @@ class TestMatrixConfig:
             config.model_runtimes,
             config.agents,
             config.definitions,
-            config.models,
-        ) == ({}, {}, {}, (), None)
+        ) == ({}, {}, {}, ())
+        assert "models" not in MatrixConfig.model_fields  # a model registry is its runtime's
 
     def test_runtime_keeps_its_options_for_the_runtime_to_validate(self) -> None:
         config = MatrixConfig.model_validate(
