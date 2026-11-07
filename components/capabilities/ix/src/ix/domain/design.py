@@ -813,7 +813,9 @@ def _kind_defaults(
 ) -> tuple[dict[str, Filled], list[SourcedValue]]:
     """What each entry's kind supplies for what it leaves out: the defaults, by the entry's
     key, and where each value came from, its kind's ``default`` (at its dotted path, inside
-    a mapping too) or its runtime (a subject's, for a probe or a sensor)."""
+    a mapping too) or its runtime (a subject's, for a probe or a sensor); and each option
+    whose absence its kind declares a meaning for (``left_out``), from the kind, with no
+    value and the meaning as its note."""
     defaults: dict[str, Filled] = {}
     sourced: list[SourcedValue] = []
     subjects = [subject.options for subject in experiment.subjects.values()]
@@ -836,6 +838,10 @@ def _kind_defaults(
                 note=f"left out, so {runtime or 'its runtime'} decides; ix does not know the value",
             )
             for name, runtime in kind.left_to_runtime(entry.options, subjects).items()
+        ]
+        sourced += [
+            _from("kind", path=f"{entry.key}.{name}", value=None, note=f"{meaning} (default)")
+            for name, meaning in kind.left_out(entry.options).items()
         ]
     return defaults, sourced
 

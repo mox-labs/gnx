@@ -364,6 +364,26 @@ class TestValidateCommand:
 
 
 class TestPlanCommand:
+    def test_an_agent_s_tools_left_out_are_shown_as_every_tool_the_runtime_offers(
+        self, evaluate_data: dict[str, Any], write_experiment: Write
+    ) -> None:
+        """Ruling Q2: an agent session's ``tools`` left out is every tool its runtime offers
+        (the semantics stay), and the plan says so, in the document and on the terminal, as
+        its kind's default; written, the subject's own value is shown instead."""
+        file: Path = write_experiment(evaluate_data)
+        document = _json(_run("plan", str(file), "--json"))
+        found = {value["path"]: value for value in document["provenance"]}
+        tools = found["subjects.catalog.tools"]
+        assert (tools["value"], tools["origin"], tools["note"]) == (
+            None, "kind", "every tool the runtime offers (default)",
+        )  # fmt: skip
+        wide = CliRunner(env={"COLUMNS": "200"}).invoke(main, ["plan", str(file)]).stdout
+        line = next(line for line in wide.splitlines() if "subjects.catalog.tools" in line)
+        assert "every tool the runtime offers (default)" in line and "kind" in line
+        evaluate_data["subjects"]["catalog"]["tools"] = ["Skill"]
+        written = _json(_run("plan", str(write_experiment(evaluate_data, "written")), "--json"))
+        assert "subjects.catalog.tools" not in {v["path"] for v in written["provenance"]}
+
     def test_the_document_shape(
         self, compare_data: dict[str, Any], write_experiment: Write
     ) -> None:
@@ -696,8 +716,8 @@ class TestGenresAndKindsCommands:
         assert load["options"]["duration"] == {
             "type": "duration", "required": True, "allowed": [], "required_when": {},
             "choices": {}, "within": "", "binds": [], "text": False, "default": None,
-            "default_by": None, "default_from": [], "fields": {}, "entries": None,
-            "description": "how long the measured load lasts",
+            "default_by": None, "default_from": [], "left_out": "", "fields": {},
+            "entries": None, "description": "how long the measured load lasts",
         }  # fmt: skip
         # Each default is the declaration's, in the document an agent reads.
         assert load["options"]["timeout"]["default"] == "60s"

@@ -334,6 +334,10 @@ class Option(Record):
     #: the same kind, or, for a probe or a sensor, ``subject.<option>`` of the subjects it
     #: reads. ix cannot know such a value, so the plan says whose it is instead.
     default_from: tuple[str, ...] = ()
+    #: For an option whose absence is a behaviour, not a value ix could hold (an agent's
+    #: ``tools`` left out is every tool the runtime offers): what leaving it out means. The
+    #: plan shows it as the option's default, from its kind.
+    left_out: str = ""
     #: For a ``mapping`` whose keys are fixed (a loop's ``strategy`` and ``rounds``): each
     #: key, declared as an option is, with its type, whether it is required and its default.
     #: No other key may be written there.
@@ -345,10 +349,16 @@ class Option(Record):
 
     @model_validator(mode="after")
     def _one_default(self) -> Option:
-        given = [self.default is not None, self.default_by is not None, bool(self.default_from)]
+        given = [
+            self.default is not None,
+            self.default_by is not None,
+            bool(self.default_from),
+            bool(self.left_out),
+        ]
         if sum(given) > 1:
             raise ValueError(
-                "an option takes its default from one of default, default_by and default_from"
+                "an option takes its default from one of default, default_by, default_from "
+                "and left_out"
             )
         if any(given) and (self.required or self.required_when):
             raise ValueError("a required option has no default")
@@ -463,6 +473,15 @@ class Kind(Record):
                     break
             found[name] = ", ".join(runtimes)
         return found
+
+    def left_out(self, written: Mapping[str, Any]) -> dict[str, str]:
+        """Each option ``written`` leaves out that declares what that means (``left_out``),
+        with its meaning."""
+        return {
+            name: option.left_out
+            for name, option in self.options.items()
+            if option.left_out and name not in written
+        }
 
     def required(self, options: Mapping[str, Any]) -> tuple[str, ...]:
         """The options that must be written beside this kind, given the ``options`` that are."""

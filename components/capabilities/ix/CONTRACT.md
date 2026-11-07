@@ -70,7 +70,10 @@ on an option that is not required; it holds no placeholder but those an option e
 `binds`. `Option.default_by` (`DefaultBy`): a default that follows the value of an option
 beside it, `{option, values}`. `Option.default_from`: the options beside it that may name the
 runtime whose own value it is, the first one written deciding, or `subject.<option>` of the
-subjects a probe or a sensor reads. At most one of the three. `Option.fields`: a mapping's
+subjects a probe or a sensor reads. `Option.left_out`: what leaving the option out means, for
+an option whose absence is a behaviour rather than a value (`tools`: every tool the runtime
+offers); the plan lists it from the kind, with no value and that meaning as its note. At most
+one of the four. `Option.fields`: a mapping's
 fixed keys, each declared as an option is; `Option.entries`: what each value of a mapping
 whose keys the author names is. The rules beside an option hold at every level. The design holds what it fills as `defaults`, by entry key (`environment`,
 `subjects.<name>`, `probes.<id>`, `sensors.<kind>`); the plan's provenance lists each, from

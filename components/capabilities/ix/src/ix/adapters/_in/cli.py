@@ -347,7 +347,12 @@ def _print_plan_design(plan: ix.Plan, path: str) -> None:
         design.add_column(column, overflow="fold")
     footnotes = []
     for value in plan.provenance:
-        shown = "(unknown to ix)" if value.origin == "runtime" else _text(value.value)
+        if value.origin == "runtime":
+            shown = "(unknown to ix)"
+        elif value.origin == "kind" and value.value is None:  # a meaning, not a value
+            shown = value.note
+        else:
+            shown = _text(value.value)
         design.add_row(escape(value.path), escape(shown), value.origin)
         # The margin's note is on its own line above; a kind's default names its kind, which
         # the entry's own line already implies.

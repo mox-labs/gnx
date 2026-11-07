@@ -62,6 +62,8 @@ class TestTheDeclaration:
             ({"type": "integer", "default": 1.5}, "is not a integer"),
             ({"type": "string", "required": True, "default": "a"}, "a required option"),
             ({"default": "a", "default_from": ["runtime"]}, "one of default, default_by"),
+            ({"default": "a", "left_out": "all"}, "one of default, default_by"),
+            ({"type": "list", "required": True, "left_out": "all"}, "a required option"),
             (
                 {"type": "integer", "default_by": {"option": "x", "values": {"a": "b"}}},
                 "is not a integer",
@@ -252,9 +254,11 @@ class TestTheDesign:
         for key, kind, options in entries:
             expected |= {f"{key}.{name}": "kind" for name in kind.defaults(options)}
             expected |= {f"{key}.{name}": "runtime" for name in kind.left_to_runtime(options)}
+            expected |= {f"{key}.{name}": "kind" for name in kind.left_out(options)}
         sourced = {value.path: value.origin for value in plan.provenance}
         assert "probes.correct-solution.timeout" in expected
         assert "subjects.canned.max_turns" in expected
+        assert "subjects.canned.tools" in expected  # left out: every tool the runtime offers
         assert {path: sourced.get(path) for path in expected} == expected
 
 
