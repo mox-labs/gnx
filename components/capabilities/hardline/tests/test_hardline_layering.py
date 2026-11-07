@@ -24,6 +24,7 @@ dependency does at run time.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,47 @@ def test_every_file_is_in_a_layer_and_every_dependency_points_inward() -> None:
 def test_the_cli_reaches_hardline_through_its_public_names_alone() -> None:
     # The CLI imported load_registry from hardline.composition, outside hardline.__all__.
     assert _cli_reaches_outside_all(PACKAGE) == []
+
+
+def _capability_reads(root: Path) -> list[str]:
+    """Each ``getattr`` or ``hasattr`` under ``src/hardline`` that names a member of an optional
+    backend protocol, as ``file:line``."""
+    from hardline.domain.ports._out import backend
+
+    optional = (
+        backend.CheckedBackend,
+        backend.ClosableBackend,
+        backend.ToolCallingBackend,
+        backend.LocatedBackend,
+    )
+    members = {name for proto in optional for name in vars(proto) if not name.startswith("_")}
+    assert members == {"check", "aclose", "supports_tools", "default_base_url"}
+    found = []
+    for path in sorted((root / "src" / "hardline").rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in {"getattr", "hasattr"}
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value in members
+            ):
+                found.append(f"{path.relative_to(root)}:{node.lineno}")
+    return found
+
+
+def test_no_getattr_reads_a_backend_capability() -> None:
+    # F-1 (owner rule, G3): optional capability is a declared Protocol read with isinstance, never
+    # a member read by name. supports_tools and default_base_url were read with getattr, so no
+    # type checker saw them, and the telemetry wrapper forwarded all four the same way.
+    assert _capability_reads(PACKAGE) == []
+
+
+def test_a_getattr_of_a_capability_is_found(tree: Path) -> None:
+    _plant(tree, "domain/runtime.py", 'TOOLS = getattr(object(), "supports_tools", False)')
+    (found,) = _capability_reads(tree)
+    assert found.startswith("src/hardline/domain/runtime.py:")
 
 
 # --- each rule bites: a violation planted in a copy of the tree -------------------------------

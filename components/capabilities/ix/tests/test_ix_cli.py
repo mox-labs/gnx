@@ -709,7 +709,10 @@ class TestGenresAndKindsCommands:
         assert runtime["required"]
         assert set(runtime["choices"]) == {"claude-sdk", "pydantic-ai", "mock"}
         runtime = document["kinds"]["ix.v1.subject.model-call"]["options"]["runtime"]
-        assert runtime["required"] and set(runtime["choices"]) == {"hardline", "mock"}
+        assert runtime["required"] and set(runtime["choices"]) == {
+            "matrix-hardline.v1.model-runtime",
+            "mock",
+        }
         assert load["options"]["rate"]["required_when"] == {"load_model": "open"}
         assert (load["needs"], load["offers"]) == (["url"], ["load"])
         judge = document["kinds"]["ix.v1.sensor.judge"]

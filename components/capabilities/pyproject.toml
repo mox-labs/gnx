@@ -26,6 +26,7 @@ recon = { workspace = true }
 gnx = { workspace = true }
 dao = { workspace = true }
 hardline = { workspace = true }
+matrix-hardline = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -45,6 +46,7 @@ dev = [
     "gnx",
     "dao",
     "hardline",
+    "matrix-hardline",
 ]
 
 # The one pytest configuration. No member sets its own, so wherever pytest starts in the

@@ -47,11 +47,11 @@ the prompt off-machine. **A registry file decides where your prompts go.** Revie
   first-8 and last-6 characters, are replaced with `***`
   (`adapters/_out/_scrub.py`; `test_openai_compat_error_is_wrapped_and_key_scrubbed`).
   `SecretError` names the reference, never the value.
-- `Completion.raw` is the provider's response metadata with the message content excluded: no
-  `content` blocks, and of each OpenAI-compatible choice only its index and finish reason. It
-  holds no request headers.
-- A call's record holds digests, never content: `turns_digest` of the turns sent, and the row's
-  digest, which covers the row's `api_key` *reference*, not the key.
+- A `Completion` carries nothing of the provider's reply but the fields it names: no response
+  payload, headers or metadata of the provider's own.
+- A call's record (`Completion.record`) holds digests, never content: `turns_digest` of the turns
+  sent, and the row's digest, which covers the row's `api_key` *reference*, not the key. Its
+  `row.rungs` name the tier that set each field, `api_key` included, never a value.
 
 ## Telemetry
 

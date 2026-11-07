@@ -39,9 +39,9 @@ arguments and never from pydantic-evals' default (``openai:gpt-5.2``), which wou
 provider from the environment: validate refuses a judge evaluator that names no runtime, and
 one whose arguments name a model. A runtime that is a stand-in (``mock``) gives pydantic-ai's
 ``TestModel``, which calls no model; any other is asked of the root's :class:`JudgeModels`,
-which gives the pydantic-ai ``Model`` that runtime offers (``hardline``'s makes each request a
-hardline call). The connections its calls opened are closed when the reading ends, in the
-loop that opened them. Its calls are hardline's ``chat`` spans and counters, made while the
+which gives pydantic-ai's ``Model`` over that runtime (each request one call on it). The
+connections its calls opened are closed when the reading ends, in the loop that opened
+them. Its calls are the model runtime's own spans and counters, made while the
 sensor reads, after the trial's spans were kept: they never join the tree an evaluator reads.
 Each is also a row of the run's session table, which the runtime's ``Model`` records, so the
 reading names the calls behind it (``sessions``), as a judge sensor's does.
@@ -62,7 +62,7 @@ from datetime import UTC, datetime
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
-from ix.adapters._out.matrix_agents import STAND_IN, runtime_requirement
+from ix.adapters._out.matrix_agents import STAND_IN, released, runtime_requirement
 from ix.domain.kind import placeholders
 from ix.domain.ports import Requirement, Sensed, StoodIn
 from ix.domain.problem import Problem, problem
@@ -364,8 +364,9 @@ class EvaluatorSensor:
                     kind="option_missing",
                     message=f"{name} calls a model, and names no model runtime: there is no "
                     "default, and pydantic-evals' own default model is never used",
-                    fix="add model_runtime: a matrix model runtime (hardline: calls a model "
-                    "provider; mock: calls no model), and model",
+                    fix="add model_runtime: a matrix model runtime "
+                    "(matrix-hardline.v1.model-runtime: calls a model provider; mock: calls no "
+                    "model), and model",
                 )
             )
         if not judge:
@@ -510,9 +511,7 @@ class EvaluatorSensor:
         try:
             return await self._read(cls(**arguments), interaction, truth, options, judged=judge)
         finally:
-            close = getattr(model, "aclose", None)
-            if callable(close):  # the connections its calls opened, in this loop
-                await close()
+            await released(model)  # its calls' connections, in this loop
 
     async def _read(
         self,

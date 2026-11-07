@@ -18,8 +18,8 @@ The judge runs on one of matrix's two runtime ports, named by one of two options
 no default, because a runtime may call a model provider, which is never implicit, and there
 is no adapter between the ports:
 
-* ``model_runtime`` (``hardline``, ``mock``, or any model runtime installed): each reading
-  is one model call, the rubric's task as its prompt.
+* ``model_runtime`` (``matrix-hardline.v1.model-runtime``, ``mock``, or any model runtime
+  installed): each reading is one model call, the rubric's task as its prompt.
 * ``agent_runtime`` (``claude-sdk``, ``mock``, or any agent runtime installed): each reading
   is a one-turn session with no tools, in a fresh temporary directory, removed after. It is
   given the config the runtime declares keeps a session from reading the machine it runs on
@@ -109,7 +109,7 @@ def _port(options: Mapping[str, Any]) -> tuple[Point, str]:
     named = [key for key in PORTS if options.get(key)]
     if len(named) != 1:
         raise ValueError(
-            "the judge needs one runtime: give model_runtime (one model call, as hardline) "
+            "the judge needs one runtime: give model_runtime (one model call) "
             "or agent_runtime (a one-turn session, as claude-sdk)" + (", not both" if named else "")
         )
     (key,) = named
@@ -167,9 +167,9 @@ class JudgeSensor:
                 kind="option_missing",
                 message="the judge names no runtime, and there is no default: a model "
                 "provider is never called implicitly",
-                fix="add model_runtime (hardline: one model call; mock: canned, calls no "
-                "model) or agent_runtime (claude-sdk: a one-turn session with no tools; mock: "
-                "canned, calls no model)",
+                fix="add model_runtime (matrix-hardline.v1.model-runtime: one model call; mock: "
+                "canned, calls no model) or agent_runtime (claude-sdk: a one-turn session with no "
+                "tools; mock: canned, calls no model)",
             )
         ]
 
@@ -243,7 +243,7 @@ class JudgeSensor:
     ) -> list[_Reply]:
         runtime = self._runtimes.build(MODEL_RUNTIME, name, config)
         runtime.check(model)
-        request = matrix.ModelRequest(prompt=task, system=SYSTEM, model=model)
+        request = matrix.ModelRequest.from_prompt(task, system=SYSTEM, model=model)
         url = matrix.model_runtime_type_url(name)
         drives = tuple(self._runtimes.drives(MODEL_RUNTIME, name))
         try:

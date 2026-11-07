@@ -1,5 +1,22 @@
 # Changelog — recon
 
+## 0.19.1 — 2026-11-06
+
+On matrix 0.10. Nothing of recon's own surface changes.
+
+### Changed
+
+- **A recon session imports no other package's registration.** matrix 0.10 loads only the
+  extensions whose entry points declare a point the session reads (ruling M-DISC), and recon
+  asks for its own four, so ix's registration, and the httpx2 it imports, are no longer loaded
+  to plan or report. The guard in `tests/test_layering.py` is back to its 0.17 form: building
+  a root loads no heavy library, whatever else is installed (design record M5-5).
+- **recon's `matrix.extensions` entry points name its points**: `recon.collector`,
+  `recon.source`, `recon.converter`, `recon.transform`, `component`, `payload-type`, each
+  `recon._matrix:register`, where one entry point was named `recon`. A third party's extension
+  declares its points the same way (`docs/reference/extending.md`).
+- recon depends on `matrix>=0.10,<0.11`.
+
 ## 0.19.0 — 2026-11-06
 
 ### Collector contract v2 (M5, completed)

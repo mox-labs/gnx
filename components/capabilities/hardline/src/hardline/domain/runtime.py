@@ -38,7 +38,12 @@ from hardline.domain.errors import (
     SchemaError,
     SecretError,
 )
-from hardline.domain.ports._out.backend import CheckedBackend, ClosableBackend
+from hardline.domain.ports._out.backend import (
+    CheckedBackend,
+    ClosableBackend,
+    ModelBackend,
+    ToolCallingBackend,
+)
 from hardline.domain.structured import (
     EMPTY_REPLY,
     empty_reply_instruction,
@@ -47,11 +52,13 @@ from hardline.domain.structured import (
     schema_instruction,
 )
 from hardline.domain.types import (
+    PROVIDER_DEFAULT,
     Answered,
     Attempt,
     AttemptFailed,
     CallBound,
     CallEvent,
+    CallRecord,
     Completion,
     FellBack,
     Message,
@@ -68,11 +75,10 @@ from hardline.domain.types import (
 if TYPE_CHECKING:
     from types import TracebackType
 
-    from hardline.domain.ports._out.backend import ModelBackend
     from hardline.domain.ports._out.observer import CallObserver
     from hardline.domain.ports._out.secrets import SecretResolver
     from hardline.domain.registry import ModelRegistry
-    from hardline.domain.types import Limit
+    from hardline.domain.types import Endpoint, Limit
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -99,6 +105,34 @@ class _Unobserved:
 
     def observe(self, event: CallEvent) -> None:
         pass
+
+
+#: What each backend's attempts are sent through, given the backend.
+Wrap = Callable[[ModelBackend], ModelBackend]
+
+
+@dataclass(frozen=True)
+class _Backend:
+    """A backend as the runtime holds it: what it sends each attempt through, and what the
+    backend declared it can do, read once from the backend itself before it was wrapped."""
+
+    #: The backend, wrapped by whatever the composition root handed (telemetry).
+    calls: ModelBackend
+    structured_modes: frozenset[str]
+    check: Callable[[Endpoint], Sequence[str]] | None
+    aclose: Callable[[], Awaitable[None]] | None
+    tools: bool
+
+    @classmethod
+    def of(cls, backend: ModelBackend, wrap: Wrap | None) -> _Backend:
+        return cls(
+            calls=backend if wrap is None else wrap(backend),
+            structured_modes=backend.structured_modes,
+            check=backend.check if isinstance(backend, CheckedBackend) else None,
+            aclose=backend.aclose if isinstance(backend, ClosableBackend) else None,
+            # Presence is what a runtime-checkable protocol sees; the value is read here, once.
+            tools=isinstance(backend, ToolCallingBackend) and backend.supports_tools is True,
+        )
 
 
 @dataclass(frozen=True)
@@ -205,12 +239,16 @@ class ModelRuntime:
         backends: Mapping[str, ModelBackend],
         secrets: SecretResolver,
         *,
-        schema_retries: int = 1,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         rng: random.Random | None = None,
         observer: CallObserver | None = None,
+        wrap: Wrap | None = None,
     ) -> None:
+        """``wrap``, when given, is what each backend's attempts go through (the composition
+        root's telemetry). What a backend can do beyond the port's two members is read from the
+        backend itself, before it is wrapped, so a wrapper can neither hide it nor claim more."""
+        held = {name: _Backend.of(backend, wrap) for name, backend in backends.items()}
         problems: list[Problem] = []
         for spec in registry:
             row = f"models.{spec.name}"
@@ -228,20 +266,20 @@ class ModelRuntime:
                             got=fallback,
                         )
                     )
-            backend = backends.get(spec.backend)
+            backend = held.get(spec.backend)
             if backend is None:
                 problems.append(
                     Problem(
                         path=f"{row}.backend",
                         kind="name_unknown",
                         message=f"{spec.backend!r} is not an installed backend. "
-                        f"Installed: {', '.join(sorted(backends)) or '(none)'}",
-                        allowed=tuple(sorted(backends)),
+                        f"Installed: {', '.join(sorted(held)) or '(none)'}",
+                        allowed=tuple(sorted(held)),
                         got=spec.backend,
                     )
                 )
                 continue
-            if isinstance(backend, CheckedBackend):
+            if backend.check is not None:
                 for found in backend.check(spec.endpoint()):
                     key, _, message = found.partition(": ")
                     problems.append(
@@ -265,16 +303,13 @@ class ModelRuntime:
                 + "\n".join(f"  {p.path}: {p.message}" for p in problems),
                 problems=problems,
             )
-        if schema_retries < 0:
-            raise ConfigError(f"schema_retries must be >= 0, got {schema_retries}")
         self._warnings = tuple(_shared_fate(registry))
         for warning in self._warnings:
             # ``problem`` lets a host that reports ``warnings`` itself (the CLI) drop the record.
             logger.warning("%s: %s", warning.path, warning.message, extra={"problem": warning})
         self._registry = registry
-        self._backends = dict(backends)
+        self._backends = held
         self._secrets = secrets
-        self._schema_retries = schema_retries
         self._clock = clock
         self._sleep = sleep
         self._rng = rng or random.Random()
@@ -297,7 +332,7 @@ class ModelRuntime:
         closed only in its own loop. The runtime stays usable; a later call opens new ones.
         """
         for backend in self._backends.values():
-            if isinstance(backend, ClosableBackend):
+            if backend.aclose is not None:
                 await backend.aclose()
 
     async def __aenter__(self) -> Self:
@@ -334,7 +369,7 @@ class ModelRuntime:
         spec = self._registry.get(model)
         chain = [spec, *(self._registry.get(name) for name in spec.fallbacks)]
         sends = [row.retries + 1 for row in chain]
-        complete, extract = sum(sends), sum(sends) + self._schema_retries * max(sends)
+        complete, extract = sum(sends), sum(sends) + spec.schema_retries * max(sends)
         attempts = spec.limits.attempts
         if attempts is not None:
             complete, extract = min(complete, attempts), min(extract, attempts)
@@ -347,12 +382,12 @@ class ModelRuntime:
 
     def check_tools(self, model: str | None) -> None:
         """Raise ``ConfigError`` unless the row ``model`` names, and each of its fallbacks, is
-        served by a backend that can call tools (``supports_tools``): one that offers a model
+        served by a backend that can call tools (``ToolCallingBackend``): one that offers a model
         tools, reads the calls it asks for, and sends tool turns. ``model=None`` is the
         registry default."""
         spec = self._registry.get(model)
         for row in (spec, *(self._registry.get(name) for name in spec.fallbacks)):
-            if getattr(self._backends[row.backend], "supports_tools", False) is not True:
+            if not self._backends[row.backend].tools:
                 raise ConfigError(
                     f"model {row.name!r}: backend {row.backend!r} cannot call tools, so it "
                     "cannot be offered tools or sent tool turns"
@@ -422,7 +457,8 @@ class ModelRuntime:
         max_tokens: int | None = None,
         temperature: float | None = None,
     ) -> Structured[T]:
-        """Structured output validated against ``output``, with bounded repair.
+        """Structured output validated against ``output``, with bounded repair: up to the
+        row's ``schema_retries`` repairs, each showing the model its reply and what was wrong.
 
         The schema is always stated in an instruction, and additionally handed to the
         provider when the registry row asks for ``json_object`` or ``json_schema``. The
@@ -447,7 +483,7 @@ class ModelRuntime:
         # failed, and asking them again would pay for that failure twice and could mix replies
         # from two models in one conversation.
         position = 0
-        for _ in range(self._schema_retries + 1):
+        for _ in range(spec.schema_retries + 1):
             reached = self._limit_reached(spec, started, log) if attempts else None
             if reached is not None:
                 limit, setting = reached
@@ -683,7 +719,7 @@ class ModelRuntime:
         return self._rng.uniform(0, min(_BACKOFF_CAP_S, _BACKOFF_BASE_S * 2**attempt))
 
     async def _attempt(self, spec: ModelSpec, request: Request) -> RawCompletion:
-        backend = self._backends[spec.backend]
+        backend = self._backends[spec.backend].calls
         api_key = self._secrets.resolve(spec.api_key) if spec.api_key else None
         raw = await backend.complete(spec.endpoint(), request, api_key)
         if not isinstance(raw, RawCompletion):
@@ -706,29 +742,33 @@ class ModelRuntime:
         spec, raw, request = answer.spec, answer.raw, answer.request
         return Completion(
             name=spec.name,
-            text=raw.text,
             family=spec.family,
             model=raw.model or spec.model,
-            backend=spec.backend,
+            provider=spec.endpoint().provider_name,
             local=spec.local,
-            usage=_total(log),
-            request_id=raw.request_id,
-            latency_ms=self._ms_since(started),
-            attempts=attempts,
-            retries=retries,
-            fallback_from=requested.name if spec.name != requested.name else None,
+            text=raw.text,
+            tool_calls=raw.tool_calls,
             finish_reason=raw.finish_reason,
             native_finish_reason=raw.native_finish_reason,
             refusal=raw.refusal,
-            tool_calls=raw.tool_calls,
-            params=RequestParams(
-                max_tokens=request.max_tokens,
-                temperature=request.temperature,
-                structured=spec.structured if request.json_schema is not None else None,
-                tools=tuple(tool.name for tool in request.tools),
+            usage=_total(log),
+            request_id=raw.request_id,
+            latency_ms=self._ms_since(started),
+            record=CallRecord(
+                backend=spec.backend,
+                attempts=attempts,
+                retries=retries,
+                fallback_from=requested.name if spec.name != requested.name else None,
+                params=RequestParams(
+                    max_tokens=request.max_tokens,
+                    temperature=PROVIDER_DEFAULT
+                    if request.temperature is None
+                    else request.temperature,
+                    structured=spec.structured if request.json_schema is not None else None,
+                    tools=tuple(tool.name for tool in request.tools),
+                ),
+                attempt_log=tuple(log),
+                turns_digest=turns_digest(request.messages),
+                row=self._registry.record(spec.name),
             ),
-            attempt_log=tuple(log),
-            turns_digest=turns_digest(request.messages),
-            row=self._registry.record(spec.name),
-            raw=raw.raw,
         )

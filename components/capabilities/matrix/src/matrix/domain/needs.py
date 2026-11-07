@@ -48,7 +48,8 @@ NEEDS: dict[str, Need] = {
         Need(
             name="model_runtimes",
             type="Mapping[str, ModelRuntime]",
-            summary="every model runtime the config builds, by name",
+            summary="every model runtime the config builds, by name; an agent runtime that "
+            "declares it makes its sessions' model calls through them",
         ),
         Need(
             name="schemas",
@@ -66,13 +67,6 @@ NEEDS: dict[str, Need] = {
             type="str",
             summary="the component's name in the run",
             components_only=True,
-        ),
-        Need(
-            name="models",
-            type="dict[str, Any] | None",
-            summary="the config's `models` section, a hardline registry; None when it sets "
-            "none, so hardline reads its own tiers",
-            stability="beta",
         ),
         Need(
             name="model_runtime_entries",

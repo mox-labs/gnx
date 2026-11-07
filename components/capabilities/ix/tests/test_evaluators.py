@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import matrix
+import matrix_hardline
 import pytest
 import yaml
 from matrix.adapters._out.observers.otel import OtelObserver
@@ -44,6 +45,8 @@ if TYPE_CHECKING:
 
 SCRIPTED = "acme.v1.agent-runtime.scripted"
 ONESHOT = "acme.v1.model-runtime.oneshot"
+#: The model runtime that calls a model, as an experiment names it: the bridge's.
+HARDLINE = matrix_hardline.TYPE_URL
 SPANS = "acme.v1.observer.spans"
 
 
@@ -395,7 +398,7 @@ class TestTheJudgesModel:
     def test_the_stand_in_puts_a_judge_on_mock_and_leaves_the_rest(self) -> None:
         sensor = _sensor()
         judge = {"evaluator": "LLMJudge", "arguments": {"rubric": "r"},
-                 "model_runtime": "hardline", "runtime_options": {"x": 1}}  # fmt: skip
+                 "model_runtime": HARDLINE, "runtime_options": {"x": 1}}  # fmt: skip
         stood = sensor.stand_in(judge)
         assert stood.options == {"evaluator": "LLMJudge", "arguments": {"rubric": "r"},
                                  "model_runtime": "mock"}  # fmt: skip
@@ -416,7 +419,7 @@ def _settings(observers: tuple[str, ...] = ()) -> matrix.Config[IxSettings]:
 class Oneshot:
     """A model runtime a third party registers, which is no stand-in."""
 
-    def check(self, model: str | None) -> None:
+    def check(self, model: str | None, *, uses: frozenset[str] = frozenset()) -> None:
         return None
 
     async def call(self, request: matrix.ModelRequest) -> matrix.ModelCall:
@@ -428,6 +431,7 @@ def _registry(provider: TracerProvider | None = None) -> matrix.Registry:
     is no stand-in, and an ``otel`` observer on the test's provider, with content."""
     registry = matrix.default_registry(discover=False)
     register(registry)
+    matrix_hardline.register(registry)
     registry.register("agent-runtime", SCRIPTED, Scripted)
     registry.register("model-runtime", ONESHOT, Oneshot)
     if provider is not None:
@@ -496,13 +500,13 @@ class TestValidate:
             ({"evaluator": "Pythonic"}, [("sensors.0.evaluator", "option_invalid")]),
             ({"evaluator": "Contains", "arguments": {"needle": "x"}},
              [("sensors.0.arguments", "option_invalid")]),
-            ({"evaluator": "Equals", "arguments": {"value": 4}, "model_runtime": "hardline"},
+            ({"evaluator": "Equals", "arguments": {"value": 4}, "model_runtime": HARDLINE},
              [("sensors.0.model_runtime", "option_inapplicable")]),
             ({"evaluator": "LLMJudge", "arguments": {"rubric": "r"}},
              [("sensors.0.model_runtime", "option_missing"),
               ("sensors.0.evaluator", "metric_unprovided")]),
             ({"evaluator": "LLMJudge", "arguments": {"rubric": "r", "model": "openai:gpt-5.2"},
-              "model_runtime": "hardline"},
+              "model_runtime": HARDLINE},
              [("sensors.0.arguments.model", "option_invalid"),
               ("sensors.0.evaluator", "metric_unprovided")]),
         ],
@@ -556,8 +560,9 @@ class TestValidate:
 
 
 def _judged_by_a_hardline_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Root, Path]:
-    """An experiment whose LLMJudge judges each reply on a hardline row, ``grader``, configured
-    as every model is (``matrix.models``): the row is hardline's mock, which grades through
+    """An experiment whose LLMJudge judges each reply on a hardline row, ``grader``, in the
+    judge's model runtime's own config (``runtime_options.models``): the row is hardline's
+    mock, which grades through
     pydantic-ai's output tool call, and pydantic-evals' own default model fails the test if
     asked."""
 
@@ -572,20 +577,17 @@ def _judged_by_a_hardline_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
             {"name": "final_result", "arguments": json.dumps(grade)}
         ]}]},
     }  # fmt: skip
-    settings = matrix.Config[IxSettings](
-        client=IxSettings(),
-        matrix=matrix.MatrixConfig(models={"models": {"grader": row}}),
-    )
     lab = _experiment(
         tmp_path,
         primary={"metric": "text_matched"},
         metrics=["judged_eval_passed"],
         sensors=[{"kind": "evaluator", "evaluator": "LLMJudge",
                   "arguments": {"rubric": "Says it fixed main."},
-                  "model_runtime": "hardline", "model": "grader"},
+                  "model_runtime": HARDLINE, "model": "grader",
+                  "runtime_options": {"models": {"models": {"grader": row}}}},
                  {"kind": "text-match", "contains": "Fixed"}],
     )  # fmt: skip
-    return Root(registry=_registry(), settings=settings), lab
+    return Root(registry=_registry(), settings=_settings()), lab
 
 
 class TestPlanAndRun:
@@ -624,12 +626,11 @@ class TestPlanAndRun:
         readings = _readings(report)
         judged = [r for r in readings if r["metric"] == "judged_eval_passed"]
         assert len(judged) == 5
-        hardline = matrix.model_runtime_type_url("hardline")
         for reading in judged:
             (by,) = reading["sessions"]  # the judge's one call: the reading's own session
             judge = sessions[by]
             assert (judge["port"], judge["runtime"], judge["drives"], judge["status"]) == (
-                "model-runtime", hardline, ["hardline"], "completed",
+                "model-runtime", HARDLINE, ["hardline"], "completed",
             )  # fmt: skip
             assert (judge["name"], judge["model"], judge["family"], judge["provider"]) == (
                 "grader", "grader-1", "mockjudge", "acme",
@@ -640,12 +641,11 @@ class TestPlanAndRun:
         assert all(r["sessions"] == [] for r in readings if r["metric"] == "text_matched")
         assert len(sessions) == 2 * len(interactions)  # a session and a judgement each
 
-    def test_a_model_runtime_that_gives_no_pydantic_ai_model_cannot_judge(
-        self, tmp_path: Path
-    ) -> None:
-        """A judge evaluator needs a pydantic-ai Model over its model runtime; a runtime that
-        offers none (``pydantic_ai_model``) is ``Runnable: no``, saying so, and nothing is
-        called."""
+    def test_any_model_runtime_can_judge(self, tmp_path: Path) -> None:
+        """Changed requirement (M-O6, I-2): a judge evaluator's model was the one its model
+        runtime offered by name (``pydantic_ai_model``), so a runtime that offered none was
+        ``Runnable: no``. matrix now builds pydantic-ai's Model over any model runtime, so one
+        written against the port alone, as this third party's is, can judge."""
         lab = _experiment(
             tmp_path,
             primary={"metric": "text_matched"},
@@ -657,8 +657,7 @@ class TestPlanAndRun:
         )  # fmt: skip
         plan = Root(registry=_registry(), settings=_settings()).plan(lab)
         (judge,) = [r for r in plan.requirements if "LLMJudge" in r.need]
-        assert not judge.holds and "gives no pydantic-ai Model" in judge.why
-        assert "pydantic_ai_model" in judge.fix
+        assert judge.holds, judge.why
         assert judge.needed_by == ("sensors.0",)
 
     def test_a_run_reads_tool_calls_from_each_trials_spans(
@@ -739,20 +738,18 @@ class TestPlanAndRun:
             "grader": {"backend": "mock", "model": "g-1", "family": "grading",
                        "options": {"default": '{"score": 0.9, "reason": "fixed"}'}},
         }  # fmt: skip
-        settings = matrix.Config[IxSettings](
-            client=IxSettings(), matrix=matrix.MatrixConfig(models={"models": rows})
-        )
+        named = {"runtime_options": {"models": {"models": rows}}}
         lab = _experiment(
             tmp_path,
-            subjects={"agent": {"kind": "model-call", "runtime": "hardline",
-                                "model": "answerer"}},
+            subjects={"agent": {"kind": "model-call", "runtime": HARDLINE,
+                                "model": "answerer", **named}},
             sensors=[{"kind": "evaluator", "evaluator": "MaxModelRequests",
                       "arguments": {"max_requests": 1}},
                      {"kind": "judge", "rubric": "Says it fixed main.",
-                      "model_runtime": "hardline", "model": "grader"}],
+                      "model_runtime": HARDLINE, "model": "grader", **named}],
             metrics=["judged_score"],
         )  # fmt: skip
-        report = Root(registry=_registry(), settings=settings).run(lab, exploratory=True)
+        report = Root(registry=_registry(), settings=_settings()).run(lab, exploratory=True)
         readings = _readings(report)
         counted = [r for r in readings if r["metric"] == "eval_passed"]
         assert len(counted) == 5 and all(r["value"] is True for r in counted)
@@ -798,7 +795,7 @@ class TestPlanAndRun:
             metrics=["judged_eval_passed"],
             sensors=[{"kind": "evaluator", "evaluator": "LLMJudge",
                       "arguments": {"rubric": "Says it fixed main."},
-                      "model_runtime": "hardline", "model": "judge"},
+                      "model_runtime": HARDLINE, "model": "judge"},
                      {"kind": "text-match", "contains": "Fixed"}],
         )  # fmt: skip
         report = Root(settings=_settings()).run(lab, dry_run=True)

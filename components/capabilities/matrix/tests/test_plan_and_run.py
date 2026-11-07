@@ -116,7 +116,7 @@ def test_the_call_counts_are_open_only_for_a_component_handed_the_runtimes(
     the plan leaves the most calls open; one handed neither cannot reach a runtime."""
     from matrix.composition import container
 
-    def registry(*, discover: bool = True) -> matrix.Registry:
+    def registry(*, discover: bool = True, points: object = None) -> matrix.Registry:
         found = matrix.default_registry(discover=False)
         found.register("component", "acme.v1.tally", lambda **_: _Tally(), needs=set(needs))
         return found
@@ -378,14 +378,14 @@ def test_describe_says_which_models_each_runtime_takes(
         for url in (
             "agent-runtime.claude-sdk",
             "agent-runtime.mock",
-            "model-runtime.hardline",
+            "agent-runtime.pydantic-ai",
             "model-runtime.mock",
         )
     }
     claude = described["agent-runtime.claude-sdk"]
     assert all(alias in claude["description"] for alias in ("`haiku`", "`sonnet`", "`opus`"))
     assert "max_budget_usd" in claude["properties"]
-    assert "hardline registry" in described["model-runtime.hardline"]["description"]
+    assert "model_runtime" in described["agent-runtime.pydantic-ai"]["properties"]
     assert "by_agent" in described["agent-runtime.mock"]["properties"]
     assert "by_model" in described["model-runtime.mock"]["properties"]
     assert "`sonnet`" in matrix.skill() and "`sonnet`" in matrix.skill("agents")
@@ -570,7 +570,7 @@ class Slow:
         print("started", file=sys.stderr, flush=True)
         await asyncio.sleep(60)
 
-def registry(*, discover=True):
+def registry(*, discover=True, points=None):
     found = matrix.default_registry(discover=False)
     found.register("component", "acme.v1.slow", Slow)
     return found

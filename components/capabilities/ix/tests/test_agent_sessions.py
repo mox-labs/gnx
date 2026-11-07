@@ -36,6 +36,10 @@ from ix.domain.experiment import ProbeConfig, SubjectConfig
 from ix.domain.ports import Requirement, Sensed, Surroundings
 from ix.domain.run import HarnessError, Interaction, SubjectError
 
+#: A model runtime's name as an experiment gives it: the bridge's type URL. The doubles here
+#: stand in for it.
+HARDLINE = "matrix-hardline.v1.model-runtime"
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
@@ -75,7 +79,7 @@ class ScriptedModel:
         self.requests: list[matrix.ModelRequest] = []
         self.checked: list[str | None] = []
 
-    def check(self, model: str | None) -> None:
+    def check(self, model: str | None, *, uses: frozenset[str] = frozenset()) -> None:
         self.checked.append(model)
         if model == "unknown":
             raise matrix.ConfigError("no model 'unknown' in the registry")
@@ -707,7 +711,7 @@ class TestStandIn:
     def test_a_model_call_stands_in_on_mock_with_the_runtimes_config_set_aside(self) -> None:
         adapter = ModelCallSubject(SessionTable(), Runtimes(ScriptedModel()))
         stood = adapter.stand_in(
-            {"runtime": "hardline", "model": "fast", "runtime_options": {"temperature": 0}}
+            {"runtime": HARDLINE, "model": "fast", "runtime_options": {"temperature": 0}}
         )
         assert stood.options == {"runtime": "mock", "model": "fast"}
         assert stood.notes == ("runtime_options set aside: the mock runtime takes none of them",)
@@ -1102,14 +1106,14 @@ class TestJudge:
         interaction = _interaction({"prompt": "Merge.", "text": "def merge"}, {"family": "claude"})
         runtimes = Runtimes(ScriptedModel(*replies))
         return await _sense(JudgeSensor(runtimes), interaction, {}, rubric="Correct and clear.",
-                            model_runtime="hardline", **options)  # fmt: skip
+                            model_runtime=HARDLINE, **options)  # fmt: skip
 
     async def test_a_score_against_the_rubric_by_one_model_call(self) -> None:
         model = ScriptedModel(_call('Here: {"score": 0.8, "reason": "clear"}', family="qwen"))
         runtimes = Runtimes(model)
         interaction = _interaction({"prompt": "Merge.", "text": "def merge"}, {"family": "claude"})
         found = await _sense(JudgeSensor(runtimes), interaction, {}, rubric="Correct.",
-                             model_runtime="hardline", model="judge-model")  # fmt: skip
+                             model_runtime=HARDLINE, model="judge-model")  # fmt: skip
         assert found.values == {
             "judged_score": 0.8, "judged_pass": True, "judge_agreement": 1.0,
             "judge_inconsistent": False, "judge_in_family": False,
@@ -1117,13 +1121,14 @@ class TestJudge:
         assert found.detail["reasons"] == ["clear"]
         # The call went through the model port: checked, then one request per reading.
         [(point, name, config, cwd)] = runtimes.built
-        assert (point, name, config, cwd) == ("model-runtime", "hardline", {}, None)
+        assert (point, name, config, cwd) == ("model-runtime", HARDLINE, {}, None)
         assert model.checked == ["judge-model"]
         (request,) = model.requests
-        assert request.model == "judge-model" and "Correct." in request.prompt
-        assert request.system and "rubric" in request.system
+        assert request.model == "judge-model" and "Correct." in (request.prompt or "")
+        system = request.turns[0]
+        assert system.role == "system" and "rubric" in system.content
         assert found.detail["judge"] == {
-            "port": "model-runtime", "runtime": "matrix.v1.model-runtime.hardline",
+            "port": "model-runtime", "runtime": HARDLINE,
             "model": None, "family": "qwen", "cost_usd": None,
         }  # fmt: skip
 
@@ -1144,7 +1149,7 @@ class TestJudge:
     async def test_it_needs_a_rubric(self) -> None:
         sensor = JudgeSensor(Runtimes(ScriptedModel(_call('{"score": 1}'))))
         with pytest.raises(ValueError, match="rubric"):
-            await sensor.sense(_interaction(), truth={}, options={"model_runtime": "hardline"})
+            await sensor.sense(_interaction(), truth={}, options={"model_runtime": HARDLINE})
 
     async def test_on_an_agent_runtime_a_one_turn_session_with_no_tools_and_what_it_cost(
         self,
@@ -1196,7 +1201,7 @@ class TestJudge:
 
         from ix.composition import _Runtimes
 
-        real = _Runtimes(default_registry(), lambda: None)
+        real = _Runtimes(default_registry(), matrix.MatrixConfig)
 
         class ThroughMatrix(Runtimes):
             def build(
@@ -1227,7 +1232,7 @@ class TestJudge:
         )  # fmt: skip
 
     @pytest.mark.parametrize(
-        "named", [{}, {"model_runtime": "hardline", "agent_runtime": "claude-sdk"}]
+        "named", [{}, {"model_runtime": HARDLINE, "agent_runtime": "claude-sdk"}]
     )
     async def test_a_judge_that_names_no_runtime_or_both_never_starts_one(
         self, named: dict[str, str], tmp_path: Path
@@ -1259,7 +1264,7 @@ async def _call_trial(
 ) -> tuple[Mapping[str, Mapping[str, Any]], bool]:
     """Reach a ``model-call`` subject, apply the prompt probe, release."""
     sessions = SessionTable()
-    subject = SubjectConfig.model_validate({"kind": "model-call", "runtime": "hardline", **options})
+    subject = SubjectConfig.model_validate({"kind": "model-call", "runtime": HARDLINE, **options})
     async with ModelCallSubject(sessions, runtimes).reach("model", subject, base=".") as target:
         assert set(target.facets) == {"respondent"}  # no working directory
         seen = await PromptProbe(sessions).apply(carried("probe", "prompt", probe), target, seed=0)
@@ -1271,11 +1276,10 @@ class TestAModelCall:
 
     async def test_one_call_and_its_facts_are_kept(self) -> None:
         reply = _call(
-            "Merged.", name="fast", model="qwen-3-8b", family="qwen", backend="openai-compat",
-            provider="openai", usage=matrix.TokenUsage(input_tokens=40, output_tokens=8,
-                                                       cache_read_tokens=30),
-            request_id="req-1", attempts=1, retries=2, fallback_from="smart", latency_ms=120,
-            finish_reason="stop",
+            "Merged.", name="fast", model="qwen-3-8b", family="qwen", provider="openai",
+            usage=matrix.TokenUsage(input_tokens=40, output_tokens=8, cache_read_tokens=30),
+            request_id="req-1", latency_ms=120, finish_reason="stop",
+            provenance={"acme.v1.call": {"retries": 2, "fallback_from": "smart"}},
         )  # fmt: skip
         model = ScriptedModel(reply)
         runtimes = Runtimes(model, takes=frozenset({"temperature"}))
@@ -1284,19 +1288,22 @@ class TestAModelCall:
             runtime_options={"temperature": 0},
         )  # fmt: skip
         [(point, name, config, cwd)] = runtimes.built
-        assert (point, name, config, cwd) == ("model-runtime", "hardline", {"temperature": 0}, None)
+        assert (point, name, config, cwd) == ("model-runtime", HARDLINE, {"temperature": 0}, None)
         (request,) = model.requests
-        assert (request.prompt, request.model, request.system) == (
+        assert (request.prompt, request.model, request.turns[0].content) == (
             "Merge them.",
             "fast",
             "Be terse.",
         )
         assert model.checked == ["fast"]
         assert seen["response"] == {"prompt": "Merge them.", "text": "Merged.", "refusal": None}
+        # Changed requirement (I-4): the facet held hardline's own facts (``backend``,
+        # ``attempts``, ``retries``, ``fallback_from``) as the call's; they are the runtime's
+        # record now (``provenance``), which no sensor reads, so the facet keeps the neutral
+        # reply's.
         assert seen["usage"] == {
-            "runtime": "matrix.v1.model-runtime.hardline", "name": "fast", "model": "qwen-3-8b",
-            "family": "qwen", "backend": "openai-compat", "provider": "openai",
-            "request_id": "req-1", "attempts": 1, "retries": 2, "fallback_from": "smart",
+            "runtime": HARDLINE, "name": "fast", "model": "qwen-3-8b",
+            "family": "qwen", "provider": "openai", "request_id": "req-1",
             "latency_ms": 120, "finish_reason": "stop", "refusal": None, "tokens_input": 40,
             "tokens_output": 8, "tokens_total": 48, "cache_read_tokens": 30,
             "cache_write_tokens": 0, "duration_ms": 120, "simulated": False,
@@ -1335,7 +1342,7 @@ class TestAModelCall:
 
         def subject(**options: Any) -> SubjectConfig:
             return SubjectConfig.model_validate(
-                {"kind": "model-call", "runtime": "hardline", **options}
+                {"kind": "model-call", "runtime": HARDLINE, **options}
             )
 
         assert _unmet(adapter.requirements(subject(model="fast").options, base=".")) is None
@@ -1357,7 +1364,7 @@ class TestAModelCall:
             ("function-test", {"file": "a.py"}), ("text-match", {}), ("judge", {}),
             ("usage", {}), ("outcome", {}), probes=(collect,),
         )  # fmt: skip
-        found = adapter.review({"runtime": "hardline"}, around)
+        found = adapter.review({"runtime": HARDLINE}, around)
         assert sorted((p.path, p.kind, str(p.got)) for p in found) == [
             ("probes.0.collect", "unobservable", "None"),
             ("subjects.agent.kind", "unobservable", "None"),  # function-test's file
@@ -1368,7 +1375,7 @@ class TestAModelCall:
             tmp_path, ("function-test", {}), ("text-match", {}), ("judge", {}), ("usage", {}),
             probes=(ProbeConfig(id="p", kind="prompt", options={"prompt": "x"}),),
         )  # fmt: skip
-        assert adapter.review({"runtime": "hardline"}, reads_the_reply) == []
+        assert adapter.review({"runtime": HARDLINE}, reads_the_reply) == []
 
     def test_an_option_the_model_runtime_does_not_declare_is_unknown(self, tmp_path: Path) -> None:
         adapter = ModelCallSubject(SessionTable(), Runtimes(ScriptedModel(), takes=MOCK))

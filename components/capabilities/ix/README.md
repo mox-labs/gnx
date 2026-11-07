@@ -13,18 +13,19 @@ disturbed by it) and reports a verdict: `holds`, `fails` or `inconclusive`. The 
 
 ```bash
 # the ix command
-uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.8.0#subdirectory=components/capabilities/ix"
+uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.9.0#subdirectory=components/capabilities/ix"
 # the library, in a project
-uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.8.0#subdirectory=components/capabilities/ix"
+uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.9.0#subdirectory=components/capabilities/ix"
 ```
 
 ix is installed from its repository at the release's tag. It is on no package index, and the
 project named `ix` on PyPI is another one. ix runs on matrix, a package of the same
 repository: installed from the git URL, uv clones the repository, finds the workspace it
 belongs to and takes matrix from there. Every runtime comes with it: `claude-sdk` (Claude
-Agent SDK sessions), `pydantic-ai` (a pydantic-ai loop whose model calls hardline makes),
-`hardline` (one model call through hardline), and the OpenTelemetry SDK that exports spans
-over OTLP. There are no extras. A service experiment needs `k6` on `PATH`.
+Agent SDK sessions), `pydantic-ai` (a pydantic-ai loop whose model calls are made on a
+matrix model runtime), `matrix-hardline.v1.model-runtime` (one model call through hardline,
+from the `matrix-hardline` bridge, which ix depends on), and the OpenTelemetry SDK that
+exports spans over OTLP. There are no extras. A service experiment needs `k6` on `PATH`.
 
 ## The experiment model
 
@@ -319,8 +320,8 @@ A declaration is not an adapter. ix can **run** these:
 |---|---|---|
 | subject | `process` | starts the command for each trial in its own process group, waits for `ready` to answer (or `url` to accept a connection), and kills the group after the trial |
 | subject | `http` | starts nothing: an endpoint that is already up, with optional `headers` and a bearer token read from `auth: env:NAME` |
-| subject | `agent-session` | a fresh session per trial on the matrix agent runtime its required `runtime` names (`claude-sdk` calls a model provider; `pydantic-ai` runs pydantic-ai's loop with every model call through hardline; `mock` calls no model; any agent runtime installed, by type URL), in a new temporary working directory seeded from `fixtures`, `skills` and a `setup` command, removed after the trial; `runtime_options` are the runtime's config, passed through as written; a `loop` asks again for a self-review or with the tests that failed |
-| subject | `model-call` | one call per trial on the matrix model runtime its required `runtime` names (`hardline` calls a model provider; `mock` calls no model; any model runtime installed), with its `model` resolved before anything starts; no tools, turns or working directory, so `activation`, `tool-usage`, `collect` and a `function-test` `file` are refused on it (`unobservable`) |
+| subject | `agent-session` | a fresh session per trial on the matrix agent runtime its required `runtime` names (`claude-sdk` calls a model provider; `pydantic-ai` runs pydantic-ai's loop with every model call on the model runtime its `runtime_options.model_runtime` names, one of `matrix.model_runtimes`; `mock` calls no model; any agent runtime installed, by type URL), in a new temporary working directory seeded from `fixtures`, `skills` and a `setup` command, removed after the trial; `runtime_options` are the runtime's config, passed through as written; a `loop` asks again for a self-review or with the tests that failed |
+| subject | `model-call` | one call per trial on the matrix model runtime its required `runtime` names (`matrix-hardline.v1.model-runtime` calls a model provider through hardline; `mock` calls no model; any model runtime installed, by type URL), with its `model` resolved before anything starts; no tools, turns or working directory, so `activation`, `tool-usage`, `collect` and a `function-test` `file` are refused on it (`unobservable`) |
 | probe | `http-load` | runs k6 for `warmup` then `duration`, with `load_model: closed` (`concurrency` clients, 1 when left out) or `open` (an arrival `rate`, with `concurrency` clients started before the load, 100 when left out; an arrival when every one is waiting is dropped, and counted an error); only the measured part is read, and each request sent in it is waited for until it is answered or its `timeout` (60s when left out) runs out |
 | probe | `prompt` | puts the prompt to the session or the call and keeps the reply; for a session also every tool call, each round's transcript and the files named in `collect` |
 | probe | `command` | runs `command` once with the subject up, in `cwd` (the experiment's directory when left out) with `env` added, its `{url}` and every other placeholder filled as a probe's are, and keeps its exit code and the last 64 KiB of what it wrote to stdout and stderr; one that cannot start or runs past its `timeout` (60s when left out) is the harness's failure. The program and each file an argument names are digested as what was tested |
@@ -354,7 +355,9 @@ adapter that skips its check on a placeholder still checks the rest.
 An adapter plugs in through matrix's registry, as every extension does. A package declares
 its kind as data at the `ix.kind` entry point, and registers the adapter from its
 `matrix.extensions` entry point at ix's point for the family (`ix.extension.POINTS`:
-`ix.subject`, `ix.probe`, `ix.sensor`, `ix.environment`) under the kind's type URL. ix
+`ix.subject`, `ix.probe`, `ix.sensor`, `ix.environment`) under the kind's type URL; the entry
+point's name is that point (`"ix.sensor" = "acme.ix_ext:register"`), so only a session that
+reads ix's points imports the package. ix
 resolves every adapter it runs that way, its own included, so a new one needs no edit to ix.
 Everything an adapter author writes against is in one public module, `ix.extension`, and
 ix's own adapters import it as a third party's do. An adapter declares what it needs built,
@@ -616,11 +619,12 @@ that builds its own `Root` may name another store whose config takes `root`):
 The manifest records what the verdict is about and where the run ran from: the digest of
 each file and folder the subjects and sensors name (`contents`, paths and digests, never what
 the files hold); the git commit the experiment sits at and whether a tracked file differed
-from it (`dirty`), or `not a repository`; the installed versions of ix, matrix and hardline;
+from it (`dirty`), or `not a repository`; the installed versions of ix, matrix and of each
+distribution an installed runtime drives;
 and every agent and model runtime installed, by type URL, with the distribution that
 registered it and its version, and each distribution it drives with that one's version (the
 Claude Agent SDK, for `claude-sdk`); and where each setting it read came from
-(`provenance.settings`: `ix.runs`, `matrix.observers` and `matrix.models`, each with the file
+(`provenance.settings`: `ix.runs`, `matrix.observers` and `matrix.model_runtimes`, each with the file
 that set it or `default`, never the value). `ix report` prints the digests (`Contents`), the commit
 (`Ran from`) and the versions, `ix runs` the commit, and `--json` carries all of it.
 
@@ -775,7 +779,9 @@ ix:
 ```
 
 An unknown key is refused, by its path and file. The same read gives the `matrix:` section:
-the observers of a run, and the models a `hardline` model runtime is handed.
+the observers of a run, and the named model runtimes (`matrix.model_runtimes`) a
+`pydantic-ai` session's `model_runtime` names. A model runtime's own models are its config's:
+a model-call subject's or a judge's `runtime_options.models` for hardline.
 
 ix makes spans through the OpenTelemetry API, under the instrumentation scope `ix`:
 `ix.plan`, `ix.run`, `ix.environment`, `ix.trial` and `ix.sensor`, with each reading as a

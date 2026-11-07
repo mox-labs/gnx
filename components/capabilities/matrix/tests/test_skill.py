@@ -200,11 +200,19 @@ def test_the_extension_example_registers_wires_runs_and_refuses_an_unknown_key()
     assert f"```python\n{EXTENSION_EXAMPLE.rstrip()}\n```" in skill
     assert f"```toml\n{ENTRY_POINT.rstrip()}\n```" in skill
     group = tomllib.loads(ENTRY_POINT)["project"]["entry-points"]["matrix.extensions"]
-    assert group == {"acme": "acme.matrix_extension:register"}
+    assert group == {"component": "acme.matrix_extension:register"}
     namespace: dict[str, Any] = {}
     exec(compile(EXTENSION_EXAMPLE, "<skill>", "exec"), namespace)
     registry = matrix.default_registry(discover=False)
-    namespace["register"](registry)
+    # Loaded as discovery loads it, so the points its entry points declare are held to what
+    # its register does.
+    example = matrix.Extension(
+        name="acme.matrix_extension:register",
+        origin="acme",
+        register=namespace["register"],
+        points=frozenset(group),
+    )
+    assert registry.load([example]).failures == []
     container = compose(MatrixConfig(), registry=registry)
     wiring = container.wire(
         [{"name": "score", "type": "acme.v1.scorer", "config": {"weight": 2}}],
@@ -303,7 +311,7 @@ def test_every_max_option_the_skill_names_exists() -> None:
     """Moved from the spend tests when spend was removed: each ``max_*`` option the config and
     agents references name is a field of a runtime, an agent, the limits or a retry."""
     from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntimeConfig, SubagentConfig
-    from matrix.adapters._out.runtime.model import HardlineModelRuntimeConfig
+    from matrix.adapters._out.runtime.pydantic_ai import PydanticAiRuntimeConfig
     from matrix.domain.config import AgentConfig
 
     text = matrix.skill("config") + matrix.skill("agents")
@@ -311,7 +319,7 @@ def test_every_max_option_the_skill_names_exists() -> None:
     fields = {
         *ClaudeSdkRuntimeConfig.model_fields,
         *SubagentConfig.model_fields,
-        *HardlineModelRuntimeConfig.model_fields,
+        *PydanticAiRuntimeConfig.model_fields,
         *AgentConfig.model_fields,
         *matrix.Limits.model_fields,
         *matrix.Retry.model_fields,

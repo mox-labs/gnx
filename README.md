@@ -50,13 +50,15 @@ A capability is installed from this repository at its release's tag; none is on 
 index, where the names `matrix` and `ix` belong to other projects:
 
 ```
-uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.8.0#subdirectory=components/capabilities/matrix"
-uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.8.0#subdirectory=components/capabilities/ix"
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.16.0#subdirectory=components/capabilities/recon"
-uv tool install "git+https://github.com/mox-labs/gnx@hardline-v0.2.0#subdirectory=components/capabilities/hardline"
+uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.10.0#subdirectory=components/capabilities/matrix"
+uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.9.0#subdirectory=components/capabilities/ix"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.19.1#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@hardline-v0.3.1#subdirectory=components/capabilities/hardline"
 ```
 
-`ix` depends on `matrix`, and `matrix` on `hardline`; installed from the git URL, uv takes each from the same repository.
+`ix` depends on `matrix` and `matrix-hardline`, the bridge that makes hardline a matrix model
+runtime; `matrix-hardline` depends on `matrix` and `hardline`, and `matrix` on no model
+runtime. Installed from the git URL, uv takes each from the same repository.
 Each package's README has its library install line. No package has extras: each brings every runtime and telemetry it uses.
 
 ## Stack placement

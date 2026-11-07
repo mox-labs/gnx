@@ -10,7 +10,7 @@ the reply's text, your own graders, and a judge.
 ## What you need
 
 ```bash
-uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.8.0#subdirectory=components/capabilities/ix"
+uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.9.0#subdirectory=components/capabilities/ix"
 ```
 
 ix comes with the `claude-sdk` agent runtime, which runs each session through the Claude
@@ -472,8 +472,9 @@ subject's own model family (`judge_in_family`).
 
 The judge names its runtime with one of two options, and there is no default:
 
-- `model_runtime`: a matrix model runtime, one call per reading. `hardline` calls a model
-  provider through hardline's registry; `mock` does not.
+- `model_runtime`: a matrix model runtime, one call per reading. `matrix-hardline.v1.model-runtime` calls a
+  model provider through hardline's registry (its `runtime_options.models`, or hardline's own
+  tiers); `mock` does not.
 - `agent_runtime`: a matrix agent runtime, a one-turn session with no tools per reading, in
   a fresh temporary directory. `claude-sdk` calls a model provider; `mock` does not. It is
   given the config its runtime declares keeps the machine out (claude-sdk's
@@ -486,7 +487,7 @@ model.
 
 ```yaml
 sensors:
-  - {kind: judge, model_runtime: hardline, rubric: Does the reply name the bug and where it is?}
+  - {kind: judge, model_runtime: matrix-hardline.v1.model-runtime, rubric: Does the reply name the bug and where it is?}
 metrics: [judged_score]
 ```
 
@@ -553,10 +554,10 @@ sensor's are. Its model comes from the matrix model runtime the sensor names wit
 from pydantic-evals' default model either, which would find a provider from the environment.
 `ix validate` refuses a judge evaluator that names no `model_runtime`, and a `model` among
 its arguments. A dry run judges it on pydantic-ai's `TestModel`, which calls no model. On a real
-model runtime the judge calls the pydantic-ai model that runtime gives: `hardline` gives one
-on the registry row `model` names (from `matrix.models` or `runtime_options.models`), each
-request a hardline call. A model runtime that gives none cannot judge: `ix plan` lists such a
-judge under `Runnable: no` and says so; score with the `judge` sensor there.
+model runtime the judge calls pydantic-ai's model over that runtime (matrix's
+`pydantic_ai_model`), which any model runtime serves: on hardline, the registry row `model`
+names (from `runtime_options.models`, or hardline's own tiers), each request a hardline
+call and a row of the run's session table.
 
 ## A model call instead of a session
 
@@ -567,13 +568,13 @@ the subject a `model-call`:
 subjects:
   fast:
     kind: model-call
-    runtime: hardline
+    runtime: matrix-hardline.v1.model-runtime
     model: fast
     system_prompt: Answer with code only.
     runtime_options: {temperature: 0}
 ```
 
-Its `runtime` is a matrix model runtime (`hardline`, `mock`, or any installed), with no
+Its `runtime` is a matrix model runtime (`matrix-hardline.v1.model-runtime`, `mock`, or any installed), with no
 default; `model` is a name the runtime resolves, which `ix plan` checks before anything
 starts; `runtime_options` is the runtime's own config, as for a session. Each trial is one
 call: no turns, no tools, no working directory. The `prompt` probe applies as it does to a

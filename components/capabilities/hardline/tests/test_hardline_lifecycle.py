@@ -159,8 +159,8 @@ def test_a_runtime_used_from_two_event_loops_answers_each_once(
         del rt
         gc.collect()
 
-    assert (first.text, first.retries) == ("ok", 0)
-    assert (second.text, second.retries) == ("ok", 0)
+    assert (first.text, first.record.retries) == ("ok", 0)
+    assert (second.text, second.record.retries) == ("ok", 0)
     assert len(server.requests) == 2  # one request per answer: none duplicated, none billed twice
     # The first loop ended without aclose(), so its connection could not be closed. hardline
     # says so, with the fix, rather than leaving it to a ResourceWarning nobody sees.

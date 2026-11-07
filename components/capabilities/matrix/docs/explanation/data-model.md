@@ -97,7 +97,7 @@ a session.
 | `status`, `reason`, `error` | `completed` when the runtime replied, whatever the reply; `failed` when it raised instead, with the reason it classified (`rate_limited`, `timeout`, ...; null for an error it did not classify) and the error's message; `cancelled`, reason `cancelled`, when it was cancelled before it replied |
 | `runtime`, `drives` | the runtime's type URL and the distributions it drives, when the caller knew them |
 | `agent` | the agent's name, for a session |
-| `name`, `model`, `family`, `provider`, `backend` | the model that answered: its registry name (a model call), the provider's id, its family, who served it |
+| `name`, `model`, `family`, `provider` | the model that answered: the runtime's name for it (a model call), the provider's id, its family, who served it |
 | `stop` | how an agent session ended: `completed`, or the limit reached |
 | `finish_reason`, `native_finish_reason`, `refusal` | why the (last) reply ended, in one vocabulary and as the provider said it; what the model said when it refused |
 | `usage` | `input_tokens` (every token read, the cache's included), `output_tokens`, `cache_read_tokens`, `cache_write_tokens` |
@@ -105,17 +105,18 @@ a session.
 | `duration_ms`, `turns` | how long it took; an agent session's turns (a model call has none) |
 | `session_id`, `request_id` | the runtime's id for a session, the provider's for a call |
 | `trace_id`, `span_id` | the OpenTelemetry trace and span the session ended in, as hex, when one was current; matrix mints no id |
-| `fallback_from`, `attempts`, `retries`, `attempt_log`, `params`, `turns_digest`, `row` | for a model call: the model asked for when a fallback answered, every attempt, what was sent and the registry row that answered |
-| `sent` | `sha256:<hex>` over canonical JSON (keys sorted, no whitespace, UTF-8) of what matrix sent the runtime: for a session `{"definition": ..., "task": ...}`, for a call `{"prompt", "system", "model", "output"}` with the output's JSON schema. Equal digests, equal requests |
+| `provenance` | for a model call, what only the model runtime that made it knows, as documents keyed by type URL, each valid against the schema its package registered (`matrix describe <type URL>`): the `matrix-hardline` runtime's is `hardline.v1.call`, hardline's own record of its attempts, fallback, what it sent and the registry row that answered (`.provenance["hardline.v1.call"].fallback_from` in `jq`). Empty when the runtime knows nothing more |
+| `sent` | `sha256:<hex>` over canonical JSON (keys sorted, no whitespace, UTF-8) of what matrix sent the runtime: for a session `{"definition": ..., "task": ...}`, for a call `{"turns", "tools", "model", "output", "max_tokens", "temperature"}`, each turn and tool as its JSON and the output as its JSON schema. Equal digests, equal requests |
 | `task`, `prompt` | for a session or a call that failed or was cancelled, the task (a session) or the prompt (a call) as sent; null for a completed one, whose reply row keeps it. Content: in the local record only, never on an event, span or metric |
 
 A fact the runtime did not report is null, never a constant.
 
 **A session that failed is a row too.** It was asked for, and it may have spent tokens and
 made attempts: a model call that exhausted its retries, an agent session whose result says it
-failed. Its row says `failed` and why, and holds what the runtime's error carried of it: for
-the `hardline` model runtime every attempt made and the usage they reported (`attempt_log`,
-`usage`), for `claude-sdk` the session's id, usage, cost and turns when its result arrived.
+failed. Its row says `failed` and why, and holds what the runtime's error carried of it: the
+usage it reported and the runtime's own record (`provenance`; the `matrix-hardline` runtime's
+is every attempt made, `matrix-hardline.v1.failed-call`), for `claude-sdk` the session's id,
+usage, cost and turns when its result arrived.
 **So is a session that was cancelled** mid-flight (its component overran its deadline, or the
 run was cancelled): `status: cancelled`, with what matrix knew of it, since its runtime
 reported nothing: the runtime, the agent, the trace and span it ran in, and `sent`. Either
@@ -155,10 +156,10 @@ behind AS (
     WHERE kind = 'KIND'
 ),
 sessions AS (
-    SELECT ordinality - 1 AS session, runtime, family, finish_reason, attempts
+    SELECT ordinality - 1 AS session, runtime, family, finish_reason, status
     FROM read_json_auto('RUN/matrix.v1.session.jsonl') WITH ORDINALITY
 )
-SELECT board.row, board.reply, runtime, family, finish_reason, attempts
+SELECT board.row, board.reply, runtime, family, finish_reason, status
 FROM board JOIN behind USING (row) JOIN sessions USING (session)
 ORDER BY board.row;
 ```
@@ -199,10 +200,11 @@ its fingerprint is the same, and every component it depends on is reused too: so
 was given then is what it would be given now. The fingerprint digests the component's type
 and config and each need it is handed: for an agent step its agent, for a model step its model
 runtime, for another component that needs `agents` or `model_runtimes` every one of them, and
-`models` and `cwd` (the process's working directory when none was given). An agent counts by
-its definition, its runtime's config and needs, and what the runtime resolved when it was
-built; a model runtime by its config and needs and what it resolved (the hardline runtime's
-registry, whether from `matrix.models` or the tiers hardline discovered). Not in it: the code
+`cwd` (the process's working directory when none was given). An agent counts by its
+definition, its runtime's config and needs (the model runtimes, for one whose calls are made
+on them), and what the runtime resolved when it was built; a model runtime by its config and
+needs and what it resolved (the `matrix-hardline` runtime's registry, whether from its own
+`models` or the tiers hardline discovered). Not in it: the code
 that runs, the payload `schemas`, and a need a host adds through `compose(context=)`. A reused component whose
 rows its kind's schema now refuses ends `failed` and is not run again; what depends on it is
 skipped. Then each row is recorded when its component

@@ -68,11 +68,14 @@ from matrix import (
     ModelRuntime,
     ModelRequest,
     ModelCall,
+    Turn,
+    Role,
+    ToolSpec,
+    ToolCall,
+    Use,
     FinishReason,
     TokenUsage,
-    RequestParams,
-    CallAttempt,
-    RegistryRow,
+    pydantic_ai_model,
     ModelStep,
     ModelStepConfig,
     call_model,
@@ -81,6 +84,7 @@ from matrix import (
     PROMPT,
     # registry
     Registry,
+    MATRIX_POINTS,
     Entry,
     Extension,
     Failure,
@@ -291,11 +295,10 @@ maps each name to a `Need` (`name`, `type`, `summary`, `stability`, `components_
 | Need | Type | What | Stability |
 |------|------|------|-----------|
 | `agents` | `Mapping[str, Agent]` | every agent the config binds, bound to its agent runtime, by name | stable |
-| `model_runtimes` | `Mapping[str, ModelRuntime]` | every model runtime the config builds, by name | stable |
+| `model_runtimes` | `Mapping[str, ModelRuntime]` | every model runtime the config builds, by name; an agent runtime that declares it makes its sessions' model calls through them (composition builds model runtimes first) | stable |
 | `schemas` | `Mapping[str, type[BaseModel]]` | the registered payload schemas, by kind | stable |
 | `cwd` | `str \| None` | the working directory the host composed for (`compose(context={"cwd": ...})`); None when it gave none, which is the process's | stable |
 | `name` | `str` | the component's name in the run; components only | stable |
-| `models` | `dict[str, Any] \| None` | the config's `models` section, a hardline registry; None when it sets none | beta |
 | `model_runtime_entries` | `Mapping[str, Entry]` | the registry entry of each model runtime the config builds, by name | beta |
 
 A host hands needs of its own through `compose(context={...})` (ix hands its components
@@ -576,7 +579,7 @@ A fact the runtime did not report is `None`.
 | `digest` | `(value) -> str` | `sha256:<hex>` over canonical JSON (keys sorted, no whitespace, UTF-8): the session row's `sent` |
 | `agent_session` | `(response, *, agent, sent, runtime=None, drives=(), error=None, task=None) -> Session` | the session row of an agent session, from its `AgentResponse`. For a session that failed, `error` is the exception and `response` what it carried (`AgentRuntimeError.response`, or `None`): the row is `status: failed` with the error's `reason` and message. For one that was cancelled, `error` is the `CancelledError`: the row is `status: cancelled`, reason `cancelled`. Either row keeps `task`, the task as sent; a completed one does not, since its reply row does |
 | `call_session` | `(call, *, sent, runtime=None, drives=(), error=None, prompt=None) -> Session` | the session row of a model call, from its `ModelCall`. For a call that failed, `error` is the exception and `call` what it carried (`ModelRuntimeError.call`, or `None`); a failed or cancelled call's row keeps `prompt`, the prompt as sent |
-| `call_sent` | `(request: ModelRequest) -> str` | the `sent` digest of a model call's request, as a model step computes it: of its prompt, system prompt, model and output schema |
+| `call_sent` | `(request: ModelRequest) -> str` | the `sent` digest of a model call's request, as a model step computes it: of its turns, tools, model, output schema, `max_tokens` and `temperature` |
 | `record_session` | `(session) -> int \| None` | records it in the run of the component running in this task, durably and in ledger order; its row, or `None` outside a run. The rows that component hands over next name it |
 
 A `BoundAgent` and a model step record their sessions themselves, the failed ones included. A
@@ -587,7 +590,7 @@ it the same span of work:
 ```python
 from matrix import ModelRequest, call_model
 
-request = ModelRequest(prompt="Rate this.", model="haiku")
+request = ModelRequest.from_prompt("Rate this.", model="haiku")
 call = await call_model(runtime, request, name="judge")  # call.session: the row it names
 ```
 
@@ -669,7 +672,7 @@ What an agent is. Frozen pydantic model, unknown fields rejected.
 | `name` | `str` | required | `^[A-Za-z0-9][A-Za-z0-9._-]*$` |
 | `description` | `str` | `""` | |
 | `system_prompt` | `str` | `""` | |
-| `model` | `str \| None` | `None` | Interpreted by the runtime: an SDK alias or model id for `claude-sdk`, a hardline registry name for `pydantic-ai`. `None` is the runtime's default |
+| `model` | `str \| None` | `None` | Interpreted by the runtime: an SDK alias or model id for `claude-sdk`, a name its model runtime resolves for `pydantic-ai`. `None` is the runtime's default |
 | `tools` | `tuple[str, ...] \| None` | `None` | `None` is the runtime's default toolset; `()` is **no tools**, never collapsed into the default |
 | `max_turns` | `int \| None` | `None` | `>= 1`; `None` is the runtime's default |
 | `metadata` | `dict[str, Any]` | `{}` | Keys a source carried that no runtime interprets; kept, never read for behaviour |
@@ -715,10 +718,11 @@ Three members are optional, each [a declared protocol](#optional-members): `Supp
 runtime settled when it was built, beyond its own config, that decides how it answers, which
 composition digests into the reuse fingerprint of every component that runs an agent on the
 runtime; and `SupportsAclose`, which closes what its sessions opened, in the loop that used
-them. One more is read by its name: `usage_counted_by`, the name of what already counts the
-inference tokens of the runtime's model calls (`pydantic-ai` declares `hardline`).
-`BoundAgent` puts it on `matrix.agent.end`, and the `otel` observer then adds the session's
-tokens to no counter; its span and its session row keep them.
+them. Nothing else is read of a runtime. One that makes its sessions' model calls on matrix's
+model runtimes declares the need `model_runtimes`; composition then binds its agents with
+`BoundAgent(..., through_model_runtime=True)`, which puts `through_model_runtime` on
+`matrix.agent.end`, and the `otel` observer adds the session's tokens to no counter, since
+the model runtime counts its calls; its span and its session row keep them.
 
 **What its sessions do is data the runtime declares when it registers**, so a caller asks it
 instead of reading its options by name: `registry.register("agent-runtime", ...,
@@ -770,7 +774,7 @@ takes the short name.
 | `type` | Type URL | Config fields | Needs | Notes |
 |--------|----------|---------------|-------|-------|
 | `claude-sdk` | `matrix.v1.agent-runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (each `user`, `project` or `local`; `[]` is hermetic), `plugins` (each `{type: local, path}`; a relative `path` resolved against `cwd`), `skills` (names, or `all`), `fallback_model`, `max_budget_usd` (the SDK's own option, passed as it stands: the SDK ends a session once it has spent that many USD, `stop: max_budget_usd`), `agents` (inline subagents by name, each `description`, `prompt`, `tools`, `disallowed_tools`, `model`, `skills`, `max_turns`, passed as the SDK's `AgentDefinition`) | `cwd` | The config is the whole of what a session can be given; an option outside it fails at its key. `check` refuses a definition whose `tools` leave out `Skill` when the runtime has `skills`, and any option the installed SDK's own dataclasses lack, with the remedy. An agent's `model` is an alias the Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the CLI's default. `bypassPermissions` and `dontAsk` log a WARNING on `RUNTIME_LOGGER`, once per process, and are a `permissive` warning in every document the `matrix` command prints. Stamps `family="claude"`, `provider="anthropic"`, and times each tool call. The reply is the session's result, every text block its `transcript`. `model` is the one the SDK's `model_usage` names, or, when it names several, the one that wrote the final reply. `tokens_input` adds the cache's tokens to Anthropic's `input_tokens`, which leaves them out. Keeps the session id and the SDK's `stop_reason` (`native_finish_reason`, mapped to `finish_reason`). With OpenTelemetry active, hands the CLI the trace context current when the session starts (`TRACEPARENT`, `TRACESTATE`, through the SDK's `env`), so the CLI's spans join the run's trace under the session's `invoke_agent` |
-| `pydantic-ai` | `matrix.v1.agent-runtime.pydantic-ai` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `tools` (tool name to `module:function`, a Python function whose module is found, not run, when the runtime is built, and imported when a session first offers it; a module that cannot be found is a config problem at `tools.<name>`, a function it does not hold, or a module whose import raises, fails the session as `incapable`, and every later session that offers the tool, without importing the module again; naming a tool is a grant to run its code, owner ruling 2026-10-22), `temperature`, `max_tokens` | `models` | A pydantic-ai `Agent` per session, its model a hardline row: every model call goes through hardline, with the row's retries, fallbacks, limits, record and telemetry. The definition's `system_prompt` is the agent's instructions; its `tools` choose from the runtime's (`None`: all, `()`: none); `max_turns` bounds its model calls (`stop: max_turns` when reached; pydantic-ai's own default bound otherwise). An agent's `model` is a hardline registry name; unset, `default_model`, then the registry's default. `check` refuses a tool the runtime does not have, a model the registry cannot resolve, and tools on a row (or a fallback) whose backend cannot call them. The reply is the run's output, every text the model wrote its `transcript`; each tool call is timed from the response that asked for it to the request that carried its result, `error` when the tool failed or its arguments were refused. `model`, `family`, `finish_reason` and `native_finish_reason` are those of the last call; usage is summed over every call; `num_turns` counts the calls; `session_id` is pydantic-ai's run id; no cost. A hardline failure is an `AgentRuntimeError` with its reason mapped, carrying what the session had spent (`response`). `usage_counted_by: "hardline"`. pydantic-ai's instrumentation is switched off on every agent. Has `aclose()`; hardline's connections in a loop close when the last session running there ends. Imports pydantic-ai and hardline only when built |
+| `pydantic-ai` | `matrix.v1.agent-runtime.pydantic-ai` | `model_runtime` (required: the name, under `matrix.model_runtimes`, of the model runtime every call is made on), `default_model`, `tools` (tool name to `module:function`, a Python function whose module is found, not run, when the runtime is built, and imported when a session first offers it; a module that cannot be found is a config problem at `tools.<name>`, a function it does not hold, or a module whose import raises, fails the session as `incapable`, and every later session that offers the tool, without importing the module again; naming a tool is a grant to run its code, owner ruling 2026-10-22), `temperature`, `max_tokens` | `model_runtimes` | A pydantic-ai `Agent` per session, its model the `ModelRuntime` its config names: every model call is one call on the port, with that runtime's retries, fallbacks, record and telemetry. The definition's `system_prompt` is the agent's instructions; its `tools` choose from the runtime's (`None`: all, `()`: none); `max_turns` bounds its model calls (`stop: max_turns` when reached; pydantic-ai's own default bound otherwise). An agent's `model` is a name the model runtime resolves; unset, `default_model`, then the model runtime's default. `check` refuses a tool the runtime does not have, and a model, or tools on it, that the model runtime's `check` refuses. A pydantic-ai setting a call cannot carry (anything but `max_tokens` and `temperature`) is refused, never dropped. The reply is the run's output, every text the model wrote its `transcript`; each tool call is timed from the response that asked for it to the request that carried its result, `error` when the tool failed or its arguments were refused (sent back as a tool turn with `is_error`). `model`, `family`, `provider`, `finish_reason` and `native_finish_reason` are those of the last call; usage is summed over every call; `num_turns` counts the calls; `session_id` is pydantic-ai's run id; no cost. A model runtime's failure is an `AgentRuntimeError` with its reason, carrying what the session had spent (`response`). Its sessions are `through_model_runtime`: the model runtime counts their tokens. pydantic-ai's instrumentation is switched off on every agent. Has `aclose()`; the model runtime's connections in a loop close when the last session running there ends. Imports pydantic-ai only when built |
 | `mock` | `matrix.v1.agent-runtime.mock` | `responses` (the whole task as sent, to a reply), `by_agent` (agent name to a reply), `default` (reply for an unmatched task and agent; `None` echoes `mock:<agent>:<task>`), `family` (default `mock`) | | A stand-in (`stand_in`). Offline. Plays every definition; an agent's `model` is recorded, never used. The first of `responses`, `by_agent`, `default` that matches replies. Each reply reports no cost (`cost_usd` is `None`): no provider reported one. Records `calls`, each `(agent, task)` |
 
 Classes: `matrix.adapters._out.runtime.claude_sdk.ClaudeSdkRuntime`,
@@ -830,19 +834,30 @@ get JSON, and so is one that fails the kind's schema.
 
 ## Model calls
 
-A model call is one request to one model: no loop, no tools, no turns. It has its own port,
-record and step, beside the agent's.
+A model call is one request to one model: the turns of a conversation, the tools offered and
+an output type, with no loop. The reply may ask for tools; the call runs none. It has its own
+port, record and step, beside the agent's. matrix ships no model runtime that calls a model
+and depends on none: one arrives as an extension (`matrix-hardline` registers
+`matrix-hardline.v1.model-runtime`).
 
 ### `ModelRequest`
 
-What a caller asks. Frozen, unknown fields rejected.
+One call in full. Frozen, unknown fields rejected.
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
-| `prompt` | `str` | required | |
-| `model` | `str \| None` | `None` | a name the runtime resolves (a hardline registry name); `None` is its default |
-| `system` | `str \| None` | `None` | |
+| `turns` | `tuple[Turn, ...]` | required, at least one | the conversation: `Turn(role, content="", tool_calls=(), tool_call_id=None, is_error=False)`, `role` one of `system`, `user`, `assistant`, `tool`. An assistant turn carries the `ToolCall`s its model asked for; a tool turn answers one by `tool_call_id`, `is_error` when the tool failed. Text only |
+| `model` | `str \| None` | `None` | a name the runtime resolves; `None` is its default |
+| `tools` | `tuple[ToolSpec, ...]` | `()` | the tools the model may ask for: `ToolSpec(name, description="", parameters=<JSON schema>)` |
 | `output` | `type[BaseModel] \| None` | `None` | the structure the reply must have; the runtime validates the reply against it and returns it as `value`, or raises |
+| `max_tokens` | `int \| None` | `None` | overrides the runtime's; `None` is the runtime's (its config's, else its model's) |
+| `temperature` | `float \| None` | `None` | as `max_tokens` |
+
+`ModelRequest.from_prompt(prompt, *, system=None, model=None, output=None, max_tokens=None,
+temperature=None)` is a request of one user turn, after a system turn when one is given.
+`prompt` is that turn's text for a request that is a prompt (system turns and one user turn),
+`None` for a conversation; `uses` is what it asks of the runtime beyond text, a `frozenset`
+of `Use` (`tools` when it offers tools or sends tool turns, `output` with an output type).
 
 ### `ModelCall`
 
@@ -853,67 +868,67 @@ never a constant.
 |-------|------|---------|---------|
 | `text` | `str` | `""` | the reply as the model wrote it |
 | `value` | `Any` | `None` | the reply validated against the request's `output`, as JSON data |
-| `finish_reason` | `FinishReason \| None` | `None` | why the reply ended: `stop` (the model ended its turn), `length` (cut at `max_tokens`), `content_filter` (the provider withheld or cut it), `refusal`, `tool_call`, `other`; `None` when the runtime does not say |
+| `tool_calls` | `tuple[ToolCall, ...]` | `()` | the tools the model asked for (`id`, `name`, `arguments` as the JSON text it wrote), none run |
+| `finish_reason` | `FinishReason \| None` | `None` | why the reply ended, in matrix's own vocabulary, which each runtime maps its provider's onto: `stop` (the model ended its turn), `length` (cut at `max_tokens`), `content_filter` (the provider withheld or cut it), `refusal`, `tool_call`, `other`; `None` when the runtime does not say |
 | `native_finish_reason` | `str \| None` | `None` | the provider's own value, verbatim |
 | `refusal` | `str \| None` | `None` | what the model said when it refused |
-| `name` | `str \| None` | `None` | the registry name of the model that answered |
+| `name` | `str \| None` | `None` | the runtime's name for the model that answered, which a fallback may make differ from the one asked for |
 | `model` | `str \| None` | `None` | the provider's id of the model that answered |
 | `family` | `str \| None` | `None` | the family that answered (`claude`, `qwen`, ...) |
-| `backend` | `str \| None` | `None` | the backend that served it |
 | `provider` | `str \| None` | `None` | by the GenAI conventions' provider names (`anthropic`), when known |
-| `usage` | `TokenUsage \| None` | `None` | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, summed over every backend call that reported usage |
+| `usage` | `TokenUsage \| None` | `None` | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, summed over every request the runtime made for the call |
 | `request_id` | `str \| None` | `None` | the provider's id for the request that answered |
-| `attempts` | `int \| None` | `None` | calls made for a structured reply: 1, plus each repair |
-| `retries` | `int \| None` | `None` | transient failures retried, across every attempt and model |
-| `fallback_from` | `str \| None` | `None` | the model asked for, when a fallback answered instead |
 | `latency_ms` | `int \| None` | `None` | |
-| `params` | `RequestParams \| None` | `None` | what was sent to the model that answered: `max_tokens`, `temperature`, `structured` (how a structure was asked for; `None` for a plain call) |
-| `attempt_log` | `tuple[CallAttempt, ...] \| None` | `None` | every backend call made, in order: `name` (the row asked), `reason` (why it failed; `None` for the one that answered), `usage`, `latency_ms` |
-| `turns_digest` | `str \| None` | `None` | `sha256:<hex>` of the turns the answering call was sent, schema instruction and repair turns included |
-| `row` | `RegistryRow \| None` | `None` | the registry row that answered: `digest` (`sha256:<hex>` of its whole spec) and `rungs` (for each field a configuration set, the tier that set it) |
+| `provenance` | `dict[str, dict[str, Any]]` | `{}` | what only the runtime that made the call knows of it: type URL to the document, JSON data valid against the schema the runtime's package registered for that type URL (`hardline.v1.call` for hardline's record: its attempts, retries, `fallback_from`, what it sent, the registry row that answered). Each key is a versioned type URL; the executor validates each document against its registered schema when it records the session row |
 | `prompt` | `str \| None` | `None` | the prompt as sent; a `model-step` records it, after filling its inputs |
 | `session` | `int \| None` | `None` | the position of the call's row in the run's `matrix.v1.session`, when a run recorded it (for a reused row, the run `reused_from` names); `None` outside a run |
 
 `as_reply()` is the call as a model step provides it: with `session` set, every field the
-session row holds (`native_finish_reason`, `name` through `latency_ms`, `params`,
-`attempt_log`, `turns_digest`, `row`) is `None`; the reply keeps `text`, `value`,
-`finish_reason`, `refusal`, `family`, `prompt` and `session`.
+session row holds (`native_finish_reason`, `name`, `model`, `provider`, `usage`,
+`request_id`, `latency_ms`, `provenance`) is `None` or empty; the reply keeps `text`, `value`,
+`tool_calls`, `finish_reason`, `refusal`, `family`, `prompt` and `session`.
 
 ### `ModelRuntime` (Protocol)
 
 | Method | Signature | Contract |
 |--------|-----------|----------|
-| `check` | `(model: str \| None) -> None` | **Required.** Raises `ConfigError` for a model name the runtime cannot resolve (an unknown one, or none where there is no default), so a step that names it is refused when it is built |
-| `call` | `async (request: ModelRequest) -> ModelCall` | Returns the call's record, or raises `ModelRuntimeError` with a `reason`. With `output`, `value` is the validated reply, or it raises |
+| `check` | `(model: str \| None, *, uses: frozenset[Use] = frozenset()) -> None` | **Required.** Raises `ConfigError` for a model name the runtime cannot resolve (an unknown one, or none where there is no default), and for what it cannot do on that model (`tools`, `output`, or both together), so a step or an agent that needs it is refused when it is built |
+| `call` | `async (request: ModelRequest) -> ModelCall` | Returns the call's record, or raises `ModelRuntimeError` with a `reason`. With `output`, `value` is the validated reply, or it raises. A part of the request it cannot carry is refused as `incapable`, never dropped |
 
 The optional members `SupportsWarnings`, `SupportsResolved` and `SupportsAclose` are [the
-declared protocols](#optional-members) an agent runtime may keep too; the `hardline` runtime's
-`resolved` is its registry (`default` and each model's row, without `api_key`), read from
-`matrix.models` or hardline's own tiers, and is digested into the fingerprint of every
-component that calls it. Its `aclose()` closes the connections the runtime's calls opened in
-the running event loop; a connection can be closed only in its own loop, so a model step
-defers it to the end of the run that made the calls. The runtime stays usable after it. A
-fourth member is read by its name: `pydantic_ai_model(model=None)` gives
-pydantic-ai's `Model` on a model name the runtime resolves (raising `ConfigError` as `check`
-does), its requests made as the runtime makes its own calls, for a caller that runs pydantic-ai
-itself, such as an evaluator's judge; the `Model` has an async `aclose()` for the connections its
-calls opened. The `hardline` runtime has it: the row's requests go through hardline with the
-runtime's `max_tokens` and `temperature` as defaults, and inside a run each is a row of the
-session table with the fields a model step's call has (its `sent` the digest of the call's row,
-turns and tools), failed and cancelled ones too.
+declared protocols](#optional-members) an agent runtime may keep too: a runtime's `warnings`
+are in the plan; its `resolved` (a registry it read, say) is digested into the fingerprint of
+every component that calls it; its `aclose()` closes the connections the runtime's calls
+opened in the running event loop. A connection can be closed only in its own loop, so a model
+step defers it to the end of the run that made the calls. The runtime stays usable after it.
+Nothing else is read of a model runtime.
+
+### `pydantic_ai_model`
+
+`pydantic_ai_model(runtime, model=None, *, settings=None, runtime_url=None, drives=()) -> Model`:
+pydantic-ai's `Model` over any `ModelRuntime`, each request one `runtime.call` on `model`
+(`None`: the runtime's default), for a caller that runs pydantic-ai itself, such as an
+evaluator's judge. pydantic-ai's messages become turns, its tools `ToolSpec`s, its
+`max_tokens` and `temperature` the request's overrides; any other setting is refused, a
+`ConfigError` when given here as `settings`, else at the request that carries it, never
+dropped. Raises `ConfigError` for a model the runtime does not resolve, as its `check` does.
+Inside a run each call is a row of the session table, with the fields a model step's call has,
+under `runtime_url` and `drives` (the runtime's registry entry's), failed and cancelled ones
+too; outside one nothing is recorded. The `Model` has an async `aclose()` that closes the
+runtime's connections, when it holds any. Imports pydantic-ai only when called.
 
 ### Built-in model runtimes
 
 Registered at the `model-runtime` point. In config, under `matrix.model_runtimes`, `type:`
-takes the short name.
+takes the short name. A model runtime another package registers is named by its full type URL
+(`matrix-hardline.v1.model-runtime`); a type nothing registered is a `config` problem whose
+fix names what to install.
 
 | `type` | Type URL | Config fields | Needs | Notes |
 |--------|----------|---------------|-------|-------|
-| `hardline` | `matrix.v1.model-runtime.hardline` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | A request's `model` is a hardline registry name; unset, `default_model`, then the registry's default. `check` resolves it. With `output`, the call is hardline's `extract`, which repairs a reply that does not fit within its bound. Carries hardline's whole record of the call: why it ended, the model that answered, its `provider` (the row's `provider:`, else the backend's name, as hardline's telemetry names it), `fallback_from`, usage with cache tokens, the request id, attempts, retries, latency, `params`, `attempt_log`, `turns_digest` and `row`. A reply cut short or refused is returned and said for what it is. Reports tokens, no cost. Has `aclose()` and `pydantic_ai_model()` |
-| `mock` | `matrix.v1.model-runtime.mock` | `responses` (the whole prompt as sent, to a reply), `by_model` (model name to a reply), `default` (reply for an unmatched prompt and model; `None` echoes `mock:<model>:<prompt>`), `family` (default `mock`) | | A stand-in (`stand_in`). Offline. Accepts every model name. Validates a reply against the request's `output` as a real runtime does. A call reports one attempt, no retries, no tokens, its latency and `finish_reason: stop`, and no cost. Records `calls`, each `(model, prompt)` |
+| `mock` | `matrix.v1.model-runtime.mock` | `responses` (the whole prompt as sent, to a reply; a conversation's last user turn), `by_model` (model name to a reply), `default` (reply for an unmatched prompt and model; `None` echoes `mock:<model>:<prompt>`), `family` (default `mock`) | | A stand-in (`stand_in`). Offline. Accepts every model name, and tools (it asks for none). Validates a reply against the request's `output` as a real runtime does. A call reports no tokens, its latency and `finish_reason: stop`, no cost and no `provenance`. Records `calls`, each `(model, prompt)` |
 
-Classes: `matrix.adapters._out.runtime.model.HardlineModelRuntime`,
-`matrix.adapters._out.runtime.mock.MockModelRuntime`.
+Class: `matrix.adapters._out.runtime.mock.MockModelRuntime`.
 
 ### `matrix.v1.model-step`
 
@@ -979,7 +994,7 @@ declare their own with `add_point`, named under their own root (ix declares `ix.
 | `stability` | `"stable" \| "beta" \| "experimental"` | default `beta` |
 | `origin` | `str` | the distribution that registered it; `(direct)` for a direct call |
 | `stand_in` | `bool` | whether it stands in for the real thing (the mock runtimes): its answers are canned, not a model's. Declared, never inferred. Default `False` |
-| `drives` | `tuple[str, ...]` | the distributions it drives, by their installed names: `claude-sdk` drives `claude-agent-sdk`, `pydantic-ai` drives `pydantic-ai-slim` and `hardline`, the `hardline` model runtime `hardline`. What a record of the versions behind a run reads, rather than a table of runtime names. Default `()` |
+| `drives` | `tuple[str, ...]` | the distributions it drives, by their installed names: `claude-sdk` drives `claude-agent-sdk`, `pydantic-ai` drives `pydantic-ai-slim`, and `matrix-hardline`'s model runtime `hardline`. What a record of the versions behind a run reads, rather than a table of runtime names. Default `()` |
 | `capabilities_of` | `Callable[[Any], AgentCapabilities] \| None` | for an agent runtime, what it registered as `capabilities=`. Default `None` |
 
 `entry.describe()` returns all of it but `capabilities_of` as a JSON-ready dict, with
@@ -989,17 +1004,21 @@ with `config` (see `AgentRuntime`), computed from the validated config without b
 `None` when it declares nothing, or when its config refuses `config`.
 
 `Failure(*, extension, origin, error)` records an extension that failed to load or a
-refused registration: `extension` is its entry point's name, `origin` its distribution.
+refused registration: `extension` is its `register`'s entry-point value
+(`acme.matrix_ext:register`), `origin` its distribution.
 
-`Extension(*, name, origin, register)` is one extension to load: `register(registry)` is
-called with the registry, and anything it raises, importing included, quarantines it.
+`Extension(*, name, origin, register, points=None)` is one extension to load:
+`register(registry)` is called with the registry, and anything it raises, importing included,
+quarantines it. `points` are the points it registers at or declares, as its entry points name
+them; registering at, or declaring, any other quarantines it whole, the message naming the
+line to add. `None`, for an extension given in code, declares nothing and is trusted.
 
 ### `Registry`
 
 | Method | Signature | Behaviour |
 |--------|-----------|-----------|
-| `add_point` | `(point, *, port=None) -> Registry` | Declares an extension point, owned by the distribution declaring it; with `port`, a Protocol whatever is registered there must keep. `ConfigError` when another distribution owns the point already |
-| `register` | `(point, type_url, build, *, config=None, needs=(), summary="", stability="beta", stand_in=False, drives=(), capabilities=None) -> Registry` | `capabilities`, for an `agent-runtime` with a `config`, is a pure function of the validated config giving its `AgentCapabilities`. `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, a class `build` that does not keep its point's port (naming each member it lacks), `capabilities` at another point or without a `config`, or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
+| `add_point` | `(point, *, port=None) -> Registry` | Declares an extension point, owned by the distribution declaring it; with `port`, a Protocol whatever is registered there must keep. `ConfigError` when another distribution owns the point already, or when the extension loading did not declare it |
+| `register` | `(point, type_url, build, *, config=None, needs=(), summary="", stability="beta", stand_in=False, drives=(), capabilities=None) -> Registry` | `capabilities`, for an `agent-runtime` with a `config`, is a pure function of the validated config giving its `AgentCapabilities`. `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, a class `build` that does not keep its point's port (naming each member it lacks), `capabilities` at another point or without a `config`, a point the extension loading did not declare, or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below). At a point outside `scope`, registers nothing |
 | `register_payload` | `(type_url, model, summary="") -> Registry` | Registers a pydantic model at `payload-type`; summary defaults to the first line of the model's docstring |
 | `entry` | `(point, type_url) -> Entry` | `NotFoundError` listing what is registered at that point |
 | `entries` | `(point=None) -> list[Entry]` | Sorted by point, then type URL |
@@ -1012,7 +1031,10 @@ Attributes: `points: set[str]`, `ports: dict[str, type]` (point to the Protocol 
 keep: `agent-runtime` to `AgentRuntime`, `model-runtime` to `ModelRuntime`, `store` to
 `ConstructStore`, `observer` to `Observer`), `owners: dict[str, str]` (point to the
 distribution that declared it: `matrix` for matrix's own, `(direct)` for one declared by the
-code composing the registry), `failures: list[Failure]`. A port is held by its required
+code composing the registry), `failures: list[Failure]`, `scope: frozenset[str] | None` (the
+points the session it serves reads: it keeps entries at those, and a registration at any
+other is ignored, so an extension serving two owners' points loads in a session of either;
+`None`, every point). A port is held by its required
 members: each must be there and callable, and one the port awaits must be a coroutine
 function; a port's [optional members](#optional-members) are not required. A point under a
 distribution's name (`ix.subject`) belongs to
@@ -1021,8 +1043,12 @@ type URLs. Any other point belongs to the distribution that declared it first. A
 declares an owned point again, with or without a port, is refused and quarantined whole; the
 owner, and code composing the registry directly, may.
 
-`load_extensions(registry, group="matrix.extensions") -> Registry` loads every entry point in
-the group into `registry`: each entry point's value is `register(registry) -> None`.
+`load_extensions(registry, group="matrix.extensions") -> Registry` loads into `registry` the
+extensions installed in the group that declare a point of its `scope` (every one, when it has
+none); one that declares none of them is not imported. An entry point's **name is a point**
+its extension registers at or declares, and its value the extension's `register(registry)`:
+an extension at three points has three entry points naming one `register`, which are one
+extension. The names are read from the installed metadata, importing nothing.
 
 `load` rules:
 
@@ -1037,12 +1063,14 @@ the group into `registry`: each entry point's value is `register(registry) -> No
   two non-owners, the first in entry-point name order keeps it and the second fails, naming
   both. Code calling `register` directly is treated as the owner.
 
-`default_registry(*, discover=True) -> Registry` returns a registry with every
-`matrix.extensions` entry point loaded. `discover=False` loads only matrix's built-ins, under
-the origin `matrix`.
+`default_registry(*, discover=True, points=None) -> Registry` returns a registry scoped to
+`points` (`None`: every point) with the `matrix.extensions` extensions loaded that declare one
+of them. `MATRIX_POINTS` are matrix's six; `compose` and the documents built on it ask for
+those, `catalog` and `describe_extension` for every point. `discover=False` loads only
+matrix's built-ins, under the origin `matrix`.
 
 `agent_runtime_type_url(name)` maps `claude-sdk` to `matrix.v1.agent-runtime.claude-sdk`;
-`model_runtime_type_url(name)` maps `hardline` to `matrix.v1.model-runtime.hardline`;
+`model_runtime_type_url(name)` maps `mock` to `matrix.v1.model-runtime.mock`;
 `observer_type_url(name)` maps `otel` to `matrix.v1.observer.otel`. A name containing `.` is
 returned unchanged.
 
@@ -1051,9 +1079,8 @@ Matrix's own entries:
 | Point | Type URL | Needs |
 |-------|----------|-------|
 | `agent-runtime` | `matrix.v1.agent-runtime.claude-sdk` | `cwd` |
-| `agent-runtime` | `matrix.v1.agent-runtime.pydantic-ai` | `models` |
+| `agent-runtime` | `matrix.v1.agent-runtime.pydantic-ai` | `model_runtimes` |
 | `agent-runtime` | `matrix.v1.agent-runtime.mock` (stand-in) | |
-| `model-runtime` | `matrix.v1.model-runtime.hardline` | `models` |
 | `model-runtime` | `matrix.v1.model-runtime.mock` (stand-in) | |
 | `component` | `matrix.v1.agent-step` | `agents` |
 | `component` | `matrix.v1.model-step` | `model_runtimes`, `schemas`, `model_runtime_entries` |
@@ -1069,11 +1096,12 @@ Matrix's own entries:
 | `store` | `matrix.v1.store.jsonl` | |
 | `store` | `matrix.v1.store.memory` | |
 
-A third-party extension:
+A third-party extension, one entry point per point it registers at:
 
 ```toml
 [project.entry-points."matrix.extensions"]
-acme = "acme.matrix_ext:register"
+component = "acme.matrix_ext:register"
+payload-type = "acme.matrix_ext:register"
 ```
 
 ```python
@@ -1138,8 +1166,7 @@ would change a result is a required member, a registration field (`stand_in`, `d
 | `SupportsAround` | `around(event) -> AbstractContextManager \| None` | an observer | it sees spans through the queue alone |
 | `SupportsClose` | `close() -> None` | an observer | nothing to close |
 
-Two members are still read by their names, each of the seam between agent runtimes and model
-runtimes: an agent runtime's `usage_counted_by` and a model runtime's `pydantic_ai_model`.
+No member of any port is read by its name.
 
 ### Conformance suites: `matrix.testing`
 
@@ -1202,7 +1229,7 @@ both are `None`.
 | `matrix.release.start` | new id / run id | |
 | `matrix.release.end` | same / run id | `status` (`released`, `failed`, `abandoned`), `error` |
 | `matrix.agent.start` | new id / the calling span | `agent`, `model`, `task` (the task as sent) |
-| `matrix.agent.end` | same / the calling span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`, `provider`, `tool_calls`, and `usage_counted_by` when the runtime declares it; or `status="error"`, `error`, `reason`, `kind`; or, when the session was cancelled, `status="cancelled"`, `reason="cancelled"` |
+| `matrix.agent.end` | same / the calling span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`, `provider`, `tool_calls`, and `through_model_runtime` when its model calls went through a model runtime; or `status="error"`, `error`, `reason`, `kind`; or, when the session was cancelled, `status="cancelled"`, `reason="cancelled"` |
 | `matrix.model.start` | new id / the calling span | `runtime` (the step's model runtime), `model` (as asked; `None` for the runtime's default) |
 | `matrix.model.end` | same / the calling span | `runtime`, `duration_ms`, then `status="completed"`, `name`, `model`, `family`, `provider`, `finish_reason` (the model that answered); or `status="failed"`, `error`, `reason`, `kind`; or `status="cancelled"`, `reason="cancelled"`. No usage: the session row holds it |
 | `matrix.tool.start` | new id / the agent's span | `agent`, `tool`, `call_id`, `arguments` (the call's input as JSON, when the runtime reported one: content); timed when the runtime saw the call start |
@@ -1287,7 +1314,7 @@ attach takes the default.
 - the conventions' names in the table below;
 - matrix's own fields that carry no content, as `matrix.<field>`: `status`, `reason`,
   `kind`, `abandoned`, `attempts`, `rows`, `duration_ms`, `reused_from`, `family`,
-  `tool_calls`, `cost_usd`, `usage_counted_by`, a model call's `runtime`, `name` and
+  `tool_calls`, `cost_usd`, `through_model_runtime`, a model call's `runtime`, `name` and
   `finish_reason`, and the ids
   `matrix.run.id` and `matrix.component`;
 - of the fields a component passes to `ctx.span`, the numbers and booleans, under its root
@@ -1328,7 +1355,7 @@ with `ctx.emit` opens no span, whatever its name ends with.
 | `invoke_workflow` (a run) | INTERNAL | `gen_ai.operation.name=invoke_workflow`, `matrix.run.id`, `matrix.status`, `matrix.rows`, `matrix.duration_ms`, `matrix.reused_from`; `error.type` when it failed or was cancelled |
 | `matrix.component` | INTERNAL | `matrix.component`, `matrix.status`, `matrix.reason`, `matrix.duration_ms`, `matrix.attempts`, `matrix.abandoned`; `matrix.kind` and `error.type` (the error's kind, or the stop's reason for one cancelled) when it failed or was cancelled. The conventions have no step |
 | `matrix.release` | INTERNAL | `matrix.component`, `matrix.status`; `error.type` when it failed. With content: `matrix.error` |
-| `invoke_agent {agent}` | INTERNAL: the agent is invoked in this process | `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `matrix.component`, `matrix.status`, `matrix.duration_ms`, `matrix.family`, `matrix.tool_calls`, `matrix.cost_usd`, and `matrix.usage_counted_by` when the runtime declares who counts its tokens; `matrix.reason`, `matrix.kind` and `error.type` (the runtime's `reason`) when it failed, and `error.type=cancelled` when the session was cancelled. With content: `matrix.task`, `matrix.error` |
+| `invoke_agent {agent}` | INTERNAL: the agent is invoked in this process | `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `matrix.component`, `matrix.status`, `matrix.duration_ms`, `matrix.family`, `matrix.tool_calls`, `matrix.cost_usd`, and `matrix.through_model_runtime` when its calls went through a model runtime; `matrix.reason`, `matrix.kind` and `error.type` (the runtime's `reason`) when it failed, and `error.type=cancelled` when the session was cancelled. With content: `matrix.task`, `matrix.error` |
 | `matrix.model` (a model step's call) | INTERNAL | `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `matrix.component`, `matrix.runtime`, `matrix.name` (the registry row that answered), `matrix.family`, `matrix.finish_reason`, `matrix.status`, `matrix.duration_ms`; `matrix.reason`, `matrix.kind` and `error.type` when it failed or was cancelled. With content: `matrix.error`. The conventions have no operation for one logical call, which may span retries and fallbacks; it carries no usage, since each attempt's inference span is the model runtime's own and nests under it |
 | `execute_tool {tool}` | INTERNAL | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.agent.name`, `matrix.status`, `matrix.duration_ms`; `error.type=tool_error`, and the status ERROR, when the tool reported an error. With content: `gen_ai.tool.call.arguments`, the call's arguments as a JSON object |
 | a component's `ctx.span(name)` | INTERNAL | `matrix.component`; its number and boolean fields and its status under its root (`acme.rows`, `acme.status`, `acme.duration_ms`). With content: its string fields too |
@@ -1352,11 +1379,11 @@ and the name given to each `ctx.measure`, of the measure's kind, with its scalar
 
 **One owner per token.** matrix's inference counters count agent sessions only, whose tokens
 no model runtime's call carries. A model call's tokens are counted by the model runtime that
-made it (hardline counts each attempt, on the same instruments), never by matrix: the call's
-session row holds them, and the `matrix.model` span carries no usage. An agent runtime whose
-model calls are counted where they are made declares it (`usage_counted_by`, which
-`pydantic-ai` sets to `hardline`): its sessions' tokens stay on their `invoke_agent` span and
-session row, and are added to no counter here. So nothing is counted twice, and no runtime is
+made it, never by matrix: the call's session row holds them, and the `matrix.model` span
+carries no usage. An agent runtime that makes its sessions' calls on matrix's model runtimes
+declares the need `model_runtimes`, and composition marks those sessions
+`through_model_runtime`: their tokens stay on their `invoke_agent` span and session row, and
+are added to no counter here. So nothing is counted twice, and no runtime is
 told apart by its name.
 
 ### `configure_telemetry` and the `OTEL_*` variables
@@ -1490,7 +1517,6 @@ The `matrix:` section. Frozen, unknown keys rejected.
 | `inputs` | `tuple[str, ...]` | `()` | the kinds a caller supplies when it runs `components` |
 | `store` | `StoreConfig` | `{type: jsonl}` | where runs are recorded: `type` (`jsonl`, `memory`, or a registered store's type URL) plus that store's options; `jsonl` keeps runs under `root` (default `.matrix/runs`, relative to the working directory) |
 | `limits` | `Limits` | `Limits()` | the bounds and retry policy every run keeps; see [`Limits`](#limits-componentlimits-and-retry) |
-| `models` | `dict \| None` | `None` | a hardline registry section (`{default?, models: {...}}`) handed to every `hardline` model runtime that has none. `None` lets hardline read its own tiers |
 
 `RuntimeConfig` and `StoreConfig`: `type` (a built-in short name or a full type URL) plus that
 extension's own options as extra keys, validated by its config model.
@@ -1508,15 +1534,16 @@ definition must give `system_prompt` inline.
 ```yaml
 matrix:
   definitions: [agents/]
-  models:
-    default: qwen3-8b
-    models:
-      qwen3-8b: {backend: openai-compat, base_url: "http://127.0.0.1:8080/v1",
-                 model: mlx-community/Qwen3-8B-4bit, family: qwen, local: true}
   agent_runtimes:
     sdk:   {type: claude-sdk, permission_mode: default, setting_sources: []}
-  model_runtimes:
-    local: {type: hardline}
+  model_runtimes:                                 # matrix-hardline installed
+    local:
+      type: matrix-hardline.v1.model-runtime
+      models:
+        default: qwen3-8b
+        models:
+          qwen3-8b: {backend: openai-compat, base_url: "http://127.0.0.1:8080/v1",
+                     model: mlx-community/Qwen3-8B-4bit, family: qwen, local: true}
   observers:
     - {type: jsonl, path: runs/events.jsonl}
   agents:
@@ -1597,14 +1624,14 @@ compose(
 ) -> Container
 ```
 
-Builds, in order: observers (and `otel` when the variables ask for export), agent runtimes
-and model runtimes (each resolved by type at its own point, options validated by its config
-model), the store, definitions (every `*.md` in each `definitions` directory, read by the
+Builds, in order: observers (and `otel` when the variables ask for export), model runtimes,
+then agent runtimes (each resolved by type at its own point, options validated by its config
+model; an agent runtime that needs `model_runtimes` is handed them), the store, definitions (every `*.md` in each `definitions` directory, read by the
 loader, plus `definitions`), and agents (each agent runtime's `check` runs here). A model
 step's model is checked by its model runtime when `Container.wire` builds the step. Makes no model or tool call,
 and installs no telemetry provider.
 
-- `registry` defaults to `default_registry()`.
+- `registry` defaults to `default_registry(points=MATRIX_POINTS)`.
 - `base_dir` anchors relative `definitions` directories that `load_config` did not already
   resolve; defaults to the working directory.
 - `source` is the key every problem's path starts with (`matrix.agents.triage.runtime`).
@@ -1631,7 +1658,7 @@ the config names one.
 | `model_runtime(name)` | `ModelRuntime`; `NotFoundError` listing configured model runtimes |
 | `bind(definition, runtime)` | a `BoundAgent` on the configured agent runtime named `runtime`, with the container's observers |
 | `needs()` | the value of each of [the needs](#needs-and-need) but `name`, which `wire` adds for each component, and each `context` key |
-| `wire(components=None, *, inputs=None)` | a `Wiring`. Each `{name, type, config}` entry (a `ComponentConfig` or a mapping) is built from the registry's `component` entries and the result wired, with the registry's payload schemas and each component's `fingerprint`: a digest of its type, its config and each need it is handed (an `agent-step`'s own agent, a `model-step`'s own model runtime, every agent or model runtime for another component that needs them, `models`, and `cwd`, the process's when none was given), where an agent counts by its definition, its runtime's config and needs, and the runtime's optional `resolved`, and a model runtime by its config, needs and `resolved` (the `hardline` runtime's registry, from `matrix.models` or hardline's own tiers). A need a host adds through `context` is not in it, nor are `schemas` or the code. Both arguments default to the config's `matrix.components` and `matrix.inputs`, and then problem paths start `matrix.`. Entries that cannot be built and wiring problems are reported together, in one `CompilationError`. A component that declares the need `name` is handed its own |
+| `wire(components=None, *, inputs=None)` | a `Wiring`. Each `{name, type, config}` entry (a `ComponentConfig` or a mapping) is built from the registry's `component` entries and the result wired, with the registry's payload schemas and each component's `fingerprint`: a digest of its type, its config and each need it is handed (an `agent-step`'s own agent, a `model-step`'s own model runtime, every agent or model runtime for another component that needs them, and `cwd`, the process's when none was given), where an agent counts by its definition, its runtime's config and needs (the model runtimes, for one that makes its calls on them), and the runtime's optional `resolved`, and a model runtime by its config, needs and `resolved` (a registry it read). A need a host adds through `context` is not in it, nor are `schemas` or the code. Both arguments default to the config's `matrix.components` and `matrix.inputs`, and then problem paths start `matrix.`. Entries that cannot be built and wiring problems are reported together, in one `CompilationError`. A component that declares the need `name` is handed its own |
 | `executor(observers=())` | an `Executor` with the container's observers (and these), given `cancel_on_signals`, and a `trace` that reads OpenTelemetry's current span for each session row |
 | `async run(inputs=None, *, run_id=None, reuse_from=None, observers=())` | runs the configured components in the configured store within the configured limits; `run_id` defaults to `<UTC time>-<4 hex digits>`. `reuse_from` takes that run's inputs and reuses what it can |
 | `reuse(run_id, wiring=None)` | the `Reuse` a run of `wiring` may take from the recorded run |
@@ -1657,7 +1684,8 @@ tier; `UsageError` when there are none).
 | `plan_config(tool="matrix", config=None, *, only=False)` | `Plan` (`matrix.v1.plan`): `tool`, `sources`, `inputs`, `stages` (what starts together), `components` (each `name`, `type`, `requires`, `provides`, `after`, `agent`, `runtime`, `model` (a model step's), `attempts`), `agents`, `agent_runtimes` and `model_runtimes` in use (each `name`, `type`, `stand_in`), `agent_calls_min` and `model_calls_min` (one per agent step, one per model step) and `agent_calls_max` and `model_calls_max` (one per attempt; null when a component that is neither needs `agents` or `model_runtimes`, and so may make sessions of its own), `store` (`type`, `location` with `RUN_ID` for the id), `settings` ([every effective value and its source](#the-plans-settings)), `warnings` | what `compose` and `wire` raise, and a problem for each `limits.components` name that is not a component |
 | `list_runs(tool="matrix", config=None, *, only=False)` | `Runs` (`matrix.v1.runs`): `store` (its type URL) and `runs`, oldest first, each `run_id`, `status` (`interrupted` for one whose writer is gone), `started`, `ended`, `location`; and `damaged`, each record the store skipped, `location` and `reason` (empty for a store that does not say). Builds only the store: runtimes and agents are not built | `ConfigError` when the store cannot be built, `StoreError` when it cannot be read |
 
-`registry` defaults to `default_registry()`.
+`registry` defaults to `default_registry()` for `catalog` and `describe_extension`, every
+extension; the documents that compose take `compose`'s.
 
 ### The plan's settings
 
@@ -1680,7 +1708,7 @@ The run's limits come first, then each component's, in the order of work, each o
 `deadline_s`, `grace_s`, `cleanup_s` and `retry` fields its own where `limits.components`
 overrides it and the run's where it does not; a component's `retry`, given, replaces the
 run's whole. Then the store, each agent runtime, model runtime and agent, each observer,
-each component's config, `definitions` and `models`. A component's `type` and an agent's
+each component's config, and `definitions`. A component's `type` and an agent's
 prompt are not settings: the plan's `components` and `matrix agents` show them.
 
 ---
@@ -1752,8 +1780,8 @@ was already ending.
 `response`, maps its `reason` (`RuntimeReason`) to a kind; a reason matrix does not know maps to
 `component`. `retryable` is true for the transient ones; `retry_after_s` is the backend's own
 hint, which a retry policy honours. `response` (an `AgentResponse`) and `call` (a `ModelCall`)
-are what the runtime knew of the session or call that failed, when it knew anything (`hardline`:
-every attempt and the usage they reported; `claude-sdk`: a failed result's id, usage, cost and
+are what the runtime knew of the session or call that failed, when it knew anything (a model runtime:
+the usage it reported and its own record in `provenance`; `claude-sdk`: a failed result's id, usage, cost and
 turns); the session row of the failure is built from them:
 
 | `reason` | Kind | Meaning |

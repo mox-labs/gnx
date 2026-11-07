@@ -67,6 +67,32 @@ def test_every_file_is_in_a_layer_and_every_dependency_points_inward() -> None:
     assert all(count > 0 for count in report.layers.values()), report.layers
 
 
+def test_matrix_depends_on_no_model_runtime() -> None:
+    """Owner ruling HO1 (2026-11-06): matrix privileges no model runtime. hardline is in none
+    of its dependencies, no module of it imports hardline, and the map forbids it in every
+    layer, so a model runtime reaches matrix only as an extension (matrix-hardline's)."""
+    import tomllib
+
+    declared = tomllib.loads((PACKAGE / "pyproject.toml").read_text())["project"]["dependencies"]
+    assert not [d for d in declared if re.match(r"hardline\b", d)]
+    importing = [
+        str(file.relative_to(SRC))
+        for file in SRC.rglob("*.py")
+        for node in ast.walk(ast.parse(file.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Import | ast.ImportFrom)
+        and any(
+            name.split(".")[0] == "hardline"
+            for name in (
+                [a.name for a in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module or ""]
+            )
+        )
+    ]
+    assert importing == []
+    assert all("hardline" in layer["forbid"] for layer in MAP["layers"])
+
+
 @pytest.mark.parametrize("violation", [pytest.param(p, id=p.rule) for p in plants(MAP, PACKAGE)])
 def test_each_rule_of_the_map_bites(tree: Path, violation: Plant) -> None:
     plant(tree, violation)

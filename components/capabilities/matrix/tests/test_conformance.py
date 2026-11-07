@@ -2,8 +2,8 @@
 port. A test module that defines a stand-in for a port runs the suite against it there.
 
 Nothing here leaves the process: the Claude Agent SDK's ``query`` is replaced, as in
-``test_claude_runtime.py``, and the ``pydantic-ai`` runtime's model is a hardline row on its
-mock backend.
+``test_claude_runtime.py``, and the ``pydantic-ai`` runtime's model is matrix's mock model
+runtime.
 """
 
 from __future__ import annotations
@@ -11,8 +11,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from hardline import build_runtime
-from hardline.adapters._out.mock import MockBackend
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.trace import TracerProvider
 
@@ -28,6 +26,7 @@ from matrix import (
     Executor,
     JsonlConstructStore,
     MemoryConstructStore,
+    ModelRuntime,
     RecordingObserver,
     RunContext,
     default_registry,
@@ -56,6 +55,7 @@ from matrix.testing import (
     ConstructStoreConformance,
     ContextConformance,
     DocumentSourceConformance,
+    ModelRuntimeConformance,
     ObserverConformance,
 )
 
@@ -111,11 +111,9 @@ class TestThePermissiveClaudeSdkRuntime(TestTheClaudeSdkRuntime):
 
 class TestThePydanticAiRuntime(AgentRuntimeConformance):
     def runtime(self) -> AgentRuntime:
-        models = build_runtime(
-            {"models": {"q": {"backend": "mock", "model": "m-1", "family": "x"}}},
-            backends={"mock": MockBackend()},
+        return PydanticAiRuntime(
+            MockModelRuntime(), PydanticAiRuntimeConfig(model_runtime="m"), tools={}
         )
-        return PydanticAiRuntime(models, PydanticAiRuntimeConfig(default_model="q"), tools={})
 
 
 def test_every_built_in_agent_runtime_has_a_suite_here() -> None:
@@ -125,6 +123,21 @@ def test_every_built_in_agent_runtime_has_a_suite_here() -> None:
         "matrix.v1.agent-runtime.mock",
         "matrix.v1.agent-runtime.pydantic-ai",
     }
+
+
+# --- model runtimes ------------------------------------------------------------------------
+
+
+class TestTheMockModelRuntime(ModelRuntimeConformance):
+    unknown = None  # it answers every model name
+
+    def runtime(self) -> ModelRuntime:
+        return MockModelRuntime()
+
+
+def test_every_built_in_model_runtime_has_a_suite_here() -> None:
+    registered = {e.type_url for e in default_registry(discover=False).entries("model-runtime")}
+    assert registered == {"matrix.v1.model-runtime.mock"}
 
 
 # --- stores ------------------------------------------------------------------------------

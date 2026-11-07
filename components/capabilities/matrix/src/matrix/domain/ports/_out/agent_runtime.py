@@ -21,11 +21,10 @@ as a no-op.
 every component that runs an agent on it) and ``SupportsAclose`` (the connections its
 sessions opened, closed in the loop that used them).
 
-One more member, ``usage_counted_by``, is read by its name: the name of what counts the
-inference tokens of the runtime's model calls already (``hardline``, which counts every call
-it makes). An observer then counts a session's tokens no second time; its session row keeps
-them. A runtime whose calls nothing else counts leaves it unset. It belongs to the seam
-between agent runtimes and model runtimes, and is not a protocol of its own.
+A runtime whose sessions make their model calls through a matrix model runtime declares the
+need ``model_runtimes`` when it registers, and is handed them: those calls' tokens are the
+model runtime's to count, so matrix counts the session's no second time (its session row
+keeps them). Nothing else is said by the runtime about it.
 
 A runtime that also logs what its ``warnings`` say logs it on :data:`RUNTIME_LOGGER`, once per
 process, so a caller that builds a runtime per session is not told once per session. A

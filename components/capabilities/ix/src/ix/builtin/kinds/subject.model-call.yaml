@@ -8,9 +8,9 @@ options:
     required: true
     description: "the matrix model runtime that makes the call: one of the choices, or any model runtime installed. There is no default, so a model provider is never called implicitly"
     choices:
-      hardline: one call through hardline's model registry; calls a model provider
+      matrix-hardline.v1.model-runtime: one call through hardline's model registry; calls a model provider
       mock: canned replies; calls no model
-  model: {type: string, default_from: [runtime], description: "the model the runtime resolves (a hardline registry name); left out, the runtime's own"}
+  model: {type: string, default_from: [runtime], description: "the model the runtime resolves (on hardline's, a registry name); left out, the runtime's own"}
   system_prompt: {type: string, text: true, description: the system prompt}
-  runtime_options: {type: mapping, description: "the runtime's own config, passed through as written and checked by the runtime (hardline: temperature, max_tokens, default_model, models); `matrix describe matrix.v1.model-runtime.<name>` lists a runtime's"}
+  runtime_options: {type: mapping, description: "the runtime's own config, passed through as written and checked by the runtime (hardline's: models, default_model, temperature, max_tokens); `matrix describe <its type URL>` lists a runtime's"}
 offers: [respondent]

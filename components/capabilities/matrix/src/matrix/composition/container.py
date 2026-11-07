@@ -6,10 +6,10 @@ order, and reports **every** problem it meets as one ConfigError, each a
 
 1. **observers**, each ``matrix.observers`` entry resolved through the registry, and the
    ``otel`` observer when the standard ``OTEL_*`` variables ask for export;
-2. **runtimes**, each ``matrix.agent_runtimes.<name>`` at the ``agent-runtime`` point and
-   each ``matrix.model_runtimes.<name>`` at the ``model-runtime`` point, resolved by its type
-   (a built-in short name or a full type URL), its options validated by that runtime's typed
-   config;
+2. **runtimes**, each ``matrix.model_runtimes.<name>`` at the ``model-runtime`` point, and
+   then each ``matrix.agent_runtimes.<name>`` at the ``agent-runtime`` point, which may be
+   handed the model runtimes (the ``model_runtimes`` need), resolved by its type (a built-in
+   short name or a full type URL), its options validated by that runtime's typed config;
 3. **the store**, ``matrix.store``, resolved the same way at the ``store`` point;
 4. **definitions**, every ``*.md`` in each ``matrix.definitions`` directory, read by the
    loader as :class:`~matrix.domain.agent.AgentDefinition`;
@@ -74,7 +74,7 @@ from matrix.domain.needs import NEEDS
 from matrix.domain.optional import SupportsResolved, SupportsWarnings
 from matrix.domain.ports._out.construct_store import location_of
 from matrix.domain.problems import problem, sourced
-from matrix.domain.registry import Extension, Registry
+from matrix.domain.registry import MATRIX_POINTS, Extension, Registry
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -213,6 +213,7 @@ class Container:
             observers=self._observers,
             runtime_url=url,
             drives=_drives(self._registry, AGENT_RUNTIME, url),
+            through_model_runtime=_through_model_runtime(self._registry, url),
         )
 
     def needs(self) -> dict[str, Any]:
@@ -229,7 +230,6 @@ class Container:
                 if (MODEL_RUNTIME, model_runtime_type_url(spec.type)) in self._registry
             },
             "schemas": self._registry.payload_schemas(),
-            "models": self._config.matrix.models,
             "cwd": self._context.get("cwd"),
         }
 
@@ -251,9 +251,9 @@ class Container:
         it reuses the component's rows: a digest of its type, its config, and each need it
         is handed (an ``agent-step``'s own agent, a ``model-step``'s
         own model runtime, every agent or model runtime for another component that needs
-        them, ``models``, ``cwd``). An agent counts by its definition, its runtime's config
-        and needs, and what that runtime resolved when it was built; a model runtime by its
-        config and needs and what it resolved.
+        them, ``cwd``). An agent counts by its definition, its runtime's config and needs (the
+        model runtimes, for one that makes its calls on them), and what that runtime resolved
+        when it was built; a model runtime by its config and needs and what it resolved.
         """
         configured = components is None
         prefix = "matrix." if configured else ""
@@ -325,8 +325,7 @@ class Container:
     def _agent_made_of(self, name: str) -> dict[str, Any] | None:
         """What decides how the agent ``name`` answers: its definition, its runtime's config
         and the needs that runtime was handed, and what the runtime resolved when it was
-        built (``resolved``: a model runtime's registry, from ``matrix.models`` or the tiers
-        hardline discovered)."""
+        built (``resolved``)."""
         agent = self._agents.get(name)
         spec = self._config.matrix.agents.get(name)
         if agent is None or spec is None:
@@ -345,7 +344,8 @@ class Container:
 
     def _model_runtime_made_of(self, name: str) -> dict[str, Any] | None:
         """What decides how the model runtime ``name`` answers: its config, the needs it was
-        handed, and what it resolved when it was built (``resolved``: hardline's registry)."""
+        handed, and what it resolved when it was built (``resolved``: a model registry it
+        read)."""
         built = self._model_runtimes.get(name)
         runtime = self._config.matrix.model_runtimes.get(name)
         if built is None or runtime is None:
@@ -360,9 +360,9 @@ class Container:
 
     def _needs_made_of(self, needs: Iterable[str]) -> dict[str, Any]:
         """The value of each need matrix hands over, as it decides the work: every agent,
-        every model runtime, the model registry, the working directory (the process's when
-        none was given). The payload ``schemas`` are code, not config, and a need a host adds
-        through ``context`` is its own: neither is digested."""
+        every model runtime, the working directory (the process's when none was given). The
+        payload ``schemas`` are code, not config, and a need a host adds through ``context``
+        is its own: neither is digested."""
         found: dict[str, Any] = {}
         for need in sorted(needs):
             if need == "agents":
@@ -371,8 +371,6 @@ class Container:
                 found[need] = {
                     name: self._model_runtime_made_of(name) for name in sorted(self._model_runtimes)
                 }
-            elif need == "models":
-                found[need] = self._config.matrix.models
             elif need == "cwd":
                 found[need] = str(self._context.get("cwd") or Path.cwd())
         return found
@@ -529,6 +527,9 @@ def _problems_of(error: MatrixError, where: str, entry: ComponentConfig) -> list
 
 
 #: The entry point group every extension, matrix's own built-ins included, registers through.
+#: An entry point's name is a point the extension registers at or declares, and its value the
+#: extension's ``register(registry)``: an extension at three points has three entry points,
+#: one ``register``.
 ENTRY_POINT_GROUP = "matrix.extensions"
 
 
@@ -545,28 +546,53 @@ def _registers(point: EntryPoint) -> Callable[[Registry], None]:
     return register
 
 
-def load_extensions(registry: Registry, group: str = ENTRY_POINT_GROUP) -> Registry:
-    """Load every extension installed at the ``group`` entry point into ``registry``."""
-    return registry.load(
+def installed_extensions(group: str = ENTRY_POINT_GROUP) -> list[Extension]:
+    """Every extension installed at the ``group`` entry point, with the points it declares,
+    read from the installed metadata: nothing is imported. The entry points of one
+    distribution that name one ``register`` are one extension."""
+    declared: dict[tuple[str, str], list[EntryPoint]] = {}
+    for point in entry_points(group=group):
+        origin = point.dist.name if point.dist is not None else point.value
+        declared.setdefault((origin, point.value), []).append(point)
+    return [
         Extension(
-            name=point.name,
-            origin=point.dist.name if point.dist is not None else point.value,
-            register=_registers(point),
+            name=value,
+            origin=origin,
+            register=_registers(points[0]),
+            points=frozenset(point.name for point in points),
         )
-        for point in entry_points(group=group)
-    )
+        for (origin, value), points in declared.items()
+    ]
 
 
-def default_registry(*, discover: bool = True) -> Registry:
-    """A registry with every ``matrix.extensions`` entry point loaded, matrix's built-ins
-    among them.
+def load_extensions(registry: Registry, group: str = ENTRY_POINT_GROUP) -> Registry:
+    """Load into ``registry`` every extension installed at the ``group`` entry point that
+    declares a point of its :attr:`~matrix.domain.registry.Registry.scope` (every one, when it
+    has none). An extension that declares none of them is not imported."""
+    found = installed_extensions(group)
+    scope = registry.scope
+    if scope is not None:
+        found = [extension for extension in found if (extension.points or frozenset()) & scope]
+    return registry.load(found)
+
+
+def default_registry(*, discover: bool = True, points: Iterable[str] | None = None) -> Registry:
+    """A registry with the ``matrix.extensions`` entry points loaded that declare one of
+    ``points``, the points the session it serves reads (None: every point, and every
+    extension): matrix's built-ins among them, when a point is one of matrix's.
 
     ``discover=False`` loads only matrix's built-ins, for tests and hermetic callers.
     """
+    registry = Registry(scope=None if points is None else frozenset(points))
     if discover:
-        return load_extensions(Registry())
-    builtins = Extension(name="matrix", origin="matrix", register=register_builtins)
-    return Registry().load([builtins])
+        return load_extensions(registry)
+    builtins = Extension(
+        name="matrix.composition.builtins:register",
+        origin="matrix",
+        register=register_builtins,
+        points=frozenset(MATRIX_POINTS),
+    )
+    return registry.load([builtins])
 
 
 class _Problems:
@@ -579,7 +605,7 @@ class _Problems:
     def add(
         self, error: MatrixError, where: str, *, got: Any = None, kind: str | None = None
     ) -> None:
-        if error.problems:  # one problem read by several parts (`matrix.models`) is said once
+        if error.problems:  # one problem read by several parts is said once
             self.found += [p for p in error.problems if p not in self.found]
             return
         if "missing" in error.details:  # selected, but a dependency of it is not installed
@@ -595,14 +621,11 @@ def build_runtimes(
     needs: Mapping[str, Any],
     *,
     where: str,
-    models_at: str = "",
     problems: _Problems | None = None,
 ) -> dict[str, Any]:
     """Each runtime in ``runtimes`` (an ``agent_runtimes`` or ``model_runtimes`` section),
     built at ``point`` (``agent-runtime`` or ``model-runtime``). ``where`` is the section's
-    key path; ``models_at`` is the key path of the ``models`` need, where a problem in the
-    registry a runtime was handed, not given in its own config, is reported. Raises
-    ConfigError listing every problem unless ``problems`` collects them."""
+    key path. Raises ConfigError listing every problem unless ``problems`` collects them."""
     found = problems or _Problems()
     prefix = AGENT_RUNTIME_PREFIX if point == AGENT_RUNTIME else MODEL_RUNTIME_PREFIX
     type_url_of = agent_runtime_type_url if point == AGENT_RUNTIME else model_runtime_type_url
@@ -617,33 +640,40 @@ def build_runtimes(
                     f"{at}.type",
                     "name_unknown",
                     f"{spec.type!r} is not a registered {point}",
-                    fix=f"use one of the registered {point}s, or install the package providing it",
+                    fix=_install_fix(point, registry),
                     allowed=legal,
                     got=spec.type,
                 )
             )
             continue
-        options = spec.options()
         try:
-            built[name] = registry.create(point, url, options, needs=needs, where=at)
+            built[name] = registry.create(point, url, spec.options(), needs=needs, where=at)
         except MatrixError as e:
-            handed = models_at and options.get("models") is None and needs.get("models")
-            found.add(_rerooted(e, f"{at}.models", models_at) if handed and e.problems else e, at)
+            found.add(e, at)
     if problems is None and found.found:
         raise invalid(f"the {point}s cannot be built", found.found)
     return built
 
 
-def _rerooted(error: MatrixError, path: str, to: str) -> MatrixError:
-    """``error``'s problems, each at ``path`` (or under it) moved to ``to``: what
-    :meth:`_Problems.add` reads of an error that has problems."""
-    moved = [
-        p.model_copy(update={"path": to + p.path[len(path) :]})
-        if p.path == path or p.path.startswith(f"{path}.")
-        else p
-        for p in error.problems
-    ]
-    return MatrixError(error.message, fix=error.fix, problems=moved, complete=error.complete)
+#: What to install for a model runtime that calls a model, which matrix does not ship: matrix
+#: privileges none, and this is a pointer, not a default (owner ruling HO1, 2026-11-06).
+MODEL_RUNTIME_PACKAGE = "matrix-hardline"
+
+
+def _install_fix(point: str, registry: Registry) -> str:
+    """The fix for a type nothing registered at ``point``: install the package that registers
+    it, and, where only stand-ins are installed at the model-runtime point, which one does."""
+    fix = (
+        f"use one of the registered {point}s, or install the package providing it; a "
+        "third party's is named by its full type URL"
+    )
+    if point == MODEL_RUNTIME and all(e.stand_in for e in registry.entries(point)):
+        fix += (
+            f". No model runtime that calls a model is installed: matrix ships only `mock`. "
+            f"Install one, as `{MODEL_RUNTIME_PACKAGE}` (`pip install {MODEL_RUNTIME_PACKAGE}`, "
+            "which registers `matrix-hardline.v1.model-runtime`)"
+        )
+    return fix
 
 
 def build_observers(
@@ -827,6 +857,7 @@ def bind_agents(
                 observers=observers,
                 runtime_url=url,
                 drives=_drives(registry, AGENT_RUNTIME, url),
+                through_model_runtime=_through_model_runtime(registry, url),
             )
         except MatrixError as e:
             found.add(e, where)
@@ -862,7 +893,7 @@ def compose(
     """
     full = config if isinstance(config, Config) else Config[Any](matrix=config, client=None)
     matrix = full.matrix
-    reg = registry if registry is not None else default_registry()
+    reg = registry if registry is not None else default_registry(points=MATRIX_POINTS)
     root = Path(base_dir) if base_dir is not None else Path.cwd()
     problems = _Problems()
     given = dict(context or {})
@@ -874,24 +905,23 @@ def compose(
             value=taken,
             allowed=["cwd"],
         )
-    shared = {**given, "cwd": given.get("cwd"), "models": matrix.models}
+    shared = {**given, "cwd": given.get("cwd")}
     observers = build_observers(matrix, reg, source=source, problems=problems)
-    agent_runtimes = build_runtimes(
-        matrix.agent_runtimes,
-        AGENT_RUNTIME,
-        reg,
-        shared,
-        where=f"{source}.agent_runtimes",
-        models_at=f"{source}.models",
-        problems=problems,
-    )
+    # Model runtimes first: an agent runtime that makes its calls on one is handed them.
     model_runtimes = build_runtimes(
         matrix.model_runtimes,
         MODEL_RUNTIME,
         reg,
         shared,
         where=f"{source}.model_runtimes",
-        models_at=f"{source}.models",
+        problems=problems,
+    )
+    agent_runtimes = build_runtimes(
+        matrix.agent_runtimes,
+        AGENT_RUNTIME,
+        reg,
+        {**shared, "model_runtimes": dict(model_runtimes)},
+        where=f"{source}.agent_runtimes",
         problems=problems,
     )
     store = build_store(matrix, reg, source=source, problems=problems)
@@ -965,3 +995,11 @@ def _drives(registry: Registry | None, point: str, url: str) -> tuple[str, ...]:
     if registry is None or (point, url) not in registry:
         return ()
     return registry.entry(point, url).drives
+
+
+def _through_model_runtime(registry: Registry | None, url: str) -> bool:
+    """Whether the agent runtime registered at ``url`` makes its sessions' model calls on
+    matrix's model runtimes: it declared it needs them, so composition handed them over."""
+    if registry is None or (AGENT_RUNTIME, url) not in registry:
+        return False
+    return "model_runtimes" in registry.entry(AGENT_RUNTIME, url).needs

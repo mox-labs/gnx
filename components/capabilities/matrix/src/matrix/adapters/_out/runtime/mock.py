@@ -11,12 +11,14 @@ echo, ``mock:<agent>:<task>``, which shows the task each agent was sent. The tas
 also on every response an agent step records (``AgentResponse.task``) and in the run's
 ``matrix.agent.start`` events, and ``calls`` keeps each ``(agent, task)``.
 
-**MockModelRuntime** (``matrix.v1.model-runtime.mock``) answers any model name. A reply is the
-first of ``responses`` keyed by the whole prompt as sent, ``by_model`` keyed by the model
-name, ``default``, or else the echo ``mock:<model>:<prompt>``; ``calls`` keeps each
+**MockModelRuntime** (``matrix.v1.model-runtime.mock``) answers any model name, with text: it
+is offered tools and asks for none. A reply is the first of ``responses`` keyed by the whole
+prompt as sent (a conversation's last user turn), ``by_model`` keyed by the model name,
+``default``, or else the echo ``mock:<model>:<prompt>``; ``calls`` keeps each
 ``(model, prompt)``. A request with an ``output`` type gets the reply validated against it,
-as a real model runtime does. A call records what is true of a canned reply: one attempt, no
-retries, no tokens, the time it took, and the reply as whole (``finish_reason: stop``).
+as a real model runtime does. A call records what is true of a canned reply: no tokens, the
+time it took, and the reply as whole (``finish_reason: stop``); nothing beyond that, so no
+``provenance``.
 
 Neither reports a cost: a reported cost is what a provider said, and a mock is not one.
 """
@@ -35,7 +37,7 @@ from matrix.domain.template import json_document
 
 if TYPE_CHECKING:
     from matrix.domain.agent import AgentDefinition
-    from matrix.domain.model_call import ModelRequest
+    from matrix.domain.model_call import ModelRequest, Use
 
 
 class MockAgentRuntimeConfig(BaseModel):
@@ -107,21 +109,25 @@ class MockModelRuntime:
         self._config = config or MockModelRuntimeConfig()
         self.calls: list[tuple[str | None, str]] = []
 
-    def check(self, model: str | None) -> None:
-        """Every model name can be mocked."""
+    def check(self, model: str | None, *, uses: frozenset[Use] = frozenset()) -> None:
+        """Every model name can be mocked, offered tools (it asks for none) or asked for a
+        structure."""
 
     async def call(self, request: ModelRequest) -> ModelCall:
         started = time.monotonic()
-        self.calls.append((request.model, request.prompt))
+        prompt = request.prompt
+        if prompt is None:  # a conversation: its last user turn
+            prompt = next((t.content for t in reversed(request.turns) if t.role == "user"), "")
+        self.calls.append((request.model, prompt))
         config = self._config
-        text = config.responses.get(request.prompt)
+        text = config.responses.get(prompt)
         if text is None and request.model is not None:
             text = config.by_model.get(request.model)
         if text is None:
             text = (
                 config.default
                 if config.default is not None
-                else (f"mock:{request.model or ''}:{request.prompt}")
+                else (f"mock:{request.model or ''}:{prompt}")
             )
         value = None
         if request.output is not None:
@@ -142,9 +148,6 @@ class MockModelRuntime:
             name=request.model,
             model=request.model,
             family=config.family,
-            backend="mock",
             usage=TokenUsage(),
-            attempts=1,
-            retries=0,
             latency_ms=int((time.monotonic() - started) * 1000),
         )

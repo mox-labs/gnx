@@ -23,7 +23,7 @@ is the general conventions' ``error.type``. When the conventions move, this file
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from opentelemetry import trace
 
@@ -101,6 +101,14 @@ class OtelTracer:
             yield _Span(span)
 
 
+@runtime_checkable
+class _Keeping(Protocol):
+    """A tracer provider that keeps spans (the SDK's), as against the API's proxy, which
+    keeps none: declared, so it is asked with ``isinstance``, not found by its name."""
+
+    def add_span_processor(self, span_processor: Any, /) -> None: ...
+
+
 def keep_spans() -> None:
     """Make the spans of this process readable inside it: the tracer provider installed is
     used as it is, exporters and all; when there is none, one with no span processor is
@@ -108,7 +116,7 @@ def keep_spans() -> None:
     is exported. OpenTelemetry lets a process install one provider, so a program that installs
     its own does so before a run. Without the SDK none can be: a reading of the spans then
     says so."""
-    if hasattr(trace.get_tracer_provider(), "add_span_processor"):
+    if isinstance(trace.get_tracer_provider(), _Keeping):
         return
     try:
         from opentelemetry.sdk.trace import TracerProvider

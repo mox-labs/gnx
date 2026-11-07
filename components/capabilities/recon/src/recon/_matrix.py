@@ -26,8 +26,9 @@ URL (``type: acme.v1.collector.sql``), ruling R3. Code using recon registers its
 matrix's own rules hold: a type URL with no version segment is refused, two registrations of
 one type URL are refused naming both, and an extension that fails to load is quarantined whole,
 every entry it registered with it (``recon types --json`` and ``recon status`` say which).
-Discovery loads every installed ``matrix.extensions`` entry point, so a session imports each
-installed package's registration (review C3).
+Discovery loads only the installed extensions that declare one of recon's points (each entry
+point's name is a point), so a recon session imports no other package's registration, ix's
+included.
 
 Reading the entries back (:func:`plugins`), recon builds each collector type once with stand-in
 needs that refuse to be used, to read what it declares and which optional protocols it keeps
@@ -135,7 +136,7 @@ def plugins(extensions: Iterable[Register] = (), *, stand_ins: Mapping[str, Any]
     extension given that raises is not quarantined: its error is the caller's, and one matrix
     refuses (a type URL with no version, one registered already, a point recon does not have)
     is a UsageError saying why."""
-    registry = default_registry()
+    registry = default_registry(points=POINTS)  # recon's points: no other extension is imported
     for extend in extensions:
         try:
             extend(registry)

@@ -1,16 +1,16 @@
 """``matrix.v1.model-step``: one model call as an ordinary component.
 
 The model counterpart of the agent step. It names a configured **model runtime**, not an
-agent: a model call has no loop, no tools and no turns. What it requires and provides comes
-from its config:
+agent: a model step's call is one prompt, with no loop and no tools. What it requires and
+provides comes from its config:
 
 * it **requires** the kinds its ``inputs`` name, and renders their rows into the prompt;
 * it **provides** the call's reply, a :class:`ModelCall` carrying the prompt as sent and
   pointing at the call's row in ``matrix.v1.session``, which it records, under the kind
   ``response`` names; and, when ``output`` names a kind, the reply as one row of that
   kind. When a package registered a schema for that kind, the runtime is asked for that
-  structure and validates the reply against it (hardline repairs a reply that does not fit);
-  otherwise the reply must be one JSON document. The executor validates the row against the
+  structure and validates the reply against it (a runtime may repair a reply that does not
+  fit); otherwise the reply must be one JSON document. The executor validates the row against the
   kind's schema like any other.
 
 **A reply that is not a whole answer fails the step.** A reply cut at ``max_tokens``, refused,
@@ -23,12 +23,13 @@ is not taken to have cut it, and the row keeps the None.
 
 The call is a span of work: ``matrix.model.start`` and ``.end`` (the model asked for, and the
 one that answered and why its reply ended), with each observer's ``around`` entered while the
-runtime works, so what the runtime opens inside it (hardline's spans) nests under it. That path
+runtime works, so what the runtime opens inside it (its own spans) nests under it. That path
 is public, :func:`call_model`, for a caller that calls a model runtime itself: its call is then
 the same span of work and the same session row as a step's.
 
 Both the prompt's placeholders and the model name are checked when the step is built: a
-typo, or a model the runtime cannot resolve, is a ``config`` problem at composition. A
+typo, a model the runtime cannot resolve, or an ``output`` structure it cannot give on that
+model, is a ``config`` problem at composition. A
 runtime that holds connections (``SupportsAclose``) has them closed when the run ends, in the
 run's event loop, which made them.
 
@@ -145,12 +146,13 @@ class ModelStep:
                 f"Composed: {', '.join(sorted(model_runtimes)) or '(none)'}",
                 fix="name a model runtime defined under matrix.model_runtimes",
             )
-        runtime.check(config.model)  # an unknown model is refused now, not mid-run
+        self._output = (schemas or {}).get(config.output) if config.output is not None else None
+        # An unknown model, or a structure it cannot give, is refused now, not mid-run.
+        runtime.check(config.model, uses=frozenset({"output"}) if self._output else frozenset())
         self._config = config
         self._runtime = runtime
         self._runtime_url = runtime_url
         self._drives = tuple(drives)
-        self._output = (schemas or {}).get(config.output) if config.output is not None else None
         self.requires: frozenset[str] = frozenset(config.inputs.values())
         self.provides: frozenset[str] = frozenset(
             {config.response} | ({config.output} if config.output is not None else set())
@@ -166,8 +168,8 @@ class ModelStep:
             # The runtime's connections close in the loop that made them.
             ctx.defer(self._runtime.aclose)
         prompt = self.render(inputs)
-        request = ModelRequest(
-            prompt=prompt, model=self._config.model, system=self._config.system, output=self._output
+        request = ModelRequest.from_prompt(
+            prompt, model=self._config.model, system=self._config.system, output=self._output
         )
         call = (await self._call(request)).model_copy(update={"prompt": prompt})
         self._whole(call)

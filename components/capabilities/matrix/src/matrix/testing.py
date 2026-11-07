@@ -16,7 +16,7 @@ the port promises when it is called, and that each optional member an implementa
 keeps its protocol. What one implementation adds beyond the port (the JSONL store's files) is
 for that implementation's own tests.
 
-There is a suite for every port but the model runtime's.
+There is a suite for every port.
 """
 
 from __future__ import annotations
@@ -33,13 +33,16 @@ from matrix.domain.component import Component, Context, wire
 from matrix.domain.construct import Construct
 from matrix.domain.errors import (
     AgentRuntimeError,
+    ConfigError,
     ContractError,
+    ModelRuntimeError,
     NotFoundError,
     RunError,
     RuntimeReason,
     StoreError,
 )
 from matrix.domain.executor import Executor, Run
+from matrix.domain.model_call import ModelCall, ModelRequest
 from matrix.domain.observer import (
     RUN_END,
     RUN_START,
@@ -58,6 +61,7 @@ from matrix.domain.ports._out.construct_store import (
     SupportsLocation,
 )
 from matrix.domain.ports._out.document_source import Document, DocumentSource
+from matrix.domain.ports._out.model_runtime import ModelRuntime
 from matrix.domain.problems import Problem
 from matrix.domain.session import SESSION
 
@@ -70,6 +74,7 @@ __all__ = [
     "ConstructStoreConformance",
     "ContextConformance",
     "DocumentSourceConformance",
+    "ModelRuntimeConformance",
     "ObserverConformance",
 ]
 
@@ -127,6 +132,62 @@ class AgentRuntimeConformance:
             return
         _expect(isinstance(response, AgentResponse), "a session returns an AgentResponse")
         _expect(bool(response.stop), "a response says why its session ended (stop)")
+
+    def test_each_optional_member_it_has_keeps_its_protocol(self) -> None:
+        runtime = self.runtime()
+        _optional_warnings_and_resolved(runtime)
+        if isinstance(runtime, SupportsAclose):
+            _expect(inspect.iscoroutinefunction(runtime.aclose), "aclose is a coroutine function")
+            asyncio.run(runtime.aclose())
+
+
+class ModelRuntimeConformance:
+    """What every model runtime does. Define :meth:`runtime`; :attr:`model` and :attr:`prompt`
+    say what its call is, when the defaults (its default model, a one-word question) do not
+    suit it."""
+
+    #: The model each call names; None is the runtime's default.
+    model: ClassVar[str | None] = None
+    #: The prompt each call sends.
+    prompt: ClassVar[str] = "Say hello."
+    #: A model name no runtime resolves, which ``check`` must refuse unless it resolves every
+    #: name (then set it to None).
+    unknown: ClassVar[str | None] = "conformance-no-such-model"
+
+    def runtime(self) -> ModelRuntime:
+        """A new runtime, as its builder would make it."""
+        raise NotImplementedError("define runtime() to return the model runtime to check")
+
+    def test_it_keeps_the_model_runtime_port(self) -> None:
+        runtime = self.runtime()
+        _expect(isinstance(runtime, ModelRuntime), "it has check and call")
+        _expect(inspect.iscoroutinefunction(runtime.call), "call is a coroutine function")
+        _expect(not inspect.iscoroutinefunction(runtime.check), "check is synchronous")
+
+    def test_check_takes_the_model_and_what_a_call_uses(self) -> None:
+        runtime = self.runtime()
+        runtime.check(self.model)
+        runtime.check(self.model, uses=frozenset())
+        if self.unknown is not None:
+            _raises(
+                ConfigError,
+                "check refuses a model name it cannot resolve, as a ConfigError",
+                lambda: runtime.check(self.unknown),
+            )
+
+    def test_a_call_ends_in_a_model_call_or_in_a_typed_failure(self) -> None:
+        runtime = self.runtime()
+        request = ModelRequest.from_prompt(self.prompt, model=self.model)
+        try:
+            call = asyncio.run(_closing(runtime, runtime.call(request)))
+        except ModelRuntimeError as error:
+            _expect(
+                error.reason in get_args(RuntimeReason),
+                f"a failed call's reason is one of {get_args(RuntimeReason)}",
+            )
+            return
+        _expect(isinstance(call, ModelCall), "a call returns a ModelCall")
+        json.dumps(call.provenance)  # provenance is JSON data, keyed by type URL
 
     def test_each_optional_member_it_has_keeps_its_protocol(self) -> None:
         runtime = self.runtime()

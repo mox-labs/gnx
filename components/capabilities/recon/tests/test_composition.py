@@ -150,7 +150,7 @@ def test_an_extension_that_fails_to_load_is_quarantined_whole_and_others_load(
         registry.register(COLLECTOR, "boom.v1.collector.half", GOOD)
         raise RuntimeError("boom on import")
 
-    def installed() -> Registry:
+    def installed(*, points: object = None) -> Registry:
         registry = Registry()
         registry.load([Extension(name="recon", origin="recon", register=register),
                        Extension(name="boom", origin="boom", register=explodes)])  # fmt: skip

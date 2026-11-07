@@ -17,9 +17,10 @@ ignores and a hosted endpoint rejects loudly. Nothing is read from the environme
 timeouts and connection lifetimes are ``_http``'s.
 
 Tools are the protocol's ``tools`` (each a ``function``), an assistant turn's ``tool_calls``
-and the ``tool`` role. A call's ``arguments`` are the JSON text the model wrote; a compatible
-server that sends them as an object has them written as JSON text, and a call with no id is
-given ``call-<position>``.
+and the ``tool`` role. The role has no error flag, so a failed tool's result (``is_error``) is
+sent with its content marked, ``[tool error] <content>``. A call's ``arguments`` are the JSON
+text the model wrote; a compatible server that sends them as an object has them written as
+JSON text, and a call with no id is given ``call-<position>``.
 """
 
 from __future__ import annotations
@@ -46,9 +47,6 @@ _FINISH: dict[str, FinishReason] = {
     "tool_calls": "tool_call",
     "function_call": "tool_call",
 }
-
-#: Keys of a choice that carry the reply's content, which ``raw`` never holds.
-_CONTENT_KEYS = frozenset({"message", "delta", "text", "logprobs"})
 
 
 class _Options(BaseModel):
@@ -185,15 +183,22 @@ class OpenAICompatBackend:
                 ToolCall(id=call.id or f"call-{i}", name=call.function.name, arguments=_json(call))
                 for i, call in enumerate(choice.message.tool_calls or ())
             ),
-            raw=_metadata(data),
         )
 
 
+#: What a failed tool's result begins with on the wire. The protocol's ``tool`` role has no
+#: error flag, so ``Message.is_error`` is carried in the content, where the model reads it,
+#: rather than dropped (CONTRACT.md, "The backend port").
+TOOL_ERROR_MARK = "[tool error] "
+
+
 def _wire(message: Message) -> dict[str, Any]:
-    """One turn as the protocol takes it: a tool's result in the ``tool`` role, an assistant
-    turn's tool calls as ``tool_calls``."""
+    """One turn as the protocol takes it: a tool's result in the ``tool`` role, marked
+    :data:`TOOL_ERROR_MARK` when the tool failed, and an assistant turn's tool calls as
+    ``tool_calls``."""
     if message.role == "tool":
-        return {"role": "tool", "tool_call_id": message.tool_call_id, "content": message.content}
+        content = TOOL_ERROR_MARK + message.content if message.is_error else message.content
+        return {"role": "tool", "tool_call_id": message.tool_call_id, "content": content}
     turn: dict[str, Any] = {"role": message.role, "content": message.content}
     if message.tool_calls:
         turn["tool_calls"] = [
@@ -214,19 +219,6 @@ def _json(call: _ToolCall) -> str:
     if arguments is None:
         return "{}"
     return arguments if isinstance(arguments, str) else json.dumps(arguments)
-
-
-def _metadata(data: dict[str, Any]) -> dict[str, Any]:
-    """The reply without its content: each choice keeps its index and finish reason."""
-    raw = dict(data)
-    choices = raw.get("choices")
-    if isinstance(choices, list):
-        raw["choices"] = [
-            {key: value for key, value in c.items() if key not in _CONTENT_KEYS}
-            for c in choices
-            if isinstance(c, dict)
-        ]
-    return raw
 
 
 def _text(content: str | list[Any] | None) -> str:

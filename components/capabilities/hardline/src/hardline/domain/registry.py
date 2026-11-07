@@ -28,6 +28,8 @@ from hardline.domain.errors import ConfigError, UnknownModelError
 from hardline.domain.types import ModelSpec, Problem, RowRecord
 
 _TOP_LEVEL_KEYS = frozenset({"default", "models"})
+#: The rung of a row's field that no tier set: it holds ``ModelSpec``'s default.
+DEFAULT_RUNG = "default"
 
 
 def _kind(error_type: str) -> str:
@@ -95,11 +97,22 @@ def models_not_a_mapping(source: str) -> ConfigError:
     )
 
 
+def _every_field(set_by: Mapping[str, str]) -> dict[str, str]:
+    """Where each field of a row came from, every field but ``name`` (the row's key) named in
+    ``ModelSpec``'s order: the tier in ``set_by``, else :data:`DEFAULT_RUNG`."""
+    return {
+        field: set_by.get(field, DEFAULT_RUNG)
+        for field in ModelSpec.model_fields
+        if field != "name"
+    }
+
+
 class ModelRegistry:
     """An immutable name → ModelSpec table with an optional default.
 
     ``rungs`` maps a row name to ``{field: tier}``, the tier that set each field the
-    configuration set; ``record(name)`` hands it out with the row's digest.
+    configuration set. The registry names every other field ``default``, so ``record(name)``
+    hands out, with the row's digest, where each of the row's values came from.
     """
 
     def __init__(
@@ -109,7 +122,7 @@ class ModelRegistry:
         rungs: Mapping[str, Mapping[str, str]] | None = None,
     ) -> None:
         self._specs = dict(specs)
-        self._rungs = {name: dict((rungs or {}).get(name, {})) for name in self._specs}
+        self._rungs = {name: _every_field((rungs or {}).get(name, {})) for name in self._specs}
         if default is not None and default not in self._specs:
             raise ConfigError(
                 f"default model {default!r} is not in the registry. "

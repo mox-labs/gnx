@@ -402,9 +402,8 @@ def runtime_requirement(need: str, attempt: Callable[[], object]) -> Requirement
     try:
         attempt()
     except (matrix.MatrixError, IxError, ValidationError, ValueError) as error:
-        return Requirement(
-            need=need, holds=False, why=str(error), fix=str(getattr(error, "fix", "") or "")
-        )
+        fix = error.fix if isinstance(error, matrix.MatrixError | IxError) else None
+        return Requirement(need=need, holds=False, why=str(error), fix=fix or "")
     return Requirement(need=need, holds=True)
 
 
@@ -882,11 +881,11 @@ def _limit(options: Mapping[str, Any]) -> float:
 
 
 async def released(runtime: object) -> None:
-    """Close what ``runtime`` opened for its calls (hardline's clients), if it says how
-    (``matrix.SupportsAclose``). hardline keeps a client per event loop and can close it only
-    in that loop, while it runs, so whoever made the calls closes the runtime there, once
-    they are done: a runtime is built per round, per call and per reading, and is not used
-    again."""
+    """Close what ``runtime`` (or a judge's model over one) opened for its calls, if it says
+    how (``matrix.SupportsAclose``). A model runtime may keep a client per event loop and close
+    it only in that loop, while it runs (hardline's does), so whoever made the calls closes it
+    there, once they are done: a runtime is built per round, per call and per reading, and is
+    not used again."""
     if isinstance(runtime, matrix.SupportsAclose):
         await runtime.aclose()
 

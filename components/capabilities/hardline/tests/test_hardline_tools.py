@@ -17,6 +17,7 @@ from hardline_helpers import DictSecrets, mock_runtime
 from pydantic import ValidationError
 
 from hardline import (
+    CallRecord,
     Completion,
     ConfigError,
     Endpoint,
@@ -25,6 +26,7 @@ from hardline import (
     RawCompletion,
     Request,
     RequestParams,
+    RowRecord,
     ToolCall,
     ToolSpec,
     Usage,
@@ -141,7 +143,23 @@ async def test_openai_compat_offers_tools_sends_tool_turns_and_reads_the_calls_a
         "tool_call",
         "tool_calls",
     )
-    assert "lookup" not in json.dumps(raw.raw)  # the calls are content; raw never holds them
+
+
+async def test_openai_compat_marks_a_failed_tool_s_result_in_its_content() -> None:
+    """``is_error`` is never dropped (ruling HO7): the protocol's ``tool`` role has no flag
+    for it, so the content says so, with the one marker CONTRACT.md declares."""
+    wire = Wire({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+    failed = (*CALLED, Message(role="tool", tool_call_id="c1", content="no", is_error=True))
+    await OpenAICompatBackend(wire.transport).complete(
+        _spec("openai-compat", "http://127.0.0.1:9/v1"),
+        Request(messages=failed, tools=(LOOKUP,), max_tokens=8),
+        None,
+    )
+    sent = wire.bodies[-1]["messages"]
+    assert [m["content"] for m in sent if m["role"] == "tool"] == [
+        "to turn into bone",
+        "[tool error] no",
+    ]
 
 
 async def test_openai_compat_sends_no_tools_key_when_none_are_offered() -> None:
@@ -223,7 +241,6 @@ async def test_anthropic_offers_tools_sends_results_as_one_user_turn_and_reads_t
         "tool_call",
         "tool_use",
     )
-    assert "content" not in raw.raw
 
 
 async def test_anthropic_refuses_arguments_that_are_not_a_json_object() -> None:
@@ -254,22 +271,31 @@ async def test_a_tool_call_is_a_whole_answer_when_tools_were_offered() -> None:
     c = await rt.complete("q", "What is bone?", tools=[LOOKUP])
     assert c.tool_calls == (ToolCall(id="mock-q-1-0", name="lookup", arguments='{"word": "bone"}'),)
     assert (c.finish_reason, c.text) == ("tool_call", "")
-    assert c.params is not None and c.params.tools == ("lookup",)
+    assert c.record.params.tools == ("lookup",)
     assert c.answered
 
 
 async def test_complete_keeps_its_promise_a_tool_call_unasked_for_is_no_answer() -> None:
     # The promise for plain `complete`: a reply that ended on a tool call is not a whole
     # answer. It is one only when the caller offered the tools.
+    params = RequestParams(max_tokens=8, temperature="provider_default", structured=None)
+    record = CallRecord(
+        backend="b", attempts=1, retries=0, fallback_from=None, params=params, attempt_log=(),
+        turns_digest="sha256:0", row=RowRecord(digest="sha256:0"),
+    )  # fmt: skip
     unasked = Completion(
-        name="q", text="", family="x", model="m", backend="b", local=False, usage=Usage(),
-        request_id=None, latency_ms=1, attempts=1, finish_reason="tool_call",
-        tool_calls=(ToolCall(id="c", name="lookup"),),
-        params=RequestParams(max_tokens=8, temperature=None, structured=None),
+        name="q", family="x", model="m", provider="b", local=False, text="",
+        tool_calls=(ToolCall(id="c", name="lookup"),), finish_reason="tool_call",
+        native_finish_reason="tool_calls", refusal=None, usage=Usage(), request_id=None,
+        latency_ms=1, record=record,
     )  # fmt: skip
     assert not unasked.answered
     offered = unasked.model_copy(
-        update={"params": unasked.params.model_copy(update={"tools": ("lookup",)})}  # type: ignore[union-attr]
+        update={
+            "record": record.model_copy(
+                update={"params": params.model_copy(update={"tools": ("lookup",)})}
+            )
+        }
     )
     assert offered.answered
     assert not offered.model_copy(update={"tool_calls": ()}).answered  # offered, none asked for
@@ -277,14 +303,14 @@ async def test_complete_keeps_its_promise_a_tool_call_unasked_for_is_no_answer()
     assert offered.model_copy(update={"finish_reason": "stop"}).answered
     assert not unasked.model_copy(update={"finish_reason": "stop"}).answered  # no text either
     rt = _scripted("plain")
-    assert (await rt.complete("q", "hi")).params.tools == ()
+    assert (await rt.complete("q", "hi")).record.params.tools == ()
 
 
 async def test_a_tool_turn_round_trips_through_the_runtime_and_its_digest_covers_it() -> None:
     rt = _scripted("done")
     c = await rt.complete("q", CALLED, tools=[LOOKUP])
     assert c.text == "done" and c.answered
-    assert c.turns_digest == turns_digest(CALLED)
+    assert c.record.turns_digest == turns_digest(CALLED)
     other = CALLED[:2] + (
         CALLED[2].model_copy(
             update={"tool_calls": (ToolCall(id="c1", name="lookup", arguments="{}"),)}

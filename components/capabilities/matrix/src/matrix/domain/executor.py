@@ -1175,10 +1175,14 @@ class _Session:
 
     def record_session(self, name: str, row: Session) -> int:
         """Record a session component ``name`` ran, with the trace it ended in; durable when
-        this returns. Its position is named by the next rows the component hands over."""
+        this returns. Its position is named by the next rows the component hands over. Each
+        document of its ``provenance`` must validate against the schema registered for its
+        type URL, when one is: a ContractError when not, and the session is not recorded."""
         ids = self._trace() if self._trace is not None else None
         if ids is not None and row.trace_id is None:
             row = row.model_copy(update={"trace_id": ids[0], "span_id": ids[1]})
+        for url, document in row.provenance.items():
+            _validate(self._wiring, url, document, where=f"{name}: a session's provenance")
         try:
             entry = self._append(name, SESSION, _private(row, SESSION))
         except StoreError as e:

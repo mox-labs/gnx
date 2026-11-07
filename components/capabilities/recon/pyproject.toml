@@ -1,6 +1,6 @@
 [project]
 name = "recon"
-version = "0.19.0"
+version = "0.19.1"
 description = "Config-driven collection: fetch or run what a mission names, normalize the answers to JSONL, query them with SQL"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -53,7 +53,7 @@ dependencies = [
     # The registry recon's extension points are on, and the component contract recon's flow
     # members keep: reached through recon/_matrix.py alone (owner ruling, REQ §2). Bounded to
     # the minor recon is built against: before 1.0 a matrix minor may break.
-    "matrix>=0.9,<0.10",
+    "matrix>=0.10,<0.11",
 ]
 
 [project.urls]
@@ -69,7 +69,12 @@ recon = "recon.adapters._in.cli:main"
 # recon's built-ins register at them through matrix's one group, exactly as a third party's do:
 # a callable register(registry), here recon._matrix's.
 [project.entry-points."matrix.extensions"]
-recon = "recon._matrix:register"
+"recon.collector" = "recon._matrix:register"
+"recon.source" = "recon._matrix:register"
+"recon.converter" = "recon._matrix:register"
+"recon.transform" = "recon._matrix:register"
+component = "recon._matrix:register"
+payload-type = "recon._matrix:register"
 
 [build-system]
 requires = ["hatchling"]

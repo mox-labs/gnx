@@ -636,13 +636,11 @@ def test_each_built_in_has_a_timeout_of_its_rows_choosing() -> None:
 async def test_openai_compat_reports_why_the_reply_ended(
     native: str | None, finish_reason: str | None
 ) -> None:
-    # Before: finish_reason was dropped and `raw` excluded `choices`, so a reply cut at
-    # max_tokens looked like a whole one.
+    # Before: finish_reason was dropped, so a reply cut at max_tokens looked like a whole one.
     wire = _answer(_chat("partial", finish_reason=native))
     raw = await OpenAICompatBackend(wire.transport).complete(_spec(), _request(), None)
     assert (raw.finish_reason, raw.native_finish_reason) == (finish_reason, native)
     assert raw.refusal is None
-    assert raw.raw["choices"] == [{"index": 0, "finish_reason": native}]  # no content
 
 
 async def test_openai_compat_keeps_a_refusal_apart_from_the_text() -> None:
@@ -666,14 +664,13 @@ async def test_openai_compat_keeps_a_refusal_apart_from_the_text() -> None:
     ],
 )
 async def test_anthropic_reports_why_the_reply_ended(native: str, finish_reason: str) -> None:
-    # Before: stop_reason survived only inside the untyped `raw`.
+    # Before: stop_reason survived only inside the untyped wire payload hardline then kept.
     wire = _answer(_message(stop_reason=native))
     raw = await AnthropicBackend(wire.transport).complete(
         _spec(backend="anthropic"), _request(), "k"
     )
     assert (raw.finish_reason, raw.native_finish_reason) == (finish_reason, native)
     assert (raw.refusal is not None) == (native == "refusal")
-    assert raw.raw["stop_reason"] == native
 
 
 async def test_the_mock_reports_a_finish_reason_a_row_chooses() -> None:

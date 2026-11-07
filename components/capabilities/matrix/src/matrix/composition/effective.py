@@ -113,16 +113,15 @@ def settings(loaded: Config[Any], container: Container, wiring: Wiring) -> list[
             entry.config,
             origins,
         )
-    for key in ("definitions", "models"):
-        found.append(
-            _leaf(
-                f"matrix.{key}",
-                matrix.model_dump(mode="json")[key],
-                key in matrix.model_fields_set,
-                origins,
-                "matrix",
-            )
+    found.append(
+        _leaf(
+            "matrix.definitions",
+            list(matrix.definitions),
+            "definitions" in matrix.model_fields_set,
+            origins,
+            "matrix",
         )
+    )
     return found
 
 

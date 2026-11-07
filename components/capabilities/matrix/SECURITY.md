@@ -23,13 +23,14 @@ no permission mode stands between the model's request and the call. **So naming 
 config is a code-execution grant**, accepted as such (owner ruling 2026-10-22): review a
 config that names tools as you would the code it names. The model chooses the
 arguments; a function sees them validated against its own typed parameters, and nothing more.
-A definition's `tools` narrow the set (`[]` is none), never widen it. Every model call goes
-through hardline, so where the conversation goes, tool results included, is decided by the
-hardline registry, as for a model call.
+A definition's `tools` narrow the set (`[]` is none), never widen it. Every model call is made
+on the model runtime its `model_runtime` names, so where the conversation goes, tool results
+included, is decided by that runtime's config, as for a model call.
 
-A `hardline` model runtime makes one model call and carries no local authority: it has no
-tools and no agent can be bound to it. Where that call's data goes is decided by the hardline
-registry; hardline's own security notes cover it.
+A model runtime makes one model call and carries no local authority: it runs no tools and no
+agent can be bound to it. matrix ships none that calls a model; where an installed one's data
+goes is decided by its config (for `matrix-hardline`, its hardline registry; hardline's own
+security notes cover it).
 
 ## Trust boundaries
 
@@ -60,8 +61,8 @@ tool built on matrix, reads `./matrix.yaml` and `./<tool>.yaml` from the directo
 (tiers 3 and 4), unasked, and merges them over the user's own tiers; `$MATRIX_CONFIG` and
 `$<TOOL>_CONFIG` add files from the environment (tiers 5 and 6). So running in a checkout you
 did not write gives that checkout's config its authority: a `permission_mode`, `plugins` and
-`skills` for a session, a `models` row whose `base_url` receives every prompt a model step
-sends, a store `root` where the record is written, observers, and `definitions` directories
+`skills` for a session, a model runtime's registry row whose `base_url` receives every prompt
+a model step sends, a store `root` where the record is written, observers, and `definitions` directories
 whose agent files carry prompts and tools. In an untrusted directory, read
 `matrix config --sources` first: it lists every file consulted. `matrix run CONFIG --only`
 reads the named files alone, without the tiers.
@@ -101,8 +102,9 @@ the span's status description), or a component's string fields. `error.type` is 
 
 A `pydantic-ai` session adds no span of pydantic-ai's own. Its instrumentation records prompts,
 replies and tool arguments once anything in the process turns it on for every agent
-(`Agent.instrument_all()`), so the runtime switches it off on each agent it builds; hardline's
-`chat` spans, which carry no content, and the session's `invoke_agent` trace it instead.
+(`Agent.instrument_all()`), so the runtime switches it off on each agent it builds; its model
+runtime's own spans (hardline's `chat` spans carry no content) and the session's `invoke_agent`
+trace it instead.
 
 Content leaves only when the config asks: `observers: [{type: otel, capture_content: true}]`.
 That config is a grant to send prompts to the collector; review it like one. A `ctx.measure`'s

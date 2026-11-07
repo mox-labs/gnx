@@ -19,6 +19,7 @@ members = [
     "hardline",
     "ix",
     "matrix",
+    "matrix-hardline",
     "recon",
 ]
 
@@ -29,6 +30,7 @@ dev = [
     { name = "hardline", editable = "hardline" },
     { name = "ix", editable = "ix" },
     { name = "matrix", editable = "matrix" },
+    { name = "matrix-hardline", editable = "matrix-hardline" },
     { name = "mypy", specifier = ">=1.8" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
@@ -862,7 +864,7 @@ wheels = [
 
 [[package]]
 name = "hardline"
-version = "0.2.0"
+version = "0.3.1"
 source = { editable = "hardline" }
 dependencies = [
     { name = "httpx2" },
@@ -965,11 +967,12 @@ wheels = [
 
 [[package]]
 name = "ix"
-version = "0.8.0"
+version = "0.9.0"
 source = { editable = "ix" }
 dependencies = [
     { name = "httpx2" },
     { name = "matrix" },
+    { name = "matrix-hardline" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-sdk" },
     { name = "pydantic" },
@@ -982,6 +985,7 @@ dependencies = [
 requires-dist = [
     { name = "httpx2", specifier = ">=2.10,<3" },
     { name = "matrix", editable = "matrix" },
+    { name = "matrix-hardline", editable = "matrix-hardline" },
     { name = "opentelemetry-api", specifier = ">=1.20" },
     { name = "opentelemetry-sdk", specifier = ">=1.20" },
     { name = "pydantic", specifier = ">=2.0" },
@@ -1370,11 +1374,10 @@ all = [
 
 [[package]]
 name = "matrix"
-version = "0.9.0"
+version = "0.10.0"
 source = { editable = "matrix" }
 dependencies = [
     { name = "claude-agent-sdk" },
-    { name = "hardline" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
@@ -1388,7 +1391,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "claude-agent-sdk", specifier = ">=0.1.51" },
-    { name = "hardline", editable = "hardline" },
     { name = "opentelemetry-api", specifier = ">=1.23" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.23" },
     { name = "opentelemetry-sdk", specifier = ">=1.23" },
@@ -1397,6 +1399,23 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13" },
     { name = "rich-click", specifier = ">=1.8" },
+]
+
+[[package]]
+name = "matrix-hardline"
+version = "0.1.0"
+source = { editable = "matrix-hardline" }
+dependencies = [
+    { name = "hardline" },
+    { name = "matrix" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "hardline", editable = "hardline" },
+    { name = "matrix", editable = "matrix" },
+    { name = "pydantic", specifier = ">=2.0" },
 ]
 
 [[package]]
@@ -2384,7 +2403,7 @@ wheels = [
 
 [[package]]
 name = "recon"
-version = "0.19.0"
+version = "0.19.1"
 source = { editable = "recon" }
 dependencies = [
     { name = "duckdb" },

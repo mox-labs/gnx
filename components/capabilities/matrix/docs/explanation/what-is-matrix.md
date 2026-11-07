@@ -151,7 +151,7 @@ record of it; what does survive is every row handed over before the kill.
 
 An agent has two owners. What it *is* (its prompt, tools, model and turn bound) belongs to
 whoever wrote it. *Where it runs* (the Claude Agent SDK with a permission mode and a working
-directory, pydantic-ai's loop on a hardline model with its tools, or a mock) belongs to whoever
+directory, pydantic-ai's loop on a model runtime with its tools, or a mock) belongs to whoever
 deploys it. matrix keeps them apart:
 
 - an `AgentDefinition` is the what. It is data, the same shape as a Claude Code agent file, so
@@ -165,9 +165,10 @@ before anything has spent a token. What a runtime can be given is data: its type
 the whole of it, so `claude-sdk` takes `permission_mode`, `setting_sources`, `plugins`,
 `skills` and inline subagents and refuses any other option at its key; and its `check`
 refuses a definition whose tools leave out `Skill` when it has skills, which could then never
-run, and any option the installed SDK's own dataclasses do not have. `pydantic-ai` takes a
-hardline registry, a default model and the tools an agent may choose from, and refuses a tool
-it does not have or a model hardline cannot resolve.
+run, and any option the installed SDK's own dataclasses do not have. `pydantic-ai` takes the
+model runtime its calls are made on, a default model and the tools an agent may choose from,
+and refuses a tool it does not have, or a model, or tools on it, that its model runtime
+refuses.
 
 A runtime reports how a session ended (`AgentResponse.stop`: `completed`, or the limit it
 reached, such as `max_turns`) and raises `AgentRuntimeError` when the session failed. The
@@ -215,7 +216,7 @@ are checked against its inputs when the step is built.
 `matrix.v1.model-step` is the same for one model call. It names a model runtime and a model,
 renders its prompt from its inputs, and provides the `ModelCall`, with the prompt as sent,
 under its `response` kind. With an `output` kind that has a registered schema, it asks the
-runtime for that structure, which hardline validates and repairs; the row is the validated
+runtime for that structure, which the runtime validates (and hardline's repairs); the row is the validated
 reply. A reply cut at `max_tokens`, refused, withheld or empty is not provided at all: the step
 fails, saying which. A component downstream takes whatever row it is given as an answer, and
 nothing in the wiring could tell it otherwise.
@@ -322,7 +323,7 @@ it. What a session reports is kept as a fact of that session (its tokens, and `c
 when the runtime reports one), and a runtime may bound its own sessions with its own option
 (the `claude-sdk` runtime passes the SDK's `max_budget_usd`). The per-call token cap is kept
 as it is (owner ruling 2026-10-22): `max_tokens`, on a model runtime, the `pydantic-ai`
-runtime or a hardline row, bounds each reply, and a reply cut there says so; it bounds a reply,
+runtime, a model call's request or a hardline row, bounds each reply, and a reply cut there says so; it bounds a reply,
 not a run's cost.
 
 ## One loader
