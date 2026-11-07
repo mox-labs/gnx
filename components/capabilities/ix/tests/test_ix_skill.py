@@ -219,6 +219,26 @@ class TestEveryClaimHolds:
         assert {"--skill", "-r", "--version"} <= top
         assert {command.split()[1] for command, _ in COMMANDS} == set(main.commands)
 
+    def test_every_flag_it_writes_after_a_command_is_one_that_command_takes(self) -> None:
+        """Review D8: a flag the skill tells an agent to pass (``ix run <path> --detach``,
+        ``ix events <run> --follow``) is one the command has, so following the skill never
+        meets a usage error. Each code span or block line ``ix <command> ...`` is read."""
+        spans = re.findall(r"`(ix [a-z][a-z-]* [^`\n]*)`", _everything())
+        blocks = [line.strip() for block in re.findall(r"```\w*\n(.*?)```", _everything(), re.S)
+                  for line in block.splitlines() if line.strip().startswith("ix ")]  # fmt: skip
+        checked = 0
+        for snippet in [*spans, *blocks]:
+            command, *words = snippet.split("#", 1)[0].split()[1:]
+            if command not in main.commands:
+                continue  # a command that does not exist is the test above's
+            takes = {option for param in main.commands[command].params for option in param.opts}
+            for word in words:
+                flag = word.split("=", 1)[0].strip("`,;:.()")
+                if flag.startswith("-") and flag != "-":
+                    assert flag in takes, (snippet, flag)
+                    checked += 1
+        assert checked > 10
+
     def test_the_exit_table_is_the_one_table(self) -> None:
         rows = re.findall(r"^\| (\d+) \| `([a-z_]+)` \| (.*?) \| (.*?) \|$", _skill(), re.M)
         assert [(kind, int(code)) for code, kind, _, _ in rows] == list(EXIT_CODES.items())

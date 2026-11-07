@@ -1194,7 +1194,8 @@ experiment writes `trials_in_flight`. It prints progress on stderr and then the 
   `ix report` prints them under `Contents`, `Ran from` and `Versions`; `ix runs` gives each
   run's commit.
 - **Stopping.** Ctrl-C stops the trial in flight, stops everything the run started and
-  exits {EXIT_CODES["run_interrupted"]} with the partial report. `ix report <run directory>`
+  exits {EXIT_CODES["run_interrupted"]} with the partial report; `ix stop <run directory>`
+  does the same from elsewhere (below). `ix report <run directory>`
   reads any run again, finished or not; a run that did not finish gives no verdict, and one
   still running exits {EXIT_CODES["running"]}. A report calls no model and runs no code: a
   run stopped before a judge, an `evaluator`, `function-test` or `outcome` read is reported
@@ -1223,6 +1224,44 @@ experiment writes `trials_in_flight`. It prints progress on stderr and then the 
   dropped. `error_rate` counts a request that failed, timed out (`http-load`'s
   `timeout`, {_default(kinds, "probe", "http-load", "timeout")} when left out) or was never
   answered, and each arrival dropped, as an error.
+
+## Long runs
+
+A run can take longer than your tool call may last. Start it detached, and come back to it
+in later calls.
+
+```bash
+ix run <path> --detach --json        # returns once it has started; exits {EXIT_CODES["running"]}
+ix status <run directory> --json     # where it stands: exits {EXIT_CODES["running"]} while it runs
+ix report <run directory>            # the verdict, once it has ended
+```
+
+- **`ix run <path> --detach`** takes the flags any run does (`--exploratory`, `--dry-run`,
+  `--repeats`, `--trials-in-flight`, `--run-id`). It is refused before anything starts
+  exactly as a run in the foreground is, with the same exit codes (unregistered:
+  {EXIT_CODES["unregistered"]}), and `-` is refused (exit {EXIT_CODES["usage"]}). Once the
+  run's own process has opened its record it prints `ix.v1.status`, `run` (its id) first,
+  then `location` (its directory: pass it to the commands below), `status`, `planned`,
+  `carried_out`, `pid`, `events`, `log` (what the run's process wrote to stderr) and `exit`.
+  It exits as `ix status` does. A start that has not opened its record within two minutes is
+  stopped, and exits {EXIT_CODES["config"]}.
+- **`ix status <run>`** reads the record alone, so ask it as often as you like: `status` is
+  `running`, `completed`, `interrupted` or `failed`, with `carried_out` of `planned` trials.
+  It exits {EXIT_CODES["running"]} while the run runs, {EXIT_CODES["ok"]} once it completed,
+  {EXIT_CODES["run_interrupted"]} for a run that was stopped or whose process died, and
+  {EXIT_CODES["run_failed"]} for one the harness could not finish. **{EXIT_CODES["ok"]} from
+  `status` is not a verdict**: it says the run completed; `ix report` says what it found.
+- **`ix events <run> --follow`** prints the run's events as they are written (`--json`: one
+  `matrix.v1.event` a line) and returns once the run has ended, however it ended (a killed
+  run included), exiting as `ix status` then would. It waits as long as the run takes, so
+  call it only when the run will end within your tool call; otherwise ask `ix status`
+  again later. Events are telemetry and may be dropped: results are the report's.
+- **`ix stop <run>`** stops a running run as Ctrl-C does: the trial in flight is kept as the
+  harness's, what the run started is released, and the record says `interrupted`. It waits
+  up to 30 seconds and prints the status; one still releasing says `running` (exit
+  {EXIT_CODES["running"]}): ask `ix status` again. A run that has ended is left as it is.
+- `<run>` is a run's directory, or an experiment, meaning its latest run. A run started in
+  the foreground can be followed and stopped the same way.
 
 ## Reading a verdict
 
@@ -1276,18 +1315,17 @@ probes and a metric. What makes it one is the kinds.
   into the working directory first), `setup` (a command run there after them:
   `[python3, seed.py]`), `setup_timeout` (how long it may take: {setup} when left out) and
   `runtime_options`: the runtime's own config, passed through as
-  written. For `claude-sdk` that is `permission_mode`, `setting_sources` (`[]` keeps this
-  machine's settings and plugins out), `fallback_model`, `max_budget_usd` and `agents`;
-  `matrix describe matrix.v1.agent-runtime.claude-sdk` lists them. A key the runtime's
+  written; `matrix describe <the runtime's type URL>` lists the keys it takes
+  (`matrix describe matrix.v1.agent-runtime.claude-sdk`). A key the runtime's
   config does not declare is `option_unknown`; `plugins` on a runtime that takes none are
   `option_inapplicable`.
 - **To measure a model rather than an agent, the subject is `model-call`.** Each trial is one call
   on the matrix model runtime its `runtime` names (`matrix-hardline.v1.model-runtime`, `mock`, or
   any installed): no turns, no tools, no working directory. Options: `model` (a name the runtime
-  resolves, checked by `ix plan`), `system_prompt` and `runtime_options` (the runtime's config:
-  `models`, `temperature`, `max_tokens` for hardline's). The `prompt` probe applies, without
-  `collect`; `activation` and `tool-usage` read tool calls a call never makes, so validate refuses
-  them on it (`unobservable`), and a `function-test` `file`.
+  resolves, checked by `ix plan`), `system_prompt` and `runtime_options` (the runtime's
+  config: `matrix describe <its type URL>` lists its keys). The `prompt` probe applies,
+  without `collect`; `activation` and `tool-usage` read tool calls a call never makes, so
+  validate refuses them on it (`unobservable`), and a `function-test` `file`.
 - **The probe is `prompt`.** Write one file per probe in a `probes/` folder beside the
   experiment and leave `probes:` out: the markdown body is the prompt, and every
   frontmatter key but `id`, `kind` and `options` is the truth sensors read
