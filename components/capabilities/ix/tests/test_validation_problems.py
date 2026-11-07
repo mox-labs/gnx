@@ -631,8 +631,10 @@ def test_the_document_carries_the_genres_short_name_and_its_url(
     unknown = ix.validate(write_experiment({**compare_data, "genre": "benchmark"}))
     (found,) = unknown.problems
     assert found.got == "benchmark"
-    assert found.allowed == ("characterize", "check", "compare", "evaluate", "regress")
-    assert found.fix == "genre: one of characterize, check, compare, evaluate, regress"
+    genres = ("characterize", "check", "compare", "evaluate", "mutation-regress",
+              "mutation-score", "regress")  # fmt: skip
+    assert found.allowed == genres
+    assert found.fix == f"genre: one of {', '.join(genres)}"
 
 
 # --- placeholders ----------------------------------------------------------------------

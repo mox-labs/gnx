@@ -27,7 +27,18 @@ what it is given:
                           now, by handle, shared by a subject and a probe
 :data:`JUDGE_MODELS`      :class:`JudgeModels`: a pydantic-ai ``Model`` making its calls
                           through a matrix model runtime
+:data:`MUTANT_SOURCES`    :class:`MutantSources`: the mutant sources installed, by name
 ========================  ==========================================================
+
+**A mutant source** is an extension of its own kind, not an adapter of a family: it makes the
+mutants a mutation experiment samples (``ix mutants sample``). It registers at
+:data:`MUTANT_SOURCE` under a type URL of its own namespace, held to :class:`MutantSource`:
+given one Python file's text, every mutant it makes of it, each a :class:`Mutation` (the
+span it replaces and the text put there), and what it meant to make and could not
+(:class:`Unmade`). ix applies each to the text, keeps those that parse and differ from the
+original, and draws the sample; a source decides nothing else. A probe file of kind
+``mutant`` is the same record as data, so mutants written by any other tool, or by hand,
+run with no source installed.
 
 An adapter's own role is one of the four family ports (:class:`Subject`, :class:`Probe`,
 :class:`Sensor`, :class:`Environment`). What else it can say is a separate optional
@@ -57,12 +68,14 @@ failure. None of these fails the run.
 **Stability.** Everything here is ix's published extension contract (``ix.v1``) and changes
 only with a version's breaking section in the changelog. :class:`JudgeModels` and
 :class:`SpanReader` have one built-in user each and are **provisional**: they may change
-without a deprecation until a second user arrives.
+without a deprecation until a second user arrives; so are :data:`MUTANT_SOURCE`, its records
+and :class:`MutantSources`, until a second mutant source registers there.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, runtime_checkable
 
 from ix.domain.design import SelectedSensor
 from ix.domain.experiment import EnvironmentConfig, ProbeConfig, SubjectConfig
@@ -126,6 +139,11 @@ SESSIONS: Final = "sessions"
 #: The need of an adapter whose model is a pydantic-ai ``Model`` making its calls through a
 #: matrix model runtime: :class:`JudgeModels`.
 JUDGE_MODELS: Final = "judge_models"
+#: The need of an adapter that asks which mutant sources are installed: :class:`MutantSources`.
+MUTANT_SOURCES: Final = "mutant_sources"
+
+#: The extension point of a mutant source, whose port is :class:`MutantSource`.
+MUTANT_SOURCE: Final = "ix.mutant-source"
 
 #: matrix's two runtime points: an agent session (a loop and tools) and one model call.
 type Point = Literal["agent-runtime", "model-runtime"]
@@ -229,11 +247,76 @@ class JudgeModels(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class Mutation:
+    """One mutant a source makes of a file's text: ``replacement`` put in place of the text
+    from ``start`` to ``end``, each ``(line, column)`` with the line from 1 and the column in
+    characters from 0. ``key`` names it among the source's mutants of that text, the same for
+    the same text and the same version of the source (cosmic-ray's is ``<operator>:<n>``);
+    ``operator`` names what it changes, in the source's own words."""
+
+    key: str
+    operator: str
+    start: tuple[int, int]
+    end: tuple[int, int]
+    replacement: str
+
+
+@dataclass(frozen=True)
+class Unmade:
+    """Mutants a source meant to make of a file and could not (an operator that raised):
+    which operator, how many, and why, in words."""
+
+    operator: str
+    count: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class Mutations:
+    """Every mutant a source made of one file's text, and what it could not make."""
+
+    made: tuple[Mutation, ...] = ()
+    unmade: tuple[Unmade, ...] = ()
+
+
+@runtime_checkable
+class MutantSource(Protocol):
+    """Makes mutants of Python source text: the port of :data:`MUTANT_SOURCE`.
+
+    ``mutations`` is pure: it reads only ``text``, writes nothing and starts nothing, and gives
+    the same mutants, under the same keys, for the same text. A mutant that would not parse,
+    or that changes nothing, may be made: ix applies each, and leaves those out and counts
+    them. Raising refuses the whole file, and ``ix mutants sample`` says why."""
+
+    def mutations(self, text: str) -> Mutations: ...
+
+
+class MutantSources(Protocol):
+    """The mutant sources installed at :data:`MUTANT_SOURCE`, each by its type URL."""
+
+    def names(self) -> tuple[str, ...]:
+        """The type URL of each source installed, in name order; none when none is."""
+        ...
+
+    def source(self, name: str) -> MutantSource:
+        """The source registered as ``name``, built. Raises :class:`ix.NotFoundError` for a
+        name nothing registered, and :class:`ix.ConfigError` for one that cannot be built."""
+        ...
+
+    def drives(self, name: str) -> dict[str, str]:
+        """Each distribution the source drives (``cosmic-ray``), as its registration declares,
+        with its installed version: what a population records it was made with."""
+        ...
+
+
 __all__ = [
     "AGENT_RUNTIME",
     "JUDGE_MODELS",
     "LAUNCHER",
     "MODEL_RUNTIME",
+    "MUTANT_SOURCE",
+    "MUTANT_SOURCES",
     "POINTS",
     "PORTS",
     "RUNTIMES",
@@ -250,6 +333,10 @@ __all__ = [
     "Liveness",
     "Measured",
     "ModelCalls",
+    "MutantSource",
+    "MutantSources",
+    "Mutation",
+    "Mutations",
     "Point",
     "Preflight",
     "Probe",
@@ -276,6 +363,7 @@ __all__ = [
     "Target",
     "Traced",
     "TrialError",
+    "Unmade",
     "arrivals",
     "duration_of",
     "placeholders",

@@ -1,5 +1,5 @@
 """The ``ix`` command line: validate, plan, register, deviations, run, report, runs, genres,
-kinds.
+kinds, and ``mutants sample|read``.
 
 An inbound adapter over the library API and nothing else: every call goes through ``ix``'s
 declared names, so a program importing ``ix`` gets exactly what these commands print.
@@ -1341,6 +1341,227 @@ def kinds(lab: str | None, as_json: bool) -> None:
         err.print(f"[red]Adapter cannot be built:[/red] {escape(name)}: {escape(why)}")
     for line in found.quarantined:
         err.print(f"[red]Extension not loaded:[/red] {escape(line)} [dim](matrix catalog)[/dim]")
+
+
+# --- mutation (provisional) --------------------------------------------------------------
+
+
+@main.group(epilog=EXIT_CODES)
+def mutants() -> None:
+    """Mutation testing: draw the mutants of a scope, and read what a run found.
+
+    An experiment of genre mutation-score (or mutation-regress) has subjects of kind
+    test-suite and a probe per mutant. `ix mutants sample` draws the mutants, pins each as a
+    probe file and makes each suite's selection map (`ix mutants map` makes the map alone, for
+    probe files another tool wrote); validate, plan, register and run it as any experiment;
+    `ix mutants read` lists the survivors and the tests the run found no use for.
+    Provisional: the names may change in a minor release, said in the changelog.
+    """
+
+
+@mutants.command(name="sample", epilog=EXIT_CODES)
+@_path_argument
+@click.option("--n", "n", type=int, help="How many mutants to draw (default 100)")
+@click.option("--seed", type=int, help="The seed the sample is drawn from (default 1)")
+@click.option(
+    "--exclude",
+    type=click.Path(),
+    help="An experiment an earlier sample was drawn into: draw none of its mutants",
+)
+@click.option("--source", help="The mutant source's type URL, when more than one is installed")
+@click.option(
+    "--timeout",
+    "timeout_s",
+    type=float,
+    help="Seconds the baseline run under coverage may take (default 3600)",
+)
+@_json_option
+def mutants_sample(
+    path: str,
+    n: int | None,
+    seed: int | None,
+    exclude: str | None,
+    source: str | None,
+    timeout_s: float | None,
+    as_json: bool,
+) -> None:
+    """Draw the mutants of the test-suite subjects' scope and make their selection maps.
+
+    Asks the mutant source for every mutant of each scope file, keeps those that parse and
+    change the code, draws N from SEED, and runs each suite's baseline once in a fresh copy
+    under coverage.py's per-test contexts (pytest-cov in the suite's own environment). Writes
+    probes/m-<id>.yaml, each subject's map and mutation/population.json beside PATH, and
+    nothing when it refuses: a baseline that does not pass, a probes/ folder that holds
+    files, no mutant source installed (install ix-cosmic-ray beside ix). Prints
+    ix.v1.mutation-sample: the population by operator, what was left out and why, the
+    uncovered mutants drawn and the test time the run will take.
+    """
+    try:
+        found = ix.mutants.sample(
+            path, n=n, seed=seed, exclude=exclude, source=source, timeout_s=timeout_s
+        )
+    except ix.IxError as error:
+        _fail(error, as_json=as_json)
+    if as_json:
+        _emit(found)
+        return
+    settings = found["settings"]
+    out.print(
+        f"[bold]Sampled[/bold] {found['sampled']} of {found['population']} mutants "
+        f"{'(every one: a census)' if found['census'] else ''}from "
+        f"{escape(found['source']['type_url'])}",
+        highlight=False,
+    )
+    _field(
+        "Drawn with",
+        ", ".join(f"{key} {value['value']} ({value['from']})" for key, value in settings.items()),
+    )
+    _field("By operator", ", ".join(f"{op} {count}" for op, count in found["by_operator"].items()))
+    dropped = {reason: count for reason, count in found["dropped"].items() if count}
+    _field(
+        "Left out",
+        ", ".join(f"{reason} {count}" for reason, count in dropped.items()) or "none",
+    )
+    if found["unmade"]:
+        _field(
+            "Not made",
+            ", ".join(
+                f"{op} {item['count']} ({item['reason']})" for op, item in found["unmade"].items()
+            ),
+        )
+    for subject in found["subjects"]:
+        baseline = subject["baseline"]
+        _field(
+            f"Subject {subject['subject']}",
+            f"baseline passed: {baseline['tests']} tests in {baseline['duration_s']:g}s; "
+            f"{subject['uncovered']} drawn mutant(s) no test runs (confirm: "
+            f"{subject['confirm']}); about {subject['estimated_s']:g}s of test time to run"
+            + (
+                f", {subject['worst_s']:g}s if every covered mutant survives"
+                if subject["worst_s"] != subject["estimated_s"]
+                else ""
+            ),
+        )
+    err.print(f"[dim]{escape(found['estimate_note'])}[/dim]")
+    err.print(f"[dim]Next: ix validate {escape(path)}, then ix plan, ix register, ix run[/dim]")
+
+
+@mutants.command(name="map", epilog=EXIT_CODES)
+@_path_argument
+@click.option(
+    "--timeout",
+    "timeout_s",
+    type=float,
+    help="Seconds the baseline run under coverage may take (default 3600)",
+)
+@_json_option
+def mutants_map(path: str, timeout_s: float | None, as_json: bool) -> None:
+    """Make each test-suite subject's selection map, and nothing else.
+
+    For probe files of kind mutant another tool wrote: runs each suite's baseline once in a
+    fresh copy under coverage.py's per-test contexts (pytest-cov in the suite's own
+    environment) and writes the map where the subject's map option names. Needs no mutant
+    source. Prints ix.v1.mutation-maps.
+    """
+    try:
+        found = ix.mutants.map(path, timeout_s=timeout_s)
+    except ix.IxError as error:
+        _fail(error, as_json=as_json)
+    if as_json:
+        _emit(found)
+        return
+    for subject in found["subjects"]:
+        baseline = subject["baseline"]
+        _field(
+            f"Subject {subject['subject']}",
+            f"baseline passed: {baseline['tests']} tests in {baseline['duration_s']:g}s; "
+            f"map {escape(subject['map'])}",
+        )
+    err.print(f"[dim]Next: ix validate {escape(path)}, then ix plan, ix register, ix run[/dim]")
+
+
+@mutants.command(name="read", epilog=EXIT_CODES)
+@_RUN_ARGUMENT
+@click.option("--all", "every", is_flag=True, help="List every survivor and candidate, not 50")
+@_json_option
+def mutants_read(run: str, every: bool, as_json: bool) -> None:
+    """Read a mutation run: its survivors, and the tests it found no use for.
+
+    RUN is a run's directory, or an experiment for its latest run. Each survivor is an
+    assertion gap (tests ran its statement and passed: they are named) or a coverage gap (no
+    test ran it). Pruning candidates come from the kill matrix of the subject (or the control):
+    tests outside a greedy keep set, removable together as far as these mutants show, with
+    the deselect list a mutation-regress variant leaves out. A recommendation only: confirm it
+    on a fresh, disjoint sample. Prints ix.v1.mutants-reading; 50 of each unless --all, and
+    says when it cut.
+    """
+    try:
+        found = ix.mutants.read(run, every=every)
+    except ix.IxError as error:
+        _fail(error, as_json=as_json)
+    if as_json:
+        _emit(found)
+        return
+    for subject in found["subjects"]:
+        rate = subject["kill_rate"]
+        unread = ", ".join(f"{reason} {count}" for reason, count in subject["unread"].items())
+        out.print(
+            f"[bold]{escape(subject['subject'])}[/bold] ({subject['role']}): killed "
+            f"{subject['killed']} of {subject['read']} read"
+            + ("" if rate is None else f" ({rate:.1%})")
+            + f"; unread {unread or 'none'}",
+            highlight=False,
+        )
+    if not found["survivors"]:
+        out.print("No survivors: every mutant read was killed.")
+    else:
+        out.print(f"[bold]Survivors[/bold] ({found['survivors_total']})")
+    for survivor in found["survivors"]:
+        tests = survivor["tests"]
+        more = survivor["tests_count"] - len(tests)
+        named = ", ".join(tests) + (f" and {more} more" if more > 0 else "")
+        out.print(
+            f"  {escape(survivor['file'])}:{survivor['line']}  {escape(survivor['change'])}  "
+            f"[dim]{escape(survivor['operator'])}[/dim]  {survivor['class']}"
+            + (
+                ": its line runs at import, so every test ran it"
+                if survivor["at_import"]
+                else f": strengthen {escape(named)}"
+                if survivor["class"] == "assertion_gap"
+                else ": no test runs its statement"
+            )
+            + f"  [dim]{survivor['probe']}[/dim]",
+            highlight=False,
+        )
+    if found["truncated"]:
+        err.print(
+            f"[dim]{found['limit']} of {found['survivors_total']} shown: --all for every one[/dim]"
+        )
+    pruning = found["pruning"]
+    if pruning is not None:
+        out.print(
+            f"[bold]Pruning candidates[/bold] of {escape(pruning['subject'])}: "
+            f"{pruning['candidates_total']} of {pruning['judged']} judged tests "
+            f"(keep {pruning['keep']}; {pruning['not_judged']} not judged)",
+            highlight=False,
+        )
+        for candidate in pruning["candidates"]:
+            what = (
+                "kills nothing"
+                if candidate["zero_kill"]
+                else f"kills {len(candidate['kills'])}, each also killed by the keep set"
+            )
+            outside = candidate["also_runs"]
+            out.print(
+                f"  {escape(candidate['test'])}: {what}"
+                + (f"; also runs {len(outside)} file(s) outside the scope" if outside else ""),
+                highlight=False,
+            )
+        if pruning["truncated"]:
+            err.print("[dim]candidates cut at 50: --all for every one[/dim]")
+        err.print(f"[dim]{escape(pruning['note'])}[/dim]")
+    for caveat in found["caveats"]:
+        err.print(f"[dim]- {escape(caveat)}[/dim]")
 
 
 if __name__ == "__main__":

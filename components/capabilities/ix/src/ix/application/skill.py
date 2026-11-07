@@ -85,6 +85,18 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("ix stop <run>", "stop a running run as Ctrl-C does; the record is kept"),
     ("ix report <path>", "the latest run's report again; or give a run directory"),
     ("ix runs <path>", "each run: when, its commit, gated, exploratory or dry, verdict, trials"),
+    (
+        "ix mutants sample <path> --n 100 --seed 1",
+        "draw the mutants of a test-suite's scope as probes/ and make its selection map",
+    ),
+    (
+        "ix mutants map <path>",
+        "make each test-suite's selection map alone, for mutant probe files another tool wrote",
+    ),
+    (
+        "ix mutants read <run>",
+        "a mutation run's survivors (an assertion or a coverage gap) and its pruning candidates",
+    ),
     ("ix genres", "the genres installed, and any genre file ix refused"),
     (
         "ix kinds",
@@ -103,6 +115,8 @@ REFERENCES: dict[str, str] = {
     "running": "registration, running, the run record, and how a verdict is reached",
     "agents": "evaluating an agent end to end: sessions, probe files, sensors, dry runs, "
     "screens, the judge, and reading the report",
+    "mutation": "testing a test suite: sampling mutants, running them, reading the survivors, "
+    "pruning tests, and what each trial leaves",
     "problems": "every problem kind validate reports",
 }
 
@@ -127,6 +141,11 @@ PREREQUISITES: dict[str, str] = {
     "memory": "samples resident memory with `ps`, so it reads memory on macOS and Linux",
     "process": "starts the `command` it is given; `ix plan` lists a program that is not "
     "there under `Runnable: no`",
+    "test-suite": "runs the suite's own Python and pytest (its `command`) in a fresh copy of "
+    "`root` for each trial; `ix mutants sample` and `ix mutants map` need pytest-cov in that "
+    "Python's environment, and `ix mutants sample` a mutant source (`ix-cosmic-ray`). `ix plan` "
+    "lists a selection map that is missing or stale under `Runnable: no`, with the command "
+    "that makes it",
     "compose": "runs `docker compose` against a daemon that answers: `ix plan` checks docker, "
     "the daemon, compose and the file, and lists what fails under `Runnable: no`. A dry run "
     "brings the stack up for real",
@@ -219,6 +238,55 @@ probes:
 primary: {metric: ttfb, statistic: p99}
 margin: 5%
 """,
+    "mutation-score": """\
+name: parser-mutation
+question: Do the tests fail when the parser is wrong?
+genre: mutation-score
+subjects:
+  tests:
+    kind: test-suite
+    root: .
+    command: [.venv/bin/python, -m, pytest, tests, -q]
+    tests: [tests]
+    scope: [src/pkg/parser.py]
+    map: mutation/tests.map.json
+# `ix mutants sample` writes the probes, one file per mutant in probes/; one is shown inline.
+probes:
+  - {kind: mutant, file: src/pkg/parser.py, start: [12, 15], end: [12, 16], original: "<",
+     replacement: "<=", operator: core/ReplaceComparisonOperator_Lt_LtE}
+primary: {metric: killed}
+""",
+    "mutation-regress": """\
+name: parser-pruning
+question: Do the tests still catch the parser's faults without the slow ones?
+genre: mutation-regress
+subjects:
+  whole:
+    kind: test-suite
+    root: .
+    command: [.venv/bin/python, -m, pytest, tests, -q]
+    tests: [tests]
+    scope: [src/pkg/parser.py]
+    map: mutation/suite.map.json
+  pruned:
+    kind: test-suite
+    root: .
+    command: [.venv/bin/python, -m, pytest, tests, -q]
+    tests: [tests]
+    scope: [src/pkg/parser.py]
+    map: mutation/suite.map.json
+    deselect: ["tests/test_parser.py::test_slow_roundtrip"]
+# `ix mutants sample` writes the probes, one file per mutant in probes/; three are shown inline.
+probes:
+  - {kind: mutant, file: src/pkg/parser.py, start: [12, 15], end: [12, 16], original: "<",
+     replacement: "<=", operator: core/ReplaceComparisonOperator_Lt_LtE}
+  - {kind: mutant, file: src/pkg/parser.py, start: [20, 11], end: [20, 14], original: "and",
+     replacement: "or", operator: core/ReplaceAndWithOr}
+  - {kind: mutant, file: src/pkg/parser.py, start: [31, 18], end: [31, 19], original: "0",
+     replacement: "1", operator: core/NumberReplacer}
+primary: {metric: killed}
+margin: 5pp
+""",
     "check": """\
 name: proxy-health
 question: Does the proxy answer its health check once it is up?
@@ -247,6 +315,15 @@ QUESTION_TO_GENRE: tuple[tuple[str, str], ...] = (
     ),
     ('"Are A and B the same?"', "`compare`, `comparison: equivalence`, with a `margin`"),
     ('"How does X change with Y?"', "`characterize`, Y a factor; estimates, no verdict"),
+    (
+        '"Do my tests fail when the code is wrong?", "are my tests effective?"',
+        "`mutation-score` over sampled mutants (`ix mutants sample` first): a kill rate, no "
+        "verdict; `ix --skill -r mutation`",
+    ),
+    (
+        '"May I prune these tests?", "is the changed suite as strong?"',
+        "`mutation-regress`, the same mutants for both suites, a `margin` set before the run",
+    ),
     (
         '"Does X do it, here, now?" (a command exits 0, a reply holds a fact)',
         "`check`, a boolean primary, one trial: an observation, never a rate",
@@ -1538,6 +1615,143 @@ allows. Telemetry: with `OTEL_EXPORTER_OTLP_ENDPOINT` set, ix exports `ix.plan`,
 """
 
 
+def _mutation() -> str:
+    return """\
+## Testing a test suite: mutation
+
+A mutant is a small fault seeded in the code (`<` for `<=`, `and` for `or`, a constant moved
+by one). A suite that fails on it **kills** it. `mutation-score` estimates the share of
+sampled mutants a suite kills, with a Wilson interval. `mutation-regress` asks whether a
+changed suite is no worse than the baseline suite on the same mutants, within a margin.
+That share is the suite's power to show these faults, never that the code is correct.
+
+### The steps
+
+1. Write the experiment: a subject of kind `test-suite` per suite, the genre, and
+   `primary: {metric: killed}` (the `mutant-kill` sensor). `mutation-regress` also needs a
+   `margin` (`5pp`). `ix --skill -r genres` has both examples.
+2. `ix mutants sample <path> --n 100 --seed 1` draws the mutants:
+   - It asks the mutant source for every mutant of each scope file and keeps those that parse
+     and change the code.
+   - It draws `--n` of them from `--seed` and writes one probe file each as
+     `probes/m-<id>.yaml`.
+   - It runs each suite's baseline once under coverage.py's per-test contexts and writes the
+     selection map where the subject's `map` says, and `mutation/population.json`.
+   - It prints `ix.v1.mutation-sample`: the population by operator, what was left out and
+     why, the uncovered mutants drawn, and an estimate of the test time.
+3. `ix validate <path>`, `ix plan <path>`, `ix register <path>`, then `ix run <path>`
+   (`--trials-in-flight N` runs N mutants at once, each in its own copy). For a long run, use
+   `ix run <path> --detach` and follow it with `ix events <run> --follow`.
+4. `ix report <run>` gives the kill rate with its interval, and the trials it could not read,
+   by reason.
+5. `ix mutants read <run>` lists the survivors and the pruning candidates.
+
+What `ix mutants sample` needs, and refuses without:
+
+- **A mutant source.** `ix-cosmic-ray` provides cosmic-ray's operators. Install it beside
+  ix as ix was installed, from this repository at its release's tag
+  (`components/capabilities/ix-cosmic-ray`; it is on no package index): with `uv tool
+  install`, add `--with "<its git URL>"`. Probe
+  files of kind `mutant` that any other tool wrote run without one: put them in `probes/`
+  and run `ix mutants map <path>`, which makes the selection maps alone.
+- **coverage.py and pytest-cov in the suite's environment**, not ix's:
+  `<suite python> -m pip install pytest-cov`.
+- **A baseline that passes.** Deselect a test that fails, or fix it.
+- **An empty `probes/`.** Sample into a new experiment.
+
+### The subject, `test-suite`
+
+- `root` is the tree. Every trial gets a fresh copy of it, and the tree itself is never
+  written.
+- `command` is the suite's own Python and pytest's arguments, relative to `root`:
+  `[.venv/bin/python, -m, pytest, tests, -q]`.
+- `tests` are the test files or folders, digested.
+- `scope` is the files mutants change; `map` is the selection map's file.
+- `deselect` lists node ids left out of the suite. A pruned variant is the same suite less
+  these.
+- `confirm` says which survivors run again against every test:
+  - `uncovered` (the default): only those no test ran;
+  - `all`: every survivor, which calibrates the selection;
+  - `none`: never.
+- Each run of the suite may take `timeout_factor` (3) times its tests' baseline time, and
+  never less than `timeout_floor` (10s).
+
+The copy is put first on `PYTHONPATH`, so the suite imports the copy, not an editable
+install of the tree. Every run checks this. A trial that imported a scope module from
+anywhere else is the harness's failure (`not_the_mutant`), never a survivor.
+
+### A trial
+
+It applies one mutant, then runs the tests the map says ran a line of the statement it lies
+in: the whole of a simple statement, the header of a compound one (a test that short-circuits
+a multi-line condition before the mutated line is still run against it).
+
+- A mutant whose statement only imports ran runs every test.
+- A test that failed on the mutant **killed** it only if it fails again run alone on the
+  mutant, and passes run alone on the same copy with the original restored. A failure that
+  does not recur is a flake (`unreproduced`), never a kill. Every run has a temporary
+  directory of its own, so trials in flight share none.
+
+`outcome` (also the `mutant-kill` reading's detail) holds:
+
+- `status`: `killed`, `survived`, or `uncovered` (no test ran it and `confirm: none`);
+- `stage`: `selected`, `confirmed` or `none`;
+- `covered`, `selected`, `ran`, and `lines` (the statement's, which selected the tests);
+- `killers` (node ids, or `<collection>`), `unattributed` (tests that fail without the
+  mutant too) and `unreproduced` (failures that did not recur on the mutant);
+- `covered_by`: for a survivor, the tests that ran its statement and passed;
+- `imported_from` and `drifted` (its file changed since it was sampled);
+- `timeout_s` and `duration_s`.
+
+A trial the harness failed is left out of the rate and counted by its reason:
+
+- `timeout`: a run past its limit, never read as a kill;
+- `not_the_mutant`, `mutant_inapplicable` (the tree does not hold the mutant's `original`
+  text), `unattributable` (only tests that fail without the mutant failed), `runner`
+  (pytest's own trouble), `map`;
+- `equivalent`: a probe marked `equivalent: "<why>"`. The mark moves the probe set's digest,
+  so amend the registration with the reason.
+
+### Reading a run
+
+`ix mutants read <run>` prints `ix.v1.mutants-reading` (`--json`, `--all`; 50 of each list
+otherwise). Each survivor is one of two gaps:
+
+- **`assertion_gap`**: tests ran its statement and passed. Strengthen what they assert; they
+  are named.
+- **`coverage_gap`**: no test ran its statement. Write a test.
+
+The **pruning candidates** come from the kill matrix of the subject (the control, in
+`mutation-regress`):
+
+- The keep set takes every test that is the only killer of some mutant, then adds tests
+  greedily until every killed mutant is killed by one.
+- The candidates are the judged tests outside the keep set, removable together as far as these
+  mutants show. `deselect` is the list a variant leaves out.
+- A candidate that `also_runs` files outside the scope was not judged there.
+
+**Confirm before removing anything.** Run `ix mutants sample <new experiment> --seed 2
+--exclude <first experiment>` to draw a fresh sample disjoint from the first. On it, run a
+`mutation-regress` whose control is the whole suite and whose variant deselects the
+candidates, with the margin the person sets. Only `holds` supports the pruning. ix removes no
+test.
+
+### Sizing a regress
+
+The two suites meet the same mutants, so only the mutants they disagree on move the
+difference. With no disagreement, n mutants bound a loss near 3.84 / (n + 3.84):
+
+| mutants | the bound |
+|---|---|
+| 100 | about 3.7 points |
+| 200 | about 1.9 points |
+| 400 | about 1 point |
+
+A margin below that is inconclusive, not a pass. A change to the code is not a change to the
+suite: for a code refactor, run `mutation-score` on each tree, each with its own sample.
+"""
+
+
 def _problems() -> str:
     kinds = ", ".join(f"`{kind}`" for kind in sorted(PROBLEM_KINDS))
     return f"""\
@@ -1581,6 +1795,8 @@ def render(
             body = _running(kinds)
         case "agents":
             body = _agents(kinds)
+        case "mutation":
+            body = _mutation()
         case _:
             body = _problems()
     return f"# ix {version} reference: {reference}\n\n{body}"

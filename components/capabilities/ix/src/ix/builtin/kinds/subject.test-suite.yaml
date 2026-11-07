@@ -1,0 +1,16 @@
+schema: ix.v1.kind
+name: ix.v1.subject.test-suite
+summary: A Python test suite over a source tree, copied fresh for each trial and run by pytest in the copy with the copy imported; the tree is read, never written.
+overlap: allowed
+options:
+  root: {type: string, required: true, description: "the tree copied for each trial, relative to the experiment; never written"}
+  command: {type: command, required: true, within: root, description: "the suite's own Python and pytest's arguments, relative to root: [.venv/bin/python, -m, pytest, recon/tests, -q]. It runs in the trial's copy with the copy's import roots first on PYTHONPATH; ix adds its plugin (-p ix_mutation_trial), which selects the tests and reports where each scope module was imported from"}
+  tests: {type: paths, required: true, description: "the test files or folders the command runs, relative to the experiment: digested as what tested the code (a folder a command names is not digested)"}
+  scope: {type: paths, required: true, description: "the source files mutants may change, relative to the experiment and inside root; digested as what was tested"}
+  map: {type: path, required: true, description: "the selection map ix mutants sample writes for this subject, relative to the experiment; digested"}
+  deselect: {type: list, left_out: no test is left out, description: "pytest node ids left out of this suite: a pruned variant is the same suite less these"}
+  exclude: {type: string, default: ".git .venv .ix __pycache__ .mypy_cache .ruff_cache .pytest_cache node_modules", description: "the names not copied, at any depth, separated by spaces: the copy carries source and tests, not environments or caches"}
+  confirm: {type: string, default: uncovered, allowed: [uncovered, all, none], description: "which survivors run again against every test: uncovered, one no test ran (a line run only in a child process is not recorded against a test); all, every survivor, which calibrates the selection; none, trusting the map"}
+  timeout_factor: {type: number, default: 3, description: "each run of the suite may take this many times what its tests and the suite's start took in the baseline"}
+  timeout_floor: {type: duration, default: 10s, description: "and never less than this; a run past its limit is the harness's failure (timeout), read neither as killed nor as survived"}
+offers: [workspace]

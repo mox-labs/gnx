@@ -64,6 +64,15 @@ def _everything() -> str:
     return "\n".join([_skill(), *(_reference(name) for name in REFERENCES)])
 
 
+def _subcommand(command: Any, words: list[str]) -> tuple[Any, list[str]]:
+    """The command a snippet runs, and the words after it: a group's subcommand when the next
+    word names one (``ix mutants sample``)."""
+    found = getattr(command, "commands", {})
+    if words and words[0] in found:
+        return found[words[0]], words[1:]
+    return command, words
+
+
 def _frontmatter(text: str) -> tuple[dict[str, Any], str]:
     assert text.startswith("---\n"), text[:40]
     head, body = text[4:].split("\n---\n", 1)
@@ -231,7 +240,10 @@ class TestEveryClaimHolds:
             command, *words = snippet.split("#", 1)[0].split()[1:]
             if command not in main.commands:
                 continue  # a command that does not exist is the test above's
-            takes = {option for param in main.commands[command].params for option in param.opts}
+            # Changed requirement: a command may be a group (`ix mutants sample`), whose flags
+            # are its subcommand's.
+            found, words = _subcommand(main.commands[command], words)
+            takes = {option for param in found.params for option in param.opts}
             for word in words:
                 flag = word.split("=", 1)[0].strip("`,;:.()")
                 if flag.startswith("-") and flag != "-":
@@ -648,9 +660,9 @@ class TestTheAgentsReference:
             words = snippet.split()
             if len(words) < 2 or words[0] != "ix" or words[1] not in main.commands:
                 continue
-            command = main.commands[words[1]]
+            command, rest = _subcommand(main.commands[words[1]], words[2:])
             own = {option for param in command.params for option in param.opts}
-            for flag in (word for word in words[2:] if word.startswith("--")):
+            for flag in (word for word in rest if word.startswith("--")):
                 assert flag in own, (snippet, flag)
                 checked.add((words[1], flag))
         assert ("run", "--repeats") in checked and ("run", "--exploratory") in checked

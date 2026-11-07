@@ -53,8 +53,8 @@ payloads:
 # Lint the capability packages (the puma/x.uma house set: + B, SIM, TC) and check their
 # formatting, the Python blocks in their Markdown included.
 capabilities-lint:
-    uv --directory components/capabilities run ruff check hardline matrix matrix-hardline ix recon dao gnx _testing conftest.py
-    uv --directory components/capabilities run ruff format --check hardline matrix matrix-hardline ix recon dao gnx _testing conftest.py
+    uv --directory components/capabilities run ruff check hardline matrix matrix-hardline ix ix-cosmic-ray recon dao gnx _testing conftest.py
+    uv --directory components/capabilities run ruff format --check hardline matrix matrix-hardline ix ix-cosmic-ray recon dao gnx _testing conftest.py
 
 # Typecheck each capability FROM ITS OWN DIRECTORY. mypy resolves config from the
 # invocation rootdir, so running it from the workspace root silently applies the root
@@ -74,9 +74,9 @@ capabilities-typecheck:
     #!/usr/bin/env bash
     set -uo pipefail
     fail=0
-    for p in hardline matrix matrix-hardline ix recon dao gnx; do
+    for p in hardline matrix matrix-hardline ix ix-cosmic-ray recon dao gnx; do
       paths=(src/${p//-/_})
-      case " hardline matrix matrix-hardline ix recon dao " in *" $p "*) paths+=(tests) ;; esac
+      case " hardline matrix matrix-hardline ix ix-cosmic-ray recon dao " in *" $p "*) paths+=(tests) ;; esac
       ( cd components/capabilities/$p && \
         MYPYPATH=.. ../.venv/bin/mypy --strict "${paths[@]}" ) || fail=1
     done
@@ -92,8 +92,8 @@ capabilities-typecheck:
 # The capability packages' tests, each skip listed with its reason.
 capabilities-test:
     uv --directory components/capabilities run --group dev \
-        python -m pytest hardline/tests matrix/tests matrix-hardline/tests ix/tests recon/tests \
-        dao/tests _testing \
+        python -m pytest hardline/tests matrix/tests matrix-hardline/tests ix/tests ix-cosmic-ray/tests \
+        recon/tests dao/tests _testing \
         -q -rs --strict-skips
 
 # The docsite: svelte-kit sync + svelte-check + tsc --noEmit.
@@ -110,11 +110,15 @@ secrets-all:
 
 # Validate and plan every experiment in the lab. Nothing runs: this checks that each
 # experiment is well-formed against the installed genres and kinds and that the installed
-# CLI resolves them through its entry points. A run of a lab experiment starts real agent
-# sessions and spends money, so it is never part of a gate.
+# CLI resolves them through its entry points. A run of catalog-routing starts real agent
+# sessions and spends money, and one of mutation/recon-items runs recon's suite on 100
+# mutants for an hour or more, so neither is ever part of a gate. A mutation experiment's
+# plan says when its selection map is to be made (lab/README.md); that is no failure here.
 lab:
     uv --project components/capabilities run ix validate lab/catalog-routing
     uv --project components/capabilities run ix plan lab/catalog-routing
+    uv --project components/capabilities run ix validate lab/mutation/recon-items
+    uv --project components/capabilities run ix plan lab/mutation/recon-items
 
 # Every capability, built as the wheel a user installs and installed ALONE into a fresh venv
 # from only its own declared dependencies (the `uv tool install` / `uvx` path), then driven
@@ -157,7 +161,7 @@ capabilities-standalone:
     set -uo pipefail
     tmp="$(mktemp -d)"; trap 'rip "$tmp" 2>/dev/null || true' EXIT
     examples="$PWD/components/capabilities/ix/examples"
-    packages=(hardline matrix matrix-hardline ix recon gnx dao)
+    packages=(hardline matrix matrix-hardline ix ix-cosmic-ray recon gnx dao)
     # expect EXPRESSION: the JSON document on stdin makes EXPRESSION (over `d`) true.
     expect() { python -c 'import json, sys; d = json.load(sys.stdin); assert eval(sys.argv[1]), d' "$1"; }
     smoke_hardline() {
@@ -241,6 +245,24 @@ capabilities-standalone:
         'primary: {metric: text_matched}' 'threshold: {op: ">=", value: 0.5}' > on-model/experiment.yaml
       ix run on-model --exploratory --json | expect 'd["status"] == "completed" and d["simulated"] == "none" and [(e["metric"], e["value"]) for e in d["analysis"]["estimates"]] == [("text_matched", 1.0)]'
     }
+    smoke_ix-cosmic-ray() {
+      mkdir -p tree/src/calc tree/tests experiment
+      : > tree/src/calc/__init__.py
+      printf '%s\n' 'def small(x):' '    return x < 3' > tree/src/calc/core.py
+      printf '%s\n' 'from calc.core import small' '' '' 'def test_small():' \
+        '    assert small(2) and not small(3)' > tree/tests/test_core.py
+      printf '%s\n' 'name: calc' 'question: Do the tests catch a wrong comparison?' \
+        'genre: mutation-score' 'subjects:' '  suite:' '    kind: test-suite' '    root: ../tree' \
+        "    command: [\"$PWD/venv/bin/python\", -m, pytest, tests, -q, -p, no:cacheprovider]" \
+        '    tests: [../tree/tests]' '    scope: [../tree/src/calc/core.py]' \
+        '    map: mutation/suite.map.json' 'primary: {metric: killed}' > experiment/experiment.yaml
+      # The suite's environment, not ix's, carries pytest and pytest-cov: ix depends on neither.
+      uv pip install --quiet --python "$PWD/venv/bin/python" pytest pytest-cov
+      ix mutants sample experiment --json \
+        | expect 'd["source"]["type_url"] == "ix-cosmic-ray.v1.mutant-source" and d["census"] and d["population"] > 0'
+      ix run experiment --exploratory --json | expect 'd["status"] == "completed"'
+      ix mutants read experiment --json | expect 'd["subjects"][0]["killed"] > 0'
+    }
     smoke_recon() {
       printf '%s\n' 'collectors:' '  - name: releases' '    type: cli' '    run: |' \
         "      echo '{\"tag\": \"v1\", \"published\": \"2026-03-15T18:42:31Z\"}'" > mission.yaml
@@ -264,6 +286,10 @@ capabilities-standalone:
       if [ "$p" = matrix-hardline ]; then wheels+=("$tmp/dist"/matrix-*.whl "$tmp/dist"/hardline-*.whl); fi
       if [ "$p" = ix ]; then
         wheels+=("$tmp/dist"/matrix-*.whl "$tmp/dist"/matrix_hardline-*.whl "$tmp/dist"/hardline-*.whl)
+      fi
+      if [ "$p" = ix-cosmic-ray ]; then
+        wheels+=("$tmp/dist"/ix-*.whl "$tmp/dist"/matrix-*.whl "$tmp/dist"/matrix_hardline-*.whl \
+          "$tmp/dist"/hardline-*.whl)
       fi
       # Not under `if`: there bash ignores the subshell's `set -e`, and a failed step goes on.
       ( set -euo pipefail

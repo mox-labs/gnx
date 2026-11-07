@@ -1,0 +1,79 @@
+{
+  "language": "python",
+  "about": "ix-cosmic-ray's layers, checked by tests/test_source_layering.py on every test run with the shared checker (components/capabilities/_testing/layers.py). Three files: the generator, the one module that imports cosmic-ray; the registration, which imports none of it, so a session that only asks which sources are installed pays nothing for cosmic-ray; and the package surface. 'why' keys are read by neither checker.",
+  "scan": [
+    "src/ix_cosmic_ray/**/*.py"
+  ],
+  "scan_why": "Every Python file in the package. Tests are out of scan: a test reaches cosmic-ray to check what the generator gives against what it makes.",
+  "layers": [
+    {
+      "name": "generator",
+      "files": [
+        "src/ix_cosmic_ray/generator.py"
+      ],
+      "allow": [
+        "__future__",
+        "collections",
+        "typing",
+        "cosmic_ray",
+        "ix.extension"
+      ],
+      "forbid": [
+        "matrix",
+        "os",
+        "open",
+        "subprocess"
+      ],
+      "why": {
+        "cosmic_ray": "its operators, its AST walk and mutate_code, as a generator library: never its init, work database, runner or distributors",
+        "ix.extension": "the mutant source's port and records, ix's published contract, which the source is written against alone: allow admits no other ix module",
+        "forbid": "the generator reads only the text it is given: no file, no environment, no process; and it registers nothing (the registry is matrix's)"
+      }
+    },
+    {
+      "name": "registration",
+      "files": [
+        "src/ix_cosmic_ray/source.py"
+      ],
+      "allow": [
+        "__future__",
+        "typing",
+        "matrix",
+        "ix.extension",
+        "ix_cosmic_ray.generator"
+      ],
+      "forbid": [
+        "cosmic_ray"
+      ],
+      "why": {
+        "matrix": "type-only: the registry register() is handed",
+        "ix_cosmic_ray.generator": "imported inside build(), when ix asks for the source, so loading the registration imports no cosmic-ray (tests/test_source.py holds it)"
+      }
+    },
+    {
+      "name": "surface",
+      "files": [
+        "src/ix_cosmic_ray/__init__.py"
+      ],
+      "allow": [
+        "importlib",
+        "ix_cosmic_ray.source"
+      ],
+      "forbid": [
+        "cosmic_ray",
+        "matrix",
+        "ix"
+      ],
+      "why": {
+        "ix_cosmic_ray.source": "re-exports the registration's names; importlib.metadata reads the installed version"
+      }
+    }
+  ],
+  "single_importer": [
+    {
+      "name": "cosmic_ray",
+      "only": "src/ix_cosmic_ray/generator.py"
+    }
+  ],
+  "single_importer_why": "the generator is the one module that speaks cosmic-ray, so a change of its API is one file"
+}

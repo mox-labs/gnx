@@ -32,7 +32,11 @@ from ix.domain.problem import problem as a_problem
 from ix.domain.schema import DeclarationFile
 
 # Changed requirement (ruling Q-CHECK): check, a predicate observed on every trial.
-BUILT_IN = ("characterize", "check", "compare", "evaluate", "regress")
+# Changed requirement (Q-MUT): mutation-score and mutation-regress, data only.
+BUILT_IN = (
+    "characterize", "check", "compare", "evaluate", "mutation-regress", "mutation-score",
+    "regress",
+)  # fmt: skip
 FORMS = {
     "superiority": "{variant} is better than {control} on {metric}",
     "non-inferiority": "{variant} is no worse than {control} by more than {margin} on {metric}",
@@ -196,7 +200,7 @@ class TestGenreRecord:
 
 
 class TestBuiltInGenres:
-    def test_the_four_load_clean(self, builtin_genres: Genres) -> None:
+    def test_the_built_ins_load_clean(self, builtin_genres: Genres) -> None:
         assert builtin_genres.rejected == {}
         assert builtin_genres.names() == BUILT_IN
         assert tuple(builtin_genres.genres) == tuple(f"ix.v1.genre.{n}" for n in BUILT_IN)
@@ -233,7 +237,8 @@ class TestBuiltInGenres:
         overlap = {g.label: g.design.overlap for g in builtin_genres.genres.values()}
         assert overlap == {
             "characterize": "allowed", "check": "allowed", "compare": "allowed",
-            "evaluate": "allowed", "regress": "forbidden",
+            "evaluate": "allowed", "mutation-regress": "allowed", "mutation-score": "allowed",
+            "regress": "forbidden",
         }  # fmt: skip
         assert Genre.model_validate(_genre()).design.overlap == "allowed"
 
@@ -257,6 +262,8 @@ class TestBuiltInGenres:
             "check": ("primary",),
             "compare": ("primary", "comparison", "margin (for non-inferiority, equivalence)"),
             "evaluate": ("primary", "threshold"),
+            "mutation-regress": ("primary", "margin"),
+            "mutation-score": ("primary",),
             "regress": ("primary", "margin"),
         }
 
@@ -278,11 +285,13 @@ class TestBuiltInGenres:
         not also plain English)."""
         acted_on = {
             *("process", "http", "agent-session"),
-            *("prompt", "http-load", "inspect-task"),
+            *("prompt", "http-load", "inspect-task", "mutant"),
             *("timing", "memory", "activation", "function-test", "usage", "judge"),
+            *("test-suite", "mutant-kill"),
             *("k6", "compose", "kind"),
         }
-        in_prose = {"http", "http-load", "inspect-task", "function-test", "k6"}
+        in_prose = {"http", "http-load", "inspect-task", "function-test", "k6", "test-suite",
+                    "mutant-kill"}  # fmt: skip
         prose_fields = {"question", "hypothesis_form", "guidance", "comparisons"}
 
         def words(value: Any) -> set[str]:

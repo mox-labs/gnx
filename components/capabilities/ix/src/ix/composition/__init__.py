@@ -64,6 +64,12 @@ from ix.adapters._out.matrix_errors import carried_over, converted
 from ix.adapters._out.matrix_process import MatrixLauncher
 from ix.adapters._out.matrix_runs import EVENT_LOG, execute
 from ix.adapters._out.matrix_runs import Runs as RunRecords
+from ix.adapters._out.mutation import reading as mutant_reading
+from ix.adapters._out.mutation import sample as mutant_sample
+from ix.adapters._out.mutation.runner import suite_of
+from ix.adapters._out.mutation.selection import MapUnreadableError, read_map
+from ix.adapters._out.mutation.suite import SOURCE_INSTALL
+from ix.adapters._out.mutation.suite import SUBJECT_KIND as TEST_SUITE
 from ix.adapters._out.otel_tracing import OtelTracer, keep_spans
 from ix.adapters._out.provenance import checkout, contents, installed
 from ix.adapters._out.registration_file import RegistrationFile
@@ -78,7 +84,7 @@ from ix.domain.design import entries_in_use, sensor_entry
 from ix.domain.errors import ConfigError, IxError, NotFoundError, UsageError
 from ix.domain.experiment import Experiment, cells
 from ix.domain.genre import Genres, genres
-from ix.domain.kind import KIND_FAMILIES, Kinds, fill, kinds, per_cell
+from ix.domain.kind import KIND_FAMILIES, Kinds, fill, kinds, merged, per_cell
 from ix.domain.plan import Work, required, work
 from ix.domain.ports import ModelCalls, Preflight, Requirement, SpanReader, Traced
 from ix.domain.problem import InvalidExperimentError
@@ -92,9 +98,12 @@ from ix.extension import (
     JUDGE_MODELS,
     LAUNCHER,
     MODEL_RUNTIME,
+    MUTANT_SOURCE,
+    MUTANT_SOURCES,
     POINTS,
     RUNTIMES,
     SESSIONS,
+    MutantSource,
     Point,
 )
 
@@ -310,6 +319,39 @@ class _NamedModelRuntimes(matrix.ModelRuntimes):
         return self._runtimes._entry(MODEL_RUNTIME, spec.type)
 
 
+class _MutantSources:
+    """The mutant sources installed at ix's ``ix.mutant-source`` point, through matrix's
+    registry: what the ``test-suite`` subject and ``ix mutants sample`` are handed."""
+
+    def __init__(self, registry: Registry) -> None:
+        self._registry = registry
+
+    def names(self) -> tuple[str, ...]:
+        return tuple(entry.type_url for entry in self._registry.entries(MUTANT_SOURCE))
+
+    def source(self, name: str) -> MutantSource:
+        if (MUTANT_SOURCE, name) not in self._registry:
+            raise NotFoundError(
+                f"no mutant source {name!r} is installed; installed: "
+                f"{', '.join(self.names()) or 'none'}",
+                fix="install the package that provides it, or name an installed one",
+                details={"path": "--source", "value": name},
+            )
+        try:
+            built: MutantSource = self._registry.create(MUTANT_SOURCE, name)
+        except MatrixError as error:
+            raise ConfigError(
+                f"the mutant source {name} cannot be built: {error.message}",
+                fix="fix or uninstall the package that registered it",
+                details={"value": name},
+            ) from error
+        return built
+
+    def drives(self, name: str) -> dict[str, str]:
+        entry = self._registry.entry(MUTANT_SOURCE, name)
+        return {distribution: installed(distribution) for distribution in entry.drives}
+
+
 class _JudgeModels:
     """Where a pydantic-evals judge evaluator's model comes from: pydantic-ai's ``Model`` over
     the matrix model runtime the experiment names (``matrix.pydantic_ai_model``), built from
@@ -408,7 +450,7 @@ class Root:
         self._genre_files = genre_files or GenreFiles()
         self._kind_files = kind_files or KindFiles()
         self._registry = (
-            default_registry(points={*matrix.MATRIX_POINTS, *POINTS.values()})
+            default_registry(points={*matrix.MATRIX_POINTS, *POINTS.values(), MUTANT_SOURCE})
             if registry is None
             else registry
         )
@@ -419,12 +461,15 @@ class Root:
         self._run_store = run_store
         self._tracer: Traced = OtelTracer(version) if tracer is None else tracer
         self._runtimes = _Runtimes(self._registry, lambda: self._settings().matrix)
-        self._supplies = {
-            LAUNCHER: MatrixLauncher(),
+        self._launcher = MatrixLauncher()
+        self._supplies: dict[str, object] = {
+            LAUNCHER: self._launcher,
             SESSIONS: SessionTable(),
             RUNTIMES: self._runtimes,
             JUDGE_MODELS: _JudgeModels(self._runtimes),
         }
+        self._mutant_sources = _MutantSources(self._registry)
+        self._supplies[MUTANT_SOURCES] = self._mutant_sources
 
     def _settings(self) -> Config[IxSettings]:
         if self._config is None:
@@ -1196,6 +1241,160 @@ class Root:
             log=str(log) if log.is_file() else "",
         )
 
+    # --- mutation (provisional: ruling R2) ---
+
+    def _test_suites(self, source: PathLike) -> tuple[str, list[mutant_sample.Sampled]]:
+        """The experiment's directory, and each of its ``test-suite`` subjects with its options
+        as carried out. Raises :class:`InvalidExperimentError` for a subject written wrong;
+        no mutants yet is not wrong here."""
+        opened = self._open(source)
+        experiment = opened.examined.experiment
+        if experiment is None:
+            raise InvalidExperimentError(
+                f"{opened.examined.source} is not an experiment file",
+                opened.examined.problems,
+                fix=f"ix validate {opened.examined.source}",
+                complete=opened.examined.complete,
+            )
+        subjects = []
+        for name, subject in experiment.subjects.items():
+            kind = opened.vocabulary.kinds.kinds.get(schema.url("subject", subject.kind))
+            if kind is None or kind.name != TEST_SUITE:
+                continue
+            where = f"subjects.{name}"
+            wrong = [
+                problem
+                for problem in opened.examined.problems
+                if (problem.path == where or problem.path.startswith(where + "."))
+                and problem.kind != "probes_empty"
+            ]
+            if wrong:
+                raise InvalidExperimentError(
+                    f"{where} is not a suite ix can sample for ({len(wrong)} problem(s))",
+                    tuple(wrong),
+                    fix=f"ix validate {opened.examined.source}",
+                )
+            options = merged(kind.defaults(subject.options), subject.options)
+            try:
+                suite = suite_of(options, opened.base)
+            except ValueError as error:
+                raise ConfigError(
+                    f"{where}: {error}", fix="correct the subject's options",
+                    details={"path": where},
+                ) from error  # fmt: skip
+            subjects.append(mutant_sample.Sampled(name=name, suite=suite))
+        return opened.base, subjects
+
+    def mutants_sample(
+        self,
+        source: PathLike,
+        *,
+        n: int | None = None,
+        seed: int | None = None,
+        exclude: PathLike | None = None,
+        mutant_source: str | None = None,
+        timeout_s: float | None = None,
+    ) -> dict[str, Any]:
+        """Draw ``n`` mutants of the scope of the experiment's ``test-suite`` subjects and make
+        each subject's selection map: the ``ix.v1.mutation-sample`` document. Raises
+        :class:`ConfigError` when it cannot, before anything is written."""
+        base, subjects = self._test_suites(source)
+        chosen = self._chosen_source(mutant_source)
+        try:
+            return asyncio.run(
+                mutant_sample.sample(
+                    self._launcher,
+                    subjects,
+                    experiment=Path(base).resolve(),
+                    source=self._mutant_sources.source(chosen),
+                    source_name=chosen,
+                    source_drives=self._mutant_sources.drives(chosen),
+                    settings=mutant_sample.Settings.of(n=n, seed=seed, timeout_s=timeout_s),
+                    exclude=None if exclude is None else Path(os.fspath(exclude)).resolve(),
+                )
+            )
+        except mutant_sample.SampleRefusedError as refused:
+            raise ConfigError(str(refused), fix=refused.fix) from refused
+
+    def mutants_map(self, source: PathLike, *, timeout_s: float | None = None) -> dict[str, Any]:
+        """Make the selection map of each of the experiment's ``test-suite`` subjects and
+        nothing else, for mutant probe files another tool wrote: the ``ix.v1.mutation-maps``
+        document. Needs no mutant source. Raises :class:`ConfigError` when it cannot."""
+        _, subjects = self._test_suites(source)
+        settings = mutant_sample.Settings.of(n=None, seed=None, timeout_s=timeout_s)
+        try:
+            return asyncio.run(
+                mutant_sample.map_suites(self._launcher, subjects, settings=settings)
+            )
+        except mutant_sample.SampleRefusedError as refused:
+            raise ConfigError(str(refused), fix=refused.fix) from refused
+
+    def _chosen_source(self, named: str | None) -> str:
+        """The mutant source a sample is drawn with: the one named, or the one installed."""
+        installed_sources = self._mutant_sources.names()
+        if named is not None:
+            return named
+        if not installed_sources:
+            raise ConfigError(
+                "no mutant source is installed, so there is nothing to draw mutants from",
+                fix=f"{SOURCE_INSTALL}. Or write the probe files of kind mutant with another "
+                "tool and run `ix mutants map`, which needs no source",
+                details={"path": "--source"},
+            )
+        if len(installed_sources) > 1:
+            raise ConfigError(
+                f"{len(installed_sources)} mutant sources are installed: "
+                f"{', '.join(installed_sources)}",
+                fix="name one with --source",
+                details={"path": "--source"},
+            )
+        return installed_sources[0]
+
+    def mutants_read(self, target: PathLike, *, every: bool = False) -> dict[str, Any]:
+        """The survivors of a mutation run and its pruning candidates: the
+        ``ix.v1.mutants-reading`` document. ``target`` is as :meth:`report` takes it."""
+        records, run, found = self._run_of(target)
+        record = found or records.record(run)
+        manifest = record.manifest
+        experiment = Experiment.model_validate(manifest.declared)
+        probes = {
+            str(probe.get("id", "")): dict(probe.get("options") or {}) for probe in manifest.probes
+        }
+        of_probe = {trial.seq: trial.probe for trial in record.trials}
+        trials = [
+            mutant_reading.TrialRead(
+                probe=of_probe.get(interaction.seq, interaction.probe),
+                subject=interaction.subject,
+                role=interaction.role,
+                outcome=None if interaction.failure else interaction.observations.get("outcome"),
+                reason="" if interaction.failure is None else interaction.failure.reason,
+            )
+            for interaction in record.interactions
+        ]
+        maps: dict[str, dict[str, Any] | None] = {}
+        deselected: dict[str, tuple[str, ...]] = {}
+        pruned = None
+        for assigned in manifest.design.get("roles", ()):
+            name, role = str(assigned.get("subject")), str(assigned.get("role"))
+            subject = experiment.subjects.get(name)
+            if subject is None or schema.url("subject", subject.kind) != TEST_SUITE:
+                continue
+            options = subject.options
+            deselected[name] = tuple(str(node) for node in options.get("deselect") or ())
+            maps[name] = _map_of(Path(manifest.base, str(options.get("map", ""))))
+            if role in ("subject", "control") and pruned is None:
+                pruned = name
+        return mutant_reading.read(
+            trials,
+            probes,
+            maps,
+            deselected,
+            run=record.run,
+            experiment=manifest.experiment,
+            pruned=pruned,
+            every=every,
+        )
+
     def runs(self, target: PathLike | None = None) -> Runs:
         """The runs kept beside an experiment, oldest first. ``target`` is the experiment
         (its file or directory); with none, every experiment's runs under the current
@@ -1225,6 +1424,14 @@ class Root:
                 yield summarize(build_report(record))
             except IxError:
                 yield RunRecords.summary(record)  # another ix's: its id, state and counts
+
+
+def _map_of(path: Path) -> dict[str, Any] | None:
+    """A mutation run's selection map, or None when it is no longer there to read."""
+    try:
+        return read_map(path)
+    except MapUnreadableError:
+        return None
 
 
 def _width_change(given: int, written: int) -> str:
