@@ -8,22 +8,20 @@ from __future__ import annotations
 import random
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 import pytest
 
 from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.http_requester import HttpRequester
-from recon.adapters._out.sse_collector import SseCollector, collector_type
+from recon.adapters._out.sse_collector import SseCollector, SseSettings
+from recon.composition import load_plugins
+from recon.core.domain.collector import Dropped, Position, Record
 from recon.core.domain.errors import CollectionError
-from recon.core.domain.models import CollectorEntry, SourceEntry
 from recon.core.domain.ratelimit import RateLimiter
-from tests.recon_fakes import HurriedClock
+from recon.core.domain.stream import POSITION_FIELD, Gap
+from tests.recon_fakes import HurriedClock, run_for
 from tests.sse_server import SseServer
-
-if TYPE_CHECKING:
-    from recon.core.domain.stream import Gap
-
 
 #: The test server's rate limit, unless a test gives its own: each reconnect draws a token,
 #: and these tests count the reconnect waits alone.
@@ -34,12 +32,6 @@ class Gaps:
     def __init__(self) -> None:
         self.said: list[Gap] = []
         self.drops = 0
-
-    def gap(self, gap: Gap) -> None:
-        self.said.append(gap)
-
-    def drop(self) -> None:
-        self.drops += 1
 
 
 class Longest(random.Random):
@@ -83,28 +75,34 @@ class Listening:
         self.gaps = Gaps()
         requester = HttpRequester(RateLimiter(self.clock), self.clock)
         self.collector = SseCollector(
-            requester, self.clock, self.gaps, Credentials(env or {}), "recon-test",
+            requester=requester, clock=self.clock, credentials=Credentials(env or {}),
+            user_agent="recon-test",
             jitter=random.Random("a seed") if jitter is DEFAULT else jitter,
             pause=self.clock.sleep if pause is DEFAULT else pause,
         )  # fmt: skip
         self.records: list[dict[str, Any]] = []
         self.error: BaseException | None = None
-        entry = CollectorEntry.model_validate(
-            {"name": "events", "type": "sse", "endpoint": "/events", "reconnect": reconnect,
-             **({"buffer": buffer} if buffer else {})}
-        )  # fmt: skip
+        entry = {"name": "events", "type": "sse", "endpoint": "/events", "reconnect": reconnect,
+                 **({"buffer": buffer} if buffer else {})}  # fmt: skip
         given: dict[str, Any] = {"timeout": timeout} if timeout is not None else {}
         if max_bytes is not None:
             given["max_bytes"] = max_bytes
-        source = SourceEntry.model_validate(
-            {"name": "feed", "url": url, "auth": auth or {}, "rate_limit": LOCAL_RATE, **given}
+        source = {"name": "feed", "url": url, "auth": auth or {}, "rate_limit": LOCAL_RATE,
+                  **given}  # fmt: skip
+        items = self.collector.collect(
+            run_for(entry, source), None if after is None else Position(after)
         )
-        resume = {} if after is None else {"after": after}
-        records = self.collector.collect(entry, source, **resume)
 
         def run() -> None:
             try:
-                self.records.extend(records)
+                for item in items:
+                    if isinstance(item, Record):
+                        position = {} if item.position is None else {POSITION_FIELD: item.position}
+                        self.records.append({**item.data, **position})
+                    elif isinstance(item, Gap):
+                        self.gaps.said.append(item)
+                    elif isinstance(item, Dropped):
+                        self.gaps.drops += 1
             except BaseException as exc:
                 self.error = exc
 
@@ -295,15 +293,15 @@ class TestLargeEvents:
 
 class TestTheType:
     def test_it_declares_a_stream_its_source_paces(self) -> None:
-        assert collector_type.unbounded is True
-        assert collector_type.paced_by == "source"
-        assert collector_type.accepts_kinds == frozenset({"api"})
-        assert collector_type.effects == frozenset({"network"})
+        installed = load_plugins().collector_types["sse"]
+        assert installed.declared.records == "unbounded_source_paced"
+        assert installed.declared.accepts == frozenset({"api"})
+        assert installed.declared.effects == frozenset({"network"})
+        assert installed.settings is SseSettings
 
     @pytest.mark.parametrize("reconnect", [-1, 1.5])
     def test_reconnect_is_a_count_of_zero_or_more(self, reconnect: Any) -> None:
         from pydantic import ValidationError
 
-        assert collector_type.settings is not None
         with pytest.raises(ValidationError):
-            collector_type.settings.model_validate({"endpoint": "/e", "reconnect": reconnect})
+            SseSettings.model_validate({"endpoint": "/e", "reconnect": reconnect})

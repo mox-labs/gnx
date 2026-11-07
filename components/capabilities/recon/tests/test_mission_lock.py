@@ -21,39 +21,32 @@ from recon.adapters._in.cli import main
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.system_clock import SystemClock
 from recon.composition import root
+from recon.core.domain.collector import Item, Position, Record, Run
 from recon.core.domain.errors import EXIT_CODES, EXIT_MEANINGS, ReconError
-from tests.recon_fakes import plugins_with
+from tests.recon_fakes import FakeCollector, plugins_with
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
     from recon.composition import Recon
-    from recon.core.domain.capture import CaptureLog
-    from recon.core.domain.models import CollectorEntry, SourceEntry
 
 
 def _store(project: Path) -> ArchiveFiles:
     return ArchiveFiles(project / ".recon", SystemClock())
 
 
-class Slow:
+class Slow(FakeCollector):
     """A collector that gives one record once the test lets it go: a survey held mid-table."""
 
     def __init__(self) -> None:
         self.inside = threading.Event()
         self.go = threading.Event()
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-    ) -> Iterator[dict[str, Any]]:
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
         self.inside.set()
         assert self.go.wait(10), "the test never let the survey go on"
-        yield {"seq": 1}
+        yield Record({"seq": 1})
 
 
 def _mission(project: Path, name: str = "m") -> None:

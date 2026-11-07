@@ -9,13 +9,13 @@ is left unchecked, and the plan says so (``complete`` is false).
 
 Pure: no network, no subprocess, no filesystem; whether a ``local`` source's directory
 exists is asked of the predicate the caller passes. Collector types contribute through their
-``CollectorType.settings`` schema, which validates an entry's keys beyond the ones recon
-reads, and their ``check`` and ``describe`` hooks, which are pure by contract and see only an
-entry whose settings the schema accepts. A source's kind must be one an installed type adds
-(``CollectorType.source_kinds``); its keys beyond the shared ones are validated against that
-type's ``source_settings`` schema, and its ``check_source`` hook judges the rest. What a run
-needs of the host beyond this (a server that starts, a tool it lists) is not the plan's to
-check: a dry run asks the collector types that declare a ``preflight``.
+settings schema (their registration's ``config``), which validates an entry's keys beyond the
+ones recon reads, and their ``check`` and ``describe`` members, which are pure by contract and
+see only a run whose settings the schema accepts (``recon.core.domain.collector``). A source's
+kind must be one installed at ``recon.source``; its keys beyond the shared ones are validated
+against the kind's schema, and its ``check`` judges the rest. What a run needs of the host
+beyond this (a server that starts, a tool it lists) is not the plan's to check: a checked dry
+run asks the collector types that are ``Preflight``.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from pydantic import BaseModel, ValidationError
 
 from recon.core.domain.archives import RESERVED_OUTPUTS, SIDECARS, table_name
 from recon.core.domain.changes import CHANGES_SUFFIX, changes_output
+from recon.core.domain.collector import Run
 from recon.core.domain.credentials import env_name
 from recon.core.domain.documents import SourcedValue
 from recon.core.domain.errors import Problem
@@ -55,7 +56,7 @@ from recon.core.domain.subscriptions import ROW_FIELDS, SubscriptionSpec, match_
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping, Sequence
 
-    from recon.core.domain.collector import BrokenPlugin, CollectorType, Plugins
+    from recon.core.domain.collector import BrokenPlugin, InstalledType, Plugins
     from recon.core.domain.documents import Origin
     from recon.core.domain.ranges import RangeSpec
     from recon.core.domain.stream import Overflow, Retain
@@ -175,7 +176,7 @@ def fan_out(
 
     Pinned (``source:``) → that source only, output named after the collector. No source
     and a non-empty catalog → every catalog source of a kind in ``accepts``, the kinds its
-    type accepts (``CollectorType.accepts_kinds``; None, every kind), output
+    type accepts (its collector's ``accepts``; None, every kind), output
     ``<collector>-<source>`` (owner ruling 2026-10-22). No catalog → once, with no source. A
     pinned source missing from the catalog, or a catalog with no source of an accepted kind,
     yields nothing; the planner reports either.
@@ -190,15 +191,6 @@ def fan_out(
             if accepts is None or src.type in accepts
         ]
     return [(None, entry.name)]
-
-
-def accepted_kinds(
-    types: Mapping[str, CollectorType], entry: CollectorEntry
-) -> frozenset[str] | None:
-    """The source kinds the entry's type accepts; None (every kind) for a type that does not
-    say, or one not installed."""
-    ctype = types.get(entry.type)
-    return ctype.accepts_kinds if ctype is not None else None
 
 
 def build_plan(
@@ -261,7 +253,7 @@ def build_plan(
         settings_whole = settings_whole and (
             checked is not None or (ctype is None and not entry.settings)
         )
-        accepts = ctype.accepts_kinds if ctype is not None else None
+        accepts = ctype.declared.accepts if ctype is not None else None
         if not entry.source and accepts is not None:
             passed = [src for src in catalog.values() if src.type not in accepts]
             skipped += [SkippedSource(entry.name, src.name, src.type) for src in passed]
@@ -309,9 +301,18 @@ def build_plan(
             # A type's describe sees only a source whose own settings were accepted.
             judged = source is None or source.name not in refused
             if ctype is not None and checked is not None and judged:
-                problems.extend(_run_problems(i, checked, source, ctype))
+                run = _run_of(checked, output, source, ctype)
+                problems.extend(p for p in _run_problems(i, run, ctype) if p not in problems)
                 name = entry.name if is_stream else None
-                runs.append(_planned_run(checked, output, source, ctype, stream=name))
+                runs.append(_planned_run(run, entry.name, ctype, stream=name))
+        if not targets and ctype is not None and checked is not None:
+            # An entry that makes no run (its source is not in the catalog, or none is of a
+            # kind it takes, each its own problem) is still checked, as a run with no source:
+            # every problem at once, but the source's, which is said already.
+            run = _run_of(checked, entry.name, None, ctype)
+            at_source = f"collectors.{i}.source"
+            problems.extend(p for p in _run_problems(i, run, ctype)
+                            if p.path != at_source and p not in problems)  # fmt: skip
 
     subscriptions, _ = _validate_items(
         raw.get("subscriptions"), "subscriptions", SubscriptionSpec, problems
@@ -374,29 +375,34 @@ def _anchored(source: SourceEntry, base: Path | None) -> SourceEntry:
     return source.model_copy(update={"url": str(base / source.url)})
 
 
-def _planned_run(
-    entry: CollectorEntry,
-    output: str,
-    source: SourceEntry | None,
-    ctype: CollectorType,
-    *,
-    stream: str | None = None,
-) -> PlannedRun:
+def _run_of(
+    entry: CollectorEntry, output: str, source: SourceEntry | None, ctype: InstalledType
+) -> Run:
+    """The run of ``entry`` (whose settings its type's schema accepted) for ``output``."""
     target = entry if output == entry.name else entry.model_copy(update={"name": output})
+    settings = None if ctype.settings is None else ctype.settings.model_validate(entry.settings)
+    return Run(target, source, settings)
+
+
+def _planned_run(
+    run: Run, collector: str, ctype: InstalledType, *, stream: str | None = None
+) -> PlannedRun:
+    declared = ctype.declared
+    entry = run.entry
     return PlannedRun(
-        output=output,
-        collector=entry.name,
+        output=entry.name,
+        collector=collector,
         type=entry.type,
-        source=source.name if source else None,
+        source=run.source.name if run.source else None,
         type_url=entry.type_url,
-        effects=sorted(ctype.effects) if ctype.effects is not None else None,
-        detail=ctype.describe(target, source),
+        effects=sorted(declared.effects) if declared.effects is not None else None,
+        detail=dict(declared.describe(run)),
         stream=stream,
     )
 
 
 def _stream(
-    i: int, entry: CollectorEntry, ctype: CollectorType
+    i: int, entry: CollectorEntry, ctype: InstalledType
 ) -> tuple[PlannedStream, list[SourcedValue], list[Problem]]:
     """A stream entry's effective settings, where each came from, and the warning when it
     keeps every window by default."""
@@ -424,8 +430,9 @@ def _stream(
         values.append(SourcedValue(path=f"{at}.buffer.overflow", value=overflow,
                                    origin="mission"))  # fmt: skip
     else:
-        overflow = default_overflow(ctype.paced_by)
-        note = f"the {entry.type} type declares paced_by: {ctype.paced_by}"
+        records = ctype.declared.records
+        overflow = default_overflow("source" if records == "unbounded_source_paced" else "recon")
+        note = f"the {entry.type} type declares records: {records}"
         values.append(SourcedValue(path=f"{at}.buffer.overflow", value=overflow, origin="type",
                                    note=note))  # fmt: skip
     retain: Retain = entry.retain if entry.retain is not None else "all"
@@ -996,58 +1003,32 @@ def _entry_problems(
         problems += found
     if ctype is not None and (mismatch := _kind_problem(at, entry, catalog, ctype, plugins)):
         problems.append(mismatch)
-    if entry.source and entry.source not in catalog:
-        if entry.source not in unchecked:
-            known = ", ".join(sorted(catalog)) or "(empty catalog)"
-            problems.append(
-                Problem(
-                    f"{at}.source",
-                    f"source {entry.source!r} not in catalog; have: {known}",
-                    kind="name_unknown",
-                    fix="name a catalog source, add this one under catalog:, or omit source: "
-                    "to fan out over the catalog's sources it can use",
-                    got=entry.source,
-                    allowed=tuple(sorted(catalog)),
-                )
-            )
-    elif ctype is not None and ctype.requires_source and not entry.source and not catalog:
+    if entry.source and entry.source not in catalog and entry.source not in unchecked:
+        known = ", ".join(sorted(catalog)) or "(empty catalog)"
         problems.append(
             Problem(
                 f"{at}.source",
-                f"a {entry.type} collector needs a source",
-                kind="missing_key",
-                fix="add a source under catalog: and name it here (or omit source: to fan out "
-                "over the catalog's sources it can use)",
+                f"source {entry.source!r} not in catalog; have: {known}",
+                kind="name_unknown",
+                fix="name a catalog source, add this one under catalog:, or omit source: "
+                "to fan out over the catalog's sources it can use",
+                got=entry.source,
+                allowed=tuple(sorted(catalog)),
             )
         )
-    if ctype is not None and checked is not None:
-        for p in ctype.check(checked):
-            path = f"{at}.{p.path}" if p.path else at
-            problems.append(Problem(path, p.message, p.kind, p.fix, p.got, p.allowed, p.source))
-    if entry.extract and ctype is not None and not ctype.extracts:
-        problems.append(
-            Problem(
-                f"{at}.extract",
-                f"a {entry.type} collector reads no body, so it takes no extract:",
-                kind="unknown_key",
-                fix="remove extract:, or shape the records with normalize:",
-                got=entry.extract,
-                allowed=_entry_keys(ctype),
-            )
-        )
-    elif entry.extract and (problem := path_problem(entry.extract)) is not None:
+    if entry.extract and (problem := path_problem(entry.extract)) is not None:
         problems.append(
             Problem(
                 f"{at}.extract", problem, fix="use at most one * in the path", got=entry.extract
             )
         )
     paginate = entry.paginate
-    if paginate is not None and ctype is not None and not ctype.paginates:
+    if paginate is not None and ctype is not None and not ctype.paged:
         problems.append(
             Problem(
                 f"{at}.paginate",
-                f"a {entry.type} collector does not read its source page by page, so it takes "
-                "no paginate:",
+                f"a {entry.type} collector does not read its source page by page as recon "
+                "crawls it, so it takes no paginate:",
                 kind="unknown_key",
                 fix="remove paginate: (an api collector reads pages)",
                 allowed=_entry_keys(ctype),
@@ -1082,16 +1063,14 @@ def _entry_problems(
     return problems, checked
 
 
-def _run_problems(
-    i: int, entry: CollectorEntry, source: SourceEntry | None, ctype: CollectorType
-) -> list[Problem]:
+def _run_problems(i: int, run: Run, ctype: InstalledType) -> list[Problem]:
     """The problems the entry's type finds in one of its runs, at paths under the entry."""
     at = f"collectors.{i}"
     return [
         Problem(
             f"{at}.{p.path}" if p.path else at, p.message, p.kind, p.fix, p.got, p.allowed, p.source
         )  # fmt: skip
-        for p in ctype.check_run(entry, source)
+        for p in ctype.declared.check(run)
     ]
 
 
@@ -1099,13 +1078,13 @@ def _kind_problem(
     at: str,
     entry: CollectorEntry,
     catalog: Mapping[str, SourceEntry],
-    ctype: CollectorType,
+    ctype: InstalledType,
     plugins: Plugins,
 ) -> Problem | None:
     """A problem when the entry is pinned to a source of a kind its type cannot use. A
     source of a kind nothing installed adds has its own problem, and gets no second one."""
     source = catalog.get(entry.source) if entry.source else None
-    kinds = ctype.accepts_kinds
+    kinds = ctype.declared.accepts
     if source is None or kinds is None or source.type in kinds:
         return None
     if source.type not in source_kinds(plugins):
@@ -1125,7 +1104,7 @@ def _kind_problem(
 
 
 def _settings_problems(
-    at: str, entry: CollectorEntry, ctype: CollectorType
+    at: str, entry: CollectorEntry, ctype: InstalledType
 ) -> tuple[list[Problem], CollectorEntry | None]:
     """The problems in the keys that are the type's own, validated by its schema, and the
     entry to run its hooks on: without the keys found unknown, or None when its settings do
@@ -1153,7 +1132,7 @@ def _settings_problems(
     return problems, _with_settings(entry, known)
 
 
-def _unknown_key(at: str, key: str, value: Any, ctype: CollectorType) -> Problem:
+def _unknown_key(at: str, key: str, value: Any, ctype: InstalledType) -> Problem:
     return Problem(
         f"{at}.{key}",
         "unknown key: this collector type takes no such setting",
@@ -1164,11 +1143,10 @@ def _unknown_key(at: str, key: str, value: Any, ctype: CollectorType) -> Problem
     )
 
 
-def _entry_keys(ctype: CollectorType) -> tuple[str, ...]:
+def _entry_keys(ctype: InstalledType) -> tuple[str, ...]:
     """Every key an entry of this type may hold: recon's own and the type's settings."""
     own = set(ctype.settings.model_fields) if ctype.settings is not None else set()
-    shared = set(CollectorEntry.model_fields) - (set() if ctype.extracts else {"extract"})
-    shared -= set() if ctype.paginates else {"paginate"}
+    shared = set(CollectorEntry.model_fields) - (set() if ctype.paged else {"paginate"})
     return tuple(sorted(shared | own))
 
 
@@ -1179,20 +1157,17 @@ def _with_settings(entry: CollectorEntry, settings: dict[str, Any]) -> Collector
 
 
 def source_kinds(plugins: Plugins) -> tuple[str, ...]:
-    """The source kinds installed: those the installed collector types add."""
-    return tuple(
-        sorted({kind for ct in plugins.collector_types.values() for kind in ct.source_kinds})
-    )
+    """The source kinds installed at ``recon.source``."""
+    return tuple(sorted(plugins.source_kinds))
 
 
-def _kind_types(plugins: Plugins) -> dict[str, CollectorType]:
-    """The installed type that adds each source kind, recon's own first (the registry's
-    order), the first one when two add the same kind."""
-    adders: dict[str, CollectorType] = {}
-    for ct in plugins.collector_types.values():
-        for kind in sorted(ct.source_kinds):
-            adders.setdefault(kind, ct)
-    return adders
+#: Built-ins recon has removed, by the name a config wrote, and what to write instead: a
+#: config naming one is a plan problem that says so, never a type that is quietly another.
+REMOVED_TYPES = {
+    "web": "type: api with response_format: document (the page fetched and converted to "
+    "markdown by its content type, one record: url, title, content, content_type)",
+}
+REMOVED_KINDS = {"web": "type: api (an HTTP endpoint, which api and sse collectors run against)"}
 
 
 def _source_problems(
@@ -1203,21 +1178,28 @@ def _source_problems(
     keys of its own, or whose own keys its kind's schema refuses, may hide more problems,
     and no type's hook is shown it."""
     installed = source_kinds(plugins)
-    adders = _kind_types(plugins)
     problems: list[Problem] = []
     refused: set[str] = set()
     for i, src in sources:
         at = f"catalog.{i}"
-        ctype = adders.get(src.type)
-        if ctype is None:
+        kind = plugins.source_kinds.get(src.type)
+        if kind is None:
+            removed = REMOVED_KINDS.get(src.type)
+            message = (
+                f"source kind {src.type!r} was removed from recon in 0.19"
+                if removed is not None
+                else f"unknown source kind {src.type!r}; installed: "
+                f"{', '.join(installed) or '(none)'}"
+            )
             problems.append(
                 Problem(
                     f"{at}.type",
-                    f"unknown source kind {src.type!r}; installed: "
-                    f"{', '.join(installed) or '(none)'}",
+                    message,
                     kind="name_unknown",
-                    fix=f"use one of: {', '.join(installed)}, or install the collector type "
-                    f"that adds {src.type!r} sources",
+                    fix=f"write {removed}"
+                    if removed is not None
+                    else f"use one of: {', '.join(installed)}, or install the package that "
+                    f"registers {src.type!r} sources",
                     got=src.type,
                     allowed=installed,
                 )
@@ -1225,7 +1207,7 @@ def _source_problems(
             if src.settings:
                 refused.add(src.name)
             continue
-        schema = ctype.source_settings
+        schema = kind.settings
         if schema is None:
             allowed = _source_keys(None)
             for key, value in src.settings.items():
@@ -1260,7 +1242,7 @@ def _source_problems(
             ]
             refused.add(src.name)
             continue
-        for p in ctype.check_source(src):
+        for p in kind.kind.check(src):
             path = f"{at}.{p.path}" if p.path else at
             problems.append(Problem(path, p.message, p.kind, p.fix, p.got, p.allowed, p.source))
     return problems, refused
@@ -1278,6 +1260,9 @@ def _unknown_type(at: str, name: str, plugins: Plugins) -> Problem:
     if name in broken:
         message = f"collector type {name!r} is installed but failed to load: {broken[name].error}"
         fix = "fix or reinstall the package that registers it (recon status --json shows why)"
+    elif name in REMOVED_TYPES:
+        message = f"collector type {name!r} was removed from recon in 0.19"
+        fix = f"write {REMOVED_TYPES[name]}"
     else:
         message = f"unknown collector type {name!r}; installed: {', '.join(installed) or '(none)'}"
         fix = f"use one of: {', '.join(installed) or '(none)'}"
@@ -1885,8 +1870,7 @@ def _credential_warnings(
     plugins: Plugins,
 ) -> list[Problem]:
     """A warning for each variable a used source names, as ``auth.token: env:NAME`` or
-    through its kind's own settings (``CollectorType.source_env``), that ``env`` does not set."""
-    adders = _kind_types(plugins)
+    through its kind's own keys (``SourceKind.env``), that ``env`` does not set."""
     warnings = []
     for i, src in sources:
         if src.name not in used:
@@ -1903,10 +1887,10 @@ def _credential_warnings(
                     got=named,
                 )
             )
-        ctype = adders.get(src.type)
-        if ctype is None or ctype.source_settings is None:
+        kind = plugins.source_kinds.get(src.type)
+        if kind is None:
             continue
-        for name, where in ctype.source_env(src).items():
+        for name, where in kind.kind.env(src).items():
             if not env.get(name):
                 warnings.append(
                     Problem(
@@ -1924,12 +1908,11 @@ def _unscheduled_env(
     sources: list[tuple[int, SourceEntry]], used: set[str], plugins: Plugins
 ) -> list[Problem]:
     """A scheduled mission's warning for each ``env:NAME`` reference a used source makes, as
-    ``auth.token`` or through its kind's own settings (``CollectorType.source_env``): a tick
+    ``auth.token`` or through its kind's own keys (``SourceKind.env``): a tick
     runs in the scheduler's environment, never the user's shell's, so the variable is unset
     on every tick, however it is set where the plan runs. The fix names the forms a tick
     resolves itself, at the key the reference is written: a ``file:`` only its owner can read
     or, for a token, a ``headers_helper``."""
-    adders = _kind_types(plugins)
     warnings = []
     for i, src in sources:
         if src.name not in used:
@@ -1937,9 +1920,9 @@ def _unscheduled_env(
         named: dict[str, str] = {}
         if (variable := env_name(src.auth.token)) is not None:
             named[variable] = "auth.token"
-        ctype = adders.get(src.type)
-        if ctype is not None and ctype.source_settings is not None:
-            for variable, where in ctype.source_env(src).items():
+        kind = plugins.source_kinds.get(src.type)
+        if kind is not None:
+            for variable, where in kind.kind.env(src).items():
                 named.setdefault(variable, where)
         for variable, where in named.items():
             helper = where.removesuffix("token") + "headers_helper"
@@ -1973,7 +1956,7 @@ def _unpinned_packages(
     (``npx``, ``uvx``, ``pnpm dlx``...: ``recon.core.domain.schedule.FETCHERS``) fetch without an
     exact version (``recon.core.domain.schedule.unpinned``), once a path: every tick would run
     whatever was published last. The commands are what each run's type describes
-    (``CollectorType.describe``): a server's command line as ``server`` (an ``mcp``
+    (``Collector.describe``): a server's command line as ``server`` (an ``mcp``
     source's, at ``catalog.<i>``), shell lines as ``commands`` (a ``cli`` entry's, at
     ``collectors.<i>``), a ``headers_helper`` (an ``mcp`` source's, at
     ``catalog.<i>.headers_helper``), so a type of a third party's that describes its commands

@@ -19,8 +19,10 @@ import recon
 from recon.adapters._out.archive_files import ArchiveFiles, StoredTable
 from recon.composition import root
 from recon.core.domain.archives import ArchiveRef, NewRecords
+from recon.core.domain.collector import Item, Position, Record, Run
 from recon.core.domain.models import ReconConfig
 from tests.recon_fakes import (
+    FakeCollector,
     FixedClock,
     LandedThrough,
     WrappingArchives,
@@ -36,8 +38,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from recon.core.domain.archives import Landed
-    from recon.core.domain.capture import CaptureLog
-    from recon.core.domain.models import CollectorEntry, SourceEntry
 
 
 def _until(read: Callable[[], recon.RecordsSince], records: int) -> recon.RecordsSince:
@@ -51,7 +51,7 @@ def _until(read: Callable[[], recon.RecordsSince], records: int) -> recon.Record
         time.sleep(0.02)
 
 
-class _Steps:
+class _Steps(FakeCollector):
     """A collector that yields records in steps, and between steps runs what the test asks:
     ``between[i]`` runs after the records of step ``i``. It raises at the end when told."""
 
@@ -62,15 +62,9 @@ class _Steps:
         self._between = between
         self._fail = fail
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-    ) -> Iterator[dict[str, Any]]:
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
         for step, then in zip(self._steps, self._between, strict=True):
-            yield from step
+            yield from (Record(record) for record in step)
             then()
         if self._fail:
             raise RuntimeError("the source broke off")
@@ -442,16 +436,10 @@ class TestNoReceiverSlowsTheWrite:
                 super().record(meta)
                 written.append(time.monotonic())
 
-        class Slow:
-            def collect(
-                self,
-                entry: CollectorEntry,
-                source: SourceEntry | None,
-                *,
-                captures: CaptureLog | None = None,
-            ) -> Iterator[dict[str, Any]]:
+        class Slow(FakeCollector):
+            def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
                 time.sleep(0.2)
-                yield {"table": entry.name}
+                yield Record({"table": run.entry.name})
 
         clock = FixedClock()
         config = {"collectors": [{"name": f"t{n}", "type": "x"} for n in range(5)]}

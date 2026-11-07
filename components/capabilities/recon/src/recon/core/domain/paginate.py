@@ -19,9 +19,10 @@ A crawl stops (:class:`Crawl`, pure) at the first of:
 
 A truncated table is sealed ``ok`` and says it is truncated: it is not a whole snapshot of
 its source. Each record of a paginated table carries ``_position``, ``{page, i}``: its page's
-ordinal in its crawl, from 0, and its index on that page; the page log (:class:`PageLog`)
-keeps each page's token once, said before the page is asked for, so a token costs an entry a
-page rather than a record.
+ordinal in its crawl, from 0, and its index on that page; the page log keeps each page's token
+once, said before the page is asked for, so a token costs an entry a page rather than a
+record. recon runs every crawl (``recon.core.application.items.crawl``); how a page is asked
+for by its token is the collector type's (``Paged``).
 
 **Resume** (ruling P4) is a stream's: a snapshot table is all or nothing. A crawl that a
 stream's run goes on with starts at a :class:`Resume`: the last page its page log names, by
@@ -38,7 +39,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Final, Literal, Protocol
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -75,7 +76,8 @@ FIRST_PAGE: Final = 1
 
 
 class PaginateSpec(BaseModel):
-    """``paginate:`` on a collector entry of a type that reads it (``CollectorType.paginates``).
+    """``paginate:`` on a collector entry of a type recon crawls (a ``Paged`` type,
+    :mod:`recon.core.domain.collector`).
 
     ``type`` says how the next page is asked for; ``pages`` is the most pages read, 100 by
     default. ``next`` is the path, in ``extract:``'s syntax, of the next page's URL (``link``)
@@ -136,6 +138,11 @@ class Crawl:
         self.pages = pages
         self.offset = offset
 
+    def saw(self, token: Any) -> None:
+        """``token`` names a page read already (a ``link`` crawl's first page, by its URL), so a
+        page that names it next is a loop."""
+        self._seen.add(_key(token))
+
     def after(self, records: int, found: Any = None) -> Next | Stop:
         """What follows a page of ``records`` records that named ``found`` as the next."""
         self.pages += 1
@@ -164,57 +171,13 @@ def _key(token: Any) -> tuple[str, Any]:
     return type(token).__name__, token
 
 
-class PageLog(Protocol):
-    """Where a collector says what pages it read and why its crawl stopped short
-    (``CollectorContext.pages``), for the table or the stream being collected.
-
-    :meth:`page` once a page, before the page is asked for, with its ordinal in the crawl and
-    the token that asks for it (None for the first page, which none does): False when the page
-    is not wanted (the stream it is read for has ended), and the crawl stops without asking
-    for it. :meth:`truncated` once, when the crawl stopped short. A crawl that goes on from a
-    :class:`Resume` says :meth:`restarted` when the source refused the resumed page's token,
-    and :meth:`shifted` when that page's last record kept was not where it was left."""
-
-    def page(self, index: int, token: Any) -> bool: ...
-
-    def truncated(self, by: TruncatedBy) -> None: ...
-
-    def restarted(self, index: int) -> None:
-        """The source refused the token of page ``index``, the crawl's resumed page (an
-        expired cursor, a page gone): the crawl began again from its first page."""
-        ...
-
-    def shifted(self, index: int, by: int | None) -> None:
-        """Page ``index``, the crawl's resumed page, moved under the crawl: its last record
-        kept was found ``by`` records later (records were inserted ahead of it) or earlier
-        (negative: removed), and the crawl went on after it; or was not found (None), and
-        the crawl went on by its index."""
-        ...
-
-
-class NoPages:
-    """The :class:`PageLog` of a run that keeps no page log: every page is wanted."""
-
-    def page(self, index: int, token: Any) -> bool:
-        return True
-
-    def truncated(self, by: TruncatedBy) -> None:
-        return None
-
-    def restarted(self, index: int) -> None:
-        return None
-
-    def shifted(self, index: int, by: int | None) -> None:
-        return None
-
-
 @dataclass(frozen=True)
 class Resume:
     """Where a crawl a stream goes on with starts: ``page``, the last page its page log names,
     asked for again by ``token``; ``i``, the index on that page of the last record kept from
     it (-1 when none was: the page was named and never read), and ``boundary``, that record's
-    :func:`content`, by which the crawl finds where it left off. A collector of a type that
-    ``paginates`` is handed it as ``collect``'s ``after``, as :meth:`document` says it."""
+    :func:`content`, by which the crawl finds where it left off. :meth:`document` is how the
+    stream keeps it."""
 
     page: int
     token: Any

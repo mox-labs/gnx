@@ -24,11 +24,13 @@ from recon.composition import load_plugins, root
 from recon.core.application.plan import build_plan
 from recon.core.domain.archives import ArchiveRef
 from recon.core.domain.changes import ChangesSpec
+from recon.core.domain.collector import Item, Position, Record, Run
 from recon.core.domain.errors import CollectionError, ReconError
 from recon.core.domain.http import HttpResponse
 from recon.core.domain.stream import window_id
 from recon.observe.application.changes import Comparison, Hasher, MemoryJoin, canonical
 from tests.recon_fakes import (
+    FakeCollector,
     FixedClock,
     LandedThrough,
     VirtualClock,
@@ -44,9 +46,8 @@ from tests.test_paginated_survey import PagedApi
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from recon.core.domain.capture import CaptureLog
     from recon.core.domain.collector import Plugins
-    from recon.core.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.models import SourceEntry
 
 
 class Inbox:
@@ -935,23 +936,17 @@ class TestThePlan:
 # --- streams (C7) ---------------------------------------------------------------------------
 
 
-class _Feed:
+class _Feed(FakeCollector):
     """A source of the records it is given, each positioned by its index, that then ends."""
 
-    def __init__(self, records: list[dict[str, Any]]) -> None:
-        self.records = records
+    def __init__(self, given: list[dict[str, Any]]) -> None:
+        # Not ``records``: that is the collector contract's member saying whether they end.
+        self.given = given
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-        after: Any = None,
-    ) -> Iterator[dict[str, Any]]:
-        start = 0 if after is None else int(after) + 1
-        for n in range(start, len(self.records)):
-            yield {**self.records[n], "_position": n}
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+        start = 0 if resume is None else int(resume.value) + 1
+        for n in range(start, len(self.given)):
+            yield Record(self.given[n], position=n)
 
 
 def _stream_mission(project: Path, retain: Any = "all") -> None:
@@ -1005,7 +1000,7 @@ class TestStreams:
 
         (second / "s.keys.jsonl").unlink()
         (first / "s.keys.jsonl").unlink()
-        feed.records = self.RECORDS
+        feed.given = self.RECORDS
         recon.observation.stream("m", "s", windows=1)
         third = _windows(tmp_path)[-1]
         assert _window_ops(third) == [("insert", "d")], "folded again from the first window"
@@ -1049,7 +1044,7 @@ class TestStreams:
         recon.observation.stream("m", "s", windows=1)  # a1, b1
         dead = self._crashed_window(tmp_path, 1, [{**records[2], "_position": 2},
                                                  {**records[3], "_position": 3}])  # fmt: skip
-        feed.records = records[:6]
+        feed.given = records[:6]
         recon.observation.stream("m", "s", windows=1)  # resumed after 3: b1, d1
         first, crashed, resumed = _windows(tmp_path)
         assert crashed == dead
@@ -1060,7 +1055,7 @@ class TestStreams:
 
         # The resumed window's told index, rebuilt, folds the dead window's records too.
         (resumed / "s.keys.jsonl").unlink()
-        feed.records = records
+        feed.given = records
         recon.observation.stream("m", "s", windows=1)  # e1, a3
         last = _windows(tmp_path)[-1]
         assert _window_ops(last) == [("insert", "e"), ("update", "a")]
@@ -1105,12 +1100,11 @@ class TestStreams:
         class FailsAt(_Feed):
             fail_at: int | None = 3
 
-            def collect(self, entry: Any, source: Any, *, captures: Any = None,
-                        after: Any = None) -> Iterator[dict[str, Any]]:  # fmt: skip
-                for record in super().collect(entry, source, captures=captures, after=after):
-                    if record["_position"] == self.fail_at:
+            def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+                for item in super().collect(run, resume):
+                    if isinstance(item, Record) and item.position == self.fail_at:
                         raise CollectionError("the source broke", kind="transient")
-                    yield record
+                    yield item
 
         _stream_mission(tmp_path)
         feed = FailsAt(self.RECORDS)

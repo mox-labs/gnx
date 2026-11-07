@@ -37,20 +37,19 @@ import yaml
 
 from recon.adapters._out.api_collector import ApiCollector
 from recon.adapters._out.capture_collector import CaptureCollector
-from recon.adapters._out.capture_files import FilesystemCaptureLog
+from recon.adapters._out.capture_files import FilesystemCaptureLog, MissionCaptureLogs
 from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.mcp_collector import McpCollector
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.core.application.captures import record_hook_payload
-from recon.core.domain.collector import CollectorContext
 from recon.core.domain.deadline import Deadline
 from recon.core.domain.http import HttpResponse
 from recon.core.domain.models import CollectorEntry, SourceEntry
-from recon.core.domain.normalize import BUILTIN_TRANSFORMS
 from recon.core.domain.ratelimit import RateLimiter
 from recon.core.domain.telemetry import Telemetry
-from tests.recon_fakes import FixedClock, NoConverter, ScriptedRequester, ScriptedShell
+from recon.testing import records
+from tests.recon_fakes import FixedClock, ScriptedShell, run_for
 
 FIXTURES = Path(__file__).parent / "fixtures" / "templates"
 REPLAY_SERVER = Path(__file__).parent / "mcp_server.py"
@@ -112,7 +111,8 @@ def _records(template: str, raw: dict[str, Any], fixture: Path, tmp_path: Path) 
             FilesystemCaptureLog(tmp_path / "captures", FixedClock()),
             json.loads(fixture.read_text()),
         )
-        return list(CaptureCollector(tmp_path).collect(entry, None))
+        capture = CaptureCollector(capture_logs=MissionCaptureLogs(tmp_path))
+        return records(capture, run_for(entry))
     if entry.type == "mcp":
         return _replayed(entry, fixture, tmp_path)
     assert entry.type == "api", f"no fixture runner for a {entry.type} collector"
@@ -120,11 +120,11 @@ def _records(template: str, raw: dict[str, Any], fixture: Path, tmp_path: Path) 
         SourceEntry.model_validate(s) for s in config["catalog"] if s["name"] == entry.source
     ]
     requester = RecordedRequester(fixture)
-    records = list(
-        ApiCollector(requester, Credentials({}), DEFAULT_USER_AGENT).collect(entry, source)
-    )
+    api = ApiCollector(requester=requester, credentials=Credentials({}),
+                       user_agent=DEFAULT_USER_AGENT)  # fmt: skip
+    found = records(api, run_for(entry, source))
     assert requester.urls, "the collector asked its source"
-    return records
+    return found
 
 
 def _replayed(entry: CollectorEntry, recording: Path, tmp_path: Path) -> list[Any]:
@@ -132,21 +132,15 @@ def _replayed(entry: CollectorEntry, recording: Path, tmp_path: Path) -> list[An
     command = {"command": sys.executable, "args": [str(REPLAY_SERVER), "--replay", str(recording)]}
     source = SourceEntry.model_validate({"name": entry.source, "type": "mcp", **command})
     clock = SystemClock()
-    ctx = CollectorContext(
-        requester=ScriptedRequester({}),
-        converter=NoConverter(),
-        shell=ScriptedShell({}),
+    collector = McpCollector(
         telemetry=Telemetry([], clock),
         deadline=Deadline(clock),
         rate_limiter=RateLimiter(clock),
-        transforms=BUILTIN_TRANSFORMS,
-        mission_dir=tmp_path,
-        env={},
+        credentials=Credentials({}, tmp_path, ScriptedShell({}), Deadline(clock)),
         user_agent=DEFAULT_USER_AGENT,
     )
-    collector = McpCollector(ctx)
     try:
-        return list(collector.collect(entry, source))
+        return records(collector, run_for(entry, source))
     finally:
         collector.close()
 

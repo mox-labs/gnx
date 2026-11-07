@@ -29,16 +29,15 @@ from recon.adapters._in.cli import main
 from recon.adapters._out.system_clock import SystemClock
 from recon.composition import load_plugins, root
 from recon.core.domain import documents as documents_module
-from recon.core.domain.collector import BrokenPlugin, CollectorContext, CollectorType
+from recon.core.domain.collector import BrokenPlugin, InstalledType, Record
 from recon.core.domain.errors import CollectionError, ErrorKind
 from recon.core.domain.type_url import is_type_url
-from tests.recon_fakes import LandedThrough, WrappingArchives, building
+from tests.recon_fakes import FakeCollector, LandedThrough, WrappingArchives, building, installed
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterator, Mapping
 
-    from recon.core.domain.capture import CaptureLog
-    from recon.core.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.collector import Effect, Item, Position, Run
 
 OK_CONFIG = {
     "collectors": [
@@ -401,18 +400,14 @@ class TestSurvey:
         assert _error(result)["kind"] == "config"
 
 
-def _failing_type(kind: ErrorKind) -> CollectorType:
-    class Failing:
-        def collect(
-            self,
-            entry: CollectorEntry,
-            source: SourceEntry | None,
-            *,
-            captures: CaptureLog | None = None,
-        ) -> Iterator[dict[str, Any]]:
+def _failing_type(kind: ErrorKind) -> InstalledType:
+    class Failing(FakeCollector):
+        effects: frozenset[Effect] | None = frozenset({"network"})
+
+        def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
             raise CollectionError(f"simulated {kind} failure", kind=kind)
 
-    return CollectorType(create=lambda ctx: Failing(), effects=frozenset({"network"}))
+    return installed(f"fails-{kind}", lambda **needs: Failing())
 
 
 # --- survey -c ------------------------------------------------------------------------
@@ -484,7 +479,7 @@ class TestDryRun:
         built: list[str] = []
         registry = load_plugins()
         for name, ct in list(registry.collector_types.items()):
-            registry.collector_types[name] = replace(ct, create=building(built, name))
+            registry.collector_types[name] = replace(ct, build=building(built, name))
         result = _invoke("survey", "m", flag, "--json", over=root(plugins=registry))
 
         assert result.exit_code == 0, result.stderr
@@ -560,7 +555,7 @@ class TestStatus:
         assert mission["latest"]["format_version"] == 2
         assert mission["latest"]["tables"][0]["type_url"] == "recon.v1.records"
         types = {c["type"] for c in doc["plugins"]["collectors"]}
-        assert {"api", "cli", "web", "capture"} <= types
+        assert {"api", "cli", "capture"} <= types
         assert "$html2text" in doc["plugins"]["transforms"]
 
     def test_empty_is_still_a_wrapped_document(self, project: Path) -> None:
@@ -941,11 +936,11 @@ class TestFanOutByKind:
 
     MIXED: ClassVar[list[dict[str, str]]] = [
         {"name": "repo", "type": "local", "url": "."},
-        {"name": "docs", "type": "web", "url": "https://docs.example.test"},
+        {"name": "docs", "type": "api", "url": "https://docs.example.test"},
     ]
 
     def test_the_plan_names_the_sources_a_collector_skips(self, project: Path) -> None:
-        """Regression: adding a web source to a mission fanned an unpinned ``cli`` collector
+        """Regression: adding an HTTP source to a mission fanned an unpinned ``cli`` collector
         out over it too, a command run in recon's working directory in its name."""
         _mission(project, "m", {"catalog": self.MIXED, "collectors": [
             {"name": "todos", "type": "cli", "run": "echo '{}'"},
@@ -956,10 +951,10 @@ class TestFanOutByKind:
         assert result.exit_code == 0, result.stderr
         doc = _doc(result)
         assert [run["output"] for run in doc["runs"]] == ["todos-repo"]
-        assert doc["skipped"] == [{"collector": "todos", "source": "docs", "kind": "web"}]
+        assert doc["skipped"] == [{"collector": "todos", "source": "docs", "kind": "api"}]
         assert doc["warnings"] == []
         human = _invoke("survey", "m", "-n")
-        assert "todos skips docs (web)" in human.stdout
+        assert "todos skips docs (api)" in human.stdout
 
     def test_a_survey_runs_only_the_sources_its_collectors_accept(self, project: Path) -> None:
         _mission(project, "m", {"catalog": self.MIXED, "collectors": [
@@ -971,7 +966,7 @@ class TestFanOutByKind:
         assert "warning" not in result.stderr
 
     def test_a_collector_with_no_source_it_accepts_is_a_plan_problem(self, project: Path) -> None:
-        """Regression: a ``cli`` collector over a catalog of ``web`` sources alone ran in recon's
+        """Regression: a ``cli`` collector over a catalog of HTTP sources alone ran in recon's
         working directory, once per source, with no warning."""
         _mission(project, "m", {"catalog": self.MIXED[1:], "collectors": [
             {"name": "todos", "type": "cli", "run": "pwd"},
@@ -980,7 +975,7 @@ class TestFanOutByKind:
         assert result.exit_code == 3
         [problem] = _error(result)["problems"]
         assert problem["path"] == "collectors.0.source" and problem["kind"] == "missing_key"
-        assert "docs (web)" in problem["message"]
+        assert "docs (api)" in problem["message"]
 
     def test_sources_of_one_kind_skip_nothing(self, project: Path) -> None:
         config = {
@@ -1023,17 +1018,33 @@ class TestOneRecordHoldingTheRecords:
         fixed = _doc(_invoke("survey", "m", "--json"))
         assert fixed["tables"][0]["records"] == 3 and fixed["warnings"] == []
 
-    def test_a_shaped_record_or_a_type_that_does_not_extract_is_not_warned(
-        self, project: Path
-    ) -> None:
+    def test_a_shaped_record_or_one_its_type_structured_is_not_warned(self, project: Path) -> None:
+        """Changed requirement (ruling R-NS, 0.19): recon finds the records in every body, a
+        command's lines included, so a ``cli`` table's one record holding a list is warned
+        too, and its ``extract:`` works; a shaped record is not, nor one a type gave already
+        structured (a ``Record``), where no body was read."""
         nested = json.dumps({"feed": {"entry": [{"a": 1}, {"a": 2}]}})
-        config = {"collectors": [
+
+        class Structured(FakeCollector):
+            def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+                yield Record(json.loads(nested))
+
+        registry = load_plugins()
+        registry.collector_types["structured"] = installed("structured", lambda **n: Structured())
+        config: dict[str, Any] = {"collectors": [
             {"name": "lines", "type": "cli", "run": f"echo '{nested}'"},
             {"name": "shaped", "type": "cli", "run": f"echo '{nested}'",
              "normalize": {"entries": "feed.entry"}},
+            {"name": "given", "type": "structured"},
         ]}  # fmt: skip
         _mission(project, "m", config)
-        assert _doc(_invoke("survey", "m", "--json"))["warnings"] == []
+        doc = _doc(_invoke("survey", "m", "--json", over=root(plugins=registry)))
+        [warning] = doc["warnings"]
+        assert warning["kind"] == "extract_missing" and warning["path"] == "collectors.0.extract"
+        config["collectors"][0]["extract"] = "feed.entry"
+        (project / ".recon" / "m" / "config.yaml").write_text(yaml.safe_dump(config))
+        fixed = _doc(_invoke("survey", "m", "--json", over=root(plugins=registry)))
+        assert fixed["warnings"] == [] and fixed["tables"][0]["records"] == 2
 
 
 # --- templates / init -----------------------------------------------------------------
@@ -1215,21 +1226,17 @@ def test_a_plugin_reading_an_undeclared_variable_fails_its_table_with_a_fix(
     where to declare it; nothing is read from the process environment on the quiet."""
     monkeypatch.setenv("RECON_TEST_UNDECLARED", "a secret the mission never named")
 
-    class Greedy:
-        def __init__(self, ctx: CollectorContext) -> None:
-            self._env = ctx.env
+    class Greedy(FakeCollector):
+        def __init__(self, *, env: Mapping[str, str]) -> None:
+            self._env = env
 
-        def collect(
-            self,
-            entry: CollectorEntry,
-            source: SourceEntry | None,
-            *,
-            captures: CaptureLog | None = None,
-        ) -> Iterator[dict[str, Any]]:
-            yield {"leaked": self._env.get("RECON_TEST_UNDECLARED", "")}
+        def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+            yield Record({"leaked": self._env.get("RECON_TEST_UNDECLARED", "")})
 
     registry = load_plugins()
-    registry.collector_types["greedy"] = CollectorType(create=Greedy, effects=None)
+    registry.collector_types["greedy"] = installed(
+        "greedy", Greedy, needs={"env"}, declared=FakeCollector()
+    )
     mission = _mission(project, "m", {"collectors": [{"name": "g", "type": "greedy"}]})
 
     result = _invoke("survey", "m", "--json", over=root(plugins=registry))
@@ -1246,10 +1253,10 @@ def test_a_plugin_reading_an_undeclared_variable_fails_its_table_with_a_fix(
 def test_a_factory_failure_reaches_the_tables_not_a_traceback(project: Path) -> None:
     registry = load_plugins()
 
-    def explode(ctx: CollectorContext) -> NoReturn:
+    def explode(**needs: Any) -> NoReturn:
         raise ValueError("no credentials file")
 
-    registry.collector_types["fragile"] = replace(registry.collector_types["cli"], create=explode)
+    registry.collector_types["fragile"] = replace(registry.collector_types["cli"], build=explode)
     _mission(project, "m", {"collectors": [{"name": "f", "type": "fragile", "run": "true"}]})
     result = _invoke("survey", "m", "--json", over=root(plugins=registry))
     assert result.exit_code == 8
@@ -1355,20 +1362,13 @@ def test_a_survey_cut_short_leaves_its_archive_marked_incomplete(project: Path) 
     """Regression: Ctrl-C mid-survey left an archive with no meta.yaml and no marker, which
     status reported as ok and query read without a warning."""
 
-    class Interrupts:
-        def collect(
-            self,
-            entry: CollectorEntry,
-            source: SourceEntry | None,
-            *,
-            captures: CaptureLog | None = None,
-        ) -> Iterator[dict[str, Any]]:
-            yield {"a": 1}
+    class Interrupts(FakeCollector):
+        def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+            yield Record({"a": 1})
             raise KeyboardInterrupt
 
     plugins = load_plugins()
-    plugins.collector_types["stops"] = CollectorType(create=lambda ctx: Interrupts(),
-                                                     effects=None)  # fmt: skip
+    plugins.collector_types["stops"] = installed("stops", lambda **needs: Interrupts())
     mission = _mission(project, "m", {"collectors": [{"name": "s", "type": "stops"}]})
 
     result = _invoke("survey", "m", "--json", over=root(plugins=plugins))

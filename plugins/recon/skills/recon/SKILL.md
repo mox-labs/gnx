@@ -2,10 +2,10 @@
 name: recon
 description: "Writes, plans and runs recon missions: one YAML file that names sources (HTTP APIs, shell commands, web pages, MCP servers, capture logs) and what to ask them; recon collects the answers into timestamped JSONL archives and answers SQL over them with DuckDB. This skill should be used when the user asks to \"collect data from an API\", \"build a dataset from several sources\", \"mine a codebase with ripgrep or git log\", \"snapshot an API over time\", \"normalize API responses\", \"query collected records with SQL\", \"collect from an MCP server\", \"capture MCP tool results\", \"write a recon mission\", \"watch a survey as it runs\", or runs recon survey, recon query, recon watch or recon init."
 metadata:
-  version: "0.18.0"
+  version: "0.19.0"
 ---
 
-# recon 0.18.0: collect from many sources into tables SQL can query
+# recon 0.19.0: collect from many sources into tables SQL can query
 
 recon runs a mission: one YAML file that lists sources (the catalog) and what to ask each of them (the collectors). recon checks the file and shows every request, command and MCP call it would make, then fetches, runs or calls them, reshapes each answer into records with a declarative `normalize:` spec, and writes one JSONL table per collector and source into a timestamped archive. `recon query` answers SQL over an archive, so a large result is read a few rows at a time instead of loaded whole. recon uses no model: it runs exactly the file you wrote.
 
@@ -16,7 +16,7 @@ Use recon when records from APIs, shell commands, web pages or MCP servers must 
 Do not use recon:
 
 - to read one page or one API response once: fetch it directly.
-- for a page that renders its content with JavaScript: the `web` collector does one HTTP GET and converts what comes back.
+- for a page that renders its content with JavaScript: an `api` collector with `response_format: document` does one HTTP GET and converts what comes back.
 - to write to a remote system: recon only reads.
 
 ## Prerequisites
@@ -24,7 +24,7 @@ Do not use recon:
 The plugin carries this text; the `recon` command is a separate Python package. Check with `recon --version`. Install with:
 
 ```
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.18.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.19.0#subdirectory=components/capabilities/recon"
 ```
 
 If `recon` is missing, say so; do not improvise it with curl and jq, because the archive layout and the query surface are what make the output reusable. A `cli` collector runs whatever program its command names (`rg`, `git`, `gh`), which must be installed too.
@@ -114,7 +114,7 @@ Act on the exit code, then on the error's `fix`:
 A survey whose archive could not be finished (a full disk) exits 9 (`store`) whatever its tables did, an `archive_unfinished` warning saying why. The error is this envelope, on one line:
 
 ```json
-{"schema": "recon.v1.error", "error": {"kind": "config", "message": "<file>: 1 problem(s)", "fix": "fix each problem, then: recon survey m --dry-run", "complete": true, "problems": [{"path": "collectors.0.type", "kind": "name_unknown", "message": "unknown collector type 'ftp'; installed: api, capture, cli, mcp, sse, tail, web", "fix": "use one of: api, capture, cli, mcp, sse, tail, web", "allowed": ["api", "capture", "cli", "mcp", "sse", "tail", "web"], "got": "ftp", "source": ""}], "details": {}}}
+{"schema": "recon.v1.error", "error": {"kind": "config", "message": "<file>: 1 problem(s)", "fix": "fix each problem, then: recon survey m --dry-run", "complete": true, "problems": [{"path": "collectors.0.type", "kind": "name_unknown", "message": "unknown collector type 'ftp'; installed: api, capture, cli, mcp, sse, tail", "fix": "use one of: api, capture, cli, mcp, sse, tail", "allowed": ["api", "capture", "cli", "mcp", "sse", "tail"], "got": "ftp", "source": ""}], "details": {}}}
 ```
 
 A problem's `path` is dotted from the top of the file, list positions included (`collectors.0.type`); `allowed` lists the legal values where the set is closed; `got` is the value written, when there is one. `details` carries structured values: a failed survey's `archive` and `failed` tables, a wrong `value` and the `allowed` ones. A warning is a problem record in the document's `warnings` list (`recon.v1.plan`, `recon.v1.survey`, `recon.v1.query-rows`): it does not stop the command. `error.kind` is the table's Kind; every problem and warning `kind` is listed by `recon --skill -r errors`.
@@ -131,7 +131,7 @@ schedule: {every: 600, missed: once}   # optional: the OS scheduler runs it
 subscriptions: [{name, output, match, deliver}]  # who is told what changed; -r subscriptions
 catalog:                       # where to look; optional
   - name: <source>             # required, unique
-    type: api                  # api | web | local | mcp, or a kind an installed type adds
+    type: api                  # api | local | file | mcp, or a kind an installed package adds
     url: <base URL, or a directory for local>   # required, but by an mcp stdio source
     auth: {token: env:<VAR>, header: <Header-Name>, param: <query param>, prefix: "Bearer "}
     # or auth: {headers_helper: <command>}
@@ -142,7 +142,7 @@ catalog:                       # where to look; optional
     # mcp: command, args, env (as is, or env:NAME) for stdio; or url, token, headers_helper
 collectors:                    # what to ask; required, at least one
   - name: <output>             # required; names the table
-    type: api                  # api | cli | web | capture | mcp, or an installed plugin type
+    type: api                  # api | cli | capture | mcp | tail | sse, or an installed plugin type
     source: <source>           # pin one source; omit to run against every one it can use
     type_url: recon.v1.records # what the records are: <namespace>.v<N>.<kebab-name>
     normalize: {<column>: "<path>|$<transform>"}   # every type; omit to keep records whole
@@ -156,7 +156,6 @@ collectors:                    # what to ask; required, at least one
     # api:     endpoint, params (the query), vars (fill {placeholders}),
     #          method (GET | POST | PUT | PATCH | DELETE), body, response_format (json | xml)
     # cli:     run, patterns
-    # web:     endpoint
     # capture: path, match {source, collector, kind}, response_format
     # mcp:     tool and arguments, or resource; vars (fill {placeholders});
     #          result (structured | text)
@@ -164,9 +163,9 @@ collectors:                    # what to ask; required, at least one
 
 These are all the keys there are: an unknown key at the top level, in a source, a collector, `auth`, `rate_limit` or `match` is a plan problem with its path, so a typo like `normalise:` never passes silently. A collector's keys beyond the shared ones are its type's own, checked by that type (`run:` is unknown on an `api` collector), and an installed plugin type may take keys of its own; its source kinds, too. A top-level key beginning with `_` is ignored: a note, or a YAML anchor collectors alias. `params:` values are strings: quote a number (`limit: "20"`).
 
-**Fan-out.** A collector with `source:` runs once and writes the table `<name>`. Without `source:` it runs against every catalog source of a kind its type uses (`cli`: `local`; `api`, `web`: `api` or `web`; `mcp`: `mcp`; `capture`: any) and writes `<name>-<source>` for each; with no catalog it runs once. The plan's `skipped` names each source it passed over, with its kind; a catalog with none it can use is a plan problem, and so is a pinned source of another kind.
+**Fan-out.** A collector with `source:` runs once and writes the table `<name>`. Without `source:` it runs against every catalog source of a kind its type uses (`cli`: `local`; `api`, `sse`: `api`; `mcp`: `mcp`; `tail`: `file`; `capture`: any) and writes `<name>-<source>` for each; with no catalog it runs once. The plan's `skipped` names each source it passed over, with its kind; a catalog with none it can use is a plan problem, and so is a pinned source of another kind.
 
-**Placeholders.** A placeholder is `{name}`, the name a letter or `_` and then letters, digits or `_`, so a regular expression's `\w{3}` or `{2,5}` is not one; `{{` and `}}` are a literal brace (a GraphQL body's `{viewer{{login}}}`), except in `run:`. In an `api` collector, `{key}` in `endpoint` and in the string values of `body` is filled from `vars:`, which are sent nowhere else; `params:` are the query string, each value sent as written. A placeholder nothing fills is a plan problem (`unresolved`), and so is one in a `params:` value. In an `mcp` collector, `vars:` fill `{key}` in the string values of `arguments` and in `resource`. A `web` collector fills none, so a placeholder in its `endpoint` is a plan problem. In a `cli` collector recon fills `{url}`, the source's `url`, and `{pattern}`, each entry of `patterns:` in turn: `{pattern}` without `patterns:` is a plan problem, and so is `{url}` in a run with no source. Any other `{...}` in `run:` is the command's own (`cargo tree --format '{p}'`, `'{{.Name}}'`) and is passed as written.
+**Placeholders.** A placeholder is `{name}`, the name a letter or `_` and then letters, digits or `_`, so a regular expression's `\w{3}` or `{2,5}` is not one; `{{` and `}}` are a literal brace (a GraphQL body's `{viewer{{login}}}`), except in `run:`. In an `api` collector, `{key}` in `endpoint` and in the string values of `body` is filled from `vars:`, which are sent nowhere else; `params:` are the query string, each value sent as written. A placeholder nothing fills is a plan problem (`unresolved`), and so is one in a `params:` value. In an `mcp` collector, `vars:` fill `{key}` in the string values of `arguments` and in `resource`. In a `cli` collector recon fills `{url}`, the source's `url`, and `{pattern}`, each entry of `patterns:` in turn: `{pattern}` without `patterns:` is a plan problem, and so is `{url}` in a run with no source. Any other `{...}` in `run:` is the command's own (`cargo tree --format '{p}'`, `'{{.Name}}'`) and is passed as written.
 
 **Credentials.** A secret is never in the file. `auth.token` is `env:NAME` (a variable) or `file:PATH` (relative to the mission; refused, `config`, if its group or others can read or write it, or it is a link), sent as `auth.header` and/or `auth.param`, `auth.prefix` in front; or `auth.headers_helper`, a command printing JSON headers, run once a survey. An unset variable sends the request without it, and the plan warns. A scheduled tick sees no shell variable: use `file:` or a helper there (the plan warns `env_unscheduled`). An `mcp` remote's `token:` (as `Authorization: Bearer`) and `headers_helper:` are the same; a stdio server's `env: {GITHUB_TOKEN: env:GITHUB_TOKEN}` gives it that variable, with `HOME`, `PATH`, `SHELL`, `TERM`, `USER` and `LOGNAME` and nothing else of recon's environment. A collector type sees only the variables the mission names this way.
 
@@ -176,7 +175,7 @@ These are all the keys there are: an unknown key at the top level, in a source, 
 |---|---|---|
 | `api` | one HTTP request per source to `url` + `endpoint`; retries 429, 5xx and network errors twice, waiting out a `Retry-After` of up to 60 s (a longer one fails the table at once, `transient`, naming the wait); every send, a retry included, draws from the source's `rate_limit` | each object at `extract` in the JSON or XML body |
 | `cli` | runs `run` in a shell, in its `local` source's directory (a relative `url` is relative to the project root; a directory that does not exist is a plan problem), else, with no source, in the working directory; the plan shows it as each run's `cwd` (null: the working directory); exit 0 succeeds, and so does exit 1 with nothing on stderr (grep's and rg's no match) | each stdout line: a JSON object as is, other text as `{line_number, line}` |
-| `web` | one HTTP GET, converted to markdown by content type (HTML, PDF, DOCX, ...) | one `{url, title, content, status_code, content_type}`; `content` stops at 100,000 characters |
+| `api`, `response_format: document` | one HTTP GET, converted to markdown by content type (HTML, PDF, DOCX, ...) | one `{url, title, content, content_type}`; `content` stops at 100,000 characters |
 | `mcp` | calls `tool` with `arguments`, or reads `resource`, on its `mcp` source's server. A stdio server is started on its first table and serves every other table of the survey, then is stopped; a remote is reached over Streamable HTTP. Before each call the tool must be listed and the arguments must match its input schema (else the table fails, `config`); every call, a listing included, draws from the source's `rate_limit`; an HTTP 401 or 403 is `auth` | each object at `extract` in the tool's structured content when it declares an output schema, else in the JSON of its text content (`result: structured` or `text` says which); a resource's JSON text. A tool error fails the table; an answer with no content keeps it empty, warned (`result_empty`); text that is not JSON fails it |
 | `capture` | reads capture logs (default `captures/captures.jsonl` in the mission; a glob works); fetches nothing; fanned out over a catalog, each run keeps the captures whose `source` is that source's name; a run that read captures and kept none is warned (`captures_unmatched`) | each object in each matching body, parsed by its content type: JSON, XML, or text lines as `cli` parses them |
 

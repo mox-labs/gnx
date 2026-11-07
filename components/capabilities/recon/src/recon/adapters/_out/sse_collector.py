@@ -6,7 +6,9 @@ asking for ``text/event-stream``, and reads the events as the server sends them,
 requester's ``follow``. Each event with data is a record::
 
     {"id": <the last event id>, "event": <its type, "message" by default>,
-     "data": <its data: JSON when it is JSON, else the text>, "_position": <the id>}
+     "data": <its data: JSON when it is JSON, else the text>}
+
+positioned by the id (kept as ``_position``)
 
 as the event-stream format says to read them (comments ignored, ``data:`` lines joined, an id
 kept until the next one, ``retry:`` taken as the server's wait). The id is the record's
@@ -16,7 +18,7 @@ events sends each once. An event before any id has no position.
 An event's data is held to the stream's ``max_record_bytes`` (its ``buffer:``, or recon's
 default) as its lines arrive, and so is each line, which the requester lets go past it
 (``follow(max_line=)``) rather than hold: an event past it is dropped, its later lines read
-and let go, and counted dropped in the window being filled (``CollectorContext.gaps``). So a
+and let go, and given as ``Dropped``, counted in the window being filled. So a
 stream holds no more than ``buffer.bytes`` + ``max_record_bytes`` of its source.
 
 **Reconnecting.** When the connection ends or breaks off (the server closed it, the network
@@ -25,7 +27,7 @@ connects again with ``Last-Event-ID``, after a full-jitter wait: a random time u
 ``min(30, wait * 2 ** n)`` seconds, where ``wait`` is the server's ``retry`` (1 second until
 it says) and ``n`` the connections in a row that brought no event. The random times are not
 seeded, so processes streaming from one server do not reconnect in step; each stretch is
-reported as a gap from the clock port (``CollectorContext.gaps``), ``resumed`` when a
+given as a ``Gap`` from the clock port, ``resumed`` when a
 ``Last-Event-ID`` was sent, so the record of what happened needs no seed. The wait is on the
 real clock and ends at once when the collector is closed (a stream stopped while its server
 is down stops promptly): recon's one wait not on the clock port. ``reconnect`` (5 by default)
@@ -34,8 +36,8 @@ connection that is made and later ends spends none of it, so a healthy quiet str
 as long as it is asked. A status a retry cannot fix (401, 403: ``auth``; 404 and the rest:
 ``run_failed``) fails it at once.
 
-Registered as the built-in collector type ``sse`` (at ``recon.collector``, ``recon._matrix``):
-``unbounded`` and ``paced_by: source``, since a server sends whether recon is ready or not.
+Registered as the built-in collector type ``sse``: its records are ``unbounded_source_paced``,
+since a server sends whether recon is ready or not. It runs against an ``api`` source.
 """
 
 from __future__ import annotations
@@ -48,7 +50,6 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.http_source import (
     auth_headers,
     auth_params,
@@ -56,21 +57,20 @@ from recon.adapters._out.http_source import (
     described_credential,
 )
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
-from recon.core.domain.collector import CollectorType
+from recon.core.domain.collector import Dropped, Record, source_needed
 from recon.core.domain.errors import CollectionError, Problem
 from recon.core.domain.http import LONG_LINE, reported_url
 from recon.core.domain.optional import SupportsFollow
-from recon.core.domain.stream import POSITION_FIELD, BufferSpec, Gap
+from recon.core.domain.stream import BufferSpec, Gap
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
     from datetime import datetime
 
-    from recon.core.domain.capture import CaptureLog
     from recon.core.domain.clock import Clock
+    from recon.core.domain.collector import Effect, Intent, Item, Position, RecordsKind, Run
+    from recon.core.domain.credentials import Credentials
     from recon.core.domain.http import LiveBody, Requester
-    from recon.core.domain.models import CollectorEntry, SourceEntry
-    from recon.core.domain.stream import GapLog
 
 #: The longest wait before a reconnect, in seconds, however many attempts have failed.
 _MOST_WAIT_S = 30.0
@@ -108,26 +108,22 @@ class SseCollector:
     waits ``s`` seconds before a reconnect (by default on the real clock, ended by ``close()``):
     a test hands its own of each."""
 
+    effects: frozenset[Effect] | None = frozenset({"network"})
+    records: RecordsKind = "unbounded_source_paced"
+    accepts: frozenset[str] | None = frozenset({"api"})
+
     def __init__(
         self,
+        *,
         requester: Requester,
-        clock: Clock | None,
-        gaps: GapLog,
+        clock: Clock,
         credentials: Credentials,
         user_agent: str,
         jitter: random.Random | None = None,
         pause: Callable[[float], object] | None = None,
     ) -> None:
-        if clock is None:
-            raise CollectionError(
-                "an sse collector waits on the survey's clock before reconnecting, and none was "
-                "given",
-                kind="config",
-                fix="build it through recon's root, which hands every type the clock",
-            )
         self._requester = requester
         self._clock = clock
-        self._gaps = gaps
         self._credentials = credentials
         self._user_agent = user_agent
         self._jitter = jitter or random.Random()
@@ -141,16 +137,17 @@ class SseCollector:
         if body is not None:
             body.close()
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-        after: Any = None,
-    ) -> Iterator[dict[str, Any]]:
-        settings = SseSettings.model_validate(entry.settings)
+    def describe(self, run: Run) -> Intent:
+        return _describe(run)
+
+    def check(self, run: Run) -> list[Problem]:
+        return source_needed(run, "sse") + _check(run)
+
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+        entry, source = run.entry, run.source
+        settings = run.settings_as(SseSettings)
         assert source is not None and settings.endpoint is not None  # the plan holds both
+        after = None if resume is None else resume.value
         if not isinstance(self._requester, SupportsFollow):
             raise CollectionError(
                 "this survey's requester reads no body as it arrives, which an sse collector needs",
@@ -180,7 +177,7 @@ class SseCollector:
                     if self._closed.is_set():
                         return
                     if lost is not None:
-                        self._gaps.gap(Gap(lost, self._clock.now(), resumed=last is not None))
+                        yield Gap(lost, self._clock.now(), resumed=last is not None)
                         lost = None
                     for item in _events(body, cap):
                         if isinstance(item, int):
@@ -188,10 +185,10 @@ class SseCollector:
                             continue
                         quiet = 0
                         if isinstance(item, _TooLarge):
-                            self._gaps.drop()
+                            yield Dropped()
                             continue
                         last = item.id if item.id is not None else last
-                        yield _record(item, last)
+                        yield Record(_record(item, last), position=last)
             except CollectionError as exc:
                 if self._closed.is_set():
                     return
@@ -262,17 +259,14 @@ def _record(event: _Event, last: str | None) -> dict[str, Any]:
         data: Any = json.loads(event.data)
     except json.JSONDecodeError:
         data = event.data
-    record: dict[str, Any] = {"id": last, "event": event.event, "data": data}
-    if last is not None:
-        record[POSITION_FIELD] = last
-    return record
+    return {"id": last, "event": event.event, "data": data}
 
 
 # --- Registration ---
 
 
-def _check(entry: CollectorEntry) -> list[Problem]:
-    if SseSettings.model_validate(entry.settings).endpoint:
+def _check(run: Run) -> list[Problem]:
+    if run.settings_as(SseSettings).endpoint:
         return []
     return [
         Problem(
@@ -284,8 +278,9 @@ def _check(entry: CollectorEntry) -> list[Problem]:
     ]
 
 
-def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, Any]:
-    settings = SseSettings.model_validate(entry.settings)
+def _describe(run: Run) -> dict[str, Any]:
+    settings = run.settings_as(SseSettings)
+    source = run.source
     if source is None or not settings.endpoint:
         return {}
     secret_params, secret_headers = described_credential(source)
@@ -305,21 +300,13 @@ def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, An
     return described
 
 
-collector_type = CollectorType(
-    create=lambda ctx: SseCollector(
-        ctx.requester,
-        ctx.clock,
-        ctx.gaps,
-        Credentials(ctx.env, ctx.mission_dir, ctx.shell, ctx.deadline),
-        ctx.user_agent,
-    ),
-    effects=frozenset({"network"}),
-    summary="server-sent events → each event a record, positioned by its id",
-    settings=SseSettings,
-    accepts_kinds=frozenset({"api"}),
-    requires_source=True,
-    check=_check,
-    describe=_describe,
-    unbounded=True,
-    paced_by="source",
-)
+def register(registry: Any) -> None:
+    """The ``sse`` collector type."""
+    registry.register(
+        "recon.collector",
+        "recon.v1.collector.sse",
+        SseCollector,
+        config=SseSettings,
+        needs={"requester", "clock", "credentials", "user_agent"},
+        summary="server-sent events → each event a record, positioned by its id",
+    )

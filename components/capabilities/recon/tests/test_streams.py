@@ -18,16 +18,17 @@ import yaml
 
 from recon.adapters._out.mission_layout import STATE
 from recon.composition import root
+from recon.core.application.items import Raw
 from recon.core.application.stream import (
     Arrivals,
     ConservationError,
     Stream,
-    StreamGaps,
     StreamPlan,
     StreamRun,
     StreamStop,
 )
 from recon.core.domain.archives import ArchiveRef
+from recon.core.domain.collector import Dropped
 from recon.core.domain.models import CollectorEntry
 from recon.core.domain.stream import (
     POSITION_FIELD,
@@ -147,7 +148,6 @@ def _run(
     stop: StreamStop | None = None,
     on_window: Callable[[WindowOutcome], None] | None = None,
     sealed: Callable[[Hold, WindowOutcome], None] | None = None,
-    gaps: StreamGaps | None = None,
 ) -> tuple[StreamRun, list[WindowOutcome], list[dict[str, Any]]]:
     store = store or files_of(project, clock)
     events: list[dict[str, Any]] = []
@@ -166,16 +166,22 @@ def _run(
     run = stream.run(
         "m",
         plan,
-        source.records,
-        normalize,
+        lambda after: _events(source.records(after)),
+        lambda record, scope: normalize(record),
         close=source.close,
         windows=windows,
         preserve_raw=preserve_raw,
         sealed=sealed_,
         stop=stop,
-        gaps=gaps,
     )
     return run, outcomes, events
+
+
+def _events(given: Iterator[Any]) -> Iterator[Any]:
+    """A script's source as the events recon makes of a collector's items: each record as
+    found (its ``_position`` its own), anything else as it is."""
+    for item in given:
+        yield Raw(item) if isinstance(item, dict) else item
 
 
 def _kept(project: Path, outcome: WindowOutcome) -> Path:
@@ -483,8 +489,8 @@ class TestDropsAreWarnedByCause:
             target=lambda: stream.run(
                 "m",
                 plan,
-                source.records,
-                dict,
+                lambda after: _events(source.records(after)),
+                lambda record, scope: dict(record),
                 close=source.close,
                 sealed=lambda hold, outcome: outcomes.append(outcome),
             )  # fmt: skip
@@ -580,18 +586,16 @@ class TestEveryRecordIsCountedWhenTheStreamBreaks:
         """Review item 7: a collector that drops a record rather than hold it (an ``sse``
         event over ``max_record_bytes``) says so, and the window counts it."""
         clock = VirtualClock()
-        gaps = StreamGaps()
 
         class Drops(Script):
-            def records(self, after: Any) -> Iterator[dict[str, Any]]:
+            def records(self, after: Any) -> Iterator[Any]:
                 yield {"seq": 0}
-                gaps.drop()
+                yield Dropped()
                 yield {"seq": 2}
 
         run, [window], _ = _run(
-            tmp_path, clock, _plan(WindowSpec(seconds=60)), Drops(clock, []), gaps=gaps,
-            preserve_raw=True,
-        )  # fmt: skip
+            tmp_path, clock, _plan(WindowSpec(seconds=60)), Drops(clock, []), preserve_raw=True
+        )
 
         assert (window.table.records, window.dropped) == (2, 1)
         assert _meta(tmp_path, window)["stream"]["reproducible"] is False
@@ -780,7 +784,10 @@ class TestASourceThatWillNotStop:
         stop = StreamStop()
         stop.ask()  # the stream stops as it starts, its source still in its read
         try:
-            stream.run("m", plan, deaf, dict, close=lambda: None, stop=stop)
+            stream.run(
+                "m", plan, lambda after: _events(deaf(after)),
+                lambda record, scope: dict(record), close=lambda: None, stop=stop,
+            )  # fmt: skip
         finally:
             let_go.set()
 

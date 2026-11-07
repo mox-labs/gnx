@@ -19,7 +19,6 @@ from recon.core import (
     Problem,
     RangeRun,
     UsageError,
-    accepted_kinds,
     archive_rank,
     committed_in,
     committed_kept,
@@ -28,13 +27,12 @@ from recon.core import (
 from recon.observe.domain.spans import plan_range
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Mapping
+    from collections.abc import Callable, Collection
     from datetime import datetime
 
     from recon.core import (
         Archives,
         CollectorEntry,
-        CollectorType,
         Committed,
         ReconConfig,
         SourceEntry,
@@ -113,7 +111,7 @@ def range_runs(
     archives: Archives,
     mission: str,
     config: ReconConfig,
-    types: Mapping[str, CollectorType],
+    accepts: Callable[[str], frozenset[str] | None],
     now: datetime,
     *,
     interval: Interval | None = None,
@@ -131,7 +129,7 @@ def range_runs(
     for i, entry in enumerate(config.collectors):
         if entry.range is None:
             continue
-        for source, output in fan_out(entry, catalog, accepted_kinds(types, entry)):
+        for source, output in fan_out(entry, catalog, accepts(entry.type)):
             targets.append((i, entry, source, output))
     outputs = {output for _, _, _, output in targets}
     if interval is not None and not targets:

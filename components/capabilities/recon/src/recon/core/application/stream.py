@@ -40,8 +40,9 @@ position of the last whole record kept (a record's ``_position``): exactly once 
 that has positions. Every restart is recorded as a gap, ``resumed`` when it went on from one.
 
 **Crawls** (ruling P4). An entry that reads its source page by page (``paginate:``) crawls it
-across its windows. Its collector marks each page before it asks for it (the stream's page
-log, :class:`StreamPages`), and the mark goes through the buffer in order with the records, so
+across its windows. recon marks each page before it asks the type for it (a type's own crawl
+marks its pages itself, ``PageMark``), and the mark goes through the buffer in order with the
+records, so
 the writer adds it to the window's page log (its ``pages`` sidecar) after the records before
 it are written, and a window of ``pages`` pages ends at the mark of the page after them. A
 mark the stream will not keep (it has ended) is refused, and the page is not asked for. A run
@@ -63,8 +64,10 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
+from recon.core.application.items import Moved, Raw
 from recon.core.application.survey import PROGRESS_S, crawl_truncated
 from recon.core.domain.archives import META_FORMAT_VERSION
+from recon.core.domain.collector import Dropped, PageMark, Truncated
 from recon.core.domain.documents import TableError, TableOutcome, WindowOutcome
 from recon.core.domain.errors import ErrorKind, Problem, ReconError
 from recon.core.domain.optional import SupportsClose
@@ -83,6 +86,7 @@ if TYPE_CHECKING:
     from collections.abc import Generator, Iterator, Mapping
     from contextlib import AbstractContextManager
 
+    from recon.core.application.items import Event
     from recon.core.domain.archives import ArchiveRef, Archives, Hold, Landed, Landing
     from recon.core.domain.capture import CaptureLog
     from recon.core.domain.clock import Clock
@@ -105,6 +109,9 @@ STOP_S = 5.0
 #: The longest the ticker sleeps at once before it looks whether the stream has ended: a
 #: window is a second at least, so it wakes no more than once a window to no purpose.
 TICK_S = 1.0
+
+#: Shapes a stream's record (``normalize:``), given what its item lets the spec also read.
+Shape = Callable[[dict[str, Any], "Mapping[str, Any]"], dict[str, Any]]
 
 #: Opens one window's telemetry over the clock given, the window's event log (the sink given)
 #: among its sinks: the telemetry and the callback the window's outcome events go to, both
@@ -196,13 +203,15 @@ class _Ledger:
 
 @dataclass(frozen=True)
 class _Arrival:
-    """One record admitted: its order of arrival, its stamp, its window, and the record as its
-    collector gave it, as a JSON line's bytes (which is what the buffer's bounds count)."""
+    """One record admitted: its order of arrival, its stamp, its window, the record as recon
+    found it in its collector's items, as a JSON line's bytes (which is what the buffer's bounds
+    count), and what a normalize spec may also read of it (its item's scope)."""
 
     ordinal: int
     stamp: float
     window: int
     line: bytes
+    scope: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -275,8 +284,9 @@ class Arrivals:
 
     # --- the pump's side ---
 
-    def put(self, line: bytes) -> bool:
-        """Admit a record, or drop it; False once the stream has ended, when the pump stops."""
+    def put(self, line: bytes, scope: Mapping[str, Any] | None = None) -> bool:
+        """Admit a record (with what a normalize spec may also read of it), or drop it; False
+        once the stream has ended, when the pump stops."""
         with self._cond:
             if not self._advance():
                 return False
@@ -300,7 +310,7 @@ class Arrivals:
                 self._admitting = False
                 self._cond.notify_all()
                 return False
-            self._events.append(_Arrival(self._ordinal, stamp, window, line))
+            self._events.append(_Arrival(self._ordinal, stamp, window, line, dict(scope or {})))
             self._events.extend(after)
             ledger = self._ledger(window)
             ledger.first = self._ordinal if ledger.first is None else ledger.first
@@ -528,53 +538,6 @@ class Arrivals:
             ledger.overflow += 1
 
 
-class StreamGaps:
-    """The :class:`~recon.core.domain.stream.GapLog` a stream's collector is handed
-    (``CollectorContext.gaps``): what it says goes to the window being filled."""
-
-    def __init__(self) -> None:
-        self._to: Arrivals | None = None
-
-    def gap(self, gap: Gap) -> None:
-        to = self._to
-        if to is not None:
-            to.gap(gap)
-
-    def drop(self) -> None:
-        to = self._to
-        if to is not None:
-            to.dropped_early()
-
-
-class StreamPages:
-    """The :class:`~recon.core.domain.paginate.PageLog` a stream's collector is handed
-    (``CollectorContext.pages``): each page it marks goes to the buffer, in order with its
-    records, and into the window being filled; a mark the stream will not keep is refused, so
-    the page is not asked for."""
-
-    def __init__(self) -> None:
-        self._to: Arrivals | None = None
-
-    def page(self, index: int, token: Any) -> bool:
-        to = self._to
-        return True if to is None else to.page(index, token)
-
-    def truncated(self, by: TruncatedBy) -> None:
-        to = self._to
-        if to is not None:
-            to.truncated(by)
-
-    def restarted(self, index: int) -> None:
-        to = self._to
-        if to is not None:
-            to.moved("restarted", index, None)
-
-    def shifted(self, index: int, by: int | None) -> None:
-        to = self._to
-        if to is not None:
-            to.moved("shifted", index, by)
-
-
 class StreamStop:
     """Asks a running stream to stop, from any thread or a signal handler (``recon stream``
     asks from its SIGINT and SIGTERM handlers). The first ask seals the window being written
@@ -710,12 +673,10 @@ class Stream:
         self,
         mission: str,
         plan: StreamPlan,
-        collect: Callable[[Any], Iterator[dict[str, Any]]],
-        normalize: Callable[[dict[str, Any]], dict[str, Any]],
+        collect: Callable[[Any], Iterator[Event]],
+        normalize: Shape,
         *,
         close: Callable[[], object],
-        gaps: StreamGaps | None = None,
-        pages: StreamPages | None = None,
         windows: int | None = None,
         until: datetime | None = None,
         preserve_raw: bool = False,
@@ -730,16 +691,17 @@ class Stream:
         interrupted (``KeyboardInterrupt``): the window being written is then sealed
         ``stopped`` once what waits is written; a second stop seals it at once, what waits
         dropped. An interrupt that lands in the store's write seals the window at once.
-        ``collect(after)`` starts the source after the position ``after`` (None: from its
-        start); ``normalize`` shapes each record; ``close`` ends the collector, which ends a
-        source that would not; ``gaps`` and ``pages`` are the gap log and the page log its
-        collector was built with. Each window, once sealed and let go, is told to ``sealed``
+        ``collect(after)`` gives the source's events (:mod:`recon.core.application.items`) after
+        the position ``after`` (None: from its start; a crawl's :class:`~recon.core.domain.
+        paginate.Resume` document for a crawl recon drives); ``normalize`` shapes each record
+        with what it may also read; ``close`` ends the collector, which ends a source that would
+        not. Each window, once sealed and let go, is told to ``sealed``
         with the stream's hold, under which what is derived from it (its changes) is kept and
         what retention lets go is retired. Raises ReconError (``busy``) when another writer
         holds the stream."""
         with self._landing.hold(mission, stream=plan.name) as hold:
             return self._run(
-                hold, mission, plan, collect, normalize, close, gaps, pages, windows, until,
+                hold, mission, plan, collect, normalize, close, windows, until,
                 preserve_raw, config_sha256, config_value, dict(resolved or {}), stop, sealed,
             )  # fmt: skip
 
@@ -748,11 +710,9 @@ class Stream:
         hold: Hold,
         mission: str,
         plan: StreamPlan,
-        collect: Callable[[Any], Iterator[dict[str, Any]]],
-        normalize: Callable[[dict[str, Any]], dict[str, Any]],
+        collect: Callable[[Any], Iterator[Event]],
+        normalize: Shape,
         close: Callable[[], object],
-        gaps: StreamGaps | None,
-        pages: StreamPages | None,
         windows: int | None,
         until: datetime | None,
         preserve_raw: bool,
@@ -775,10 +735,6 @@ class Stream:
                             again=start.again)  # fmt: skip
         if start.gap is not None:
             arrivals.gap(start.gap)
-        if gaps is not None:
-            gaps._to = arrivals
-        if pages is not None:
-            pages._to = arrivals
         pump = threading.Thread(
             target=_pump, args=(collect, start.after, arrivals), name="recon-stream-pump",
             daemon=True,
@@ -863,7 +819,7 @@ class Stream:
         plan: StreamPlan,
         window: _Window,
         arrivals: Arrivals,
-        normalize: Callable[[dict[str, Any]], dict[str, Any]],
+        normalize: Shape,
         wall: Callable[[float], datetime],
         meta: dict[str, Any],
     ) -> WindowOutcome:
@@ -959,7 +915,7 @@ class Stream:
         self,
         window: _Window,
         arrivals: Arrivals,
-        normalize: Callable[[dict[str, Any]], dict[str, Any]],
+        normalize: Shape,
         captures: CaptureLog | None,
         telemetry: Telemetry,
         span: Span,
@@ -996,7 +952,7 @@ class Stream:
                 frame = b'{"n":%d,"at":%s,"record":%s}\n' % (event.ordinal, at.encode(), event.line)
                 captures.tee(output, frame)
             try:
-                record = normalize(raw)
+                record = normalize(raw, event.scope)
             except Exception as exc:  # a transform that failed: the stream ends here
                 window.error = exc
                 self._halt(window, arrivals)
@@ -1332,20 +1288,32 @@ def _moved(plan: StreamPlan, what: str, page: int, by: int | None) -> Problem:
     )
 
 
-def _pump(
-    collect: Callable[[Any], Iterator[dict[str, Any]]], after: Any, arrivals: Arrivals
-) -> None:
-    """The pump's thread: the source's records into the buffer, until it ends, fails, or the
-    stream stops taking them."""
+def _pump(collect: Callable[[Any], Iterator[Event]], after: Any, arrivals: Arrivals) -> None:
+    """The pump's thread: the source's events into the buffer, until it ends, fails, or the
+    stream stops taking them: each record, each page about to be asked for (not asked for once
+    the stream has ended), a crawl cut short or moved, a gap, a record dropped."""
     try:
-        records = collect(after)
+        events = collect(after)
         try:
-            for record in records:
-                if not arrivals.put(json.dumps(record, default=str).encode()):
-                    return
+            for event in events:
+                if isinstance(event, Raw):
+                    line = json.dumps(event.line(), default=str).encode()
+                    if not arrivals.put(line, event.scope):
+                        return
+                elif isinstance(event, PageMark):
+                    if not arrivals.page(event.index, event.token):
+                        return
+                elif isinstance(event, Truncated):
+                    arrivals.truncated(event.by)
+                elif isinstance(event, Gap):
+                    arrivals.gap(event)
+                elif isinstance(event, Dropped):
+                    arrivals.dropped_early()
+                elif isinstance(event, Moved):
+                    arrivals.moved(event.what, event.index, event.by)
         finally:
-            if isinstance(records, SupportsClose):
-                records.close()
+            if isinstance(events, SupportsClose):
+                events.close()
     except BaseException as exc:  # whatever ends the source's thread ends the stream
         arrivals.end(exc)
         return

@@ -196,7 +196,7 @@ class TestATickSeesNoShellVariable:
     def test_an_mcp_source_s_token_and_server_variables_are_warned_each(
         self, plugins: Plugins
     ) -> None:
-        """A kind's own references (``CollectorType.source_env``) are warned as ``auth.token``
+        """A kind's own references (its ``SourceKind.env``) are warned as ``auth.token``
         is, so a third party's source kind is held to it through the same entry point."""
         sources: list[dict[str, Any]] = [
             {"name": "s", "type": "mcp", "command": "/usr/local/bin/srv",

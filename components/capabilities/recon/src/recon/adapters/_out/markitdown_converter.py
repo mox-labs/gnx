@@ -1,8 +1,13 @@
-"""MarkitdownConverter — DocumentConverter adapter using Microsoft's markitdown.
+"""MarkitdownConverter: the ``document`` converter (``recon.v1.converter.document``) and the
+``$markitdown`` transform, one adapter over Microsoft's markitdown.
 
-Handles HTML, PDF, DOCX, PPTX, XLSX, XLS, EPub, CSV, JSON, XML, RSS, notebooks, Outlook
-messages, ZIP and images. Installed via `markitdown[all]`, which pulls the format-specific
-libraries (pdfminer, python-docx, python-pptx, openpyxl, ...).
+A document's bytes become one record, ``{url, title, content, content_type}``: the markdown of
+HTML, PDF, DOCX, PPTX, XLSX, XLS, EPub, CSV, RSS, notebooks, Outlook messages, ZIP and images,
+its runs of blank lines folded and its content cut at 100,000 characters, marked. A body names
+it (an ``api`` collector's ``response_format: document``), or its media type picks it. The
+``$markitdown`` transform converts a local file a record names through the same conversion.
+Installed via `markitdown[all]`, which pulls the format-specific libraries (pdfminer,
+python-docx, python-pptx, openpyxl, ...).
 
 Lazy-imports markitdown so plain `import recon` stays fast, and builds it once per converter.
 A document is converted by the content type its server gave, not by a guess from its bytes,
@@ -31,39 +36,75 @@ classified; anything else is a defect and propagates as it is.
 from __future__ import annotations
 
 import io
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from recon.core.domain.converters import ConversionResult
+from recon.core.domain.converters import essence
 from recon.core.domain.errors import CollectionError
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Iterator, Sequence
 
 #: What markitdown's ``convert`` would fetch or decode by itself, given a string.
 _URI_SCHEMES = ("http:", "https:", "file:", "data:")
 
+#: The most characters of a document's content a record keeps.
+MAX_CONTENT_CHARS = 100_000
+
+#: The media types the ``document`` converter is picked for by a body that names none.
+DOCUMENT_TYPES = frozenset({
+    "text/html",
+    "application/xhtml+xml",
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "application/vnd.ms-outlook",
+    "application/epub+zip",
+    "application/rss+xml",
+    "application/atom+xml",
+    "application/x-ipynb+json",
+    "application/zip",
+    "text/csv",
+    "image/*",
+})  # fmt: skip
+
 
 class MarkitdownConverter:
+    """The ``document`` converter. A document markitdown cannot read is a CollectionError."""
+
+    media_types = DOCUMENT_TYPES
+
     def __init__(self) -> None:
         self._markitdown: Any = None
 
-    def convert(self, content: bytes, content_type: str, url: str) -> ConversionResult:
+    def convert(self, chunks: Iterable[bytes], media_type: str, origin: str) -> Iterator[Any]:
+        title, text = self.document(b"".join(chunks), origin, mimetype=essence(media_type))
+        content = re.sub(r"\n{3,}", "\n\n", text).strip()
+        if len(content) > MAX_CONTENT_CHARS:
+            content = content[:MAX_CONTENT_CHARS] + "\n\n[Content truncated due to length...]"
+        yield {"url": origin, "title": title, "content": content,
+               "content_type": essence(media_type)}  # fmt: skip
+
+    def document(
+        self, data: bytes, origin: str, *, mimetype: str = "", extension: str = ""
+    ) -> tuple[str, str]:
+        """The title and the markdown of a document's bytes, by its media type (or its file's
+        extension), from its bytes alone."""
         from markitdown import MarkItDownException, StreamInfo
 
-        info = StreamInfo(mimetype=content_type or None, url=url)
+        info = StreamInfo(mimetype=mimetype or None, extension=extension or None,
+                          url=origin if "://" in origin else None)  # fmt: skip
         try:
-            result = self._converter().convert_stream(io.BytesIO(content), stream_info=info)
+            result = self._converter().convert_stream(io.BytesIO(data), stream_info=info)
         except MarkItDownException as exc:
-            raise _conversion_error(url, exc) from exc
-
+            raise _conversion_error(origin, exc) from exc
         if result is None:
-            return ConversionResult(title="", text="")
-
-        return ConversionResult(
-            title=(getattr(result, "title", "") or ""),
-            text=(getattr(result, "text_content", "") or ""),
-        )
+            return "", ""
+        return (getattr(result, "title", "") or ""), (getattr(result, "text_content", "") or "")
 
     def _converter(self) -> Any:
         if self._markitdown is None:
@@ -117,9 +158,9 @@ def confined_markitdown() -> Any:
 def markitdown_path(path: Any, *, roots: Sequence[Path] = (), base: Path | None = None) -> str:
     """The ``$markitdown`` transform: convert a local file the record names to markdown.
 
-    Handles what the web collector's converter handles, with the same confined markitdown
-    (the module docstring lists what is left out, audio among it). Registered under the
-    ``recon.transform`` point as ``markitdown``.
+    Converts what the ``document`` converter converts, through it (the module docstring lists
+    what is left out, audio among it). Registered under the ``recon.transform`` point as
+    ``markitdown``.
 
     A relative path is relative to ``base``, the directory its record came from (a ``cli``
     collector binds the directory its command ran in), else to the working directory.
@@ -140,7 +181,8 @@ def markitdown_path(path: Any, *, roots: Sequence[Path] = (), base: Path | None 
         raise CollectionError(
             f"$markitdown converts local files and does not fetch: {_shown(path)}",
             kind="config",
-            fix="fetch the document with a `web` collector, which converts it by content type",
+            fix="fetch the document with an api collector's response_format: document, which "
+            "converts it by its content type",
         )
     resolved = (Path(base) / path if base is not None else Path(path)).resolve()
     if not any(resolved.is_relative_to(Path(root).resolve()) for root in roots):
@@ -151,18 +193,33 @@ def markitdown_path(path: Any, *, roots: Sequence[Path] = (), base: Path | None 
             fix="add the file's directory to catalog: as a source with `type: local`, "
             "or move the file under the mission directory",
         )
-    from markitdown import MarkItDownException
-
     try:
-        result = confined_markitdown().convert_local(resolved)
+        data = resolved.read_bytes()
     except OSError as exc:
         raise CollectionError(
             f"$markitdown could not read {path!r}: {exc.strerror or exc}",
             fix="check that the file the record names exists and is readable",
         ) from exc
-    except MarkItDownException as exc:
-        raise _conversion_error(repr(path), exc) from exc
-    return getattr(result, "text_content", "") or ""
+    _, text = _FILES.document(data, repr(path), extension=resolved.suffix)
+    return text
+
+
+#: The converter the ``$markitdown`` transform converts through, made once.
+_FILES = MarkitdownConverter()
+
+
+def register(registry: Any) -> None:
+    """The ``document`` converter at ``recon.converter`` and the ``$markitdown`` transform at
+    ``recon.transform``, over one conversion."""
+    registry.register("recon.converter", "recon.v1.converter.document", MarkitdownConverter,
+                      summary="a document (HTML, PDF, DOCX, ...) as markdown: one record, url, "
+                      "title, content, content_type")  # fmt: skip
+    registry.register("recon.transform", "recon.v1.transform.markitdown", _markitdown,
+                      summary="a local file the record names, as markdown")  # fmt: skip
+
+
+def _markitdown() -> Any:
+    return markitdown_path
 
 
 def _conversion_error(what: str, exc: Exception) -> CollectionError:

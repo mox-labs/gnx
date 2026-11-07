@@ -2,19 +2,26 @@
 ``single_importer`` rule), so a move of the harness contract to another one (slick's) changes
 this module and no other (owner ruling, REQ §2; RUBRIC H6).
 
-**The registry** (ruling R2). recon's extension points are matrix ``Registry`` points, owned by
-the distribution ``recon``:
+**The registry** (rulings R2, R14). recon's extension points are matrix ``Registry`` points,
+owned by the distribution ``recon``:
 
-- ``recon.collector``: a collector type, named in a config as ``type:``;
-- ``recon.transform``: a transform, named in a normalize spec as ``path|$name``.
+- ``recon.collector``: a collector type, named in a config as ``type:``. The entry is
+  ``build(**needs)`` giving a :class:`~recon.core.domain.collector.Collector`, with the needs it
+  names (``recon.core.domain.collector.NEEDS``); its ``config`` is the schema of the type's own
+  keys in a collector entry, handed to every member in ``Run.settings``;
+- ``recon.source``: a source kind, named in a catalog as ``type:``: ``build()`` giving a
+  :class:`~recon.core.domain.collector.SourceKind`, its ``config`` the kind's own keys;
+- ``recon.converter``: a converter, picked by a body's media type: ``build()`` giving a
+  :class:`~recon.core.domain.collector.Converter`;
+- ``recon.transform``: a transform, named in a normalize spec as ``path|$name``: ``build()``
+  giving the callable.
 
 recon's built-ins register at them from recon's own ``matrix.extensions`` entry point
-(:func:`register`), as a third party's do from theirs: a built-in by a short name
-(``type: api``, ``$html2text``: ``recon.v1.collector.api``, ``recon.v1.transform.html2text``),
-anyone else's by its full type URL (``type: acme.v1.collector.sql``), ruling R3. Code using
-recon registers its own in-process (``recon.open(extensions=[register])``), at the same points
-and under the same rules: each ``register(registry)`` is called with the session's registry,
-and what it registers is trusted as its owner's (matrix's rule for direct registration).
+(:func:`register`), each adapter module through its own ``register(registry)``, as a third
+party's do from theirs: a built-in by a short name (``type: api``, ``$html2text``:
+``recon.v1.collector.api``, ``recon.v1.transform.html2text``), anyone else's by its full type
+URL (``type: acme.v1.collector.sql``), ruling R3. Code using recon registers its own in-process
+(``recon.open(extensions=[register])``), at the same points and under the same rules.
 
 matrix's own rules hold: a type URL with no version segment is refused, two registrations of
 one type URL are refused naming both, and an extension that fails to load is quarantined whole,
@@ -22,37 +29,57 @@ every entry it registered with it (``recon types --json`` and ``recon status`` s
 Discovery loads every installed ``matrix.extensions`` entry point, so a session imports each
 installed package's registration (review C3).
 
-What a point's entry builds is, for now, the descriptor recon's planner and core read
-(:class:`~recon.core.domain.collector.CollectorType`, or a transform's callable): each entry is
-built with no config and no need.
+Reading the entries back (:func:`plugins`), recon builds each collector type once with stand-in
+needs that refuse to be used, to read what it declares and which optional protocols it keeps
+(``Paged``, ``Preflight``); an entry that does not keep its point's contract is reported broken
+and left out, and so is a converter that claims a media type another already converts (recon's
+own keep theirs).
 """
 
 from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from matrix import ConfigError, MatrixError, Registry, default_registry
 from pydantic import BaseModel, ConfigDict
 
-from recon.core.domain.collector import BrokenPlugin, CollectorType, Plugins
+from recon.core.domain.collector import (
+    NEEDS,
+    BrokenPlugin,
+    Collector,
+    Converter,
+    InstalledConverter,
+    InstalledKind,
+    InstalledType,
+    Plugins,
+    SourceKind,
+)
+from recon.core.domain.converters import claim_problem, claimed
 from recon.core.domain.documents import Act, Change, Span
 from recon.core.domain.errors import ReconError, UsageError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
 
-    from matrix import Context, Inputs
+    from matrix import Context, Entry, Inputs
 
     from recon.composition import Recon, StreamStop
     from recon.core.domain.collector import Transform
 
 #: recon's extension points on matrix's registry.
 COLLECTOR = "recon.collector"
+SOURCE = "recon.source"
+CONVERTER = "recon.converter"
 TRANSFORM = "recon.transform"
-POINTS = (COLLECTOR, TRANSFORM)
+POINTS = (COLLECTOR, SOURCE, CONVERTER, TRANSFORM)
+
+#: The values a collector's ``records`` may hold, and its ``effects``.
+_RECORDS = frozenset({"finite", "unbounded_recon_paced", "unbounded_source_paced"})
+_EFFECTS = frozenset({"network", "subprocess", "filesystem"})
 
 #: The group a broken extension is reported under: matrix's.
 GROUP = "matrix.extensions"
@@ -91,24 +118,23 @@ def register(registry: Registry) -> None:
     for point in POINTS:
         registry.add_point(point)
     register_components(registry)
-    collectors, transforms = builtins()
-    for name, collector_type in collectors.items():
-        registry.register(COLLECTOR, type_url(COLLECTOR, name), _giving(collector_type),
-                          summary=collector_type.summary)  # fmt: skip
+    registers, transforms = builtins()
+    for register_builtin in registers:
+        register_builtin(registry)
     for name, transform in transforms.items():
         summary = (transform.__doc__ or "").strip().split("\n", 1)[0]
         registry.register(TRANSFORM, type_url(TRANSFORM, name), _giving(transform),
                           summary=summary)  # fmt: skip
 
 
-def plugins(extensions: Iterable[Register] = ()) -> Plugins:
-    """Every collector type and transform at recon's points: those of every installed
-    ``matrix.extensions`` entry point, recon's own among them, then those each of
-    ``extensions`` registers in-process; with each extension that failed to load, and whose
-    each collector type is (its distribution, or ``in_process``). An extension given that
-    raises is not quarantined: its error is the caller's, and one matrix refuses (a type URL
-    with no version, one registered already, a point recon does not have) is a UsageError
-    saying why."""
+def plugins(extensions: Iterable[Register] = (), *, stand_ins: Mapping[str, Any]) -> Plugins:
+    """Everything at recon's points: what every installed ``matrix.extensions`` entry point
+    registers, recon's own among them, then what each of ``extensions`` registers in-process;
+    each collector type built with ``stand_ins`` to read what it declares; with each extension
+    and entry that failed, and whose each entry is (its distribution, or ``in_process``). An
+    extension given that raises is not quarantined: its error is the caller's, and one matrix
+    refuses (a type URL with no version, one registered already, a point recon does not have)
+    is a UsageError saying why."""
     registry = default_registry()
     for extend in extensions:
         try:
@@ -117,26 +143,52 @@ def plugins(extensions: Iterable[Register] = ()) -> Plugins:
             raise UsageError(
                 f"an extension given could not register: {exc.message}",
                 fix=exc.fix
-                or "register at recon.collector or recon.transform, under a type URL "
-                "of your own (<namespace>.v<N>.<name>)",
+                or "register at recon.collector, recon.source, recon.converter or "
+                "recon.transform, under a type URL of your own (<namespace>.v<N>.<name>)",
             ) from exc
     broken = [
         BrokenPlugin(GROUP, failure.extension, failure.origin, failure.error)
         for failure in registry.failures
     ]
-    types: dict[str, CollectorType] = {}
-    packages: dict[str, str] = {}
-    for entry in registry.entries(COLLECTOR) if COLLECTOR in registry.points else ():
+    types: dict[str, InstalledType] = {}
+    for entry in _entries(registry, COLLECTOR):
         name = short(COLLECTOR, entry.type_url)
-        built = _built(entry.build, entry.type_url, broken)
-        if built is None:
+        unknown = sorted(entry.needs - set(NEEDS))
+        why = _settings_problem(entry.config) or (
+            f"it needs {', '.join(unknown)}, which recon does not supply; recon supplies "
+            f"{', '.join(sorted(NEEDS))}"
+            if unknown
+            else None
+        )
+        if why is not None:
+            broken.append(BrokenPlugin(GROUP, name, entry.type_url, why))
             continue
-        if not isinstance(built, CollectorType):
-            broken.append(BrokenPlugin(GROUP, name, entry.type_url, "expected a recon "
-                                       f"CollectorType, got {type(built).__name__}"))  # fmt: skip
+        given = {need: stand_ins[need] for need in entry.needs}
+        declared = _built(partial(entry.build, **given), entry.type_url, broken)
+        if declared is None:
             continue
-        types[name] = built
-        packages[name] = IN_PROCESS if entry.origin == _DIRECT else entry.origin
+        why = _collector_problem(declared)
+        if why is not None:
+            broken.append(BrokenPlugin(GROUP, name, entry.type_url, why))
+            continue
+        types[name] = InstalledType(
+            name=name, build=entry.build, needs=entry.needs, declared=declared,
+            settings=entry.config, summary=entry.summary, package=_package(entry.origin),
+        )  # fmt: skip
+    kinds: dict[str, InstalledKind] = {}
+    for entry in _entries(registry, SOURCE):
+        name = short(SOURCE, entry.type_url)
+        why = _settings_problem(entry.config) or _needless(entry.needs)
+        built = None if why else _built(entry.build, entry.type_url, broken)
+        if why is None and built is not None and not isinstance(built, SourceKind):
+            why = f"expected a recon SourceKind (check, env), got {type(built).__name__}"
+        if why is not None:
+            broken.append(BrokenPlugin(GROUP, name, entry.type_url, why))
+        if why is not None or built is None:
+            continue
+        kinds[name] = InstalledKind(name, built, entry.config, entry.summary,
+                                    _package(entry.origin))  # fmt: skip
+    converters = _converters(registry, broken)
     transforms: dict[str, Transform] = {}
     for entry in registry.entries(TRANSFORM) if TRANSFORM in registry.points else ():
         name = short(TRANSFORM, entry.type_url)
@@ -148,7 +200,80 @@ def plugins(extensions: Iterable[Register] = ()) -> Plugins:
             broken.append(BrokenPlugin(GROUP, name, entry.type_url, error))
             continue
         transforms[name] = built
-    return Plugins(types, transforms, broken, packages)
+    return Plugins(types, kinds, converters, transforms, broken)
+
+
+def _entries(registry: Registry, point: str) -> list[Entry]:
+    return registry.entries(point) if point in registry.points else []
+
+
+def _package(origin: str) -> str:
+    return IN_PROCESS if origin == _DIRECT else origin
+
+
+def _needless(needs: frozenset[str]) -> str | None:
+    if needs:
+        return f"it needs {', '.join(sorted(needs))}; an entry at this point is built with none"
+    return None
+
+
+def _settings_problem(config: type[BaseModel] | None) -> str | None:
+    """Why an entry's ``config`` cannot be the schema of a mission's keys: it must refuse a key
+    it does not know, so a misspelt one is a plan problem."""
+    if config is not None and config.model_config.get("extra") != "forbid":
+        return (
+            f"its config {config.__name__} lets unknown keys through: give it "
+            "model_config = ConfigDict(extra='forbid'), so a misspelt key is a plan problem"
+        )
+    return None
+
+
+def _collector_problem(declared: Any) -> str | None:
+    """Why what a ``recon.collector`` entry built is not a Collector, or None."""
+    if not isinstance(declared, Collector):
+        lacking = [m for m in ("effects", "records", "accepts", "describe", "check", "collect",
+                               "close") if not hasattr(declared, m)]  # fmt: skip
+        return f"its build gave a {type(declared).__name__}, which lacks {', '.join(lacking)}"
+    if declared.records not in _RECORDS:
+        return f"its records is {declared.records!r}; one of {', '.join(sorted(_RECORDS))}"
+    effects = declared.effects
+    if effects is not None and not (isinstance(effects, frozenset) and effects <= _EFFECTS):
+        return f"its effects is {effects!r}; None, or a frozenset of {', '.join(sorted(_EFFECTS))}"
+    accepts = declared.accepts
+    if accepts is not None and not (
+        isinstance(accepts, frozenset) and all(isinstance(k, str) for k in accepts)
+    ):
+        return f"its accepts is {accepts!r}; None, or a frozenset of source kinds"
+    return None
+
+
+def _converters(registry: Registry, broken: list[BrokenPlugin]) -> dict[str, InstalledConverter]:
+    """Each converter at ``recon.converter``, recon's own first; one that claims a media type
+    another already converts is left out, said why."""
+    found: list[InstalledConverter] = []
+    ordered = sorted(_entries(registry, CONVERTER),
+                     key=lambda e: (not e.type_url.startswith("recon."), e.type_url))  # fmt: skip
+    for entry in ordered:
+        name = short(CONVERTER, entry.type_url)
+        why = _needless(entry.needs)
+        built = None if why else _built(entry.build, entry.type_url, broken)
+        if why is None and built is not None:
+            if not isinstance(built, Converter) or not isinstance(built.media_types, frozenset):
+                why = (
+                    f"expected a recon Converter (media_types, convert), got {type(built).__name__}"
+                )
+            else:
+                bad = [c for c in sorted(built.media_types) if claim_problem(c)]
+                why = f"it claims {', '.join(bad)}: {claim_problem(bad[0])}" if bad else None
+        if why is None and built is not None:
+            _, refused = claimed([*((c.name, c.converter) for c in found), (name, built)])
+            why = refused[0] if refused else None
+        if why is not None:
+            broken.append(BrokenPlugin(GROUP, name, entry.type_url, why))
+        if why is not None or built is None:
+            continue
+        found.append(InstalledConverter(name, built, entry.summary, _package(entry.origin)))
+    return {converter.name: converter for converter in found}
 
 
 def _built(build: Callable[[], Any], url: str, broken: list[BrokenPlugin]) -> Any:

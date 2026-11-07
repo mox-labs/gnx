@@ -27,9 +27,10 @@ import pytest
 import yaml
 
 from recon.composition import root
+from recon.core.domain.collector import Record
 from recon.core.domain.errors import CollectionError
 from recon.core.domain.ranges import Interval, committed_in, committed_kept, iso
-from tests.recon_fakes import FixedClock, LandedThrough, WrappingArchives, files_of
+from tests.recon_fakes import FakeCollector, FixedClock, LandedThrough, WrappingArchives, files_of
 from tests.test_ranges import StepsSettings, _plugins
 
 if TYPE_CHECKING:
@@ -38,8 +39,7 @@ if TYPE_CHECKING:
 
     from recon.composition import Recon
     from recon.core.domain.archives import ArchiveRef, Landed
-    from recon.core.domain.capture import CaptureLog
-    from recon.core.domain.models import CollectorEntry, SourceEntry
+    from recon.core.domain.collector import Item, Position, Run
 
 HISTORIES = 25
 EVENTS = 24
@@ -78,25 +78,19 @@ class Killing(LandedThrough):
 
 
 @dataclass
-class Asked:
+class Asked(FakeCollector):
     """The source: each interval it was asked for, and by whether its run moved anything."""
 
     faults: Faults
     asked: list[tuple[str, str]] = field(default_factory=list)
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-    ) -> Iterator[dict[str, Any]]:
-        asked = StepsSettings.model_validate(entry.settings)
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+        asked = run.settings_as(StepsSettings)
         call, self.faults.calls = self.faults.calls, self.faults.calls + 1
         if self.faults.fail_at is not None and call >= self.faults.fail_at:
             raise CollectionError("the source is down", kind="transient")
         self.asked.append((asked.since, asked.until))
-        yield {"id": asked.since, "since": asked.since, "until": asked.until}
+        yield Record({"id": asked.since, "since": asked.since, "until": asked.until})
 
 
 class History:

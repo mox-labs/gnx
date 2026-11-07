@@ -452,3 +452,50 @@ class TestTicksWhoseTokensExpire:
         assert starved["got"] == 1 and "window.pages" in starved["fix"]
         assert "every" in starved["fix"]
         assert "paginate_starved" in logged[2] and "paginate_starved" not in logged[1]
+
+
+class TestNormalizationMovedIntoTheCore:
+    """Regression (contract v2; design record M5-1): the ``api`` type applied ``normalize:``
+    before it gave a record its position, and a resumed crawl found where it left off by
+    comparing the page it asked for again with the last record kept, both normalized. recon now
+    normalizes every type's records itself, and drives the crawl, so it must compare the
+    resumed page's records shaped as the store kept the boundary."""
+
+    #: A spec under which no record recon reads equals the one it keeps: ``title`` is kept as
+    #: ``label``.
+    NORMALIZE = {"id": "id", "label": "title"}
+
+    def _run(self, project: Path) -> tuple[list[int], list[Any], list[dict[str, Any]]]:
+        with PagedServer(12, 3) as server:
+            _project(project, server.url, {"pages": 2}, normalize=self.NORMALIZE)
+            _stream(project)  # ids 0..5, then the window seals at two pages: cut mid-crawl
+            server.data.insert(0, {"id": 100, "title": "new"})  # the source moves under it
+            since = len(server.tried)
+            resumed = _stream(project)
+            asked = server.tried[since:]
+            _stream(project, windows=10)
+        return _ids(project), asked, resumed.warnings
+
+    def test_a_crawl_cut_mid_way_resumes_at_its_page_and_keeps_each_record_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ids, asked, warnings = self._run(tmp_path / "found")
+        assert asked[0] == 1, "the resumed run asks first for the page it left off on"
+        assert ids == list(range(12)), "every record once, in order"
+        [shifted] = [w for w in warnings if w["kind"] == "paginate_shifted"]
+        assert shifted["got"] == 1, "the boundary was found one record on, by its content"
+        rows = [row for window in _windows(tmp_path / "found") for row in _rows(window)]
+        assert all(set(row) == {"id", "label", "_position"} for row in rows)
+
+        # Check the checker: compare the resumed page's records as recon read them, before
+        # normalize:, and the boundary is never found; the crawl goes on by its index and
+        # keeps a record twice.
+        from recon.core.application import items
+        from recon.core.domain.paginate import content
+
+        monkeypatch.setattr(
+            items, "_contents", lambda raws, shaping: [content(r.data) for r in raws]
+        )
+        ids, _, warnings = self._run(tmp_path / "raw")
+        assert ids != list(range(12)) and len(ids) != len(set(ids)), ids
+        assert [w["got"] for w in warnings if w["kind"] == "paginate_shifted"] == [None]

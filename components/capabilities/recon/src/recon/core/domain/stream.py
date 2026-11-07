@@ -40,9 +40,10 @@ ClosedBy = Literal["seconds", "records", "bytes", "pages", "eof", "stopped", "un
 #: a burst would cost the whole stream.
 Overflow = Literal["block", "drop_newest", "drop_oldest"]
 
-#: Who sets the pace a type's records arrive at (``CollectorType.paced_by``): ``recon``, which
-#: reads the next when it is ready for it (a file, a command, a polled API), or ``source``,
-#: which sends whether recon is ready or not (server-sent events, a socket).
+#: Who sets the pace a type's records arrive at (its ``records``: ``unbounded_recon_paced`` or
+#: ``unbounded_source_paced``): ``recon``, which reads the next when it is ready for it (a
+#: file, a command, a polled API), or ``source``, which sends whether recon is ready or not
+#: (server-sent events, a socket).
 PacedBy = Literal["recon", "source"]
 
 #: By default, the seconds a window of a type that does not end spans, when its entry sets no
@@ -88,7 +89,7 @@ class BufferSpec(BaseModel):
     faster than the windows are written), ``drop_newest`` drops the one arriving,
     ``drop_oldest`` the one waiting longest. A record of more than ``max_record_bytes`` bytes
     is dropped as it arrives. Every drop is counted in its window. ``overflow`` left out is
-    :func:`default_overflow` of the collector type's ``paced_by``."""
+    :func:`default_overflow` of who the collector type's ``records`` say paces them."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -154,28 +155,6 @@ class Gap:
             "to": self.end.isoformat(),
             "resumed": self.resumed,
         }
-
-
-class GapLog(Protocol):
-    """Where a collector of a stream says what of its source it could not give: a stretch it
-    was not read (a dropped connection, a file truncated under it: :meth:`gap`), or a record
-    it dropped before handing it on (one larger than the stream's ``max_record_bytes``:
-    :meth:`drop`). ``CollectorContext.gaps``; each is counted in the window being filled when
-    it is said."""
-
-    def gap(self, gap: Gap) -> None: ...
-
-    def drop(self) -> None: ...
-
-
-class NoGaps:
-    """The :class:`GapLog` of a survey's snapshot tables, which keep no gaps."""
-
-    def gap(self, gap: Gap) -> None:
-        return None
-
-    def drop(self) -> None:
-        return None
 
 
 class Stop(Protocol):

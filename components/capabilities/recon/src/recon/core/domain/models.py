@@ -6,9 +6,9 @@ Every model forbids unknown keys: a misspelt ``normalise:`` or ``preserve-raw:``
 error with a path, not a silently ignored line. Three exceptions: a top-level key beginning
 with ``_`` is dropped by the planner before a config reaches these models; a collector entry
 keeps the keys that are its type's own settings, which the planner validates against that
-type's schema (``CollectorType.settings``); and a catalog source keeps the keys that are its
+type's schema (its registration's ``config``); and a catalog source keeps the keys that are its
 kind's own, which the planner validates against the schema of the type that adds the kind
-(``CollectorType.source_settings``). An unknown one is still a config error.
+(registered at ``recon.source``). An unknown one is still a config error.
 """
 
 from __future__ import annotations
@@ -118,11 +118,10 @@ class SourceEntry(BaseModel):
     """A source in the catalog — where to look.
 
     API sources provide URL + auth + rate limits.
-    Web sources provide URL + rate limits for page fetching.
     Local sources provide a filesystem path (used as cwd by CLI collectors).
 
-    ``type`` is a source kind: ``api``, ``web``, ``local``, or one an installed collector type
-    adds (``CollectorType.source_kinds``). It is an open string here; whether it is installed
+    ``type`` is a source kind: ``api``, ``local``, ``file``, ``mcp``, or one an installed
+    package registers at ``recon.source``. It is an open string here; whether it is installed
     is checked at plan time.
 
     ``url`` is where the source is. A source of a kind with no settings of its own needs one,
@@ -178,12 +177,13 @@ class CollectorEntry(BaseModel):
     The fields here are the ones recon itself reads, for every type: `name`, `type`,
     `source`, `type_url` (what the output table's records are; recorded in the archive's
     meta.yaml, never injected into the records), `normalize` (output column to
-    ``path.to.field|$transform``), `extract` (where the records are in a body, for a type
-    that declares ``extracts``) and `deadline` (the seconds each of its tables may take).
+    ``path.to.field|$transform``), `extract` (where the records are in each body's converted
+    values and each record's data, for every type) and `deadline` (the seconds each of its
+    tables may take).
     `window` makes the entry a stream, collected into windows that each end at the first of
     its bounds; `buffer` and `retain` are a stream's too (:mod:`recon.core.domain.stream`); left
     out, the plan fills in their defaults and says so. `paginate` reads the source page by
-    page, for a type that declares ``paginates`` (:mod:`recon.core.domain.paginate`). `changes`
+    page, for a type recon crawls (``Paged``, :mod:`recon.core.domain.paginate`). `changes`
     compares each of its tables with the same table of an earlier archive and writes what
     changed beside it (:mod:`recon.core.domain.changes`). `range` asks a snapshot entry's source
     for its time step by step, run after run, each step's bounds filled into the type's

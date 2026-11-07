@@ -1,5 +1,32 @@
 # Changelog — recon
 
+## 0.19.0 — 2026-11-06
+
+### Collector contract v2 (M5, completed)
+
+- **One contract, `recon.extension`** (review C7, ruling R13): a collector type's `Collector` has `effects`, `records` (`finite`, `unbounded_recon_paced` or `unbounded_source_paced`), `accepts` (the source kinds its runs use), pure `describe(run)` and `check(run)`, `collect(run, resume)` and `close()`. A `Run` is one table's: its entry, its source, and its `settings`, the type's own keys validated by its schema and filled for the run. A run gives items: `Body` (bytes of a media type, whole or as they arrive), `Record` (already structured), `PageMark`, `Gap`, `Dropped`, `Truncated`.
+- **recon captures, converts, finds and shapes the records of every type, once** (ruling R-NS): no type applies `normalize:` or writes its own capture. A body is captured with the credentials its type sent kept out (a record keeps what its source said), converted by the converter it names or its media type picks, its records found with `extract:`, each shaped with `normalize:`.
+- **`Paged`: recon drives a crawl** (`page(run, token) -> Page`): its stopping, page log, `{page, i}` positions, and for a stream's crawl resumed after a stop, the page it left off on asked for again and the last record kept found there by its content, compared as the store kept it, shaped. The `api` type is `Paged`; how a page is asked for stays its own.
+- **`Preflight`**: `preflight` and `requirements(run)`, found with `isinstance` when recon reads the type, as `Paged` is.
+- **Two new points**, `recon.source` (a source kind: `check(source)`, `env(source)`, its config the kind's own keys) and `recon.converter` (`media_types`, `convert(chunks, media_type, origin)`). Built-in kinds `api`, `local`, `file`, `mcp`; converters `json`, `xml`, `lines`, `document` (markitdown) and `mcp_result`. `$markitdown` converts a file through the `document` converter's conversion.
+- **A type is built as `build(**needs)`** with the needs it names: `requester`, `shell`, `clock`, `telemetry`, `deadline`, `rate_limiter`, `credentials`, `env`, `user_agent`, `project`, `capture_logs`. Credentials arrive through the `credentials` need; the capture type reads logs through `capture_logs`; no type is handed the mission's directory. recon builds each installed type once per session with stand-in needs that refuse to be used, to read what it declares.
+- **`recon.testing`, the conformance kit** (`CollectorConformance`): what a type promises, checked by its behaviour; `records(collector, run)` is recon's pipeline for one run. Every built-in passes it, and so does a client type written as an outside package would write it.
+- **`extract:` is every type's**: recon finds the records in each converted value and each record's data (a `cli` command's JSON lines included).
+- **`api`'s `response_format: text`** (the answer line by line) and **`document`** (converted to markdown by its content type, one record `{url, title, content, content_type}`).
+- **`recon types --json`** lists each converter and the media types it converts, and each source kind's origin and summary.
+
+### Changed (breaking)
+
+- **`CollectorType` and its 19 fields are gone**, and with them `CollectorContext`, the `normalizes`, `extracts`, `paginates`, `unbounded`, `paced_by`, `requires_source`, `preflight`, `source_kinds`, `accepts_kinds`, `source_settings`, `check_source`, `source_env` and `check_run` switches and hooks, the `PageLog` and `GapLog` a type was handed, `SupportsRequirements`, and the `DocumentConverter` port (`root()` and `recon.open` take no `converter`). An entry at `recon.collector` registers a collector's build with `config=` its settings schema (refusing unknown keys) and `needs=`.
+- **`type: web` is gone** (ruling R10), the collector type and the source kind: a config naming either is a plan problem whose fix says what to write (`type: api` with `response_format: document`; a source `type: api`). The document record has no `status_code`. `api`'s `response_format: html` is no value (it was refused at plan time before).
+- **`recon.v1.types`**: `sources[].added_by` is replaced by `origin` and `summary`, since a kind is an entry of its own; `capabilities` names `paginate` and `preflight` only.
+- **A `cli` entry with `patterns:` keeps one capture a command**, each with its own `commands`, `exit_codes` and `status`, where it kept one for the entry.
+- **An `mcp` capture is recon's**: its body is still the whole result, its credentials redacted value by value; an api body that echoed a credential is redacted the same way when it is JSON, and written again only then.
+- **A replayed capture is captured again** by a survey with `preserve_raw`, with its original `kind` and request.
+- **A stream's window capture holds each record as recon found it, before `normalize:`**, for every type (an `api` stream's held normalized records).
+- **An `mcp` source's `env:` and `file:` references and its `headers_helper`** resolve through the `credentials` need: the same rules, through the one resolver every kind's credential goes through.
+- **The `docs-mine` template** reads its pages with `api` and `response_format: document`.
+
 ## 0.18.0 — 2026-11-06
 
 ### Two layers: the collect core and the observe layer (M3)

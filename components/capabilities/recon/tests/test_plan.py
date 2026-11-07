@@ -1,5 +1,6 @@
 """Planning: every problem, with a path; every run, with its effects; no effects of its own."""
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -8,7 +9,15 @@ import yaml
 
 from recon.composition import load_plugins
 from recon.core.application.plan import Plan, build_plan
-from recon.core.domain.collector import BrokenPlugin, Collector, CollectorContext, Plugins
+from recon.core.domain.collector import (
+    BrokenPlugin,
+    Collector,
+    InstalledKind,
+    InstalledType,
+    PlainKind,
+    Plugins,
+)
+from tests.recon_fakes import FakeCollector, installed
 
 
 @pytest.fixture(scope="module")
@@ -17,14 +26,31 @@ def registry() -> Plugins:
 
 
 def _plan(raw: Any, registry: Plugins, **kwargs: Any) -> Plan:
-    plugins = Plugins(
-        registry.collector_types, registry.transforms, kwargs.pop("broken", registry.broken)
-    )
+    plugins = replace(registry, broken=kwargs.pop("broken", registry.broken))
     return build_plan(raw, plugins, kwargs.pop("env", {}))
 
 
-def _never_built(ctx: CollectorContext) -> Collector:
-    raise AssertionError("planning builds no collector")
+def _never_built(**needs: Any) -> Collector:
+    raise AssertionError("planning builds no collector for an act")
+
+
+def _with(
+    registry: Plugins,
+    types: dict[str, InstalledType] | None = None,
+    kinds: dict[str, InstalledKind] | None = None,
+) -> Plugins:
+    """The installed plugins, with ``types`` and ``kinds`` too, and nothing broken."""
+    return replace(
+        registry,
+        collector_types={**registry.collector_types, **(types or {})},
+        source_kinds={**registry.source_kinds, **(kinds or {})},
+        broken=[],
+    )
+
+
+def _declaring(name: str, **settings: Any) -> InstalledType:
+    """A type a test installs that declares nothing and is never built for an act."""
+    return installed(name, _never_built, declared=FakeCollector(), **settings)
 
 
 def _paths(plan: Plan) -> dict[str, str]:
@@ -66,13 +92,10 @@ class TestValidPlans:
         assert plan.effects() == ["network", "subprocess"]
 
     def test_undeclared_effects_are_unknown_never_none(self, registry: Plugins) -> None:
-        from dataclasses import replace
 
-        types = dict(registry.collector_types)
-        types["mystery"] = replace(types["cli"], effects=None, check=lambda e: [])
         plan = build_plan(
             {"collectors": [{"name": "m", "type": "mystery"}]},
-            Plugins(types, registry.transforms, []),
+            _with(registry, {"mystery": _declaring("mystery")}),
             {},
         )
         assert plan.runs[0].document()["effects"] == "unknown"
@@ -117,7 +140,8 @@ class TestEveryProblemWithAPath:
         paths = _paths(plan)
         assert not plan.valid
         assert "unknown collector type 'ftp'" in paths["collectors.0.type"]
-        assert "api, capture, cli, mcp, sse, tail, web" in paths["collectors.0.type"], (
+        # Changed requirement (ruling R10): the web type is removed, so it is not installed.
+        assert "api, capture, cli, mcp, sse, tail" in paths["collectors.0.type"], (
             "names what is installed"
         )
         assert "source 'nowhere' not in catalog" in paths["collectors.1.source"]
@@ -304,28 +328,14 @@ class TestEveryProblemWithAPath:
         )
         assert plan.valid, plan.problems
 
-    def test_a_web_endpoint_placeholder_is_a_problem(self, registry: Plugins) -> None:
-        """Regression: a web collector fills no placeholder, and ``/page/{slug}`` was
-        fetched literally with a valid plan."""
-        plan = _plan(
-            {
-                "catalog": [{"name": "docs", "type": "web", "url": "https://docs.example.test"}],
-                "collectors": [{"name": "p", "type": "web", "endpoint": "/page/{slug}"}],
-            },
-            registry,
-        )
-        [problem] = plan.problems
-        assert (problem.path, problem.kind) == ("collectors.0.endpoint", "unresolved")
-        assert "{slug}" in problem.message
-
     @pytest.mark.parametrize(
         "collector",
         [
-            {"type": "web", "endpoint": "/search?q=\\w{3}-\\d{2,4}"},
+            {"type": "api", "endpoint": "/search?q=\\w{3}-\\d{2,4}"},
             {"type": "api", "endpoint": "/search", "params": {"q": "\\w{3}\\d{2,}"}},
             {"type": "cli", "run": "rg --json '\\w{3}' .", "source": "here"},
         ],
-        ids=["web", "api", "cli"],
+        ids=["endpoint", "params", "cli"],
     )
     def test_a_regex_quantifier_is_not_a_placeholder(
         self, registry: Plugins, collector: dict[str, Any]
@@ -333,7 +343,7 @@ class TestEveryProblemWithAPath:
         plan = _plan(
             {
                 "catalog": [
-                    {"name": "s", "type": "web", "url": "https://s.example.test"},
+                    {"name": "s", "type": "api", "url": "https://s.example.test"},
                     {"name": "here", "type": "local", "url": "/tmp"},
                 ],
                 "collectors": [{"name": "c", "source": "s", **collector}],
@@ -347,7 +357,7 @@ class TestEveryProblemWithAPath:
     ) -> None:
         """Regression: ``{url}`` in a ``cli`` run with no source planned valid and failed only
         when surveyed, though the plan knows the run has no source. A type checks each run
-        against its source (``CollectorType.check_run``)."""
+        against its source (its collector's ``check(run)``)."""
         plan = _plan({"collectors": [{"name": "c", "type": "cli", "run": "echo {url}"}]}, registry)
         [problem] = plan.problems
         assert (problem.path, problem.kind) == ("collectors.0.run", "unresolved")
@@ -474,21 +484,26 @@ class TestBrokenPlugins:
         assert plan.valid
 
 
-@pytest.mark.parametrize("fmt", ["html", "text"])
-def test_an_api_collector_that_would_parse_no_records_is_a_problem(
-    registry: Plugins, fmt: str
-) -> None:
+def test_an_api_collector_reads_only_formats_recon_converts(registry: Plugins) -> None:
     """Regression: an api collector with response_format html or text wrote an empty table
-    and reported success; the body is not JSON or XML, so it held no records to keep."""
-    plan = _plan(
-        {
-            "catalog": [{"name": "s", "url": "https://api.example.test"}],
-            "collectors": [{"name": "c", "type": "api", "endpoint": "/x", "response_format": fmt}],
-        },
-        registry,
-    )
-    [problem] = [p for p in plan.problems if p.path == "collectors.0.response_format"]
-    assert problem.got == fmt and "web collector" in problem.fix
+    and reported success. Changed requirement (ruling R10, 0.19): every format it takes is one
+    recon converts into records (``text`` line by line, ``document`` to markdown, folding the
+    web type in), so ``html`` is no format of it, and ``text`` and ``document`` plan."""
+
+    def plan(fmt: str) -> Plan:
+        return _plan(
+            {
+                "catalog": [{"name": "s", "url": "https://api.example.test"}],
+                "collectors": [
+                    {"name": "c", "type": "api", "endpoint": "/x", "response_format": fmt}
+                ],
+            },  # fmt: skip
+            registry,
+        )
+
+    [problem] = [p for p in plan("html").problems if p.path == "collectors.0.response_format"]
+    assert problem.got == "html" and problem.allowed == ("json", "xml", "text", "document")
+    assert plan("text").valid and plan("document").valid
 
 
 class TestCheckingDoesNotStopEarly:
@@ -572,7 +587,7 @@ class TestProblemRecords:
         )
         by_path = {p.path: p for p in plan.problems}
         assert by_path["collectors.0.type"].kind == "name_unknown"
-        assert {"api", "cli", "capture", "web"} <= set(by_path["collectors.0.type"].allowed)
+        assert {"api", "cli", "capture"} <= set(by_path["collectors.0.type"].allowed)
         assert by_path["collectors.0.source"].allowed == ("s",)
         assert by_path["collectors.1.method"].kind == "invalid_value"
         assert by_path["collectors.1.method"].allowed == ("GET", "POST", "PUT", "PATCH", "DELETE")
@@ -660,20 +675,14 @@ class TestATypeOwnsItsSettings:
     def plugins(self, registry: Plugins) -> Plugins:
         from pydantic import BaseModel, ConfigDict
 
-        from recon.core.domain.collector import CollectorType
-
         class SqlSettings(BaseModel):
             model_config = ConfigDict(frozen=True, extra="forbid")
             database: str
             sql: str
             timeout_ms: int = 1000
 
-        types = dict(registry.collector_types)
-        types["sql"] = CollectorType(
-            create=_never_built, effects=None, settings=SqlSettings,
-            source_kinds=frozenset({"sqlite"}),
-        )  # fmt: skip
-        return Plugins(types, registry.transforms, [])
+        return _with(registry, {"sql": _declaring("sql", settings=SqlSettings)},
+                     {"sqlite": InstalledKind("sqlite", PlainKind())})  # fmt: skip
 
     def test_a_type_s_own_keys_plan_valid(self, plugins: Plugins) -> None:
         raw = {"collectors": [{"name": "q", "type": "sql", "database": "d.db", "sql": "SELECT 1"}]}
@@ -709,14 +718,23 @@ class TestATypeOwnsItsSettings:
         assert (problem.path, problem.kind) == ("collectors.0.run", "unknown_key")
         assert "endpoint" in problem.allowed and "run" not in problem.allowed
 
-    def test_extract_is_for_a_type_that_reads_a_body(self, plugins: Plugins) -> None:
+    def test_extract_is_every_type_s(self, plugins: Plugins) -> None:
+        """Changed requirement (ruling R-NS, 0.19): recon finds the records in what every type
+        gives (a body's converted values, a record's data), so every type takes extract:; a
+        path recon cannot resolve is still a problem."""
         plan = build_plan(
             {"collectors": [{"name": "c", "type": "cli", "run": "true", "extract": "data"}]},
             plugins,
             {},
         )
-        [problem] = plan.problems
-        assert (problem.path, problem.kind) == ("collectors.0.extract", "unknown_key")
+        assert plan.valid, plan.problems
+        bad = build_plan(
+            {"collectors": [{"name": "c", "type": "cli", "run": "true", "extract": "a.*.b.*"}]},
+            plugins,
+            {},
+        )
+        [problem] = bad.problems
+        assert problem.path == "collectors.0.extract"
 
 
 class TestFanOutByKind:
@@ -726,7 +744,7 @@ class TestFanOutByKind:
 
     MIXED: ClassVar[list[dict[str, str]]] = [
         {"name": "repo", "type": "local", "url": "/tmp"},
-        {"name": "docs", "type": "web", "url": "https://docs.example.test"},
+        {"name": "docs", "type": "api", "url": "https://docs.example.test"},
         {"name": "srv", "type": "mcp", "command": "server"},
     ]
 
@@ -734,17 +752,17 @@ class TestFanOutByKind:
         self, registry: Plugins
     ) -> None:
         """Regression: each ran against every source, so the ``cli`` command ran in recon's
-        working directory for ``docs`` and ``srv``, and the ``web`` collector asked a
-        directory and an MCP server's command for a page."""
+        working directory for ``docs`` and ``srv``, and the page's collector asked a directory
+        and an MCP server's command for a page."""
         raw = {"catalog": self.MIXED, "collectors": [
             {"name": "todos", "type": "cli", "run": "rg TODO ."},
-            {"name": "page", "type": "web"},
+            {"name": "page", "type": "api", "endpoint": "/", "response_format": "document"},
         ]}  # fmt: skip
         plan = _plan(raw, registry)
         assert plan.valid, plan.problems
         assert [run.output for run in plan.runs] == ["todos-repo", "page-docs"]
         assert [s.document() for s in plan.skipped] == [
-            {"collector": "todos", "source": "docs", "kind": "web"},
+            {"collector": "todos", "source": "docs", "kind": "api"},
             {"collector": "todos", "source": "srv", "kind": "mcp"},
             {"collector": "page", "source": "repo", "kind": "local"},
             {"collector": "page", "source": "srv", "kind": "mcp"},
@@ -768,7 +786,7 @@ class TestFanOutByKind:
         [problem] = plan.problems
         assert (problem.path, problem.kind) == ("collectors.0.source", "missing_key")
         assert "local" in problem.message
-        assert "docs (web)" in problem.message and "srv (mcp)" in problem.message
+        assert "docs (api)" in problem.message and "srv (mcp)" in problem.message
         assert problem.fix is not None and "catalog:" in problem.fix
         assert plan.runs == [] and not plan.valid
 
@@ -802,7 +820,7 @@ class TestFanOutByKind:
         }  # fmt: skip
         config = _plan(raw, registry, env={"API_KEY": "k"}).config
         assert config is not None
-        assert declared_env(config, registry.collector_types) == {
+        assert declared_env(config, registry) == {
             "cli": set(),
             "api": {"API_KEY"},
         }
@@ -828,19 +846,19 @@ class TestSourceKinds:
             "name_unknown",
             "git",
         )
-        assert problem.allowed == ("api", "file", "local", "mcp", "web")
-        assert "api, file, local, mcp, web" in problem.message
+        assert problem.allowed == ("api", "file", "local", "mcp")
+        assert "api, file, local, mcp" in problem.message
 
     @pytest.mark.parametrize(
         ("source", "collector", "kinds"),
         [
             # cli would run in recon's working directory, and survey `ok`
-            ({"type": "web", "url": "https://x.test"}, {"type": "cli", "run": "pwd"}, "local"),
+            ({"type": "api", "url": "https://x.test"}, {"type": "cli", "run": "pwd"}, "local"),
             # the API's URL would be used as an MCP server's
             ({"type": "api", "url": "https://x.test"}, {"type": "mcp", "tool": "t"}, "mcp"),
-            ({"type": "local", "url": "/tmp"}, {"type": "api", "endpoint": "/x"}, "api, web"),
-            ({"type": "mcp", "command": "srv"}, {"type": "api", "endpoint": "/x"}, "api, web"),
-            ({"type": "mcp", "command": "srv"}, {"type": "web"}, "api, web"),
+            ({"type": "local", "url": "/tmp"}, {"type": "api", "endpoint": "/x"}, "api"),
+            ({"type": "mcp", "command": "srv"}, {"type": "api", "endpoint": "/x"}, "api"),
+            ({"type": "mcp", "command": "srv"}, {"type": "sse", "endpoint": "/e"}, "api"),
         ],
     )
     def test_a_collector_pinned_to_a_source_of_a_kind_its_type_cannot_use_is_a_problem(
@@ -866,23 +884,19 @@ class TestSourceKinds:
         """``capture`` keeps the captures a source's name filters, whatever its kind; a
         plugin type that declares nothing is not judged."""
         raw = {
-            "catalog": [{"name": "s", "type": "web", "url": "https://x.test"}],
+            "catalog": [{"name": "s", "type": "api", "url": "https://x.test"}],
             "collectors": [{"name": "c", "type": "capture", "source": "s"}],
         }
         assert _plan(raw, registry).valid
 
-    def test_a_kind_an_installed_type_adds_plans(self, registry: Plugins) -> None:
-        from recon.core.domain.collector import CollectorType
-
-        types = dict(registry.collector_types)
-        types["sqlite"] = CollectorType(
-            create=_never_built, effects=None, source_kinds=frozenset({"sqlite"})
-        )
+    def test_a_kind_an_installed_package_registers_plans(self, registry: Plugins) -> None:
         raw = {
             "catalog": [{"name": "db", "type": "sqlite", "url": "data.db"}],
             "collectors": [{"name": "c", "type": "sqlite", "source": "db"}],
         }
-        plan = build_plan(raw, Plugins(types, registry.transforms, []), {})
+        plugins = _with(registry, {"sqlite": _declaring("sqlite")},
+                        {"sqlite": InstalledKind("sqlite", PlainKind())})  # fmt: skip
+        plan = build_plan(raw, plugins, {})
         assert plan.valid, plan.problems
 
     def test_a_key_no_kind_takes_is_unknown_and_a_url_is_needed(self, registry: Plugins) -> None:
@@ -899,38 +913,34 @@ class TestSourceKinds:
         assert problems["catalog.0.url"].kind == "missing_key"
 
     def test_a_kind_with_settings_of_its_own_is_judged_by_its_type(self, registry: Plugins) -> None:
-        """A type that adds a kind can give it keys of its own (``source_settings``), say what
-        it needs of the shared ones (``check_source``) and name the variables it reads
-        (``source_env``): the plan validates, checks and warns through each."""
+        """A source kind (at ``recon.source``) can have keys of its own (its config), say what
+        it needs of the shared ones (its ``check``) and name the variables it reads (its
+        ``env``): the plan validates, checks and warns through each."""
         from pydantic import BaseModel, ConfigDict
 
         from recon.core.application.collectors import declared_env
-        from recon.core.domain.collector import CollectorType
         from recon.core.domain.errors import Problem
+        from recon.core.domain.models import SourceEntry
 
         class DbSource(BaseModel):
             model_config = ConfigDict(extra="forbid")
             path: str
             password: str = ""
 
-        types = dict(registry.collector_types)
-        types["sqlite"] = CollectorType(
-            create=_never_built,
-            effects=None,
-            source_kinds=frozenset({"sqlite"}),
-            source_settings=DbSource,
-            check_source=lambda src: (
-                []
-                if src.settings["path"].endswith(".db")
-                else [Problem("path", "not a database file", fix="name a .db file")]
-            ),
-            source_env=lambda src: (
-                {src.settings["password"].removeprefix("env:"): "password"}
-                if src.settings.get("password", "").startswith("env:")
-                else {}
-            ),
-        )
-        plugins = Plugins(types, registry.transforms, [])
+        class Db:
+            def check(self, src: SourceEntry) -> list[Problem]:
+                if src.settings["path"].endswith(".db"):
+                    return []
+                return [Problem("path", "not a database file", fix="name a .db file")]
+
+            def env(self, src: SourceEntry) -> dict[str, str]:
+                written = src.settings.get("password", "")
+                return (
+                    {written.removeprefix("env:"): "password"} if written.startswith("env:") else {}
+                )
+
+        plugins = _with(registry, {"sqlite": _declaring("sqlite")},
+                        {"sqlite": InstalledKind("sqlite", Db(), settings=DbSource)})  # fmt: skip
         raw = {
             "catalog": [
                 {"name": "ok", "type": "sqlite", "path": "a.db", "password": "env:DB_PW"},
@@ -952,7 +962,7 @@ class TestSourceKinds:
         ok = {"catalog": raw["catalog"][:1], "collectors": raw["collectors"]}
         config = build_plan(ok, plugins, {"DB_PW": "x"}).config
         assert config is not None
-        assert declared_env(config, types) == {"sqlite": {"DB_PW"}}
+        assert declared_env(config, plugins) == {"sqlite": {"DB_PW"}}
 
 
 class TestRateLimitDefault:
@@ -963,7 +973,7 @@ class TestRateLimitDefault:
         collectors = [
             {"name": f"c{i}", "type": "cli", "source": s["name"], "run": "true"}
             if s["type"] == "local"
-            else {"name": f"c{i}", "type": "web", "source": s["name"], "endpoint": "/"}
+            else {"name": f"c{i}", "type": "api", "source": s["name"], "endpoint": "/"}
             for i, s in enumerate(catalog)
         ]
         plan = _plan({"catalog": list(catalog), "collectors": collectors}, registry)
@@ -973,7 +983,7 @@ class TestRateLimitDefault:
     def test_a_source_that_says_nothing_is_sent_one_request_a_second(
         self, registry: Plugins
     ) -> None:
-        [said] = self._rates(registry, {"name": "s", "type": "web",
+        [said] = self._rates(registry, {"name": "s", "type": "api",
                                         "url": "https://x.test"}).values()  # fmt: skip
         assert (said.path, said.value, said.origin) == (
             "catalog.0.rate_limit", {"rps": 1.0, "burst": 1}, "recon")  # fmt: skip
@@ -984,8 +994,8 @@ class TestRateLimitDefault:
     ) -> None:
         rates = self._rates(
             registry,
-            {"name": "a", "type": "web", "url": "https://a.test", "rate_limit": {"rps": 5}},
-            {"name": "b", "type": "web", "url": "https://b.test",
+            {"name": "a", "type": "api", "url": "https://a.test", "rate_limit": {"rps": 5}},
+            {"name": "b", "type": "api", "url": "https://b.test",
              "rate_limit": {"rps": 2, "burst": 4}},
         )  # fmt: skip
         a, b = rates["catalog.0.rate_limit"], rates["catalog.1.rate_limit"]

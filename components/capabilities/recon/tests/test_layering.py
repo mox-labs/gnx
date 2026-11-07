@@ -566,8 +566,12 @@ def test_each_rule_of_the_map_bites(tree: Path, violation: Plant) -> None:
         # The first pass's finding F3, since fixed: the query read the store's file layout.
         ("adapters/_out/duckdb_query.py", "from .archive_files import ArchiveFiles",
          "layer query may not reach recon.adapters._out.archive_files"),
-        ("adapters/_out/web_collector.py", "from .http_requester import HttpRequester",
+        ("adapters/_out/api_collector.py", "from .http_requester import HttpRequester",
          "layer collectors may not reach recon.adapters._out.http_requester"),
+        # Contract v2: a credential arrives through the credentials need, so a collector
+        # type that reaches recon's credentials adapter is reaching across.
+        ("adapters/_out/sse_collector.py", "from .credentials import Credentials",
+         "layer collectors may not reach recon.adapters._out.credentials"),
         ("adapters/_out/capture_collector.py", "import yaml",
          "layer collectors names forbidden yaml"),
     ],

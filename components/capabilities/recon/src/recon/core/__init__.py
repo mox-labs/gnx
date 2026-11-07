@@ -20,7 +20,6 @@ from recon.core.application.collection import (
 from recon.core.application.plan import (
     Plan,
     PlannedStream,
-    accepted_kinds,
     fan_out,
 )
 from recon.core.application.stream import (
@@ -48,9 +47,6 @@ from recon.core.domain.changes import (
 )
 from recon.core.domain.clock import (
     Clock,
-)
-from recon.core.domain.collector import (
-    CollectorType,
 )
 from recon.core.domain.documents import (
     Act,
@@ -170,7 +166,6 @@ __all__ = [
     "Collection",
     "ConfigGiven",
     "CollectorEntry",
-    "CollectorType",
     "Committed",
     "ConfigError",
     "ConfigFile",
@@ -241,7 +236,6 @@ __all__ = [
     "WindowRange",
     "WindowRecord",
     "WindowSpec",
-    "accepted_kinds",
     "aligned",
     "archive_rank",
     "changes_output",

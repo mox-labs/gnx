@@ -1,107 +1,270 @@
-"""Collector — the port in Recon's hexagon, and the extension contract for collector types.
+"""The collector contract (v2): what a collector type implements, and what recon does with what
+it gives.
 
-A collector takes a collector entry + optional source and yields records. It is
-transport-agnostic: HTTP, a subprocess, a capture log, anything else.
+**The decision it hides.** How to talk to one kind of source. A collector type knows its
+source's protocol (an HTTP API's paging, a command line, an MCP server, a file followed as it
+grows); recon knows everything else, once, for every type: it captures what the type fetched,
+converts each body by its media type, finds the records in it (``extract:``), shapes them
+(``normalize:``), lands them, and drives a crawl's stopping, resumption and shift detection.
+A type that does none of that cannot forget it.
 
-The dispatch loop consumes the iterator and writes to JSONL line-by-line; collectors that
-return a list should wrap it in `iter()`. Streaming collectors yield as they produce,
-enabling bounded memory for large outputs.
+**The members** (:class:`Collector`, a structural Protocol: a type implements it without
+importing recon's classes):
 
-Collector *types* are extensions. Each is a ``CollectorType``, registered at the
-``recon.collector`` point of matrix's registry under a type URL; a config names a built-in by
-its short name (``type: api``, for ``recon.v1.collector.api``) and any other by its type URL.
-The seven built-ins (``api``, ``cli``, ``web``, ``capture``, ``mcp``, ``tail``, ``sse``)
-register from recon's own ``matrix.extensions`` entry point, so a third-party type is wired
-exactly as they are, from its package's::
+- ``effects``: what a run can touch (:data:`Effect`), or None for unknown;
+- ``records``: :data:`RecordsKind`, whether the type's records end, and who paces them;
+- ``accepts``: the source kinds a run of the type runs against, or None for any (and none);
+- ``describe(run)``: what a planned run would do, for a reviewer; pure;
+- ``check(run)``: the problems in one run, paths relative to its entry; pure;
+- ``collect(run, resume)``: the run's items (:data:`Item`), lazily;
+- ``close()``: let go of what the collector holds, once, when the act ends.
 
-    [project.entry-points."matrix.extensions"]
-    acme = "acme.recon:register"
+Two optional protocols, each found with ``isinstance`` when recon first builds the type, never
+by a member's name: :class:`Paged` (recon drives the crawl; only such a type takes
+``paginate:``) and :class:`Preflight` (a checked dry run asks what a run needs of the host).
 
-    def register(registry):
-        registry.register("recon.collector", "acme.v1.collector.sql", lambda: collector_type)
+**Items.** A run gives :class:`Body` (bytes of a media type: recon captures, converts, extracts
+and normalizes them) or :class:`Record` (already structured: recon still extracts, normalizes
+and captures it), and says what else happened as :class:`PageMark`, :class:`Gap`,
+:class:`Dropped` and :class:`Truncated`.
 
-or in-process, by code using recon: ``recon.open(extensions=[register])``.
+**Building.** A collector type is an entry at the ``recon.collector`` point of matrix's
+registry (``recon._matrix``), built once for each act (a survey, a stream's run, a checked dry
+run) as ``build(**needs)`` with the needs its registration names (:data:`NEEDS`). The entry's
+``config`` is the schema of the type's own keys in a collector entry: recon validates an entry's
+keys against it and hands the validated value to every member in :attr:`Run.settings`, filled
+for the run (a range's bounds). Building must be pure: recon builds every installed type once
+per session with stand-in needs that refuse to be used, to read what it declares. One
+collector serves every run of its type in an act, so it may hold a session across them (a
+connection, a server it started) and end it in ``close()``.
+
+**Source kinds** are entries at ``recon.source`` (:class:`SourceKind`), and **converters** at
+``recon.converter`` (:class:`Converter`): a collector names the kinds it accepts, and a body's
+media type names its converter.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, TypeVar, runtime_checkable
 
-from recon.core.domain.paginate import NoPages
-from recon.core.domain.stream import NoGaps
+from recon.core.domain.errors import Problem
+from recon.core.domain.stream import Gap
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from pydantic import BaseModel
 
-    from recon.core.domain.capture import CaptureLog
-    from recon.core.domain.clock import Clock
-    from recon.core.domain.converters import DocumentConverter
-    from recon.core.domain.deadline import Deadline
-    from recon.core.domain.errors import Problem
-    from recon.core.domain.http import Requester
     from recon.core.domain.models import CollectorEntry, SourceEntry
-    from recon.core.domain.paginate import PageLog
-    from recon.core.domain.ratelimit import RateLimiter
-    from recon.core.domain.shell import ShellRunner
-    from recon.core.domain.stream import GapLog, PacedBy
-    from recon.core.domain.telemetry import Telemetry
+    from recon.core.domain.paginate import TruncatedBy
 
 #: What running a collector can touch. Reported by ``survey --dry-run`` for every planned
 #: run; a type that declares ``effects=None`` is shown as ``unknown``, never as none.
 Effect = Literal["network", "subprocess", "filesystem"]
 
-#: A normalize transform: the resolved value in, the normalized value out. Registered
-#: at the ``recon.transform`` point (a built-in by its short name, any other by its type URL),
-#: which is used in a
-#: normalize spec as ``path|$name``.
+#: Whether a type's records end, and who paces them: ``finite`` (each run ends: a snapshot
+#: table), ``unbounded_recon_paced`` (they do not end, and recon reads the next when it is
+#: ready: a file followed as it grows) or ``unbounded_source_paced`` (they do not end, and the
+#: source sends whether recon is ready or not: server-sent events). An entry of an unbounded
+#: type is a stream; its pacing decides the stream's default overflow.
+RecordsKind = Literal["finite", "unbounded_recon_paced", "unbounded_source_paced"]
+
+#: A normalize transform: the resolved value in, the normalized value out. Registered at the
+#: ``recon.transform`` point and named in a normalize spec as ``path|$name``.
 Transform = Callable[[Any], Any]
 
+#: What a planned run would do, as a reviewer reads it (:meth:`Collector.describe`): for a
+#: request ``method``, ``url`` (every query parameter, a credential as ``REDACTED``),
+#: ``headers`` and ``body``; for commands ``commands`` and ``cwd``; for a server it starts or
+#: reaches ``server``. A scheduled mission's plan reads ``commands`` and ``server``.
+Intent = Mapping[str, Any]
 
+M = TypeVar("M", bound="BaseModel")
+
+
+@dataclass(frozen=True)
+class Run:
+    """One table's run: the entry it is for (named for its output), the source it runs against
+    (None for a run with no source), and ``settings``, the type's own keys of the entry as its
+    schema validated them, filled for this run (a ranged table's step). None when the type
+    declares no schema."""
+
+    entry: CollectorEntry
+    source: SourceEntry | None
+    settings: BaseModel | None = None
+
+    @property
+    def output(self) -> str:
+        """The table the run lands: its entry's name."""
+        return self.entry.name
+
+    def settings_as(self, model: type[M]) -> M:
+        """The run's settings as ``model``, the schema the type registered."""
+        if not isinstance(self.settings, model):
+            raise TypeError(
+                f"run {self.entry.name!r} has settings {type(self.settings).__name__}, not "
+                f"{model.__name__}: register the type with config={model.__name__}"
+            )
+        return self.settings
+
+
+@dataclass(frozen=True)
+class Position:
+    """Where a stream's source goes on from: the position (``Record.position``) of the last
+    record the stream kept, any JSON value the type gave. A stream resumed after a stop
+    passes it to ``collect``, and the type gives what comes after it, so nothing is collected
+    twice. (The range checkpoint, committed with a table at its seal, is another thing.)"""
+
+    value: Any
+
+
+@dataclass(frozen=True)
+class BodyEnd:
+    """What a body read as it arrives (:attr:`Body.data` a generator) returns when it ends:
+    the ``status`` and the ``request`` its capture records, known only then (a command's exit
+    code). A field left None keeps the :class:`Body`'s."""
+
+    status: int | None = None
+    request: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class Body:
+    """Bytes of a media type, as the type fetched them. recon captures them (with
+    ``preserve_raw``), converts them with the converter ``converter`` names (a converter's
+    config name: ``json``, ``xml``, ``lines``, ``document``, or a type URL), or else the one
+    ``media_type`` picks, finds the records in what that gives (``extract:``) and shapes each
+    (``normalize:``).
+
+    ``data`` is the whole body, or the body as it arrives (an iterator of byte chunks: a
+    command's stdout), which recon converts and captures as it flows; a generator may return
+    a :class:`BodyEnd`. The capture records ``request`` (what was asked, as the capture may
+    keep it), ``kind`` (the capture's ``kind``; None: the entry's type), ``status`` and
+    ``headers`` (the answer's). ``secrets`` are credential values the type sent or resolved:
+    recon keeps them out of the capture (its body and its request) and out of nothing else, so
+    a record that holds one keeps it. ``origin`` names where the body is from (a URL) in a
+    conversion's error. ``page`` is the body's page in a crawl the type ran itself: each of its
+    records is positioned ``{page, i}``. ``fields`` are recon's own fields (each named ``_``)
+    every record of the body carries, written with it (``_pattern``); ``scope`` is what a
+    normalize spec may also read (each named ``_``), never written by itself. ``unfit`` is what
+    recon does when ``extract:`` does not fit the body: ``fail`` (the default), as the source's
+    error it most likely is (a page past the first that holds an error object); ``skip``, for
+    one of many bodies of unrelated shape (a capture log's), which gives nothing, the table
+    ending empty with the first reason only when none of its bodies fit."""
+
+    media_type: str
+    data: bytes | Iterator[bytes]
+    request: Mapping[str, Any] = field(default_factory=dict)
+    converter: str | None = None
+    kind: str | None = None
+    status: int | None = None
+    headers: Mapping[str, str] = field(default_factory=dict)
+    secrets: tuple[str, ...] = ()
+    origin: str = ""
+    page: int | None = None
+    fields: Mapping[str, Any] = field(default_factory=dict)
+    scope: Mapping[str, Any] = field(default_factory=dict)
+    unfit: Literal["fail", "skip"] = "fail"
+
+
+@dataclass(frozen=True)
+class Record:
+    """A record the type has already structured (a line of a file, a server-sent event, a
+    capture replayed). recon finds the records in it (``extract:``), shapes each
+    (``normalize:``) and captures it. ``position`` is where it is in its source, for a
+    stream to resume after (:class:`Position`); ``scope`` what a normalize spec may also read
+    (each key named ``_``: the capture type's ``_capture``), never written by itself."""
+
+    data: Mapping[str, Any]
+    position: Any = None
+    scope: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PageMark:
+    """The type is about to ask for page ``index`` of a crawl it runs itself, by ``token``
+    (None for the first page): said before it is asked for, so a stream that has ended stops
+    the crawl there (recon stops reading the items)."""
+
+    index: int
+    token: Any = None
+
+
+@dataclass(frozen=True)
+class Dropped:
+    """The type dropped one record rather than hold it (larger than the stream's
+    ``max_record_bytes``): counted in the window being filled."""
+
+
+@dataclass(frozen=True)
+class Truncated:
+    """The type's own crawl stopped short, ``by`` its cap, a loop or empty pages: the table is
+    not a whole snapshot of its source."""
+
+    by: TruncatedBy
+
+
+#: What a run gives. A :class:`~recon.core.domain.stream.Gap` is a stretch its source was not
+#: read (a stream's; a snapshot keeps none).
+Item = Body | Record | PageMark | Gap | Dropped | Truncated
+
+
+@runtime_checkable
 class Collector(Protocol):
-    """Collect data, yield records.
+    """A collector type's collector: see the module docstring."""
 
-    ``captures`` is the mission's capture log when ``preserve_raw`` is on, else None. A
-    collector that fetches bytes records them there before parsing, so the archive can
-    prove what the source returned and be re-normalized without fetching again.
+    effects: frozenset[Effect] | None
+    records: RecordsKind
+    accepts: frozenset[str] | None
 
-    One collector serves every table of its type in a survey, so it may hold a session
-    across them (a connection, a stdio server it started once). It may then have a
-    ``close()``, an optional member read only when present: recon calls it once when the
-    survey ends, however it ends (finished, failed, interrupted).
+    def describe(self, run: Run) -> Intent:
+        """What the run would do, for a reviewer. Pure: no I/O."""
+        ...
 
-    A collector whose type declares a ``preflight`` may have a second optional member,
-    ``requirements(entry, source) -> Sequence[Requirement]``: what the run needs of this host
-    or of what it reaches (a server that starts, a tool it lists, arguments its schema
-    accepts), each checked now. A checked dry run (``--check``) builds the collector to ask
-    it, then closes it; a dry run unchecked builds none.
+    def check(self, run: Run) -> list[Problem]:
+        """The problems in the run, paths relative to its entry (``endpoint``,
+        ``params.query``), for what the schema cannot say (a run with no source when the type
+        needs one). Pure: no I/O."""
+        ...
 
-    **A stream** (an entry with ``window:``, or of a type that declares ``unbounded``) calls
-    ``collect`` once and reads its records for as long as the stream runs, on a thread of the
-    stream's own, so its iterator may never end. A record whose place in its source can be
-    named carries it as ``_position`` (``recon.core.domain.stream.POSITION_FIELD``): any JSON
-    value from which the source can go on (a file's inode and offset, a server-sent event's
-    id). A type whose records carry one takes a keyword ``after`` too: a stream resumed after
-    a stop calls ``collect(entry, source, captures=None, after=<the last position kept>)``,
-    and the collector yields the records after it, so nothing is collected twice. A type that
-    ``paginates`` is handed where its crawl goes on instead, a
-    :class:`~recon.core.domain.paginate.Resume`'s document (the page to ask for again, by its
-    token, and the last record kept from it). Its
-    ``close()`` ends a read in progress, from another thread, so a stream stops promptly. It
-    reports a stretch when its source was not read through ``CollectorContext.gaps``, and
-    opens no telemetry span (the stream's telemetry is its writer's thread's).
-    """
+    def collect(self, run: Run, resume: Position | None) -> Iterator[Item]:
+        """The run's items, consumed lazily and closed if the consumer stops. ``resume`` is
+        where a stream's run goes on from; None for a fresh one."""
+        ...
 
-    def collect(
-        self,
-        entry: CollectorEntry,
-        source: SourceEntry | None,
-        *,
-        captures: CaptureLog | None = None,
-    ) -> Iterator[dict[str, Any]]: ...
+    def close(self) -> None:
+        """Let go of what the collector holds, once, however its act ended; from another
+        thread, end a read in progress (a stream stops so)."""
+        ...
+
+
+@dataclass(frozen=True)
+class Page:
+    """One page a :class:`Paged` type was asked for: its ``body``, the ``next`` token the
+    page names (None or ``""`` when it names none; for ``offset`` and ``page`` crawls, which
+    count, recon computes the next itself), and ``token``, what names this page when it was
+    asked for with none (a ``link`` crawl's first page, by its URL), so a page linking back to
+    it is a loop."""
+
+    body: Body
+    next: Any = None
+    token: Any = None
+
+
+@runtime_checkable
+class Paged(Protocol):
+    """A type that reads its source page by page as recon asks (``paginate:``,
+    :mod:`recon.core.domain.paginate`). recon runs the crawl: it asks for the first page with
+    no token, then each next, stops by :class:`~recon.core.domain.paginate.Crawl`'s rules, keeps
+    the page log, positions each record ``{page, i}``, and, for a stream's crawl resumed after
+    a stop, asks again for the page it left off on and finds the last record it kept there
+    (a page that moved is said ``shifted``; a token the source refuses with ``run_failed``
+    begins the crawl again, said ``restarted``). How a page is asked for by its token is the
+    type's own."""
+
+    def page(self, run: Run, token: Any) -> Page:
+        """The page ``token`` names (None: the first)."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -117,174 +280,80 @@ class Requirement:
     fix: str = ""
 
 
-@dataclass(frozen=True)
-class CollectorContext:
-    """What a collector type's factory is handed for one survey.
+@runtime_checkable
+class Preflight(Protocol):
+    """A type whose runs need something of the host a plan cannot see (a server that starts, a
+    tool it lists). ``preflight`` says in words what checking does; a checked dry run
+    (``--check``) builds the type, asks ``requirements(run)`` of each run, and closes it. An
+    unchecked plan builds nothing for it."""
 
-    Shared on purpose: one Requester and one ``rate_limiter`` (one bucket per source) serve
-    every collector in a run; a type that reaches a source other than through the requester
-    draws a token for each call (``ctx.rate_limiter.acquire(source, ctx.deadline)``), so the
-    source's ``rate_limit`` holds whichever collector calls it. ``shell`` runs a command.
-    ``telemetry`` is the survey's: a span opened there (``with ctx.telemetry.span(
-    "acme.call", {...}):``) nests under the table's ``recon.collect`` span, in the event log
-    and in OpenTelemetry alike.
-    ``deadline`` is the survey's: what is left of the survey's and the table's bounds in
-    time (``remaining()``, ``limit(seconds)``, ``check()``), which a type that waits or runs
-    a command keeps to, as the requester does. ``mission_dir`` anchors relative paths in a
-    config. ``project_dir`` is the project root, against which a ``local`` source's relative
-    url resolves, and where a process the mission starts without naming a directory runs;
-    ``None`` in a context recon did not build, for the working directory.
-    ``user_agent`` is what an HTTP collector sends when its source sets none. ``clock`` is the
-    survey's clock port, which a type that waits between reads (a file followed as it grows)
-    or before reconnecting waits on, so a test's clock decides it. ``gaps`` is where a
-    stream's collector says when its source was not read (:class:`~recon.core.domain.stream.Gap`);
-    a snapshot survey's keeps none. ``pages`` is where a collector that reads its source page
-    by page (an entry's ``paginate:``) says each page before it asks for it, and why its crawl
-    stopped short (:class:`~recon.core.domain.paginate.PageLog`), for the table or the stream being
-    collected; a stream's may refuse a page (it has ended), which is then not asked for.
+    preflight: str
 
-    ``env`` is not the process environment. It holds only the variables the mission
-    declares for this type: the ``auth.token: env:NAME`` variables of the catalog sources its
-    collectors run against, and the variables their kinds read (``CollectorType.source_env``).
-    Reading any other name raises a config error that says where to declare it.
-    """
-
-    requester: Requester
-    converter: DocumentConverter
-    shell: ShellRunner
-    telemetry: Telemetry
-    deadline: Deadline
-    rate_limiter: RateLimiter
-    transforms: Mapping[str, Transform]
-    mission_dir: Path
-    env: Mapping[str, str]
-    user_agent: str
-    project_dir: Path | None = None
-    clock: Clock | None = None
-    gaps: GapLog = field(default_factory=NoGaps)
-    pages: PageLog = field(default_factory=NoPages)
+    def requirements(self, run: Run) -> list[Requirement]:
+        """What the run needs, each checked now."""
+        ...
 
 
-def _no_problems(entry: CollectorEntry) -> list[Problem]:
-    return []
+@runtime_checkable
+class SourceKind(Protocol):
+    """A catalog source kind (a source's ``type:``), the entry at ``recon.source``: its config
+    is the schema of the kind's own keys (None: it takes none, and needs ``url:``)."""
+
+    def check(self, source: SourceEntry) -> list[Problem]:
+        """The problems in a source of the kind whose own keys the schema accepted, paths
+        relative to the source (``command``, ``url``). Pure."""
+        ...
+
+    def env(self, source: SourceEntry) -> dict[str, str]:
+        """The environment variables such a source reads beyond ``auth.token``, each with
+        where it names it (``{"GITHUB_TOKEN": "env.GITHUB_TOKEN"}``): the mission declares
+        them for every type whose runs use the source. Pure."""
+        ...
 
 
-def _no_run_problems(entry: CollectorEntry, source: SourceEntry | None) -> list[Problem]:
-    return []
+@runtime_checkable
+class Converter(Protocol):
+    """How bytes of a media type become values recon finds records in, the entry at
+    ``recon.converter``. ``media_types`` are the ones it converts: ``type/subtype``, a
+    structured suffix ``+json``, or ``type/*``; recon picks the most specific."""
+
+    media_types: frozenset[str]
+
+    def convert(self, chunks: Iterable[bytes], media_type: str, origin: str) -> Iterator[Any]:
+        """The values the bytes hold, as they arrive: a JSON body's one value, a text body's
+        line by line, a document's one ``{url, title, content, content_type}``. ``origin``
+        (a URL, a capture's place) is named in an error. Raises CollectionError for bytes
+        that are not what their media type says, and NoRecordsError for a body that holds
+        nothing for a reason it can name."""
+        ...
 
 
-def _no_description(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, Any]:
-    return {}
-
-
-def _no_source_problems(source: SourceEntry) -> list[Problem]:
-    return []
-
-
-def _no_source_env(source: SourceEntry) -> dict[str, str]:
-    return {}
-
-
-@dataclass(frozen=True)
-class CollectorType:
-    """A registered collector type: how to build it, and what a plan needs to know about it.
-
-    - ``create`` builds the collector from the shared context.
-    - ``settings`` is the schema (a pydantic model that forbids unknown keys) of the type's
-      own keys in an entry, beyond the ones recon reads for every type: an entry's other
-      keys (``entry.settings``) are validated against it at plan time, each problem with its
-      path. ``None`` means the type takes no setting of its own, so any other key is
-      unknown. The type parses ``entry.settings`` with it.
-    - ``source_kinds`` are the catalog source kinds (a source's ``type:``) the type adds to
-      the ones installed; a source of any other kind is a plan problem.
-    - ``accepts_kinds`` are the source kinds a collector of the type runs against: an
-      unpinned one fans out over the catalog's sources of these kinds alone, and the plan
-      names the rest as skipped; a collector pinned to a source of another kind is a plan
-      problem. ``None`` takes a source of any kind (``capture``, which only filters by the
-      source's name, and a type that does not say).
-    - ``source_settings`` is the schema (a pydantic model that forbids unknown keys) of the
-      keys a source of one of ``source_kinds`` takes beyond the ones every source has: a
-      source's other keys (``source.settings``) are validated against it at plan time.
-      ``None`` means its kinds take no key of their own, and such a source needs a ``url``.
-      With a schema, ``check_source`` says what the kind needs of the shared keys.
-    - ``check_source`` returns problems in a source of one of ``source_kinds`` whose
-      settings ``source_settings`` accepts, with paths relative to it (``command``,
-      ``url``); the planner prefixes ``catalog.<i>.``. Pure: no I/O.
-    - ``source_env`` names the environment variables such a source reads beyond
-      ``auth.token``, each with where the source names it (``{"GITHUB_TOKEN": "token"}``): the
-      mission declares them for every type whose collectors run against the source, and the
-      plan warns when one is unset. Pure.
-    - ``effects`` declares what a run can touch; ``None`` means unknown.
-    - ``requires_source`` makes a missing ``source`` (with an empty catalog) a plan error.
-    - ``normalizes`` says the collector applies ``entry.normalize`` itself. Left ``False``,
-      recon applies the spec to every record the collector yields, so a type cannot forget
-      it. Set it only when the spec needs something the records alone do not carry (the
-      capture collector's ``_capture`` scope).
-    - ``extracts`` says the collector finds its records at ``entry.extract`` in a body, and
-      only such a type takes ``extract:``. A survey whose table of this type gets one record
-      holding a list of objects warns that ``extract:`` may be missing, naming the list's
-      path.
-    - ``check`` returns problems in an entry, with paths relative to it (``run``,
-      ``endpoint``); the planner prefixes ``collectors.<i>.``. It is called only for an
-      entry whose settings ``settings`` accepts. Pure: no I/O.
-    - ``check_run`` returns problems in one run of an entry against the source it runs
-      against (``None`` for a run with no source), for what ``check`` cannot see without
-      the catalog (a ``cli`` run's ``{url}`` with no source to fill it); paths are relative
-      to the entry, as ``check``'s are. Pure: no I/O.
-    - ``describe`` returns what a planned run would do (the URL, the command) for a
-      reviewer. Pure: no I/O, no network. A run that starts commands describes them as
-      ``commands`` (shell lines) or ``server`` (a server's command line): a scheduled
-      mission's plan reads those two for a package fetched unpinned every tick.
-    - ``preflight`` says, in words, what a checked dry run does to check a run of the type
-      (``starts each stdio server a run names``). Non-empty, a dry run with ``--check`` builds
-      the type's collector, asks its ``requirements(entry, source)`` for each run, says this
-      in the plan, and closes it. Empty, no dry run builds the type; and none unchecked does.
-    - ``unbounded`` says the type's records do not end (a file followed as it grows, a server
-      that sends events): an entry of it is a stream, collected into windows, and one with no
-      ``window:`` gets the default (``window: {seconds: 300}``), which the plan says it
-      filled in. An entry of any type with ``window:`` is a stream too.
-    - ``paced_by`` says who sets the pace the type's records arrive at: ``recon``, which reads
-      the next when it is ready (a file, a command, a polled API), or ``source``, which sends
-      whether recon is ready or not (server-sent events). It decides a stream's default
-      overflow (``recon.core.domain.stream.default_overflow``): ``block`` or ``drop_newest``.
-    - ``paginates`` says the collector reads ``entry.paginate`` (:mod:`recon.core.domain.paginate`),
-      and only such a type takes ``paginate:``: it follows the stopping rules of
-      :class:`~recon.core.domain.paginate.Crawl`, gives each record ``_position`` ``{page, i}``, and
-      says each page and a crawl cut short through ``CollectorContext.pages``. The plan reports
-      the cap and the least time the crawl takes at the source's rate limit. In a stream it
-      goes on from ``after`` (a :class:`~recon.core.domain.paginate.Resume`), finds where it left
-      off as :class:`~recon.core.domain.paginate.Seek` does, and says a refused token
-      (``restarted``) and a page that moved (``shifted``) through the page log.
-    """
-
-    create: Callable[[CollectorContext], Collector]
-    effects: frozenset[Effect] | None
-    summary: str = ""
-    settings: type[BaseModel] | None = None
-    source_kinds: frozenset[str] = frozenset()
-    accepts_kinds: frozenset[str] | None = None
-    source_settings: type[BaseModel] | None = None
-    requires_source: bool = False
-    normalizes: bool = False
-    extracts: bool = False
-    check: Callable[[CollectorEntry], list[Problem]] = field(default=_no_problems)
-    check_run: Callable[[CollectorEntry, SourceEntry | None], list[Problem]] = field(
-        default=_no_run_problems
-    )
-    describe: Callable[[CollectorEntry, SourceEntry | None], dict[str, Any]] = field(
-        default=_no_description
-    )
-    check_source: Callable[[SourceEntry], list[Problem]] = field(default=_no_source_problems)
-    source_env: Callable[[SourceEntry], dict[str, str]] = field(default=_no_source_env)
-    preflight: str = ""
-    unbounded: bool = False
-    paced_by: PacedBy = "recon"
-    paginates: bool = False
+#: The needs recon supplies a collector type's build, each a keyword argument of its
+#: ``build``, and the port of what it is given. A registration names those it takes.
+NEEDS: Final[dict[str, str]] = {
+    "requester": "the act's Requester (recon.core.domain.http): rate-limited HTTP, one span a "
+    "request, within the act's deadline",
+    "shell": "a ShellRunner (recon.core.domain.shell): runs a command, its process group "
+    "killed when it is let go",
+    "clock": "the Clock port (recon.core.domain.clock), which a type that waits waits on",
+    "telemetry": "the act's Telemetry: a span opened there nests under the table's",
+    "deadline": "the act's Deadline: what is left of the act's and the table's bounds in time",
+    "rate_limiter": "the act's RateLimiter: one bucket per source, which a type that reaches a "
+    "source other than through the requester draws from",
+    "credentials": "Credentials (recon.core.domain.credentials): a source's credential, "
+    "resolved the one way every kind's is",
+    "env": "the environment variables the mission declares for the type, and no other",
+    "user_agent": "what an HTTP request sends when its source sets none",
+    "project": "the project root, the person's own directory: where a process the mission "
+    "starts without naming one runs",
+    "capture_logs": "CaptureLogs (recon.core.domain.capture): the capture logs of the mission "
+    "a glob names",
+}
 
 
 @dataclass(frozen=True)
 class BrokenPlugin:
-    """An entry point that could not be loaded. Reported, never fatal to other plugins."""
+    """An extension that could not be loaded or built. Reported, never fatal to the others."""
 
     group: str
     name: str
@@ -296,13 +365,93 @@ class BrokenPlugin:
 
 
 @dataclass(frozen=True)
-class Plugins:
-    """Everything installed: collector types and transforms by name, and what failed to
-    load. ``collector_packages`` names the package that registered each collector type, as
-    far as it is known (``recon`` for its own), so what is said of a type can say whose it
-    is."""
+class InstalledType:
+    """What recon knows of one registered collector type: its config name, the package that
+    registered it, its summary, its settings schema, how to build it and with what, and the
+    collector recon built with stand-in needs, whose declared members the plan reads."""
 
-    collector_types: dict[str, CollectorType]
+    name: str
+    build: Callable[..., Collector]
+    needs: frozenset[str]
+    declared: Collector
+    settings: type[BaseModel] | None = None
+    summary: str = ""
+    package: str = "unknown"
+
+    @property
+    def paged(self) -> bool:
+        return isinstance(self.declared, Paged)
+
+    @property
+    def preflight(self) -> str:
+        """What a checked dry run does for the type; "" when it has no preflight."""
+        return self.declared.preflight if isinstance(self.declared, Preflight) else ""
+
+    @property
+    def unbounded(self) -> bool:
+        return self.declared.records != "finite"
+
+
+@dataclass(frozen=True)
+class InstalledKind:
+    """What recon knows of one registered source kind."""
+
+    name: str
+    kind: SourceKind
+    settings: type[BaseModel] | None = None
+    summary: str = ""
+    package: str = "unknown"
+
+
+@dataclass(frozen=True)
+class InstalledConverter:
+    """What recon knows of one registered converter."""
+
+    name: str
+    converter: Converter
+    summary: str = ""
+    package: str = "unknown"
+
+
+@dataclass(frozen=True)
+class Plugins:
+    """Everything installed at recon's points, by the name a config uses, and what failed."""
+
+    collector_types: dict[str, InstalledType]
+    source_kinds: dict[str, InstalledKind]
+    converters: dict[str, InstalledConverter]
     transforms: dict[str, Transform]
     broken: list[BrokenPlugin]
-    collector_packages: dict[str, str] = field(default_factory=dict)
+
+    def accepts(self, type_name: str) -> frozenset[str] | None:
+        """The source kinds an installed type accepts; None for any, or a type not
+        installed."""
+        found = self.collector_types.get(type_name)
+        return found.declared.accepts if found is not None else None
+
+
+class PlainKind:
+    """A source kind with no keys of its own to judge and no variable of its own to declare
+    (``api``, ``local``, ``file``): its sources need ``url:``, which the plan checks."""
+
+    def check(self, source: SourceEntry) -> list[Problem]:
+        return []
+
+    def env(self, source: SourceEntry) -> dict[str, str]:
+        return {}
+
+
+def source_needed(run: Run, collects: str = "") -> list[Problem]:
+    """The problem of a run with no source, for a type whose runs each need one: at the entry's
+    ``source``, as the plan says every missing key. ``collects`` names the type in it."""
+    if run.source is not None:
+        return []
+    return [
+        Problem(
+            "source",
+            f"a {collects or run.entry.type} collector needs a source",
+            kind="missing_key",
+            fix="add a source under catalog: and name it here (or omit source: to fan out over "
+            "the catalog's sources it can use)",
+        )
+    ]

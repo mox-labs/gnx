@@ -222,13 +222,28 @@ def test_a_helper_s_header_does_not_follow_a_redirect_off_its_origin() -> None:
 
 
 def test_an_mcp_token_file_is_held_to_the_same_rule(tmp_path: Path) -> None:
-    """The one grammar is one code: an mcp source's ``token: file:`` is refused the same."""
+    """The one grammar is one code: an mcp source's ``token: file:`` is refused the same. The
+    mcp type resolves a reference through the ``credentials`` need (contract v2), the one
+    resolver every kind's credential goes through, never a resolver of its own."""
     from recon.adapters._out import mcp_collector
+    from recon.adapters._out.credentials import Credentials
+    from recon.adapters._out.system_clock import SystemClock
+    from recon.core.domain.deadline import Deadline
+    from recon.core.domain.ratelimit import RateLimiter
+    from recon.core.domain.telemetry import Telemetry
 
-    assert vars(mcp_collector)["resolve_reference"] is resolve_reference
+    assert "resolve_reference" not in vars(mcp_collector)
     _secret(tmp_path / "t", "tok", 0o644)
     with pytest.raises(CollectionError):
         resolve_reference("file:t", {}, tmp_path, "token")
+    clock = SystemClock()
+    collector = mcp_collector.McpCollector(
+        telemetry=Telemetry([], clock), deadline=Deadline(clock), rate_limiter=RateLimiter(clock),
+        credentials=Credentials({}, tmp_path), user_agent="recon-test",
+    )  # fmt: skip
+    with pytest.raises(CollectionError) as refused:
+        collector._resolve("file:t", "token")
+    assert "chmod 600" in (refused.value.fix or "")
 
 
 class _Echoes(PagedApi):

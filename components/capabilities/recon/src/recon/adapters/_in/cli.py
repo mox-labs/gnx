@@ -1297,10 +1297,10 @@ def types(as_json: bool) -> None:
         out.print(f"  [bold]{item.type}[/]  {escape(item.summary)}  [dim]({item.origin}; "
                   f"effects: {effects or 'none'}; {item.records_kind}; {what})[/]")  # fmt: skip
     if document.sources:
-        out.print(
-            "source kinds: " + ", ".join(f"{s.kind} ({s.added_by})" for s in document.sources)
-        )
+        out.print("source kinds: " + ", ".join(f"{s.kind} ({s.origin})" for s in document.sources))
     out.print("transforms: " + ", ".join(document.transforms))
+    if document.converters:
+        out.print("converters: " + ", ".join(c.converter for c in document.converters))
 
 
 @main.command(epilog=EXIT_CODES)
