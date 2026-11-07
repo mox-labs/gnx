@@ -27,6 +27,7 @@ gnx = { workspace = true }
 dao = { workspace = true }
 hardline = { workspace = true }
 matrix-hardline = { workspace = true }
+ix-cosmic-ray = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -35,6 +36,10 @@ dev = [
     # Bounds every test (the suite default is below), so a test that waits on an event that
     # never comes fails with a traceback instead of holding the run until CI's job limit.
     "pytest-timeout>=2.3",
+    # coverage.py's per-test contexts, through pytest-cov: ix's mutation tests run a real suite
+    # under them, as `ix mutants sample` does in a suite's own environment. ix itself does not
+    # depend on either; a suite ix samples needs them in its environment.
+    "pytest-cov>=7.0",
     "ruff>=0.8",
     "mypy>=1.8",
     "types-PyYAML",  # gnx + harness parse YAML; strict mypy needs the stubs
@@ -47,6 +52,7 @@ dev = [
     "dao",
     "hardline",
     "matrix-hardline",
+    "ix-cosmic-ray",
 ]
 
 # The one pytest configuration. No member sets its own, so wherever pytest starts in the

@@ -1322,13 +1322,14 @@ class TestWhatCannotRun:
 
     def test_what_ix_can_run_is_listed_with_the_kinds(self) -> None:
         """Changed requirement: ``compose`` has an adapter, and so does
-        ``evaluator``, pydantic-evals' evaluators."""
+        ``evaluator``, pydantic-evals' evaluators, and mutation testing's three kinds."""
         kinds = ix.kinds()
         runnable = {schema.short(name) for name in kinds.runnable}
         assert runnable == {
             "process", "http", "http-load", "timing", "memory", "none", "agent-session",
             "model-call", "prompt", "activation", "tool-usage", "function-test", "outcome",
             "text-match", "usage", "judge", "compose", "evaluator", "command", "exit-status",
+            "test-suite", "mutant", "mutant-kill",
         }  # fmt: skip
         assert set(kinds.kinds) - set(kinds.runnable) == {"ix.v1.probe.inspect-task"}
         assert set(kinds.runnable) < set(kinds.kinds)

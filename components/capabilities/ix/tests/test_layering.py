@@ -29,6 +29,7 @@ import), logic in a file whose imports are all allowed, and what matrix does at 
 from __future__ import annotations
 
 import ast
+import inspect
 import subprocess
 import sys
 from pathlib import Path
@@ -368,14 +369,21 @@ class TestLibrarySurface:
         # published beside its codes and meanings, so help and the skill read one table.
         tables = {"PROBLEM_KINDS", "ERROR_KINDS", "EXIT_CODES", "EXIT_MEANINGS", "EXIT_NEXT",
                   "__version__"}  # fmt: skip
-        assert set(ix.__all__) == functions | documents | authored | errors | tables
-        assert len(ix.__all__) <= 45
+        # Changed requirement (ruling R2): mutation testing's provisional surface is one
+        # module of functions, ix.mutants (sample, map, read), which returns JSON-ready documents.
+        namespaces = {"mutants"}
+        assert set(ix.__all__) == functions | documents | authored | errors | tables | namespaces
+        assert len(ix.__all__) <= 46
+        assert set(ix.mutants.__all__) == {"sample", "map", "read"}
 
     def test_no_declared_name_is_shadowed_by_a_subpackage(self) -> None:
         """Importing ``ix.<sub>`` binds ``<sub>`` on ``ix``; a function of the same name
         would be replaced by the module the first time anything imported it."""
         modules = {path.stem for path in SRC.iterdir() if path.is_dir() or path.suffix == ".py"}
-        assert not (set(ix.__all__) & modules)
+        # A declared module (ix.mutants) is the module itself, so it shadows nothing.
+        declared_modules = {name for name in ix.__all__ if inspect.ismodule(getattr(ix, name))}
+        assert declared_modules == {"mutants"}
+        assert not ((set(ix.__all__) - declared_modules) & modules)
         ix.skill()  # reads the genre and kind packages
         for name in ("genres", "kinds", "plan", "validate", "register", "deviations", "run",
                      "start", "status", "events", "stop", "report", "runs"):  # fmt: skip

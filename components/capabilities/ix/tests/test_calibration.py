@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 import os
 import random
+from statistics import NormalDist
 from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
@@ -207,6 +208,68 @@ def aa_false_alarms(blocks: int, replications: int, seed: int = 5) -> float:
     )
 
 
+def _booleans(control: float, variant: float, *, nested: bool) -> Draw:
+    """Two booleans read in the same blocks. ``nested``: one uniform per block decides both
+    sides, so where the variant's rate is lower its trues are a subset of the control's (a
+    pruned suite kills a subset of what the whole suite kills: the two disagree one way
+    only). Otherwise each trial draws its own."""
+    block_share = NormalDist(0, 0.5)  # the block effect `_analyze` draws, as a uniform
+
+    def draw(trial: Trial, block: float, rng: random.Random) -> Any:
+        rate = variant if trial.subject == "b" else control
+        return (block_share.cdf(block) if nested else rng.random()) < rate
+
+    return draw
+
+
+def _boolean_compare(blocks: int, margin: str) -> Design:
+    return _design(
+        compare=True,
+        blocks=blocks,
+        shape="boolean",
+        margin=margin,
+        comparison="non-inferiority",
+    )
+
+
+def paired_false_holds(blocks: int, loss: float, replications: int, seed: int = 8) -> float:
+    """A variant whose kills are a subset of the control's, at 0.8 and ``0.8 - loss``, under
+    non-inferiority with the margin exactly the loss: ``holds`` is an error."""
+    design = _boolean_compare(blocks, f"{loss * 100:g}pp")
+    draw = _booleans(0.8, 0.8 - loss, nested=True)
+    return _rate(design, draw, replications, seed, lambda found: found.outcome == "holds")
+
+
+def paired_false_fails(blocks: int, loss: float, replications: int, seed: int = 9) -> float:
+    """The same, read the other way: ``fails`` is an error there too, since the variant is
+    exactly at the margin, not beyond it. The paired interval's named weakness."""
+    design = _boolean_compare(blocks, f"{loss * 100:g}pp")
+    draw = _booleans(0.8, 0.8 - loss, nested=True)
+    return _rate(design, draw, replications, seed, lambda found: found.outcome == "fails")
+
+
+def paired_covered(
+    blocks: int, control: float, variant: float, replications: int, *, nested: bool, seed: int = 10
+) -> float:
+    """How often the printed 95% interval of the difference of two booleans' rates covers
+    the true difference, in points."""
+    design = _boolean_compare(blocks, "5pp")
+    truth = (variant - control) * 100
+
+    def hit(found: Analysis) -> bool:
+        interval = found.findings[0].decisions[0].interval
+        return interval is not None and interval.low <= truth <= interval.high
+
+    return _rate(design, _booleans(control, variant, nested=nested), replications, seed, hit)
+
+
+def paired_identical_hold(blocks: int, margin: str, replications: int, seed: int = 11) -> float:
+    """Two suites that kill the same mutants: how often non-inferiority holds at ``margin``."""
+    design = _boolean_compare(blocks, margin)
+    draw = _booleans(0.8, 0.8, nested=True)
+    return _rate(design, draw, replications, seed, lambda found: found.outcome == "holds")
+
+
 def wilson_false_holds(trials: int, rate: float) -> float:
     """The exact chance that a pass rate whose truth is exactly ``rate`` holds ``>= rate``:
     the sum, over every count of passes that would hold, of its binomial probability."""
@@ -331,6 +394,33 @@ def test_a_count_on_its_threshold_over_many_units_holds_at_most_twice_as_often_a
     assert found <= 2 * NOMINAL, found
 
 
+@pytest.mark.parametrize("blocks", [20, 100])
+def test_a_pruned_suite_that_loses_exactly_the_margin_holds_no_more_often_than_stated(
+    blocks: int,
+) -> None:
+    """Two booleans read in the same blocks are compared paired (ruling R1). Where the
+    variant only ever loses (its kills a subset of the control's), Newcombe's paired method
+    10, the candidate the design named, held 5 to 7% of the time where 2.5% is stated, in
+    a screen run for the ruling (design record §32); the paired score interval holds within
+    the stated 2.5%."""
+    found = paired_false_holds(blocks, 0.05, 1500)
+    assert found <= NOMINAL + _tolerance(NOMINAL, 1500), found
+
+
+def test_two_booleans_independent_of_each_other_are_covered_as_stated() -> None:
+    found = paired_covered(50, 0.8, 0.7, 1000, nested=False)
+    assert abs(found - 0.95) <= _tolerance(0.95, 1000), found
+
+
+def test_a_suite_that_kills_what_the_baseline_kills_holds_a_5_point_margin_at_100_mutants() -> None:
+    """Changed requirement (ruling R1): with no mutant on which the two disagree, 100 blocks
+    bound the loss near 3.7 points, so a 5-point margin holds; unpaired, the interval reached
+    about -11 points and non-inferiority could not hold below a 12-point margin."""
+    assert paired_identical_hold(100, "5pp", 200) == 1.0
+    low, high = intervals.paired_difference(0, 0, 100)(0.05)
+    assert -0.04 < low < -0.035 and 0.035 < high < 0.04
+
+
 # --- the full set --------------------------------------------------------------------------
 
 
@@ -384,3 +474,18 @@ def test_the_full_simulation() -> None:
                 f"trials {trials}: holds {found:.4f}"
             )
             assert found <= 2 * NOMINAL
+    for blocks in (10, 20, 50, 100, 200, 400):
+        holds = [paired_false_holds(blocks, loss, 4000) for loss in (0.03, 0.05)]
+        fails = [paired_false_fails(blocks, loss, 4000) for loss in (0.03, 0.05)]
+        independent = paired_covered(blocks, 0.8, 0.7, 4000, nested=False)
+        half = paired_covered(blocks, 0.5, 0.5, 4000, nested=False)
+        print(
+            f"two booleans, {blocks} blocks: a subset losing 3/5pp at the margin holds "
+            f"{holds[0]:.4f}/{holds[1]:.4f}, fails {fails[0]:.4f}/{fails[1]:.4f}; "
+            f"independent 0.8 v 0.7 covered {independent:.4f}, 0.5 v 0.5 {half:.4f}"
+        )
+        assert all(found <= NOMINAL + _tolerance(NOMINAL, 4000) for found in holds)
+        assert all(found <= 0.045 for found in fails)  # the named weakness, §32
+        if blocks >= 20:  # at 10 blocks the score interval is discrete enough to sit near 94%
+            assert independent >= 0.95 - _tolerance(0.95, 4000)
+            assert half >= 0.95 - _tolerance(0.95, 4000)

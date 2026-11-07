@@ -48,8 +48,9 @@ Write = Any  # the write_experiment fixture
 
 #: The kinds ix ships, by family.
 EXPECTED = {
-    "subject": {"process", "http", "agent-session", "model-call"},
-    "probe": {"prompt", "http-load", "inspect-task", "command"},
+    # Changed requirement (Q-MUT): mutation testing's subject, probe and sensor.
+    "subject": {"process", "http", "agent-session", "model-call", "test-suite"},
+    "probe": {"prompt", "http-load", "inspect-task", "command", "mutant"},
     "sensor": {
         "timing",
         "memory",
@@ -62,6 +63,7 @@ EXPECTED = {
         "text-match",
         "exit-status",
         "evaluator",
+        "mutant-kill",
     },  # fmt: skip
     "environment": {"none", "process", "compose"},
 }
@@ -155,12 +157,13 @@ class TestBuiltInKinds:
             "http": {"url", "headers"},
             "agent-session": {"respondent", "workdir"},
             "model-call": {"respondent"},
+            "test-suite": {"workspace"},
         }
         # A command needs nothing of the subject: it checks whatever is up, by the options
         # and facets a trial fills into it.
         assert needs == {
             "prompt": {"respondent"}, "http-load": {"url"}, "inspect-task": {"respondent"},
-            "command": set(),
+            "command": set(), "mutant": set(),
         }  # fmt: skip
 
     def test_a_sensor_declares_its_metrics_and_whether_a_model_judges_them(
@@ -250,11 +253,12 @@ class TestBuiltInKinds:
         that does not say forbids it. A port or a load generator is one machine's, and a run
         brings its environment up once for every trial."""
         allowed = {
-            "subject": {"agent-session", "model-call"},
-            "probe": {"prompt"},
+            # Each trial of a test-suite has a fresh copy of its tree of its own.
+            "subject": {"agent-session", "model-call", "test-suite"},
+            "probe": {"prompt", "mutant"},
             "environment": {"none"},
             "sensor": {"judge", "evaluator", "text-match", "tool-usage", "outcome",
-                       "activation", "usage", "function-test", "exit-status"},
+                       "activation", "usage", "function-test", "exit-status", "mutant-kill"},
         }  # fmt: skip
         forbidden = {
             "subject": {"process", "http"},

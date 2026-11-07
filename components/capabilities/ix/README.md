@@ -226,6 +226,8 @@ report must contain. It holds no code and names no kind.
 | `regress` | May this change ship against the baseline? | one control, one variant | `primary`, `margin` | holds / fails / inconclusive |
 | `characterize` | How does this subject behave across the range? | one | `primary`, `factors` | none: estimates only |
 | `check` | Does the predicate hold on every trial of this subject? | one | `primary`, a boolean | holds / fails / inconclusive |
+| `mutation-score` | What share of seeded faults in this code does the test suite detect? | one test suite | `primary` (`killed`) | none: estimates only |
+| `mutation-regress` | Does the changed suite still detect what the baseline suite detects, within the margin? | one control suite, one variant | `primary`, `margin` | holds / fails / inconclusive |
 
 `check` observes; it does not estimate. Its analysis decides on a boolean primary alone,
 with no interval, so one trial (its default and its minimum) is enough to read: it holds
@@ -452,6 +454,80 @@ more) or a rate; `min` and `max` are measured, never decided on (`estimator_ille
 rate's margin is in points (`10pp`) or a share, never percent (`unit_mismatch`), and below
 the whole range (`1`, `100pp`); a rate's threshold is a share between 0 and 1, never 0 or 1
 themselves (`invalid_value`).
+
+## Mutation testing
+
+Does a test suite fail when the code is wrong? ix seeds faults (mutants: `<` for `<=`, `and`
+for `or`, a constant moved by one) into one scope, applies each once to a fresh copy of the
+tree, and runs the tests that ran its statement. The share killed is the suite's power to show these
+faults, never a proof that the code is correct.
+
+```sh
+# a mutant source, ix-cosmic-ray (cosmic-ray's operators), installed beside ix:
+uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.9.0#subdirectory=components/capabilities/ix" --with "git+https://github.com/mox-labs/gnx@ix-cosmic-ray-v0.1.0#subdirectory=components/capabilities/ix-cosmic-ray"
+ix mutants sample lab/mutation/recon-items --n 100 --seed 1
+ix validate lab/mutation/recon-items && ix register lab/mutation/recon-items
+ix run lab/mutation/recon-items --trials-in-flight 4
+ix mutants read lab/mutation/recon-items       # survivors, and the tests it found no use for
+```
+
+The experiment (`lab/mutation/recon-items/experiment.yaml`, genre `mutation-score`, primary
+`killed`) has one suite, and `ix mutants sample` writes its probes into `probes/`:
+
+```yaml
+subjects:
+  recon:
+    kind: test-suite
+    root: ../../../components/capabilities
+    command: [.venv/bin/python, -m, pytest, recon/tests, -q, -p, no:cacheprovider]
+    tests: [../../../components/capabilities/recon/tests]
+    scope: [../../../components/capabilities/recon/src/recon/core/application/items.py]
+    map: mutation/recon.map.json
+```
+
+**`ix mutants sample`** draws the mutants:
+
+- It asks the mutant source for every mutant of each scope file, and keeps those that parse and
+  change the code. It counts the rest by why: unparsable, unchanged, an annotation only, a
+  `TYPE_CHECKING` block, a line marked `# ix: no mutate`.
+- It draws `--n` of them from `--seed`, and pins each as `probes/m-<id>.yaml`.
+- It runs each suite's baseline once under coverage.py's per-test contexts and writes the
+  selection map.
+- It needs pytest-cov in the suite's environment, not ix's, and a baseline that passes.
+
+**`ix mutants map`** makes the map alone, for probe files another tool wrote: a `mutant` probe
+file is the boundary any generator speaks, and it runs with no source installed.
+
+**A trial** has three rules:
+
+- The copy is first on `PYTHONPATH`, ahead of an editable install of the tree. Every run checks
+  where each scope module was imported from: anywhere else is the harness's failure
+  (`not_the_mutant`), never a survivor.
+- A test that failed on the mutant kills it only if it fails again run alone on the mutant,
+  and passes run alone on the same copy with the original restored. Each run of the suite
+  has a temporary directory of its own.
+- A survivor no test ran is run against every test (`confirm: uncovered`, the default). A run
+  past its time limit is unread (`timeout`), never killed.
+- Coverage records no test against a line a child process runs, so a test that drives the
+  scope's code through a subprocess (a CLI test starting the tool) is never selected for it.
+  For such a suite set `confirm: all`: every survivor then runs against every test.
+
+**`ix mutants read`** names each survivor as an assertion gap (the tests that ran its statement
+are listed) or a coverage gap. It also gives the **pruning candidates**: the tests a greedy keep
+set leaves out of the kill matrix, with the `deselect` list a variant needs. They are only
+candidates. Confirm them with a `mutation-regress` on a fresh sample, disjoint from the first:
+
+```sh
+ix mutants sample <new experiment> --seed 2 --exclude lab/mutation/recon-items
+```
+
+The two suites meet the same mutants, so the difference is paired (Tango's score interval):
+
+- With no mutant on which they disagree, 100 mutants bound a loss near 3.7 points, and 400
+  near 1.
+- ix removes no test.
+
+`CONTRACT.md` has every option, outcome and refusal; `ix --skill -r mutation` teaches the flow.
 
 ## Extending
 
@@ -756,7 +832,9 @@ every verdict.
      requests out of requests sent) is a rate pooled over every unit, with the Wilson
      interval at Korn and Graubard's effective sample size, the trial as the cluster. Zero
      failures in 10,000 requests bound the rate near 3.8/10,000, never at 0. A difference of
-     two rates is Newcombe's interval;
+     two booleans' rates is paired, block by block (Tango's score interval of the paired
+     table: only the blocks where the two disagree move it); a difference of two counts is
+     Newcombe's interval;
    - `min` and `max` have no interval ix can stand behind: they are reported, never decided
      on.
 3. With the gain being the variant minus the control, turned so that positive is better:
@@ -895,7 +973,8 @@ ix.plan(experiment.model_copy(update={"repeats": 9})).trials.total  # 243
 
 `ix.__all__` is the declared API: `__version__`, `load`, `validate`, `resolve`, `plan`,
 `register`, `deviations`, `run`, `start`, `status`, `events`, `stop`, `report`, `runs`,
-`genres`, `kinds`, `skill`, `configure_telemetry`, `error_document`; the documents they
+`genres`, `kinds`, `skill`, `configure_telemetry`, `error_document`; `mutants`, the module of
+mutation testing's provisional functions (its own section below); the documents they
 return (`Validation`, `Problem`, `Design`, `Plan`, `Registered`, `Deviations`, `Report`,
 `Status`, `Runs`, `Genres`, `Kinds`); the three records an author or an extension writes
 (`Experiment`, `Genre`, `Kind`, the union of a kind's four family records); the errors

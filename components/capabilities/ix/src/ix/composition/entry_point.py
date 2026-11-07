@@ -27,16 +27,20 @@ from ix.adapters._out.k6_load import K6Load
 from ix.adapters._out.matrix_agents import AgentSessionSubject, PromptProbe
 from ix.adapters._out.matrix_calls import ModelCallSubject
 from ix.adapters._out.matrix_judge import JudgeSensor
+from ix.adapters._out.mutation import Mutant, MutantKill, TestSuite
 from ix.adapters._out.sensors import MemorySensor, TimingSensor
 from ix.adapters._out.subjects import HttpSubject, ProcessSubject
 from ix.domain import schema
 from ix.extension import (
     JUDGE_MODELS,
     LAUNCHER,
+    MUTANT_SOURCE,
+    MUTANT_SOURCES,
     POINTS,
     PORTS,
     RUNTIMES,
     SESSIONS,
+    MutantSource,
 )
 
 if TYPE_CHECKING:
@@ -45,9 +49,11 @@ if TYPE_CHECKING:
 
 def register_run_path(registry: Registry) -> None:
     """Declare ix's points and register its components and row schemas: all of ix but its
-    adapters."""
+    adapters. Besides a point per family of adapter, ix declares where a mutant source
+    registers (:data:`~ix.extension.MUTANT_SOURCE`); it ships none."""
     for family, point in POINTS.items():
         registry.add_point(point, port=PORTS[family])
+    registry.add_point(MUTANT_SOURCE, port=MutantSource)
     for type_url, (build, summary) in COMPONENTS.items():
         registry.register("component", type_url, build, needs={NEED}, summary=summary)
     for kind, model in PAYLOADS.items():
@@ -70,6 +76,12 @@ def register(registry: Registry) -> None:
          {SESSIONS}),
         ("probe", "command", CommandProbe, "A command run once against the subject, as a check",
          {LAUNCHER}),
+        ("subject", "test-suite", TestSuite, "A test suite run in a fresh copy of its tree",
+         {MUTANT_SOURCES}),
+        ("probe", "mutant", Mutant, "One mutant applied, and the tests that run it run",
+         {LAUNCHER}),
+        ("sensor", "mutant-kill", MutantKill, "Whether the suite failed because of the mutant",
+         set()),
         ("sensor", "timing", TimingSensor, "Latency and throughput from a load probe", set()),
         ("sensor", "memory", MemorySensor, "Peak resident memory, sampled", set()),
         ("sensor", "activation", ActivationSensor, "Whether the expected skill fired", set()),

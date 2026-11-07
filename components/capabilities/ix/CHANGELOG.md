@@ -1,12 +1,32 @@
 # Changelog — ix
 
-## 0.9.0 — 2026-11-06
+## 0.9.0 — 2026-11-07
 
 On matrix 0.10, which depends on no model runtime; ix depends on the `matrix-hardline` bridge so
-it works as installed. `docs/design/2026-10-19-record.md` §30 has the reasons. Each entry
-compares with 0.8.0.
+it works as installed. `docs/design/2026-10-19-record.md` §30 has the reasons. It adds mutation
+testing (§32): whether a test suite fails when the code is wrong, estimated over sampled
+mutants. Each entry compares with 0.8.0.
 
 ### Changed (breaking)
+
+- **`ix.v1.analysis.compare` compares two booleans paired** (ruling R1). The interval of the
+  difference of two booleans' rates is now Tango's score interval of the paired table of
+  blocks, which only the blocks where the two sides disagree move. It replaces Newcombe's
+  method 10, which ignored the pairing.
+  - **The verdict of an existing `compare` or `regress` on a boolean primary can change, and
+    no digest moves.** A run analysed again under 0.9 may decide differently from the one 0.8
+    reported.
+  - Where the two sides agree block by block, the interval is narrower. Two suites that kill
+    the same 100 mutants bound a loss near 3.7 points, where the unpaired interval reached
+    about 11, so non-inferiority at 5pp holds where it could not.
+  - Where they disagree as independent sides would, it is about as wide as before. It is
+    wider only where they disagree more often than that, the two sides negatively
+    correlated.
+  - A decision's `method` reads `tango (paired)` where it read `newcombe`. A count's difference
+    keeps `newcombe (clustered wilson)`: its units do not pair.
+  - Calibrated by simulation through `analyze()` (§32): a false `holds` at most 2.2% where
+    2.5% is stated, and 95% intervals covering 94.8% to 97%. The named weakness: where only
+    one side ever loses, a false `fails` reaches 4% (2.5% stated).
 
 - **hardline is named by the bridge's type URL**: `runtime: matrix-hardline.v1.model-runtime`
   (a `model-call` subject), `model_runtime: matrix-hardline.v1.model-runtime` (a judge, a judge
@@ -37,7 +57,40 @@ compares with 0.8.0.
 
 ### Added
 
-- **Long runs outlast a tool call** (owner ruling, panel 10-09 §6, reaffirmed as Q5):
+- **Mutation testing** (ruling Q-MUT, its design and rulings Q-MUT-R and Q-MUT-G). The
+  `mutation-score` and `mutation-regress` genres are data only, over existing analyses: an
+  estimate of the share of sampled mutants a suite kills, and paired non-inferiority of a
+  changed suite on the same mutants. The kinds:
+  - **`test-suite`**: the subject, a fresh copy of the tree per trial, imported ahead of an
+    editable install, with where each scope module came from checked on every run;
+  - **`mutant`**: the probe, one mutant spliced into the copy and the tests that ran its
+    statement run (not only its line: a test that short-circuits a multi-line condition
+    before the mutated line is still run against it). A kill counts only when the failing
+    test fails again alone on the mutant and passes alone without it; each run of the suite
+    has a temporary directory of its own;
+  - **`mutant-kill`**: the sensor, the boolean `killed`.
+
+  Timeouts are relative to the baseline and read as unread, never killed. A probe marked
+  `equivalent` runs nothing. `ix --skill -r mutation` teaches all of it.
+- **`ix mutants sample|map|read`** and **`ix.mutants`** (`sample`, `map`, `read`), provisional
+  (ruling R2):
+  - `sample` draws the mutants and pins them as `probes/m-<id>.yaml`, and makes each suite's
+    selection map from coverage.py's per-test contexts in the suite's own environment;
+  - `map` makes the maps alone, for probe files another tool wrote;
+  - `read` lists the survivors (an assertion gap, or a coverage gap) and the pruning candidates
+    a greedy keep set leaves, for confirmation on a fresh, disjoint sample.
+
+  ix depends on neither coverage.py nor pytest-cov: a suite without them is refused, and
+  told to install pytest-cov.
+- **A mutant source is an extension point of its own**, `ix.mutant-source` (`MUTANT_SOURCE`).
+  It is held to `MutantSource` (`mutations(text) -> Mutations`, each a `Mutation`: key,
+  operator, span, replacement; and `Unmade`). The installed sources are handed to an adapter
+  as `MutantSources` (the `mutant_sources` need). All are in `ix.extension`, provisional until
+  a second source registers.
+  - ix ships no source: `ix-cosmic-ray`, installed beside ix, adds cosmic-ray's operators. With none
+    installed, sampling and validation say so.
+  - A probe file of kind `mutant` from any tool runs without a source.
+ (owner ruling, panel 10-09 §6, reaffirmed as Q5):
   `ix run <path> --detach` starts the run in a process of its own and returns once it has
   opened its record, with its status; `ix status <run>` says where a run stands (running or
   how it ended, trials carried out of those planned, the process writing it); `ix events
@@ -70,8 +123,12 @@ compares with 0.8.0.
   own declaration. The lists for `claude-sdk` and hardline's model runtime had already
   drifted from it. `ix --skill -r running` has a **Long runs** section: `--detach`,
   `status`, `events --follow` and `stop`, with their exit codes.
+- **The probe screen is skipped when no probe was read more than once by any subject** (design
+  C2): one reading has no spread, and a floor or a ceiling restated it, so every survivor of a
+  mutation run was labelled `floor`, to be fixed.
 - **ix's `matrix.extensions` entry points name its points** (`ix.subject`, `ix.probe`,
-  `ix.sensor`, `ix.environment`, `component`, `payload-type`), as matrix 0.10 reads them, so a
+  `ix.sensor`, `ix.environment`, `ix.mutant-source`, `component`, `payload-type`), as matrix
+  0.10 reads them, so a
   session that reads none of them (a recon survey) does not import ix. ix's root asks for
   matrix's points and its own. A third party's adapter declares its family's point the same way
   (`"ix.sensor" = "acme.ix_ext:register"`).

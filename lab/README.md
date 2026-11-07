@@ -26,6 +26,22 @@ Runs are kept under each experiment's `.ix/runs/`, which git ignores.
 | Experiment | Genre | Question | Decides on |
 |---|---|---|---|
 | `catalog-routing` | `evaluate` | Does the right skill trigger, and do decoys stay quiet? | `activated_correctly >= 0.9` |
+| `mutation/recon-items` | `mutation-score` | Do recon's tests fail when `items.py` is wrong? | estimates only: the kill rate over 100 sampled mutants |
+
+`mutation/recon-items` runs recon's own test suite on mutated copies of the capabilities tree,
+and calls no model. Its probes and its population record (`mutation/population.json`) are
+committed, so the population is pinned. Its selection map (`mutation/recon.map.json`, about
+2 MB) holds this machine's test durations, and is not; neither is a registration, as for
+`catalog-routing`. To run it:
+
+```
+uv --project components/capabilities run ix mutants map lab/mutation/recon-items   # needs pytest-cov: uv sync --group dev
+uv --project components/capabilities run ix register lab/mutation/recon-items
+uv --project components/capabilities run ix run lab/mutation/recon-items --detach
+```
+
+A map made of a changed `items.py` stops the plan until it is made again. The design record
+(`components/capabilities/ix/docs/design/2026-10-19-record.md` §32) has the first run's numbers.
 
 ### catalog-routing
 

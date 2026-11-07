@@ -21,8 +21,9 @@ never on the estimate alone. The method follows the measurement
 * a ``boolean`` metric is a rate over trials, with a Wilson score interval; a ``count``
   metric (events out of units, as failed requests out of requests sent) is a rate pooled
   over trials, with the Wilson interval at Korn and Graubard's effective sample size, the
-  trial as the cluster. A difference of two rates combines their intervals (Newcombe's
-  method 10). Neither interval has zero width, whatever was counted;
+  trial as the cluster. A difference of two booleans' rates is paired, block by block
+  (Tango's score interval of the paired table); a difference of two counts combines their
+  intervals (Newcombe's method 10). None of these has zero width, whatever was counted;
 * ``min`` and ``max`` have no interval ix can stand behind: they are estimated and never
   decide.
 
@@ -91,8 +92,11 @@ Limits:
   ``median`` is the remedy. A paired difference is far less sensitive.
 * A relative difference has no bounded interval when the control's mean is not
   distinguishable from zero, and none at all when it is zero.
-* The interval of a difference of rates does not use the blocks' pairing: it is wider, not
-  narrower, for that.
+* The interval of a difference of two counts does not use the blocks' pairing: it is
+  wider, not narrower, for that. A difference of two booleans does, and where only one side
+  ever gains (a pruned suite kills a subset of what the whole suite kills) its high end
+  is liberal: a ``fails`` there is wrong up to about 4% of the time where 2.5% is stated,
+  while a ``holds`` stays within 2.5% (design record §32).
 * A rate whose rare events arrive in bursts concentrated in a few trials is under-covered:
   too few trials carry them to estimate their spread.
 * The A/A check sees a shift between the control's two samples, not every kind of
@@ -139,7 +143,8 @@ METHOD: tuple[str, ...] = (
     f"Intervals are {CONFIDENCE:.0%}: Student's t for a mean (of the per-block differences "
     "in a comparison; Fieller's for a relative one), order statistics for a median, a "
     "Wilson score interval for a rate (pooled over trials, the trial as cluster, for a "
-    "count) and Newcombe's for a difference of rates. min and max never decide.",
+    "count), Tango's paired score interval for a difference of two booleans' rates and "
+    "Newcombe's for a difference of two counts. min and max never decide.",
     "The verdict holds only if every decision holds, so each is read at the full level "
     "(an intersection-union test); it fails if any fails, so the fails side is corrected "
     "by Holm's procedure.",
@@ -252,7 +257,7 @@ class Decision(Record):
     #: Which way is better for this metric.
     better: str = ""
     #: The interval method, in words: ``t``, ``fieller``, ``order statistics``, ``wilson``,
-    #: ``clustered wilson``, ``newcombe``.
+    #: ``clustered wilson``, ``tango (paired)``, ``newcombe (clustered wilson)``.
     method: str = ""
     #: The subject minus the control (for a threshold: the subject's own estimate).
     difference: float | None = None
@@ -527,37 +532,36 @@ def _basis(measure: _Measure, margin: Margin | None) -> str:
 def _rate_gap(
     data: _Data, who: _SubjectInCell, control: _SubjectInCell, measure: _Measure, scale: float
 ) -> _Estimated:
-    """The difference of two rates, in the blocks both sides have."""
+    """The difference of two rates, in the blocks both sides have. Two booleans are read in
+    the same blocks, one trial a side, so their difference is the paired one, which only the
+    blocks where the two disagree move. Two counts pool many units a trial, which do not
+    pair, so theirs combines the two sides' own intervals."""
     name = measure.metric.name
-    if measure.metric.shape == "count":
-        ours, theirs = data.counts(who, name), data.counts(control, name)
-        blocks = sorted(ours.keys() & theirs.keys())
-        n = len(blocks)
-        if n < MIN_BLOCKS:
-            return _Estimated(n, problem=_too_few(n, MIN_BLOCKS, "usable blocks"))
-
-        def side(counted: dict[Block, tuple[int, int]]) -> tuple[float, Span]:
-            events = [counted[block][0] for block in blocks]
-            units = [counted[block][1] for block in blocks]
-            return sum(events) / sum(units), intervals.clustered_rate(events, units)
-
-        method = "newcombe (clustered wilson)"
-        (mine, mine_span), (base, base_span) = side(ours), side(theirs)
-    else:
+    if measure.metric.shape == "boolean":
         a, b = data.sample(who, name, "value"), data.sample(control, name, "value")
         blocks = sorted(a.keys() & b.keys())
         n = len(blocks)
         if n < MIN_BLOCKS:
             return _Estimated(n, problem=_too_few(n, MIN_BLOCKS, "usable blocks"))
-        ones, zeros = (
-            math.fsum(a[block] for block in blocks),
-            math.fsum(b[block] for block in blocks),
-        )
-        method = "newcombe"
-        mine, mine_span = ones / n, intervals.wilson(ones, n)
-        base, base_span = zeros / n, intervals.wilson(zeros, n)
+        gained = sum(1 for block in blocks if a[block] > b[block])
+        lost = sum(1 for block in blocks if a[block] < b[block])
+        span = intervals.paired_difference(gained, lost, n).scaled(scale)
+        return _Estimated(n, (gained - lost) / n * scale, span, "tango (paired)")
+
+    ours, theirs = data.counts(who, name), data.counts(control, name)
+    blocks = sorted(ours.keys() & theirs.keys())
+    n = len(blocks)
+    if n < MIN_BLOCKS:
+        return _Estimated(n, problem=_too_few(n, MIN_BLOCKS, "usable blocks"))
+
+    def side(counted: dict[Block, tuple[int, int]]) -> tuple[float, Span]:
+        events = [counted[block][0] for block in blocks]
+        units = [counted[block][1] for block in blocks]
+        return sum(events) / sum(units), intervals.clustered_rate(events, units)
+
+    (mine, mine_span), (base, base_span) = side(ours), side(theirs)
     span = intervals.difference(mine_span, base_span, mine, base).scaled(scale)
-    return _Estimated(n, (mine - base) * scale, span, method)
+    return _Estimated(n, (mine - base) * scale, span, "newcombe (clustered wilson)")
 
 
 def _gap(

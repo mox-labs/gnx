@@ -1,0 +1,17 @@
+name: recon-items-mutation
+question: Do recon's tests fail when items.py is wrong?
+genre: mutation-score
+subjects:
+  recon:
+    kind: test-suite
+    root: ../../../components/capabilities
+    command: [.venv/bin/python, -m, pytest, recon/tests, -q, -p, no:cacheprovider]
+    tests: [../../../components/capabilities/recon/tests]
+    scope: [../../../components/capabilities/recon/src/recon/core/application/items.py]
+    map: mutation/recon.map.json
+    # This run calibrates the selection (the design's D5 falsifier, acceptance A5): every
+    # survivor runs again against every test.
+    confirm: all
+primary: {metric: killed}
+# Four mutants at once, each in its own copy of the tree (the kinds allow it).
+trials_in_flight: 4

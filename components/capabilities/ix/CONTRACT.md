@@ -16,7 +16,8 @@ said in the changelog.
 
 **Stability: public.** The module's name is provisional until the owner picks one (ruling
 Q3). `JudgeModels` and `SpanReader` have one built-in user each and may change without a
-deprecation until a second arrives. Pinned by `tests/test_extension.py`.
+deprecation until a second arrives; so may the mutant-source point and `MutantSources`, until a
+second source registers there. Pinned by `tests/test_extension.py`.
 
 **The decision it hides.** How ix builds, wires and drives an adapter: the registry, the
 composition root, the run loop, the store. An adapter author writes against this module alone,
@@ -28,11 +29,13 @@ as ix's own adapters do, and never imports an `ix.adapters` module.
 |------|------|
 | `POINTS` | the extension point of each family: `ix.subject`, `ix.probe`, `ix.sensor`, `ix.environment` |
 | `PORTS` | the port each point holds a registration to: `Subject`, `Probe`, `Sensor`, `Environment` |
-| `LAUNCHER`, `RUNTIMES`, `SESSIONS`, `JUDGE_MODELS` | the needs, each a keyword the adapter's factory takes |
+| `LAUNCHER`, `RUNTIMES`, `SESSIONS`, `JUDGE_MODELS`, `MUTANT_SOURCES` | the needs, each a keyword the adapter's factory takes |
 | `Launcher` | given for `launcher`: `start(argv, **options)` a child in a group of its own, `stop(process, *, grace_s=5.0)` the whole group |
 | `Runtimes` | given for `runtimes`: matrix's runtimes at `AGENT_RUNTIME` or `MODEL_RUNTIME` (`Point`): `build`, `stand_in`, `takes`, `drives`, `capabilities` |
 | `Sessions`, `Respondent` | given for `sessions`: `open(respondent) -> handle`, `close(handle)`, `[handle]`; a respondent is `simulated` and `answer(prompt, options)` |
 | `JudgeModels` | given for `judge_models`: `model(runtime, model, config)`, a pydantic-ai `Model` over a matrix model runtime |
+| `MutantSources` | given for `mutant_sources`: `names()` of the sources installed, `source(name)` built, `drives(name)` with versions |
+| `MUTANT_SOURCE`, `MutantSource`, `Mutation`, `Mutations`, `Unmade` | the mutant-source point, its port and its records: its own section below |
 | optional roles | `Preflight` (`requirements`), `Review` (`review`), `StandIn` (`stand_in`), `ModelCalls` (`model_calls`), `SpanReader` (`reads_spans`), `Liveness` (`lost`); for a scope, `Traced`, `Recorded` and its `Attribution` |
 | records and errors | `Target`, `Interaction`, `Bindings`, `Measured`, `Sensed`, `Requirement`, `Surroundings`, `StoodIn`, `Problem`, the entry configs, `SelectedSensor`; `SubjectError`, `HarnessError`, `TrialError` |
 | helpers | `seconds`, `duration_of`, `arrivals`, `placeholders`, `problem` |
@@ -56,6 +59,158 @@ experiment's directory.
 - A review, a preflight or `model_calls` that raises is reported, never escapes: a problem at
   the entry (`adapter_failed`), a requirement that does not hold, an entry the work does not
   count.
+
+## The mutant-source point, `ix.mutant-source`
+
+**Stability: public, provisional** (ruling R2) until a second source registers there; then it
+grows by addition only. Pinned by `tests/test_mutation.py` and `tests/test_extension.py`.
+
+**The decision it hides.** Which mutants exist: the operators, the language they read, how an
+occurrence is counted. ix owns the point and ships no source (owner ruling HO1 (c′)); a source
+is a package of its own, `ix-cosmic-ray` the first.
+
+**Members** (`ix.extension`).
+
+| Name | What |
+|---|---|
+| `MUTANT_SOURCE` | the point, `"ix.mutant-source"`, declared by ix's entry point; a source registers there under a type URL of its own namespace, from a `matrix.extensions` entry point named `ix.mutant-source` |
+| `MutantSource` | the port: `mutations(text) -> Mutations`. Pure: it reads only `text`, starts and writes nothing, and gives the same mutants under the same keys for the same text |
+| `Mutation` | `key` (the mutant among the source's of that text), `operator`, `start` and `end` (`(line, column)`, line from 1, column in characters from 0), `replacement` |
+| `Mutations` | `made` and `unmade` |
+| `Unmade` | `operator`, `count`, `reason`: what the source meant to make and could not |
+| `MutantSources` | the `mutant_sources` need: the sources installed |
+
+**What ix does with them.** It applies each mutation to the text and keeps a **candidate**: it
+parses, and it differs from the original as Python's syntax tree. Every other is counted, by
+why, in the sample's record (never dropped silently):
+
+- `unparsable`, `unchanged` and `outside_text`;
+- the design's exclusions: `annotation` (a type annotation only), `type_checking` (inside an
+  `if TYPE_CHECKING:` block) and `marked` (a line carrying `# ix: no mutate`).
+
+A mutant's id is `<file>:<key>`, pinned to the file's digest (`file_digest`).
+
+**Failure behaviour.** None installed: `ix mutants sample` refuses, and validation's
+`probes_empty` at a `test-suite` says to install `ix-cosmic-ray` beside ix. Several: `--source`
+chooses, and its absence is refused, naming each. A source that raises refuses the file it
+was given, saying what it raised.
+
+## Mutation testing: `mutation-score`, `mutation-regress` and their kinds
+
+**Stability: public** for the names (ruling R3: `mutation-score`, `mutation-regress`,
+`test-suite`, `mutant`, `mutant-kill`, `killed`), stable after the acceptance run and one more
+user. The `mutant` probe's options are the mutant data boundary, **public and provisional**
+until a second generator writes them. Pinned by `tests/test_mutation.py`, `tests/test_kinds.py`
+and `tests/test_genre.py`.
+
+**The decision it hides.** How a mutant is isolated, applied, selected, timed and attributed.
+
+**Members.**
+
+- **`ix.v1.genre.mutation-score`** has the analysis `characterize`, no verdict and repeats 1. A
+  Wilson interval of the kill rate over the sampled mutants.
+- **`ix.v1.genre.mutation-regress`** has the analysis `compare`, non-inferiority only, a margin
+  and repeats 1. The difference is paired over the blocks both suites read (below).
+- **`ix.v1.subject.test-suite`**:
+  - `root`, `command` (the suite's Python and pytest's arguments), `tests`, `scope` and `map`
+    are required;
+  - `deselect` defaults to none, and `exclude` to `.git .venv .ix __pycache__ .mypy_cache
+    .ruff_cache .pytest_cache node_modules`;
+  - `confirm` defaults to `uncovered` (also `all`, `none`; ruling R5);
+  - `timeout_factor` defaults to 3 and `timeout_floor` to 10s.
+
+  It offers `workspace`.
+- **`ix.v1.probe.mutant`**:
+  - `file`, `start`, `end`, `original`, `replacement` and `operator` are required;
+  - `mutant` and `file_digest` are optional, and so is `equivalent`;
+  - `budget` defaults to 30m.
+
+  It offers `outcome`.
+- **`ix.v1.sensor.mutant-kill`** needs `outcome` and gives the boolean `killed`. Its detail is
+  the outcome, whole.
+
+**The outcome facet** holds:
+
+- `status` (`killed`, `survived`, `uncovered`) and `stage` (`selected`, `confirmed`, `none`);
+- `covered`, `selected` (a count, or `all`), `ran`, and `lines`: the statement whose lines
+  selected the tests (a simple statement whole, a compound one's header);
+- `killers`, `unattributed`, `unreproduced` (failures that did not recur on the mutant, read
+  as passes) and `covered_by`;
+- `imported_from` (module to `copy` or `absent`) and `drifted`;
+- `timeout_s` (one limit per run) and `duration_s`.
+
+**Defaults** are the kinds' declarations, shown in the plan with their origin.
+`ix mutants sample` draws 100 from seed 1 with an hour for the baseline, and its document says
+which were given.
+
+**Invariants**, with no option to turn them off:
+
+- the tree is never written;
+- every run is in a fresh copy, with the copy's import roots first on `PYTHONPATH`, and a
+  temporary directory of its own (`TMPDIR`);
+- a kill counts only when the failing test fails again run alone on the mutant, and passes
+  run alone on the copy with the original restored.
+
+**Failure behaviour.** Each of these is the harness's failure: unread, counted by reason, never
+killed and never survived.
+
+- `not_the_mutant`: a scope module was imported from anywhere but the copy;
+- `timeout`: a run past `timeout_factor` times its tests' and the suite's start's baseline
+  time, never under `timeout_floor`, the trial under `budget`;
+- `unattributable`: only tests that also fail without the mutant failed;
+- `mutant_inapplicable`: the tree does not hold `original`;
+- `runner`: pytest's own exit (3, 4 or 5, or a signal);
+- `equivalent`: the probe is marked so;
+- `map`: the selection map cannot be read.
+
+A plan refuses a map whose scope digests are not the scope's now. When the suite's Python
+lacks coverage.py and pytest-cov, the plan says what to install.
+
+## `ix mutants sample|map|read` and `ix.mutants`
+
+**Stability: public, provisional** (ruling R2). Pinned by `tests/test_mutation.py`,
+`tests/test_ix_cli.py` and `tests/test_layering.py`.
+
+**The decision it hides.** How the population is drawn and the selection map made, and how a
+run is read for its survivors and its pruning candidates.
+
+| Command / function | Writes | Returns |
+|---|---|---|
+| `ix mutants sample <path> [--n] [--seed] [--exclude <experiment>] [--source] [--timeout]`, `ix.mutants.sample` | `probes/m-<id>.yaml`, each suite's map, `mutation/population.json` (`ix.v1.mutation-population`) | `ix.v1.mutation-sample`: the population by operator, `dropped`, `unmade`, `settings` (each value and whether it was given), per subject its baseline, uncovered mutants drawn, `estimated_s` (the test time a run takes, one trial in flight) and `worst_s` (with every covered mutant confirmed, under `confirm: all`) |
+| `ix mutants map <path> [--timeout]`, `ix.mutants.map` | each suite's map | `ix.v1.mutation-maps` |
+| `ix mutants read <run> [--all]`, `ix.mutants.read` | nothing | `ix.v1.mutants-reading`: per subject the kill rate and unread by reason; survivors (`assertion_gap` or `coverage_gap`, `at_import`); `pruning` (judged, keep, candidates with `kills`, `zero_kill`, `also_runs`, and `deselect`); caveats |
+
+**Maps.** One map (`ix.v1.mutation-map`) belongs to each suite: its tree, command and scope.
+Subjects of one suite share a baseline, and may name one file.
+
+**Defaults.**
+
+- `--n` is 100, `--seed` is 1 and `--timeout` is 3600 s.
+- `read` lists 50 survivors and 50 candidates; `--all` lists every one.
+
+**Failure behaviour.** Each refusal is `config`, with a `fix`, and **nothing is written**:
+
+- no `test-suite` subject;
+- no source installed, or several and none named;
+- a `probes/` that holds files;
+- different scopes across the subjects;
+- coverage.py or pytest-cov missing in the suite's environment (install pytest-cov there);
+- a baseline that does not pass, naming the failing tests;
+- a baseline that imported the scope from outside its copy;
+- every candidate excluded.
+
+## The paired difference of two booleans in `compare`
+
+**Stability: stable rule** (ruling R1), under `ix.v1.analysis.compare`; no id or digest
+moved. Pinned by `tests/test_calibration.py` and `tests/test_analysis.py`.
+
+- **The rule.** Two booleans read in the same blocks get Tango's score interval of the paired
+  table of blocks, in place of Newcombe's unpaired method 10. Each end's level is the score
+  test's p-value, in closed form.
+- **What it changes.** An existing boolean `compare` or `regress` verdict may change.
+- **What it keeps.** A count's difference keeps `newcombe (clustered wilson)`.
+- **The named weakness.** Where only one side ever loses, a false `fails` reaches about 4%,
+  where 2.5% is stated (design record §32).
 
 ## A kind option's default
 

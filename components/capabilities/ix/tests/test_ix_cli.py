@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import click
 import pytest
 import yaml
 from click import unstyle
@@ -256,11 +257,18 @@ class TestFixesNameRealCommands:
 
     def test_the_commands_are_these(self) -> None:
         # Changed requirement (ruling Q5): a long run is followed and stopped by status,
-        # events and stop.
+        # events and stop. Changed requirement (ruling R2): mutation testing's provisional
+        # group, `ix mutants sample|map|read`.
         assert sorted(main.commands) == [
-            "deviations", "events", "genres", "kinds", "plan", "register", "report", "run",
-            "runs", "status", "stop", "validate",
+            "deviations", "events", "genres", "kinds", "mutants", "plan", "register", "report",
+            "run", "runs", "status", "stop", "validate",
         ]  # fmt: skip
+        group = main.commands["mutants"]
+        assert isinstance(group, click.Group) and sorted(group.commands) == [
+            "map",
+            "read",
+            "sample",
+        ]
         assert {command.split()[1] for command, _ in COMMANDS} == set(main.commands)
         result = _run("results", "x", "--json")
         assert result.exit_code == 2 and "No such command" in _error(result)["message"]
@@ -269,7 +277,14 @@ class TestFixesNameRealCommands:
         register = main.commands["register"]
         flags = {option for param in register.params for option in param.opts}
         assert {"--amend", "--reason", "--json"} <= flags
-        for command in main.commands.values():
+        # Changed requirement: a group's commands are its subcommands, each of which takes it.
+        leaves = [
+            leaf
+            for command in main.commands.values()
+            for leaf in (getattr(command, "commands", {}) or {command.name: command}).values()
+        ]
+        assert len(leaves) == len(main.commands) - 1 + 3
+        for command in leaves:
             assert "--json" in {o for p in command.params for o in p.opts}, command.name
 
 

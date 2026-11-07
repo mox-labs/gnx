@@ -62,12 +62,14 @@ ix = "ix.builtin.genres"
 ix = "ix.builtin.kinds"
 
 # ix's run path, its extension points and its adapters, registered as every matrix
-# extension is; `matrix catalog` lists them.
+# extension is; `matrix catalog` lists them. ix declares `ix.mutant-source` and registers
+# nothing there: a mutant source is a package of its own (ix-cosmic-ray).
 [project.entry-points."matrix.extensions"]
 "ix.subject" = "ix.composition.entry_point:register"
 "ix.probe" = "ix.composition.entry_point:register"
 "ix.sensor" = "ix.composition.entry_point:register"
 "ix.environment" = "ix.composition.entry_point:register"
+"ix.mutant-source" = "ix.composition.entry_point:register"
 component = "ix.composition.entry_point:register"
 payload-type = "ix.composition.entry_point:register"
 

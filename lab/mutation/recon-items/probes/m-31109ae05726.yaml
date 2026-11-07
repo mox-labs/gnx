@@ -1,0 +1,14 @@
+# A mutant `ix mutants sample` drew (seed 1) from ix-cosmic-ray.v1.mutant-source.
+# A survivor that behaves as the original may be marked, under options:
+#   equivalent: "<why it cannot be told from the original>"
+# which moves the probe set's digest: amend the registration with the reason.
+kind: mutant
+options:
+  file: "recon/src/recon/core/application/items.py"
+  start: [314, 28]
+  end: [314, 30]
+  original: "=="
+  replacement: "<"
+  operator: "core/ReplaceComparisonOperator_Eq_Lt"
+  mutant: "recon/src/recon/core/application/items.py:core/ReplaceComparisonOperator_Eq_Lt:3"
+  file_digest: "sha256:a01d09d5fdd9390b62f79606fc75d6db8a9189962507ceb51618616cb6768e22"

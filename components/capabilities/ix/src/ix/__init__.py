@@ -9,11 +9,13 @@ records an author or an extension writes (``Experiment``, ``Genre``, ``Kind``), 
 errors. The command line calls these and nothing else. Every part of those records
 (``SubjectConfig``, ``Margin``, ``Decision``, ``Interval``, ...) and every port an extension
 implements (``Subject``, ``Probe``, ``Sensor``, ``Environment``) is exported from
-``ix.domain``; the modules inside it are not public.
+``ix.domain``; the modules inside it are not public. ``ix.mutants`` is mutation testing's
+surface (``sample``, ``read``), provisional.
 """
 
 from importlib.metadata import PackageNotFoundError, version
 
+from ix import mutants
 from ix.api import (
     configure_telemetry,
     deviations,
@@ -99,6 +101,7 @@ __all__ = [
     "genres",
     "kinds",
     "load",
+    "mutants",
     "plan",
     "register",
     "report",
