@@ -21,8 +21,19 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import SpanKind, StatusCode
 
-from hardline import BackendError, build_runtime
+from hardline import (
+    BackendError,
+    CheckedBackend,
+    ClosableBackend,
+    LocatedBackend,
+    ModelBackend,
+    ToolCallingBackend,
+    build_runtime,
+)
 from hardline.adapters._out.mock import MockBackend
+from hardline.adapters._out.openai_compat import OpenAICompatBackend
+from hardline.adapters._out.otel import Telemetry as HardlineTelemetry
+from hardline.adapters._out.otel import TracedBackend
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.trace import ReadableSpan
@@ -243,3 +254,17 @@ async def test_a_host_observer_replaces_the_root_s_own() -> None:
     assert heard == ["AttemptFailed", "FellBack", "Answered"]
     assert otel.points("hardline.fallbacks") == []
     assert len(otel.finished()) == 2  # the spans are the backends', whoever observes the call
+
+
+@pytest.mark.parametrize("inner", [MockBackend(), OpenAICompatBackend()], ids=["mock", "wire"])
+def test_the_telemetry_wrapper_claims_no_capability_of_its_own(inner: ModelBackend) -> None:
+    # F-1, the regression. The wrapper defined check, aclose, supports_tools and
+    # default_base_url on every instance and forwarded each by getattr, so every composed backend
+    # satisfied every optional protocol: the mock has no aclose, and its wrapper was a
+    # ClosableBackend. The runtime reads what a backend declares from the backend itself, before
+    # it is wrapped; the wrapper is a ModelBackend and nothing more.
+    assert not isinstance(MockBackend(), ClosableBackend)
+    traced = TracedBackend(inner, HardlineTelemetry())
+    assert isinstance(traced, ModelBackend)
+    for optional in (CheckedBackend, ClosableBackend, ToolCallingBackend, LocatedBackend):
+        assert not isinstance(traced, optional), optional.__name__

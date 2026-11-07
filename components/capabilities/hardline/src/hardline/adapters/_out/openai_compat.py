@@ -47,9 +47,6 @@ _FINISH: dict[str, FinishReason] = {
     "function_call": "tool_call",
 }
 
-#: Keys of a choice that carry the reply's content, which ``raw`` never holds.
-_CONTENT_KEYS = frozenset({"message", "delta", "text", "logprobs"})
-
 
 class _Options(BaseModel):
     """The ``options`` this backend reads; any other key is refused."""
@@ -185,7 +182,6 @@ class OpenAICompatBackend:
                 ToolCall(id=call.id or f"call-{i}", name=call.function.name, arguments=_json(call))
                 for i, call in enumerate(choice.message.tool_calls or ())
             ),
-            raw=_metadata(data),
         )
 
 
@@ -214,19 +210,6 @@ def _json(call: _ToolCall) -> str:
     if arguments is None:
         return "{}"
     return arguments if isinstance(arguments, str) else json.dumps(arguments)
-
-
-def _metadata(data: dict[str, Any]) -> dict[str, Any]:
-    """The reply without its content: each choice keeps its index and finish reason."""
-    raw = dict(data)
-    choices = raw.get("choices")
-    if isinstance(choices, list):
-        raw["choices"] = [
-            {key: value for key, value in c.items() if key not in _CONTENT_KEYS}
-            for c in choices
-            if isinstance(c, dict)
-        ]
-    return raw
 
 
 def _text(content: str | list[Any] | None) -> str:

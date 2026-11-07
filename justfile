@@ -165,7 +165,7 @@ capabilities-standalone:
       printf '%s\n' 'models:' '  echo: {backend: mock, model: m, family: mock, options: {default: hello}}' \
         > hardline.yaml
       hardline complete echo "Say hello." --json \
-        | expect 'd["text"] == "hello" and d["finish_reason"] == "stop" and d["backend"] == "mock"'
+        | expect 'd["text"] == "hello" and d["answered"] and d["record"]["backend"] == "mock"'
     }
     smoke_matrix() {
       printf '%s\n' 'matrix:' '  agent_runtimes: {offline: {type: mock}}' \

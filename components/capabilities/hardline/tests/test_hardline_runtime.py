@@ -11,13 +11,15 @@ from hardline_helpers import DictSecrets, mock_runtime
 from pydantic import BaseModel
 
 from hardline import (
-    COMPLETION_TYPE_URL,
+    CallRecord,
+    Completion,
     ConfigError,
     ContractError,
     Endpoint,
     Message,
     ModelRegistry,
     ModelRuntime,
+    ModelSpec,
     RawCompletion,
     Request,
     RequestParams,
@@ -42,10 +44,42 @@ async def test_completion_carries_family_usage_and_provenance() -> None:
     )
     c = await rt.complete("q", "hello there")
     assert c.text == "mock:qwen-8b:hello there"
-    assert (c.family, c.backend, c.local, c.attempts) == ("qwen", "mock", True, 1)
-    assert c.type_url == COMPLETION_TYPE_URL
+    assert (c.family, c.provider, c.local) == ("qwen", "mock", True)
+    assert (c.record.backend, c.record.attempts) == ("mock", 1)
     assert c.usage.input_tokens == 2 and c.usage.output_tokens == 2  # "mock:qwen-8b:hello there"
     assert c.latency_ms >= 0 and c.request_id
+
+
+async def test_the_reply_names_who_served_it() -> None:
+    # HL-2 (review D3, F-3). The row knew its provider and hardline's telemetry reported it, but
+    # the reply did not carry it, so a caller asked hardline's registry again and wrote the
+    # "else the backend's name" rule a second time.
+    rt = mock_runtime(
+        {
+            "a": {
+                "backend": "mock",
+                "model": "m",
+                "family": "x",
+                "provider": "ollama",
+                "retries": 0,
+                "fallbacks": ["b"],
+            },
+            "b": {"backend": "mock", "model": "m", "family": "y"},
+            "down": {
+                "backend": "mock",
+                "model": "m",
+                "family": "x",
+                "provider": "ollama",
+                "retries": 0,
+                "fallbacks": ["b"],
+                "options": {"script": [{"error": "unavailable"}]},
+            },
+        }
+    )
+    assert (await rt.complete("a", "hi")).provider == "ollama"
+    assert (await rt.complete("b", "hi")).provider == "mock"  # no provider: the backend's name
+    fell_back = await rt.complete("down", "hi")
+    assert (fell_back.name, fell_back.provider) == ("b", "mock")  # the row that answered
 
 
 async def test_default_model_used_when_none_named() -> None:
@@ -130,7 +164,7 @@ async def test_extract_validates_on_first_attempt() -> None:
     )
     s = await rt.extract("q", "is it supported?", Verdict)
     assert s.value == Verdict(supported=True, reason="quoted")
-    assert s.completion.attempts == 1
+    assert s.completion.record.attempts == 1
 
 
 @pytest.mark.parametrize(
@@ -143,12 +177,10 @@ async def test_extract_validates_on_first_attempt() -> None:
 async def test_extract_finds_the_answer_after_bracketed_prose(reply: str) -> None:
     # The first bracketed span was taken as the answer and the valid one discarded, which
     # cost a repair turn, or a SchemaError with no repairs allowed.
-    rt = mock_runtime(
-        {"q": {"backend": "mock", "model": "m", "family": "qwen", "options": {"default": reply}}},
-        schema_retries=0,
-    )
+    row = {"backend": "mock", "model": "m", "family": "qwen", "schema_retries": 0}
+    rt = mock_runtime({"q": {**row, "options": {"default": reply}}})
     s = await rt.extract("q", "?", Verdict)
-    assert s.value == Verdict(supported=True, reason="r") and s.completion.attempts == 1
+    assert s.value == Verdict(supported=True, reason="r") and s.completion.record.attempts == 1
 
 
 class Reported(MockBackend):
@@ -192,7 +224,7 @@ async def test_planted_schema_failure_is_repaired_once() -> None:
     )
     s = await rt.extract("q", "?", Verdict)
     assert s.value.supported is False
-    assert s.completion.attempts == 2
+    assert s.completion.record.attempts == 2
     # This asserted only `> 0`, which the answering attempt alone satisfies. Usage is the
     # sum of what both calls reported.
     first, second = backend.returned
@@ -218,14 +250,16 @@ async def test_schema_failure_after_retries_raises_with_evidence() -> None:
     assert "reason" in e.value.validation
 
 
-async def test_zero_retries_means_one_attempt() -> None:
-    rt = mock_runtime(
-        {"q": {"backend": "mock", "model": "m", "family": "qwen", "options": {"script": ["nope"]}}},
-        schema_retries=0,
-    )
+@pytest.mark.parametrize(("repairs", "attempts"), [(0, 1), (3, 4)])
+async def test_the_rows_schema_retries_bounds_the_repairs(repairs: int, attempts: int) -> None:
+    # HL-4 (review D5, F-5). The repair count was a `build_runtime` argument that no row,
+    # digest or record named, so every extract matrix made got one repair no document showed.
+    # It is the row's, and the row asked for sets it, as it sets the call's `limits`.
+    row = {"backend": "mock", "model": "m", "family": "qwen", "options": {"script": ["nope"]}}
+    rt = mock_runtime({"q": {**row, "schema_retries": repairs}})
     with pytest.raises(SchemaError) as e:
         await rt.extract("q", "?", Verdict)
-    assert e.value.attempts == 1
+    assert e.value.attempts == attempts
 
 
 async def test_repair_turn_shows_the_model_its_own_reply_and_the_error() -> None:
@@ -344,8 +378,10 @@ async def test_a_bad_call_argument_is_a_config_error(call: dict[str, Any], match
 
 
 def test_a_negative_schema_retries_is_a_config_error() -> None:
-    with pytest.raises(ConfigError, match="schema_retries"):
-        mock_runtime({"q": {"backend": "mock", "model": "m", "family": "x"}}, schema_retries=-1)
+    # A row key now (HL-4): refused at composition, naming the key, like any bad row value.
+    with pytest.raises(ConfigError) as e:
+        mock_runtime({"q": {"backend": "mock", "model": "m", "family": "x", "schema_retries": -1}})
+    assert [p.path for p in e.value.problems] == ["models.q.schema_retries"]
 
 
 # --- the promise for `complete`: a reply that is not a whole answer never looks like one --
@@ -373,6 +409,30 @@ async def test_a_completion_says_whether_it_is_a_whole_answer(
     assert c.refusal == options.get("refusal")
 
 
+async def test_answered_is_in_the_json_and_cannot_contradict_the_reply() -> None:
+    # HO8 (review F-9). `answered` was a property, so `complete --json` left it out and the skill
+    # taught an agent to recompute it; one that got the rule slightly wrong took a cut reply for
+    # an answer. It is in the JSON, and JSON that claims otherwise than its own fields is refused.
+    from pydantic import ValidationError
+
+    rt = mock_runtime(
+        {
+            "q": {
+                "backend": "mock",
+                "model": "m",
+                "family": "x",
+                "options": {"finish_reason": "length"},
+            }
+        }
+    )
+    c = await rt.complete("q", "hi")
+    dumped = c.model_dump(mode="json")
+    assert dumped["answered"] is False
+    assert Completion.model_validate(dumped) == c
+    with pytest.raises(ValidationError, match="answered"):
+        Completion.model_validate({**dumped, "answered": True})
+
+
 # --- the call's whole record -------------------------------------------------------
 
 
@@ -397,13 +457,13 @@ async def test_extract_records_the_turns_actually_sent_repair_turns_included() -
     s = await rt.extract("q", "?", Verdict, system="be strict")
     answered = backend.sent[-1].messages
     assert [m.role for m in answered] == ["system", "user", "user", "assistant", "user"]
-    assert s.completion.turns_digest == _sha256(answered)
+    assert s.completion.record.turns_digest == _sha256(answered)
 
 
 async def test_complete_records_the_turns_it_sent() -> None:
     rt, backend = _reported({"q": {"backend": "mock", "model": "m", "family": "x"}})
     c = await rt.complete("q", "hi", system="s")
-    assert c.turns_digest == _sha256(backend.sent[-1].messages)
+    assert c.record.turns_digest == _sha256(backend.sent[-1].messages)
 
 
 async def test_the_record_holds_the_params_the_answering_row_was_sent() -> None:
@@ -428,7 +488,18 @@ async def test_the_record_holds_the_params_the_answering_row_was_sent() -> None:
         }
     )
     c = await rt.complete("a", "hi")
-    assert c.params == RequestParams(max_tokens=77, temperature=0.3, structured=None)
+    assert c.record.params == RequestParams(max_tokens=77, temperature=0.3, structured=None)
+
+
+async def test_an_unset_temperature_is_recorded_as_the_providers_default() -> None:
+    # HO6. Neither the call nor the row set a temperature, so none was sent and the provider's
+    # own default applied: a value hardline cannot know. The record says that, not a bare null
+    # a reader could take for "zero" or "unrecorded".
+    rt = mock_runtime({"q": {"backend": "mock", "model": "m", "family": "x"}})
+    c = await rt.complete("q", "hi")
+    assert c.record.params.temperature == "provider_default"
+    assert c.record.params.model_dump(mode="json")["temperature"] == "provider_default"
+    assert (await rt.complete("q", "hi", temperature=0.0)).record.params.temperature == 0.0
 
 
 @pytest.mark.parametrize("mode", ["prompt", "json_object", "json_schema"])
@@ -447,7 +518,9 @@ async def test_the_record_holds_the_structured_mode_used(
         }
     )
     s = await rt.extract("q", "?", Verdict, max_tokens=9, temperature=0.0)
-    assert s.completion.params == RequestParams(max_tokens=9, temperature=0.0, structured=mode)
+    assert s.completion.record.params == RequestParams(
+        max_tokens=9, temperature=0.0, structured=mode
+    )
 
 
 async def test_the_record_names_the_row_its_digest_and_the_tier_of_each_field(
@@ -462,8 +535,11 @@ async def test_the_record_names_the_row_its_digest_and_the_tier_of_each_field(
         backends={"mock": MockBackend()},
     )
     c = await rt.complete("q", "hi")
-    assert c.row is not None
-    assert c.row.rungs == {
+    # Requirement changed in 0.3 (HO5, review D5): the rungs named only the fields a tier set,
+    # and left the rest to be inferred ("a field not named kept the model's default"). They
+    # name every field, `default` for each no tier set.
+    assert c.record.row.rungs == {
+        **_DEFAULTED,
         "backend": f"user {user}",
         "model": f"user {user}",
         "family": f"user {user}",
@@ -471,7 +547,25 @@ async def test_the_record_names_the_row_its_digest_and_the_tier_of_each_field(
     }
     spec = rt.registry.get("q")
     canonical = json.dumps(spec.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
-    assert c.row.digest == "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+    assert c.record.row.digest == "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+
+
+#: A row's rungs for the fields no tier set: every field of a row but its name, which its key is.
+_DEFAULTED = {field: "default" for field in ModelSpec.model_fields if field != "name"}
+
+
+def test_the_rungs_name_every_field_of_the_row() -> None:
+    # HO5: a default is shown, never implied. Pinned against the row's own fields, so a field
+    # added to ModelSpec is named in every record without this test or the registry changing.
+    rt = mock_runtime({"q": {"backend": "mock", "model": "m", "family": "x"}})
+    rungs = rt.registry.record("q").rungs
+    assert set(rungs) == set(ModelSpec.model_fields) - {"name"}
+    assert {field for field, rung in rungs.items() if rung == "default"} == set(rungs) - {
+        "backend",
+        "model",
+        "family",
+    }
+    assert rt.registry.get("q").schema_retries == 1  # the repair count, now a row value
 
 
 async def test_a_default_location_is_recorded_as_the_backends() -> None:
@@ -483,6 +577,7 @@ async def test_a_default_location_is_recorded_as_the_backends() -> None:
         label="matrix.models",
     )
     assert rt.registry.record("o").rungs == {
+        **_DEFAULTED,
         "backend": "matrix.models",
         "model": "matrix.models",
         "family": "matrix.models",
@@ -499,11 +594,36 @@ async def test_a_completion_reads_back_its_own_json_and_refuses_keys_it_does_not
     # the Completion docstring states.
     from pydantic import ValidationError
 
-    from hardline import Completion
-
     rt = mock_runtime({"q": {"backend": "mock", "model": "m", "family": "x"}})
     c = await rt.complete("q", "hi")
     assert Completion.model_validate_json(c.model_dump_json()) == c
     with pytest.raises(ValidationError, match="added_later"):
         Completion.model_validate({**c.model_dump(mode="json"), "added_later": 1})
     assert "upgrades first" in (Completion.__doc__ or "")
+
+
+async def test_a_call_record_ignores_keys_a_later_minor_adds_and_refuses_another_major() -> None:
+    # Review D2: what hardline records of a call grows in `hardline.v1.call`, not in the reply,
+    # and a reader of that document ignores the fields it does not know within its major and
+    # refuses another major (MRC:c35). So a stored record a newer 0.x wrote still reads, and a
+    # reader of stored Completions need not upgrade first for a field the record gained.
+    from pydantic import ValidationError
+
+    rt = mock_runtime({"q": {"backend": "mock", "model": "m", "family": "x"}})
+    c = await rt.complete("q", "hi")
+    dumped = c.record.model_dump(mode="json")
+    newer = {
+        **dumped,
+        "added_later": 1,
+        "params": {**dumped["params"], "added_later": 1},
+        "row": {**dumped["row"], "added_later": 1},
+        "attempt_log": [{**dumped["attempt_log"][0], "added_later": 1}],
+    }
+    assert CallRecord.model_validate(newer) == c.record
+    assert Completion.model_validate({**c.model_dump(mode="json"), "record": newer}) == c
+    with pytest.raises(ValidationError, match="type_url"):
+        CallRecord.model_validate({**dumped, "type_url": "hardline.v2.call"})
+    with pytest.raises(ValidationError, match="type_url"):
+        Completion.model_validate(
+            {**c.model_dump(mode="json"), "type_url": "hardline.v1/completion"}
+        )

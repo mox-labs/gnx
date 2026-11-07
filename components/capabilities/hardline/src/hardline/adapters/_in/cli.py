@@ -296,6 +296,9 @@ def check(as_json: bool) -> None:
                 "ok": spec.name not in problems,
                 "problem": problems.get(spec.name),
                 "worst_case": runtime.worst_case(spec.name).model_dump(mode="json"),
+                # Where each of the row's values came from, `default` where no tier set one:
+                # the values are `models --json`'s, their sources are here, before any call.
+                "rungs": runtime.registry.record(spec.name).rungs,
             }
             for spec in runtime.registry
         ]
@@ -349,14 +352,14 @@ def complete(
 ) -> None:
     """Call MODEL (a registry name; '' for the default) with PROMPT ('-' reads stdin).
 
-    Prints the text; with --json, the Completion and its record. A reply that is not a whole
-    answer (cut at max_tokens, refused, withheld, empty) is printed with a note on stderr, and
-    exits 0.
+    Prints the text; with --json, the Completion: the reply, whether it is a whole answer, and
+    the record of the call. A reply that is not a whole answer (cut at max_tokens, refused,
+    withheld, empty) is printed with a note on stderr, and exits 0.
     """
     text = sys.stdin.read() if prompt == "-" else prompt
     completion = asyncio.run(_complete(model or None, text, system, max_tokens, temperature))
     if as_json:
-        click.echo(completion.model_dump_json(indent=2, exclude={"raw"}))
+        click.echo(completion.model_dump_json(indent=2))
         return
     click.echo(completion.text)
     if not completion.answered:

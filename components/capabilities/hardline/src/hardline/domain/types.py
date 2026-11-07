@@ -4,9 +4,10 @@ Messages and an optional output schema go in; text (or a validated object) comes
 tagged with the family that answered, what it cost, and enough provenance to ledger.
 Stateless: the conversation belongs to the caller.
 
-The one type URL, ``hardline.v1/completion``, follows the matrix convention
-``<namespace>.v<version>/<resource>`` (xDS TypedExtensionConfig). A backend is keyed by its
-entry-point name alone.
+Two documents carry type URLs, each spelled ``<package>.v<major>.<resource>`` as matrix, ix and
+recon spell theirs (and hardline its error envelope, ``hardline.v1.error``): the reply,
+``hardline.v2.completion``, and the record of how hardline made the call, ``hardline.v1.call``.
+Each major moves on its own. A backend is keyed by its entry-point name alone.
 """
 
 from __future__ import annotations
@@ -14,12 +15,32 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 from hardline.domain.errors import Reason  # noqa: TC001 -- pydantic reads it at runtime
 
-NAMESPACE = "hardline.v1"
-COMPLETION_TYPE_URL = f"{NAMESPACE}/completion"
+#: The reply's type URL. Its major moved from ``hardline.v1/completion`` in 0.3, when the record
+#: of the call left the reply for :class:`CallRecord`.
+COMPLETION_TYPE_URL: Literal["hardline.v2.completion"] = "hardline.v2.completion"
+#: The type URL of :class:`CallRecord`, what hardline alone knows of how a call was made.
+CALL_TYPE_URL: Literal["hardline.v1.call"] = "hardline.v1.call"
+
+#: What a record says of a temperature that neither the call nor its row set: none was sent, so
+#: the provider's own default applied, which hardline cannot know.
+PROVIDER_DEFAULT: Literal["provider_default"] = "provider_default"
+
+#: How a part of :class:`CallRecord` reads JSON: it ignores a key it does not know, which a later
+#: minor release may have added, so a stored record outlives the hardline that wrote it. The
+#: record's ``type_url`` is what a reader refuses on: another major is another document.
+_RECORD = ConfigDict(frozen=True, extra="ignore")
 
 
 #: ``tool`` is a tool's result, sent back to the model: the caller ran the tool, not hardline.
@@ -177,6 +198,13 @@ class Endpoint(BaseModel):
     #: at composition; the reference itself stays with the runtime.
     has_key: bool = False
 
+    @property
+    def provider_name(self) -> str:
+        """Who serves this row: its ``provider``, else the backend's entry-point name, which for
+        an OpenAI-compatible backend says the protocol, not the server. What telemetry calls
+        ``gen_ai.provider.name`` and what ``Completion.provider`` says."""
+        return self.provider or self.backend
+
 
 class ModelSpec(BaseModel):
     """One registry row: a model is configuration, not a class.
@@ -209,6 +237,10 @@ class ModelSpec(BaseModel):
     #: Retries of a *transient* failure (rate limit, timeout, unavailable) on this model,
     #: with exponential backoff and jitter, honouring a provider's Retry-After.
     retries: int = Field(default=2, ge=0, le=10)
+    #: How many times ``extract`` on this row shows the model its invalid reply and asks again,
+    #: each repair a logical call of its own, retries and fallbacks included. Like ``limits``,
+    #: the row asked for sets it, whichever row of its chain answers.
+    schema_retries: int = Field(default=1, ge=0, le=10)
     #: Registry names tried in order once this model's retries are exhausted on a transient
     #: failure. Never on a bad key or a malformed request — those are faults to fix, and
     #: another model would hide them. The Completion names the model that answered.
@@ -313,16 +345,17 @@ class RawCompletion(BaseModel):
     refusal: str | None = None
     #: The calls the model asked for, in order; none when no tools were offered.
     tool_calls: tuple[ToolCall, ...] = ()
-    raw: dict[str, Any] = {}
 
 
 class RequestParams(BaseModel):
     """What was sent to the model that answered, after its row's defaults were applied."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = _RECORD
 
     max_tokens: int
-    temperature: float | None
+    #: The temperature sent; ``provider_default`` when neither the call nor the row set one, so
+    #: none was sent and the provider's own default applied.
+    temperature: float | Literal["provider_default"]
     #: How structured output was asked for; None for a plain completion.
     structured: StructuredMode | None
     #: The names of the tools offered; none for a call that offered none.
@@ -332,7 +365,7 @@ class RequestParams(BaseModel):
 class Attempt(BaseModel):
     """One backend call made for a logical call: a retry, a fallback or a schema attempt."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = _RECORD
 
     #: The registry row asked.
     name: str
@@ -347,77 +380,112 @@ class RowRecord(BaseModel):
     """The registry row that answered, as it was configured.
 
     ``digest`` is that of the row's whole spec (``ModelSpec.model_dump(mode="json")``); see
-    ``domain/digests.py``. ``rungs`` names, for each field a configuration set, the tier that
-    set it: a file with how it was found (``cwd ./hardline.yaml``), a host's section
-    (``matrix.models``), or the backend's default location. A field not named kept the model's
-    default.
+    ``domain/digests.py``. ``rungs`` names, for every field of the row but its name, where its
+    value came from: the tier that set it, a file with how it was found (``cwd
+    ./hardline.yaml``) or a host's section (``matrix.models``); ``default of backend <name>``
+    for a location the backend supplied; or ``default`` when no tier set it.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = _RECORD
 
     digest: str
     rungs: dict[str, str] = {}
 
 
-class Completion(BaseModel):
-    """What a caller gets back. Every field needed to ledger the call.
+class CallRecord(BaseModel):
+    """How hardline made a call: what only hardline knows, ``hardline.v1.call``.
 
-    ``name``, ``family``, ``model`` and ``backend`` describe the model that **answered**. When
-    a fallback answered, ``fallback_from`` names the model that was asked for — the family
+    Every backend call made, the retries and fallbacks they cost, what the answering row was
+    sent, and the row as it was configured. A caller that ledgers a call stores this document
+    whole, under its type URL, beside the reply's own facts; it never needs to ask hardline
+    again.
+
+    **How it grows.** What hardline records of a call changes more often than what a reply says,
+    so it grows here, not in the reply. A minor release may add a key, each with a default, to
+    this record or a part of it (``params``, ``attempt_log``, ``row``), and none is removed or
+    renamed while ``type_url`` is ``hardline.v1.call``. A reader ignores a key it does not know,
+    and refuses another major's ``type_url``: a record written by a newer 0.x reads in an older
+    one, without its new keys.
+    """
+
+    model_config = _RECORD
+
+    type_url: Literal["hardline.v1.call"] = CALL_TYPE_URL
+    #: The entry-point name of the backend that answered.
+    backend: str
+    #: Schema attempts: 1 for a plain completion; up to 1 + the row's ``schema_retries`` for
+    #: ``extract``.
+    attempts: int
+    #: Transient-failure retries spent across all attempts and rows.
+    retries: int
+    #: The row asked for, when a fallback answered; None when the row asked for answered.
+    fallback_from: str | None
+    #: What was sent to the row that answered.
+    params: RequestParams
+    #: Every backend call made, in order, with why each failed.
+    attempt_log: tuple[Attempt, ...]
+    #: The digest of the turns the answering call was sent: for ``extract``, the schema
+    #: instruction and any repair turns included. See ``domain/digests.py``.
+    turns_digest: str
+    #: The registry row that answered, its digest and where each of its values came from.
+    row: RowRecord
+
+
+class Completion(BaseModel):
+    """What a caller gets back: the reply, in terms any model runtime can state, and the record
+    of how hardline made the call.
+
+    ``name``, ``family``, ``model`` and ``provider`` describe the model that **answered**. When
+    a fallback answered, ``record.fallback_from`` names the model that was asked for: the family
     may differ, and an out-of-family judgement must use the one that answered.
 
     A reply that is not a whole answer never looks like one. ``finish_reason`` is ``stop``
     only when the provider said the model ended its turn; a reply cut at ``max_tokens`` is
     ``length``, a refusal is ``refusal`` with ``refusal`` set, a withheld one
     ``content_filter``. ``answered`` is true only for a whole answer, and is what to check
-    before taking ``text`` as one. A reply that asks for tools (``tool_call``, with
+    before taking ``text`` as one; it is in the JSON, derived, and JSON whose ``answered``
+    contradicts its other fields is refused. A reply that asks for tools (``tool_call``, with
     ``tool_calls``) is a whole answer when the call offered tools, and only then.
 
     **Who upgrades first.** A Completion's JSON validates back into a Completion, and refuses a
     key it does not know (``extra="forbid"``). A minor release of hardline may add keys, each with
-    a default; none is removed or renamed while ``type_url`` is ``hardline.v1/completion``. So a
+    a default; none is removed or renamed while ``type_url`` is ``hardline.v2.completion``. So a
     reader of stored Completion JSON upgrades first: it installs the newer hardline before any
-    writer does, or it reads the JSON as a mapping rather than through this model.
+    writer does, or it reads the JSON as a mapping rather than through this model. A key added
+    to ``record`` is not one of these: :class:`CallRecord` ignores what it does not know.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    type_url: str = COMPLETION_TYPE_URL
+    type_url: Literal["hardline.v2.completion"] = COMPLETION_TYPE_URL
+    #: The registry row that answered.
     name: str
-    text: str
     family: str
+    #: The model id the provider said answered, else the row's.
     model: str
-    backend: str
+    #: Who served the row: its ``provider``, else its backend's entry-point name.
+    provider: str
+    #: Whether the row that answered runs on the operator's machine.
     local: bool
-    #: Summed over every backend call that reported usage: each of ``attempt_log``. A failed
-    #: call reports none (the provider sends usage with an answer), so it adds nothing.
-    usage: Usage
-    request_id: str | None
-    latency_ms: int
-    #: Schema attempts (1 for a plain completion; up to 1 + schema_retries for extract).
-    attempts: int
-    #: Transient-failure retries spent across all attempts and models.
-    retries: int = 0
-    fallback_from: str | None = None
-    #: Why the answering reply ended; see the class docstring. None when the provider did not say.
-    finish_reason: FinishReason | None = None
-    #: The provider's own value, verbatim.
-    native_finish_reason: str | None = None
-    #: What the model said when it refused; None when it did not refuse.
-    refusal: str | None = None
+    text: str
     #: The calls the model asked for, in order: the caller runs them. None asked for, none here.
-    tool_calls: tuple[ToolCall, ...] = ()
-    #: What was sent to the model that answered.
-    params: RequestParams | None = None
-    #: Every backend call made, in order, with why each failed.
-    attempt_log: tuple[Attempt, ...] = ()
-    #: The digest of the turns the answering call was sent: for ``extract``, the schema
-    #: instruction and any repair turns included. See ``domain/digests.py``.
-    turns_digest: str | None = None
-    #: The registry row that answered, its digest and the tier that set each field.
-    row: RowRecord | None = None
-    raw: dict[str, Any] = {}
+    tool_calls: tuple[ToolCall, ...]
+    #: Why the answering reply ended; see the class docstring. None when the provider did not say.
+    finish_reason: FinishReason | None
+    #: The provider's own value, verbatim.
+    native_finish_reason: str | None
+    #: What the model said when it refused; None when it did not refuse.
+    refusal: str | None
+    #: Summed over every backend call that reported usage: each of ``record.attempt_log``. A
+    #: failed call reports none (the provider sends usage with an answer), so it adds nothing.
+    usage: Usage
+    #: The provider's id for the answer.
+    request_id: str | None
+    #: Wall time of the whole logical call, retries, fallbacks and repairs included.
+    latency_ms: int
+    record: CallRecord
 
+    @computed_field  # type: ignore[prop-decorator]  # pydantic's documented form
     @property
     def answered(self) -> bool:
         """A whole answer: the model ended its turn, did not refuse, and said something; or,
@@ -428,11 +496,29 @@ class Completion(BaseModel):
         """
         if self.refusal is not None:
             return False
-        offered = self.params is not None and bool(self.params.tools)
-        asked = offered and bool(self.tool_calls)
+        asked = bool(self.record.params.tools) and bool(self.tool_calls)
         if self.finish_reason == "stop":
             return bool(self.text) or asked
         return self.finish_reason == "tool_call" and asked
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _answered_is_derived(
+        cls, data: Any, handler: ModelWrapValidatorHandler[Completion]
+    ) -> Completion:
+        # ``answered`` is written to JSON but derived, never stored: read back, it is set aside,
+        # and a document claiming otherwise than its own fields is refused rather than believed.
+        claimed = None
+        if isinstance(data, dict) and "answered" in data:
+            data = dict(data)
+            claimed = data.pop("answered")
+        completion = handler(data)
+        if claimed is not None and claimed != completion.answered:
+            raise ValueError(
+                f"answered is {claimed!r}, but the reply's own fields make it "
+                f"{completion.answered!r}; it is derived from them, not set"
+            )
+        return completion
 
 
 class Problem(BaseModel):

@@ -36,7 +36,7 @@ from hardline.adapters._out.otel import (
 from hardline.adapters._out.secrets import EnvFileSecretResolver
 from hardline.adapters._out.yaml_source import MappingConfigSource, YamlConfigSource
 from hardline.domain.errors import ConfigError
-from hardline.domain.ports._out.backend import ModelBackend
+from hardline.domain.ports._out.backend import LocatedBackend, ModelBackend
 from hardline.domain.registry import ModelRegistry, models_not_a_mapping, unknown_keys
 from hardline.domain.runtime import ModelRuntime
 from hardline.domain.types import Problem
@@ -209,13 +209,14 @@ def load_registry(
 
 
 def default_locations(backends: Mapping[str, ModelBackend]) -> dict[str, str]:
-    """Backend name -> the ``default_base_url`` it declares, for the backends that declare one."""
-    found: dict[str, str] = {}
-    for name, backend in backends.items():
-        url = getattr(backend, "default_base_url", None)
-        if isinstance(url, str):
-            found[name] = url
-    return found
+    """Backend name -> the ``default_base_url`` it declares (``LocatedBackend``), for the
+    backends that declare one; read from each backend as it was loaded. A protocol sees only
+    that the member is there, so a backend whose ``default_base_url`` is None declares none."""
+    return {
+        name: backend.default_base_url
+        for name, backend in backends.items()
+        if isinstance(backend, LocatedBackend) and isinstance(backend.default_base_url, str)
+    }
 
 
 def build_runtime(
@@ -224,7 +225,6 @@ def build_runtime(
     sources: Sequence[ConfigSource] | None = None,
     backends: Mapping[str, ModelBackend] | None = None,
     secrets: SecretResolver | None = None,
-    schema_retries: int = 1,
     label: str = "<mapping>",
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     rng: random.Random | None = None,
@@ -239,7 +239,9 @@ def build_runtime(
     ``sleep``/``rng`` to observe retry backoff without waiting.
 
     Every backend, found or handed in, is wrapped in ``TracedBackend``: one ``chat`` span and
-    the inference metrics per backend call. ``observer`` hears each logical call's failed
+    the inference metrics per backend call. What a backend declares it can do (``check``,
+    ``aclose``, tools, a default location) is read from the backend itself, never through the
+    wrapper, which declares none of it. ``observer`` hears each logical call's failed
     attempts, fallbacks and answer; by default ``OtelCallObserver`` counts the retries and
     fallbacks. Both use the OpenTelemetry API on ``tracer_provider`` and ``meter_provider``,
     the global ones by default, which record nothing until an application installs an SDK.
@@ -252,17 +254,18 @@ def build_runtime(
         tiers = discover_sources()
     found = backends if backends is not None else discover_backends()
     telemetry = Telemetry(tracer_provider, meter_provider)
-    traced: dict[str, ModelBackend] = {
-        name: TracedBackend(backend, name, telemetry) for name, backend in found.items()
-    }
+
+    def traced(backend: ModelBackend) -> ModelBackend:
+        return TracedBackend(backend, telemetry)
+
     return ModelRuntime(
-        load_registry(tiers, traced),
-        traced,
+        load_registry(tiers, found),
+        found,
         secrets if secrets is not None else EnvFileSecretResolver(),
-        schema_retries=schema_retries,
         sleep=sleep,
         rng=rng,
         observer=observer if observer is not None else OtelCallObserver(telemetry),
+        wrap=traced,
     )
 
 

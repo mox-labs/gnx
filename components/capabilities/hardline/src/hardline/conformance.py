@@ -21,7 +21,13 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING, get_args
 
-from hardline.domain.ports._out.backend import ModelBackend
+from hardline.domain.ports._out.backend import (
+    CheckedBackend,
+    ClosableBackend,
+    LocatedBackend,
+    ModelBackend,
+    ToolCallingBackend,
+)
 from hardline.domain.types import FinishReason, Message, RawCompletion, Request, StructuredMode
 
 if TYPE_CHECKING:
@@ -36,9 +42,11 @@ def backend_problems(backend: object) -> list[str]:
 
     Required: ``structured_modes``, a frozenset of known modes that includes ``prompt`` (every
     backend serves the schema stated in an instruction; the runtime validates either way), and
-    an async ``complete(endpoint, request, api_key)``. Optional, and checked when present: a
-    callable ``check(endpoint)``, an async ``aclose()``, ``default_base_url``, an http(s) URL, and
-    ``supports_tools``, a bool.
+    an async ``complete(endpoint, request, api_key)``. Optional, each a declared protocol the
+    runtime reads with ``isinstance``, and checked here by the same test: a callable
+    ``check(endpoint)`` (``CheckedBackend``), an async ``aclose()`` (``ClosableBackend``),
+    ``supports_tools``, a bool (``ToolCallingBackend``), and ``default_base_url``, an http(s)
+    URL (``LocatedBackend``).
     """
     found: list[str] = []
     modes = getattr(backend, "structured_modes", None)
@@ -56,18 +64,16 @@ def backend_problems(backend: object) -> list[str]:
     complete = getattr(backend, "complete", None)
     if not inspect.iscoroutinefunction(complete):
         found.append("complete: must be an async method complete(endpoint, request, api_key)")
-    check = getattr(backend, "check", None)
-    if check is not None and not callable(check):
+    if isinstance(backend, CheckedBackend) and not callable(backend.check):
         found.append("check: present but not callable; check(endpoint) returns a row's problems")
-    aclose = getattr(backend, "aclose", None)
-    if aclose is not None and not inspect.iscoroutinefunction(aclose):
+    if isinstance(backend, ClosableBackend) and not inspect.iscoroutinefunction(backend.aclose):
         found.append("aclose: present but not an async method")
-    tools = getattr(backend, "supports_tools", None)
-    if tools is not None and not isinstance(tools, bool):
+    if isinstance(backend, ToolCallingBackend) and not isinstance(backend.supports_tools, bool):
         found.append("supports_tools: present but not a bool")
-    url = getattr(backend, "default_base_url", None)
-    if url is not None and not (isinstance(url, str) and url.startswith(("http://", "https://"))):
-        found.append(f"default_base_url: {url!r} is not an http:// or https:// URL")
+    if isinstance(backend, LocatedBackend):
+        url: object = backend.default_base_url
+        if not (isinstance(url, str) and url.startswith(("http://", "https://"))):
+            found.append(f"default_base_url: {url!r} is not an http:// or https:// URL")
     if not found and not isinstance(backend, ModelBackend):
         found.append("not a ModelBackend")
     return found
@@ -86,9 +92,9 @@ async def answer_problems(
     found = backend_problems(backend)
     if found:
         return found
-    check = getattr(backend, "check", None)
-    if callable(check):
-        found.extend(f"check refused the row: {problem}" for problem in check(spec.endpoint()))
+    if isinstance(backend, CheckedBackend):
+        refused = backend.check(spec.endpoint())
+        found.extend(f"check refused the row: {problem}" for problem in refused)
         if found:
             return found
     request = Request(messages=(Message(role="user", content="Say ok."),), max_tokens=16)

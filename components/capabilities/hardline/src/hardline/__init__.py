@@ -34,21 +34,28 @@ from hardline.domain.errors import (
     SecretError,
     UnknownModelError,
 )
-from hardline.domain.ports._out.backend import ModelBackend
+from hardline.domain.ports._out.backend import (
+    CheckedBackend,
+    ClosableBackend,
+    LocatedBackend,
+    ModelBackend,
+    ToolCallingBackend,
+)
 from hardline.domain.ports._out.config_source import ConfigSource
 from hardline.domain.ports._out.observer import CallObserver
 from hardline.domain.ports._out.secrets import SecretResolver
 from hardline.domain.registry import ModelRegistry
 from hardline.domain.runtime import ModelRuntime
 from hardline.domain.types import (
+    CALL_TYPE_URL,
     COMPLETION_TYPE_URL,
-    NAMESPACE,
     Answered,
     Attempt,
     AttemptFailed,
     CallBound,
     CallEvent,
     CallLimits,
+    CallRecord,
     Completion,
     Endpoint,
     FellBack,
@@ -73,9 +80,9 @@ except PackageNotFoundError:  # running from a source tree that was never instal
     __version__ = "0+unknown"
 
 __all__ = [
+    "CALL_TYPE_URL",
     "COMPLETION_TYPE_URL",
     "RETRYABLE",
-    "NAMESPACE",
     "Answered",
     "Attempt",
     "AttemptFailed",
@@ -84,6 +91,9 @@ __all__ = [
     "CallEvent",
     "CallLimits",
     "CallObserver",
+    "CallRecord",
+    "CheckedBackend",
+    "ClosableBackend",
     "Completion",
     "ConfigError",
     "ConfigSource",
@@ -91,6 +101,7 @@ __all__ = [
     "Endpoint",
     "FellBack",
     "FinishReason",
+    "LocatedBackend",
     "Message",
     "ModelBackend",
     "ModelRegistry",
@@ -108,6 +119,7 @@ __all__ = [
     "SecretResolver",
     "Structured",
     "ToolCall",
+    "ToolCallingBackend",
     "ToolSpec",
     "UnknownModelError",
     "Usage",

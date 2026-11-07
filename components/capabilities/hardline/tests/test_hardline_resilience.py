@@ -46,7 +46,7 @@ async def test_transient_failures_are_retried_with_backoff() -> None:
         rng=random.Random(0),
     )
     c = await rt.complete("a", "hi")
-    assert c.text == "ok" and c.retries == 2 and c.fallback_from is None
+    assert c.text == "ok" and c.record.retries == 2 and c.record.fallback_from is None
     assert len(sleeps.delays) == 2
     # full jitter under an exponential cap: 0.5s then 1.0s
     assert 0 <= sleeps.delays[0] <= 0.5 and 0 <= sleeps.delays[1] <= 1.0
@@ -130,8 +130,8 @@ async def test_fallback_answers_and_the_completion_names_who_answered() -> None:
     c = await rt.complete("primary", "hi")
     assert c.text == "from backup"
     assert c.name == "backup" and c.family == "gemma"  # the family of the model that answered
-    assert c.fallback_from == "primary"
-    assert c.retries == 1
+    assert c.record.fallback_from == "primary"
+    assert c.record.retries == 1
 
 
 async def test_every_model_failing_names_the_chain() -> None:
@@ -160,15 +160,15 @@ async def test_extract_falls_back_and_sums_usage() -> None:
     )
     s = await rt.extract("a", "judge this", Verdict)
     assert s.value.ok is True
-    assert s.completion.family == "llama" and s.completion.fallback_from == "a"
+    assert s.completion.family == "llama" and s.completion.record.fallback_from == "a"
     # This asserted only `> 0`. The failed call reported nothing, so the total is exactly
     # what b reported for '{"ok": true}' (two words in the mock's count).
     assert s.completion.usage.output_tokens == 2
-    assert [(t.name, t.reason, t.usage is None) for t in s.completion.attempt_log] == [
+    assert [(t.name, t.reason, t.usage is None) for t in s.completion.record.attempt_log] == [
         ("a", "unavailable", True),
         ("b", None, False),
     ]
-    assert s.completion.usage == s.completion.attempt_log[-1].usage
+    assert s.completion.usage == s.completion.record.attempt_log[-1].usage
 
 
 # --- the attempt log: each row tried, and why it failed -----------------------------
@@ -183,12 +183,12 @@ async def test_the_attempt_log_names_each_row_tried_and_why() -> None:
         sleep=Sleeps(),
     )
     c = await rt.complete("primary", "hi")
-    assert [(t.name, t.reason) for t in c.attempt_log] == [
+    assert [(t.name, t.reason) for t in c.record.attempt_log] == [
         ("primary", "unavailable"),
         ("primary", "unavailable"),
         ("backup", None),
     ]
-    assert all(t.latency_ms >= 0 for t in c.attempt_log)
+    assert all(t.latency_ms >= 0 for t in c.record.attempt_log)
 
 
 async def test_an_exhausted_chain_carries_its_log_and_what_it_cost() -> None:
@@ -240,12 +240,16 @@ async def test_a_schema_repair_goes_on_from_the_row_that_answered() -> None:
         sleep=Sleeps(),
     )
     s = await rt.extract("a", "?", Verdict)
-    assert [(t.name, t.reason) for t in s.completion.attempt_log] == [
+    assert [(t.name, t.reason) for t in s.completion.record.attempt_log] == [
         ("a", "unavailable"),
         ("b", None),
         ("b", None),
     ]
-    assert (s.completion.name, s.completion.fallback_from, s.completion.attempts) == ("b", "a", 2)
+    assert (s.completion.name, s.completion.record.fallback_from, s.completion.record.attempts) == (
+        "b",
+        "a",
+        2,
+    )
 
 
 def test_a_repeated_fallback_is_refused() -> None:
@@ -350,8 +354,7 @@ async def test_limits_tokens_stops_the_schema_repairs() -> None:
     # Each reply reports 1 input token per word sent and 1 output token per word replied; the
     # first call alone passes 10 tokens, so no repair is sent.
     rt = mock_runtime(
-        {"a": _row(["not json at all, said at length"], limits={"tokens": 10})},
-        schema_retries=3,
+        {"a": _row(["not json at all, said at length"], limits={"tokens": 10}, schema_retries=3)}
     )
     with pytest.raises(SchemaError, match=r"limits\.tokens=10") as e:
         await rt.extract("a", "?", Verdict)
@@ -382,11 +385,14 @@ def test_a_rows_worst_case_is_its_chain_unless_its_limits_say_less() -> None:
             "a": _row(["x"], retries=2, fallbacks=["b"]),
             "b": _row(["x"], retries=0),
             "c": _row(["x"], retries=2, fallbacks=["b"], limits=limits),
+            "d": _row(["x"], retries=2, fallbacks=["b"], schema_retries=2),
         },
         default="c",
     )
     a, c = rt.worst_case("a"), rt.worst_case("c")
     assert (a.complete_calls, a.extract_calls, a.seconds, a.tokens) == (4, 7, None, None)
+    # The repairs are the row's own `schema_retries` (HL-4), default 1: two here, of 3 calls each.
+    assert rt.worst_case("d").extract_calls == 4 + 2 * 3
     assert (c.complete_calls, c.extract_calls, c.seconds, c.tokens) == (4, 5, 60, 1000)
     assert rt.worst_case(None) == c, "None is the default row, as for a call"
 

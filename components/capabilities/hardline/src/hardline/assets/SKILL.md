@@ -12,7 +12,7 @@ One command for every model the operator has configured. Models are registry row
 ```bash
 hardline models          # name, family, backend, local?, model id
 hardline check           # validates every tier and resolves every api_key reference
-hardline check --json    # {"ok", "tiers", "models": [{"name", "ok", "problem", "worst_case", ...}], "warnings"}
+hardline check --json    # {"ok", "tiers", "models": [{"name", "ok", "problem", "worst_case", "rungs", ...}], "warnings"}
 ```
 
 `check` exits 0 only when every row would get past composition and find its key: a valid row,
@@ -21,7 +21,8 @@ A key the provider then rejects is only discovered by a call (exit 6). A `shared
 row's fallback sends to the same server as the row, so it will not answer when that server is
 down: tell the operator rather than count on it. Each row's `worst_case` is what one call on it
 can cost: backend calls for a `complete` and an `extract`, and `seconds` and `tokens`, `null` when
-its `limits` set none, which is the default.
+its `limits` set none, which is the default. Its `rungs` say where each of the row's values came
+from: a tier file, or `default` when nothing set it.
 
 If `hardline models` lists nothing, no registry exists yet. Do not invent one — ask the operator
 which models they run.
@@ -32,23 +33,24 @@ which models they run.
 hardline complete qwen3-8b "Summarise in one line: ..."
 hardline complete haiku --system "You are a strict reviewer." "Is this claim supported? ..."
 echo "long input" | hardline complete qwen3-8b -          # prompt from stdin
-hardline complete qwen3-8b --json "..."                   # full Completion as JSON
+hardline complete qwen3-8b --json "..."                   # the reply and its record, as JSON
 ```
 
-`--json` output carries `family`, `model`, `backend`, `local`, `usage`, `latency_ms`, `attempts`,
-`retries`, `fallback_from`, `finish_reason`, `refusal`, and the call's record (`params`,
-`attempt_log`, `turns_digest`, `row`). Report the `family` when a second model's answer is used
-as evidence: a check by the same family as the author is not an independent check. When
-`fallback_from` is set, the model that answered is not the one asked for — use the `family`
-that actually answered, not the one in `fallback_from`. `usage.input_tokens` counts every input
-token, the cache's included; `cache_read_tokens` and `cache_write_tokens` are part of it, not
-added to it.
+`--json` output is the reply: `text`, `answered`, `finish_reason`, `refusal`, `name`, `family`,
+`model`, `provider`, `local`, `usage`, `latency_ms`; and `record`, how hardline made the call
+(`backend`, `attempts`, `retries`, `fallback_from`, `params`, `attempt_log`, `turns_digest`,
+`row`). Report the `family` when a second model's answer is used as evidence: a check by the
+same family as the author is not an independent check. When `record.fallback_from` is set, the
+model that answered is not the one asked for — use the `family` that actually answered, not the
+one in `fallback_from`. `usage.input_tokens` counts every input token, the cache's included;
+`cache_read_tokens` and `cache_write_tokens` are part of it, not added to it.
 
-**Is it an answer?** Only when `finish_reason` is `"stop"`, `refusal` is `null` and `text` is not
-empty. The command offers no tools, so a `"tool_call"` reply is not one either. `"length"` means the reply was cut at `max_tokens` (raise `--max-tokens` and ask again);
-`refusal` set means the model refused; `null` means the provider did not say. Do not use such a
-reply as the model's answer. Without `--json`, the CLI writes a `hardline:` note on stderr
-beside it; the exit is still 0.
+**Is it an answer?** Read `answered`: `true` only when the model ended its turn, did not refuse,
+and said something. When it is `false`, `finish_reason` says why: `"length"` means the reply was
+cut at `max_tokens` (raise `--max-tokens` and ask again); `refusal` set means the model refused;
+`null` means the provider did not say; `"tool_call"` means it asked for a tool, which the command
+never offers. Do not use such a reply as the model's answer. Without `--json`, the CLI writes a
+`hardline:` note on stderr beside it; the exit is still 0.
 
 ## When a command fails
 
