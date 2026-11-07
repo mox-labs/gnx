@@ -27,10 +27,14 @@ The methods, and why each:
   effective sample size, with their adjustment for the few degrees of freedom the trials
   give. Zero events in N units bound the rate near ``3.8 / N`` (the rule of three's
   neighbour at 97.5% one-sided), never at 0.
+* :func:`paired_difference`: the difference of two rates read in the same blocks, from the
+  paired table (Tango 1998, the score test of the difference inverted). Only the blocks that
+  disagree move it, so two rates that agree block by block are compared at the width their
+  disagreement leaves, not at the width of two independent samples.
 * :func:`difference`: the difference of two independent estimates from their own
   intervals (Newcombe 1998, method 10; generalised as the method of variance estimates
-  recovery by Zou and Donner 2008). Two Wilson intervals give Newcombe's hybrid score
-  interval.
+  recovery by Zou and Donner 2008). It is used for two pooled counts, whose units do not
+  pair.
 """
 
 from __future__ import annotations
@@ -429,6 +433,74 @@ def difference(first: Span, second: Span, first_value: float, second_value: floa
         )
 
     return Span(at)
+
+
+def _paired_statistic(only_first: int, only_second: int, n: int, bound: float) -> float:
+    """Tango's score statistic for ``p1 - p2 = bound``, two rates read in the same ``n``
+    blocks: ``(b - c - n * bound) / sqrt(n * (2 q + bound - bound^2))``, where ``b`` blocks
+    read true on the first side alone, ``c`` on the second alone, and ``q`` is the
+    second-alone share's maximum-likelihood estimate under the bound (the root of Tango's
+    quadratic). Infinite, with the numerator's sign, where the bound leaves no variance."""
+    b, c = only_first, only_second
+    gap = b - c - n * bound
+    quadratic_b = -b - c + (2 * n - b + c) * bound
+    quadratic_c = -c * bound * (1 - bound)
+    share = (-quadratic_b + math.sqrt(max(0.0, quadratic_b**2 - 8 * n * quadratic_c))) / (4 * n)
+    variance = n * (2 * share + bound - bound * bound)
+    if variance <= 0:
+        return 0.0 if gap == 0 else math.copysign(math.inf, gap)
+    return gap / math.sqrt(variance)
+
+
+def paired_difference(only_first: int, only_second: int, n: int) -> Span:
+    """The interval of ``p1 - p2``, two rates read in the same ``n`` blocks: ``only_first``
+    blocks read true on the first side alone and ``only_second`` on the second alone (the
+    discordant cells of the paired 2x2 table; the concordant ones move neither end). It is
+    Tango's (1998) score interval, the set of differences the score test of the paired
+    table does not reject, so each end's level is that test's p-value in closed form. Zero
+    discordant blocks bound the difference by about ``z^2 / (n + z^2)`` on each side, never
+    at zero width."""
+    delta = (only_first - only_second) / n
+
+    def statistic(bound: float) -> float:
+        return _paired_statistic(only_first, only_second, n, bound)
+
+    def end(z: float, *, low: bool) -> float:
+        # The statistic falls as the bound rises, and is 0 at the estimate: each end is
+        # where it reaches +z (low) or -z (high), found by bisection inside [-1, 1].
+        inside, outside = delta, (-1.0 if low else 1.0)
+
+        def reached(bound: float) -> bool:
+            return statistic(bound) >= z if low else statistic(bound) <= -z
+
+        if not reached(outside):
+            return outside
+        for _ in range(60):
+            middle = (inside + outside) / 2
+            if reached(middle):
+                outside = middle
+            else:
+                inside = middle
+        return (inside + outside) / 2
+
+    def at(alpha: float) -> Ends:
+        if alpha >= 1:
+            return delta, delta
+        z = z_quantile(1 - alpha / 2)
+        return end(z, low=True), end(z, low=False)
+
+    def level(bound: float, *, low: bool) -> float:
+        if (low and delta <= bound) or (not low and delta >= bound):
+            return math.inf
+        if bound <= -1 or bound >= 1:
+            return 0.0  # the interval never leaves [-1, 1]
+        return _p_two_sided(statistic(bound), None)
+
+    return Span(
+        at,
+        lambda bound: level(bound, low=True),
+        lambda bound: level(bound, low=False),
+    )
 
 
 def ratio(numerator: Sequence[float], denominator: Sequence[float]) -> Span:

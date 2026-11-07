@@ -59,6 +59,21 @@ def test_the_screen_names_the_probes_that_cannot_discriminate(
     assert screened == {"easy": "ceiling", "coin": "noisy", "broken": "failed", "hard": "floor"}
 
 
+def test_probes_each_read_once_have_no_screen(
+    evaluate_data: dict[str, Any], vocabulary: Vocabulary
+) -> None:
+    """A mutant is applied once: one reading has no spread, and a floor or a ceiling would
+    tell an agent to fix every mutant the suite killed or missed (design D13, C2)."""
+    design = _design(evaluate_data, vocabulary)
+    trials = _trials({"killed": 1, "survived": 1})
+    readings = [_reading(0, True), _reading(1, False)]
+    assert screen(design, trials, readings) == ()
+    # Trials decide it, not readings: probes carried out five times and never read are
+    # still screened, as ones that failed.
+    failed = {probe.screen for probe in screen(design, _trials({"a": 5, "b": 5}), [])}
+    assert failed == {"failed"}
+
+
 def test_a_flag_is_said_only_when_a_trial_raised_it(
     evaluate_data: dict[str, Any], vocabulary: Vocabulary
 ) -> None:

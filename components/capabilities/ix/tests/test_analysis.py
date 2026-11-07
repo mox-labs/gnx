@@ -132,8 +132,9 @@ class TestTheNumbers:
             intervals.wilson(9, 9),
             intervals.clustered_rate([3, 10, 0, 5, 2], [1000] * 5),
             intervals.ratio([11, 12, 10.5, 11.4, 12.2], [10, 10.2, 9.8, 10.1, 10.4]),
+            intervals.paired_difference(7, 1, 60),
         ]
-        bounds = [1.0, 1.5, 0.5, 0.001, 1.0]
+        bounds = [1.0, 1.5, 0.5, 0.001, 1.0, 0.0]
         for span, bound in zip(spans, bounds, strict=True):
 
             def excludes(alpha: float, span: intervals.Span = span, bound: float = bound) -> bool:

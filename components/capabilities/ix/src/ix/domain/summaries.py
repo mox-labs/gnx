@@ -14,13 +14,16 @@ from the record says the same.
   lowest value the metric can take, ``ceiling`` at the highest, ``noisy`` when the readings
   of one subject on it spread by more than 0.35 of that range, and ``failed`` when no trial
   of it gave a reading. A metric with no
-  range (a latency) is screened only for ``failed``.
+  range (a latency) is screened only for ``failed``. A design that carries each probe out
+  once a subject (each mutant applied once) has no screen: one reading has no spread, and
+  its floor or ceiling is the reading itself.
 """
 
 from __future__ import annotations
 
 import math
 import statistics
+from collections import Counter
 from typing import TYPE_CHECKING, Literal
 
 from ix.domain import schema
@@ -199,6 +202,12 @@ def screen(
         if number is not None and math.isfinite(number):
             subjects = numbers[probe_of[reading.seq]]
             subjects.setdefault(reading.subject, []).append(number)
+    planned = Counter((trial.probe, trial.subject) for trial in trials if trial.role != CALIBRATION)
+    if planned and max(planned.values()) <= 1:
+        # Each probe is carried out once a subject (a mutant applied once): there is no spread
+        # to screen, and a floor or a ceiling would only restate the reading. Trials, not
+        # readings, decide it, so a run whose trials failed is still screened ``failed``.
+        return ()
     span = _range(metric)
     found = []
     for probe, by_subject in numbers.items():
