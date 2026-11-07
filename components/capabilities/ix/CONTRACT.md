@@ -204,3 +204,64 @@ trials_in_flight=)`), allowed with `--exploratory` or `--dry-run` only.
 **Failure behaviour.** Otherwise `UsageError` (kind `usage`, exit 2), its `details.path` the
 first flag and `details.value` its value, its fix the pilot to run instead; refused before the
 changed experiment is judged.
+
+## Long runs: `ix run --detach`, `ix status`, `ix events`, `ix stop`
+
+**Stability: public** (`ix.v1.status`, version 1, and the four commands). Pinned by
+`tests/test_long_runs.py`. Built to the owner's ruling (panel 10-09 §6, reaffirmed as Q5):
+long runs outlast a tool call, and the primary caller is an agent.
+
+**The decision it hides.** How a run outlives the call that started it, and how anything
+else learns where it stands. The run is a child process in a session of its own, and the
+run's record is the only channel between it and every other command: no socket, no pid
+file of ix's own. Whether its process is alive is matrix's store's to say (`writer.lock`).
+
+**Members.**
+
+- `ix run <path> --detach` (`ix.start(path, ...)`, the flags of `ix run` but `-`): refuses
+  as `ix run` does, then starts `python -m ix run <path> ... --run-id <id> --json` detached
+  and returns its `Status` once the child has opened the record. `--run-id ID`
+  (`ix.run(run_id=)`, `ix.start(run_id=)`) names any run.
+- `ix status <run>` (`ix.status(run)`): `Status`, read from the record alone.
+- `ix events <run> [--follow]` (`ix.events(run, follow=)`): the run's `matrix.v1.event`
+  documents, oldest first; with follow, each as it is written until the run ends.
+- `ix stop <run>` (`ix.stop(run)`): SIGTERM to the process writing the run, then its
+  `Status`.
+- `Status` (`ix.v1.status`): `run`, `location`, `experiment`, `status` (`running`,
+  `completed`, `interrupted`, `failed`), `mode`, `started_at`, `ended_at`, `planned`,
+  `carried_out`, `pid` and `host` (the writer, `pid` only while it runs on this host),
+  `events` (the event log), `log` (a detached run's standard error), `exit` (`code`, `kind`,
+  `meaning`, `next`). `<run>` is a run's directory, or an experiment, meaning its latest run.
+
+**Exit codes**, the same for every command that prints a `Status` (`--detach`, `status`,
+`stop`, and `events` when it ends): 13 (`running`) while the run runs, 0 (`ok`) once it
+completed, which is no verdict (`ix report` gives that), 12 (`run_interrupted`) for a run that
+was stopped or whose process died, 8 (`run_failed`) for one the harness could not finish. No
+new code: each is the one `ix report` already gives that state.
+
+**Defaults.** A run's id is `<experiment>-<UTC time>-<4 hex digits>`. A detached child has
+`STARTUP_S` (120s) to open its record; `ix stop` waits `STOP_WAIT_S` (30s) for the run to
+end; a follower reads the record and the event log again every `POLL_S` (0.25s). Each is a
+bound on the apparatus, not a choice of the experiment's, so none is configured. The child
+reads nothing on standard input, its standard output is discarded (`ix report` computes the
+report again), and its standard error is appended to `<runs directory>/<run id>.log`.
+
+**Failure behaviour.**
+
+- `--detach` refuses before starting anything, with the error and exit code `ix run` gives:
+  an invalid or unregistered experiment, a requirement that does not hold, an override a
+  gated run refuses, a `--run-id` that is taken or unsafe (`usage`), a path of `-`
+  (`usage`). A child that exits before opening its record (a race: the parent checked first) is
+  raised as the `ix.v1.error` it printed, as its kind where that is `usage`, `config`,
+  `not_found` or `unregistered` and as `unknown` otherwise, with `details.log`; one that
+  printed none is `unknown` with its log's end; one that has not opened it within
+  `STARTUP_S` is stopped (SIGTERM, then SIGKILL after 5s) and the start is `config`.
+- A run whose process died on this host reads as `interrupted` (matrix finishes its
+  record), so `status` says so and a follower ends. A run written on another host is read
+  as its record says: `stop` refuses it (`usage`), and a follower waits for its record to
+  say it ended there.
+- `stop` on a run that has ended does nothing; on a process it may not signal, `config`. A
+  run still releasing after `STOP_WAIT_S` is returned `running`: ask again.
+- What a SIGKILLed run started (a subject, a probe) is not released: as for a run in the
+  foreground, nothing reaps it later (README, Not built).
+

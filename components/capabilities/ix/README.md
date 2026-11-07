@@ -63,7 +63,8 @@ anything did), `ix runs [path]` (each run kept beside the experiment, or with no
 experiment's runs under the current directory: when it started,
 whether it was gated, exploratory or a dry run, the commit it ran from, its verdict or
 indication, its trials),
-`ix genres` and
+`ix status <run>`, `ix events <run> --follow` and `ix stop <run>` (a run started with
+`ix run --detach`, or any other: [Long runs](#long-runs)), `ix genres` and
 `ix kinds` (what is installed), and `ix --skill` (the skill an agent reads; `-r NAME` prints
 one of its references). A path is the experiment file, a directory holding
 `experiment.yaml`, or `-` for an experiment on standard input. Every command takes `--json`.
@@ -574,7 +575,11 @@ read at the same width, one at a time for a kind that forbids overlap.
 - **Stopping.** Ctrl-C (or SIGTERM) stops the trial in flight, kills the process groups the
   run started, and exits 12 with the partial report. A run the harness could not finish (an
   environment that did not come up, or went down between trials) exits 8. `ix report` of a
-  run still being written exits 13.
+  run still being written exits 13. `ix stop <run>` stops a run from elsewhere
+  ([Long runs](#long-runs)).
+- **A run's id** is `<experiment>-<UTC time>-<4 hex digits>`, or what `--run-id ID` names
+  (letters, digits, `.`, `_`, `-`); an id a run is kept under already is refused (exit 2),
+  since a run's record is never reopened.
 - **Refused before it starts**: whatever an entry needs of this host that does not hold
   here. Each adapter checks its own (a `preflight`): a program that is not there (a
   subject's or a service's command, `k6` for `http-load`), an `auth` variable that is not
@@ -601,6 +606,50 @@ read at the same width, one at a time for a kind that forbids overlap.
   an error, and the trial is measured with its `dropped` count. A sensor that
   could not read is a reading with a failure. None of these stops a run, but a lost
   environment; the report counts each.
+
+### Long runs
+
+A run can outlast the call that started it: an agent's tool call has a time limit, and a
+long experiment does not. `ix run <path> --detach` starts the run in a process of its own and
+returns as soon as that process has opened the run's record, printing the run's status
+(`ix.v1.status`): its id first, its directory, the process writing it (`pid`, `host`), the
+trials planned and carried out, its event log. It exits as `ix status` does, 13 while the
+run runs. It is refused before anything starts exactly as a run in the foreground is, with
+the same exit codes (an unregistered experiment exits 15), and a path of `-` is refused
+(exit 2): the process reads nothing on standard input. The process is an ordinary
+`ix run` of the same experiment under the same id, in a session of its own, so the end of
+the caller's terminal or tool call does not reach it; it records, stops and reports as a
+run in the foreground does. What it writes to standard error is kept beside the run's
+directory, `<run id>.log` (`log` in the status). One that has not opened its record within
+two minutes is stopped, and the start fails (exit 3).
+
+Then, for that run or any other (a run's directory, or an experiment for its latest run):
+
+- `ix status <run>` says where it stands, read from the record alone: `running`, or how
+  it ended (`completed`, `interrupted`, `failed`), and how many of its trials were carried
+  out. It exits 13 while the run runs, 0 once it completed, 12 for a run that was stopped
+  or whose process died, 8 for one the harness could not finish. A completed run's verdict
+  is `ix report`'s, not the status's: exit 0 from `status` says the run completed, nothing
+  about what it found.
+- `ix events <run> --follow` prints the run's events as they are written (`--json`: one
+  `matrix.v1.event` a line) and returns once the run has ended, however it ended: a run
+  whose process was killed reads as interrupted, and the follower returns. It then exits as
+  `ix status` would. Events are telemetry and may be dropped: read results from the report.
+  Ctrl-C stops following and leaves the run running.
+- `ix stop <run>` stops a running run as Ctrl-C stops one in the foreground (it sends the
+  process writing it SIGTERM): the trial in flight is kept as the harness's, everything the
+  run started is released, and the record says `interrupted`. It waits up to 30 seconds for
+  the run to end and prints its status; a run still releasing what it started then still
+  says `running` (exit 13): ask `ix status` again. A run that has ended is left as it is; a
+  run written on another host is refused (exit 2).
+- `ix report <run>` gives its verdict once it has ended.
+
+```bash
+ix run lab/proxy --detach --json      # exits 13: running; prints its directory
+ix status <run directory> --json      # 13 while it runs; 0, 12 or 8 once it has ended
+ix events <run directory> --follow    # returns when it ends
+ix report <run directory>             # the verdict
+```
 
 ### The record
 
@@ -772,7 +821,10 @@ cannot run in flight: those kinds forbid overlap, and no measurement says yet wh
 several at once would do to them. A subject left running by a run that was
 killed outright is not found and stopped later: in the next run, each trial of a subject
 whose address already answers is recorded as a harness failure (`address_in_use`) instead
-of being measured. The sensors cannot be run again over a stored run and written back.
+of being measured. The sensors cannot be run again over a stored run and written back. A
+stopped or killed run cannot be resumed; it is run again. A run written on another host
+(a shared run directory) can be read and followed, not stopped from here, and a follower of
+one whose process died there waits until its record says it ended, which nothing writes.
 
 ## Settings and telemetry
 
@@ -829,16 +881,23 @@ report = ix.run(slower)  # ix.Report; blocks until the run ends
 again = ix.report(report.location)  # the same report, from the record
 listed = ix.runs(slower)  # ix.Runs
 
+started = ix.start(slower)  # ix.Status, once its own process has opened the record
+ix.status(started.location).status  # "running", then how it ended
+for event in ix.events(started.location, follow=True):  # until the run ends
+    print(event["name"])
+ix.stop(started.location)  # ix.Status; a run that ended is left as it is
+
 experiment = ix.load("examples/proxy-streaming")  # ix.Experiment
 ix.plan(experiment.model_copy(update={"repeats": 9})).trials.total  # 243
 ```
 
 `ix.__all__` is the declared API: `__version__`, `load`, `validate`, `resolve`, `plan`,
-`register`, `deviations`, `run`, `report`, `runs`, `genres`, `kinds`, `skill`,
-`configure_telemetry`, `error_document`; the documents they return (`Validation`,
-`Problem`, `Design`, `Plan`, `Registered`, `Deviations`, `Report`, `Runs`, `Genres`,
-`Kinds`); the three records an author or an extension writes (`Experiment`, `Genre`,
-`Kind`, the union of a kind's four family records); the errors (`IxError`, `ConfigError`, `NotFoundError`, `InvalidExperimentError`,
+`register`, `deviations`, `run`, `start`, `status`, `events`, `stop`, `report`, `runs`,
+`genres`, `kinds`, `skill`, `configure_telemetry`, `error_document`; the documents they
+return (`Validation`, `Problem`, `Design`, `Plan`, `Registered`, `Deviations`, `Report`,
+`Status`, `Runs`, `Genres`, `Kinds`); the three records an author or an extension writes
+(`Experiment`, `Genre`, `Kind`, the union of a kind's four family records); the errors
+(`IxError`, `ConfigError`, `NotFoundError`, `InvalidExperimentError`,
 `RegistrationConflictError`, `UnregisteredError`, `UsageError`); and the tables
 `PROBLEM_KINDS`, `ERROR_KINDS`, `EXIT_CODES`, `EXIT_MEANINGS` and `EXIT_NEXT`. Every part of
 those records (`SubjectConfig`, `Margin`, `Decision`, `Interval`, ...) is exported from
@@ -876,8 +935,9 @@ not:
 ## Output
 
 `--json` prints one document with a `schema` field: `ix.v1.validation`, `ix.v1.plan`,
-`ix.v1.registered`, `ix.v1.deviations`, `ix.v1.report`, `ix.v1.runs`, `ix.v1.genres`,
-`ix.v1.kinds`.
+`ix.v1.registered`, `ix.v1.deviations`, `ix.v1.report`, `ix.v1.status` (`ix status`, `ix stop`,
+`ix run --detach`), `ix.v1.runs`, `ix.v1.genres`, `ix.v1.kinds`. `ix events --json` prints one
+`matrix.v1.event` document a line.
 
 A command that fails prints one envelope on stderr, as one JSON line under `--json`:
 
@@ -902,7 +962,7 @@ over.
 
 | Exit | Kind | Meaning |
 |------|------|---------|
-| 0 | `ok` | done; for validate, the experiment is valid; for run and report, the verdict holds, or there is no verdict to give and none was asked for (exploratory or dry) |
+| 0 | `ok` | done; for validate, the experiment is valid; for run and report, the verdict holds, or there is no verdict to give and none was asked for (exploratory or dry); for status, events and stop, the run completed, which is no verdict |
 | 1 | `unknown` | a failure ix did not classify |
 | 2 | `usage` | a bad flag or argument |
 | 3 | `config` | the experiment is invalid, or it cannot be carried out here as written (a kind with no adapter, a subject that cannot start, an unsupported analysis): read the message and the fix |
@@ -912,7 +972,7 @@ over.
 | 10 | `fails` | the verdict is fails |
 | 11 | `inconclusive` | the verdict is inconclusive |
 | 12 | `run_interrupted` | the run stopped before it finished; the record is kept and it gives no verdict |
-| 13 | `running` | the run has not finished yet; report it again when it has |
+| 13 | `running` | the run has not finished yet (from `ix stop`: it is still releasing what it started); ask `ix status` again, or `ix events --follow` until it ends |
 | 14 | `deviations` | the experiment differs from its registration (ix deviations); a run of it gave no gate result |
 | 15 | `unregistered` | ix run needs a registration, or --exploratory |
 | 16 | `simulated` | a stand-in (a mock runtime) answered a run held to its registration: it measured the harness, not the subject, and gives no gate result |

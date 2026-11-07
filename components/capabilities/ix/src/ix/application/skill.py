@@ -76,6 +76,13 @@ COMMANDS: tuple[tuple[str, str], ...] = (
         "N trials at once, the file unchanged: no verdict; refused where overlap confounds",
     ),
     ("ix run <path>", "carry it out and print the report; the exit code is the verdict"),
+    (
+        "ix run <path> --detach",
+        "start it in a process of its own and return its status: a long run outlasts a call",
+    ),
+    ("ix status <run>", "where a run stands and how far it got; exits 13 while it runs"),
+    ("ix events <run> --follow", "its events as they come; returns once the run has ended"),
+    ("ix stop <run>", "stop a running run as Ctrl-C does; the record is kept"),
     ("ix report <path>", "the latest run's report again; or give a run directory"),
     ("ix runs <path>", "each run: when, its commit, gated, exploratory or dry, verdict, trials"),
     ("ix genres", "the genres installed, and any genre file ix refused"),

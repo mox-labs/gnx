@@ -35,6 +35,21 @@ compares with 0.8.0.
   it; a sensor kind file with no `metrics` is `missing_key` at `metrics`, where it was
   `kind_invalid`.
 
+### Added
+
+- **Long runs outlast a tool call** (owner ruling, panel 10-09 §6, reaffirmed as Q5):
+  `ix run <path> --detach` starts the run in a process of its own and returns once it has
+  opened its record, with its status; `ix status <run>` says where a run stands (running or
+  how it ended, trials carried out of those planned, the process writing it); `ix events
+  <run> --follow` prints its events until it ends, however it ends; `ix stop <run>` stops it
+  as Ctrl-C does. Each prints `ix.v1.status` and exits as it says: 13 while the run runs, 0
+  once it completed (no verdict: `ix report` gives that), 12 stopped or its process gone, 8
+  failed. No new exit code. In the library: `ix.start`, `ix.status`, `ix.events`, `ix.stop`
+  and `ix.Status`. `CONTRACT.md` has what each promises.
+- **`ix run --run-id ID`** (`ix.run(run_id=)`) names the run; an id a run is kept under
+  already, or one that is no safe directory name, is refused (`usage`).
+- `python -m ix` runs the command line.
+
 ### Removed (breaking)
 
 - **A model runtime that "gives no pydantic-ai Model" is no longer `Runnable: no` for a judge

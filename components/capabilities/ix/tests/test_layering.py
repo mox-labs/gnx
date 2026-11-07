@@ -354,11 +354,13 @@ class TestLibrarySurface:
         parts are reachable as field types and are not exported."""
         # Changed requirement: the command configures telemetry through the API, since it
         # names nothing but ``ix``.
+        # Changed requirement (ruling Q5, long runs): a run started detached is followed and
+        # stopped through the library as the command does, with the status it returns.
         functions = {"load", "validate", "resolve", "plan", "register", "deviations", "run",
-                     "report", "runs", "genres", "kinds", "skill", "error_document",
-                     "configure_telemetry"}  # fmt: skip
+                     "start", "status", "events", "stop", "report", "runs", "genres", "kinds",
+                     "skill", "error_document", "configure_telemetry"}  # fmt: skip
         documents = {"Validation", "Problem", "Design", "Plan", "Registered", "Deviations",
-                     "Report", "Runs", "Genres", "Kinds"}  # fmt: skip
+                     "Report", "Status", "Runs", "Genres", "Kinds"}  # fmt: skip
         authored = {"Experiment", "Genre", "Kind"}
         errors = {"IxError", "ConfigError", "NotFoundError", "InvalidExperimentError",
                   "RegistrationConflictError", "UnregisteredError", "UsageError"}  # fmt: skip
@@ -367,7 +369,7 @@ class TestLibrarySurface:
         tables = {"PROBLEM_KINDS", "ERROR_KINDS", "EXIT_CODES", "EXIT_MEANINGS", "EXIT_NEXT",
                   "__version__"}  # fmt: skip
         assert set(ix.__all__) == functions | documents | authored | errors | tables
-        assert len(ix.__all__) <= 40
+        assert len(ix.__all__) <= 45
 
     def test_no_declared_name_is_shadowed_by_a_subpackage(self) -> None:
         """Importing ``ix.<sub>`` binds ``<sub>`` on ``ix``; a function of the same name
@@ -376,7 +378,7 @@ class TestLibrarySurface:
         assert not (set(ix.__all__) & modules)
         ix.skill()  # reads the genre and kind packages
         for name in ("genres", "kinds", "plan", "validate", "register", "deviations", "run",
-                     "report", "runs"):  # fmt: skip
+                     "start", "status", "events", "stop", "report", "runs"):  # fmt: skip
             assert callable(getattr(ix, name)), name
 
 
@@ -473,7 +475,7 @@ def test_every_type_reachable_from_a_public_result_is_exported_from_ix_domain() 
                 walk(field.annotation)
 
     for name in ("Report", "Plan", "Registered", "Deviations", "Validation", "Experiment",
-                 "Genre", "Kind", "Design", "Runs"):  # fmt: skip
+                 "Genre", "Kind", "Design", "Runs", "Status"):  # fmt: skip
         walk(getattr(ix, name))
     reachable = {model.__name__ for model in seen} - set(ix.__all__)
     assert {"Interval", "Decision", "SubjectConfig", "Sensitivity"} <= reachable  # the walk works

@@ -193,6 +193,9 @@ def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
     ix register lab/proxy       freeze the design before a run
     ix deviations lab/proxy     what changed since registration
     ix run lab/proxy            carry it out; the exit code is the verdict
+    ix run lab/proxy --detach   start it and return: a long run outlasts a tool call
+    ix status lab/proxy         where its latest run stands; ix stop to stop it
+    ix events lab/proxy -f      its events as they come, until it ends
     ix report lab/proxy         the report of its latest run, computed again
     ix runs lab/proxy           the runs kept beside it
     """
@@ -919,7 +922,17 @@ written in) gives none and exits {_CODE["simulated"]}, never {_CODE["ok"]}. Ctrl
 trial in flight, releases what was started and exits {_CODE["run_interrupted"]} with the
 partial report; a run the harness could not finish exits {_CODE["run_failed"]}. Either way
 the record is kept and `ix report` reads it. Without --json the exit code, what it means and
-the next step follow the report on stderr."""
+the next step follow the report on stderr.
+
+`--detach` starts the run in a process of its own and returns as soon as it has opened its
+record, printing its status (ix.v1.status: the run's id first, its directory, the process
+writing it) and exiting as `ix status` would: {_CODE["running"]} while it runs. A long run
+outlasts a tool call. It is refused
+before anything starts exactly as a run in the foreground is, with the same exit codes. Then
+`ix status <run directory>` says where it stands, `ix events <run directory> --follow`
+prints its events until it ends, `ix stop <run directory>` stops it, and `ix report <run
+directory>` gives its verdict once it has ended. `--run-id ID` names the run (letters,
+digits, '.', '_', '-'); an id a run is kept under already is refused (exit {_CODE["usage"]})."""
 
 _REPORT_HELP = f"""Print the report of a run, computed again from its record. Runs nothing.
 
@@ -960,6 +973,18 @@ finish and {_CODE["simulated"]} for a registered run a stand-in answered; and
     "writes none), with --exploratory or --dry-run only; refused where a kind in use or "
     "the genre forbids overlap, or a deciding metric is contended",
 )
+@click.option(
+    "--detach",
+    is_flag=True,
+    help="Start the run in a process of its own and return once it has started, with its "
+    "status; follow it with `ix status`, `ix events --follow`, stop it with `ix stop`",
+)
+@click.option(
+    "--run-id",
+    metavar="ID",
+    help="The run's id (default: <experiment>-<UTC time>-<4 hex digits>); one a run is kept "
+    "under already is refused",
+)
 @_json_option
 def run(
     path: str,
@@ -967,8 +992,24 @@ def run(
     dry_run: bool,
     repeats: int | None,
     trials_in_flight: int | None,
+    detach: bool,
+    run_id: str | None,
     as_json: bool,
 ) -> None:
+    if detach:
+        try:
+            started = ix.start(
+                path,
+                exploratory=exploratory,
+                dry_run=dry_run,
+                repeats=repeats,
+                trials_in_flight=trials_in_flight,
+                run_id=run_id,
+            )
+        except ix.IxError as error:
+            _fail(error, as_json=as_json)
+        _print_status(started, as_json)
+        sys.exit(started.exit_code)
     on_event, bar = _progress(as_json)
     try:
         report = ix.run(
@@ -977,6 +1018,7 @@ def run(
             dry_run=dry_run,
             repeats=repeats,
             trials_in_flight=trials_in_flight,
+            run_id=run_id,
             on_event=on_event,
         )
     except ix.IxError as error:
@@ -1000,6 +1042,119 @@ def report(run: str, as_json: bool) -> None:
     except ix.IxError as error:
         _fail(error, as_json=as_json)
     _finish(found, as_json)
+
+
+_RUN_ARGUMENT = click.argument("run", type=click.Path())
+
+_STANDING_HELP = f"""RUN is a run's directory (as `ix run --detach`, `ix run` and `ix runs` print
+it), or an experiment file or directory, meaning its latest run. Exits {_CODE["running"]} while
+the run runs, {_CODE["ok"]} once it completed (which is no verdict: `ix report` gives that),
+{_CODE["run_interrupted"]} for a run that was stopped or whose process died, and
+{_CODE["run_failed"]} for one the harness could not finish."""
+
+
+@main.command(
+    epilog=EXIT_CODES,
+    help=f"""Say where a run stands. Runs nothing.
+
+Prints ix.v1.status: the run's id, its directory, whether it is running or how it ended,
+how many of its planned trials were carried out, the process writing it while it runs
+here, and its event log. Read from the record alone, with nothing computed from its
+readings, so it is cheap to ask again. {_STANDING_HELP}""",
+)
+@_RUN_ARGUMENT
+@_json_option
+def status(run: str, as_json: bool) -> None:
+    try:
+        found = ix.status(run)
+    except ix.IxError as error:
+        _fail(error, as_json=as_json)
+    _print_status(found, as_json)
+    sys.exit(found.exit_code)
+
+
+@main.command(
+    epilog=EXIT_CODES,
+    help=f"""Print a run's events, oldest first.
+
+Each is a matrix.v1.event (its name, time, component and fields): a trial starting and
+ending, a component's progress. They are telemetry and may be dropped; read results from
+`ix report`. With --json, one event document a line (JSON lines). With --follow, each event
+as it is written, until the run ends however it ends (its process killed included); a run
+written on another host is followed until its record says it ended there. Ctrl-C stops
+following and leaves the run running. At the end it exits as `ix status` would then.
+{_STANDING_HELP}""",
+)
+@_RUN_ARGUMENT
+@click.option("--follow", "-f", is_flag=True, help="Go on printing events until the run ends")
+@click.option(
+    "--json", "as_json", is_flag=True, help="One event document a line; errors as JSON on stderr"
+)
+def events(run: str, follow: bool, as_json: bool) -> None:
+    try:
+        for event in ix.events(run, follow=follow):
+            if as_json:
+                click.echo(json.dumps(event, default=str))
+            else:
+                out.print(_event_line(event), soft_wrap=True, highlight=False)
+        found = ix.status(run)
+    except ix.IxError as error:
+        _fail(error, as_json=as_json)
+    if not as_json:
+        err.print(f"[dim]run {escape(found.run)} {found.status}[/dim]")
+    sys.exit(found.exit_code)
+
+
+@main.command(
+    epilog=EXIT_CODES,
+    help=f"""Stop a running run, as Ctrl-C stops one in the foreground.
+
+The trial in flight is stopped and kept as the harness's, everything the run started is
+released, and the record says interrupted; `ix report` reads what was kept. Waits up to 30
+seconds for the run to end, then prints its status (ix.v1.status); a run still releasing
+what it started then says running (exit {_CODE["running"]}): ask `ix status` again. A run
+that has ended is left as it is. A run written on another host is refused (exit
+{_CODE["usage"]}). {_STANDING_HELP}""",
+)
+@_RUN_ARGUMENT
+@_json_option
+def stop(run: str, as_json: bool) -> None:
+    try:
+        found = ix.stop(run)
+    except ix.IxError as error:
+        _fail(error, as_json=as_json)
+    _print_status(found, as_json)
+    sys.exit(found.exit_code)
+
+
+def _print_status(found: ix.Status, as_json: bool) -> None:
+    """Print a run's status: the document with ``--json``; else its id first, where it
+    stands, and on stderr what that means and what to do next."""
+    if as_json:
+        _emit(found.document())
+        return
+    out.print(f"run {escape(found.run)}", soft_wrap=True, highlight=False)
+    _field("Directory", found.location)
+    _field("Status", found.status + (f" (pid {found.pid} on {found.host})" if found.pid else ""))
+    _field("Trials", f"{found.carried_out} of {found.planned} carried out")
+    _field("Started", found.started_at or "-")
+    if found.ended_at:
+        _field("Ended", found.ended_at)
+    _field("Events", found.events)
+    if found.log:
+        _field("Log", found.log)
+    outcome = found.exit
+    step = outcome.next.replace("<run directory>", found.location)
+    err.print(f"[dim]Exit {outcome.code} ({outcome.kind}): {escape(outcome.meaning)}[/dim]")
+    err.print(f"[dim]Next: {escape(step)}[/dim]", soft_wrap=True)
+
+
+def _event_line(event: Mapping[str, Any]) -> str:
+    """One event as a line: its time, name, component and fields."""
+    fields = event.get("fields") or {}
+    said = " ".join(f"{key}={_text(value)}" for key, value in fields.items())
+    component = f" [{event['component']}]" if event.get("component") else ""
+    return escape(f"{event.get('time', '')} {event.get('name', '')}{component} {said}".rstrip())
 
 
 @main.command(epilog=EXIT_CODES)

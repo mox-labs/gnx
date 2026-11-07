@@ -255,9 +255,11 @@ class TestFixesNameRealCommands:
         assert mentioned <= set(main.commands), mentioned - set(main.commands)
 
     def test_the_commands_are_these(self) -> None:
+        # Changed requirement (ruling Q5): a long run is followed and stopped by status,
+        # events and stop.
         assert sorted(main.commands) == [
-            "deviations", "genres", "kinds", "plan", "register", "report", "run", "runs",
-            "validate",
+            "deviations", "events", "genres", "kinds", "plan", "register", "report", "run",
+            "runs", "status", "stop", "validate",
         ]  # fmt: skip
         assert {command.split()[1] for command, _ in COMMANDS} == set(main.commands)
         result = _run("results", "x", "--json")
