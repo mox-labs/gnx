@@ -8,6 +8,10 @@ matrix depends on no model runtime (owner ruling HO1, 2026-11-06), and the model
 is one call in full. Each entry compares with 0.9.0. The hardline model runtime moves to a
 bridge distribution of its own, `matrix-hardline` 0.1.0.
 
+### Security
+
+- floors raised past known advisories: opentelemetry-api >= 1.45.1 (GHSA-xcq7-p3pf-p88h)
+
 ### Removed (breaking)
 
 - **hardline is no dependency of matrix**, and no module of matrix imports it

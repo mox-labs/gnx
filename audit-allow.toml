@@ -1,0 +1,104 @@
+# Known vulnerabilities `just audit` accepts, each for one package, for a reason, until a date.
+#
+# An entry is the advisory's id (GHSA, PYSEC or CVE: any alias matches), the package it is
+# accepted for, why it is accepted, and the date it expires. Past that date the gate fails until
+# the finding is fixed or the entry is renewed with a reason that still holds; an entry that
+# matches no finding fails too, and is removed. Accept only what has no fix inside the declared
+# ranges, and say what would fix it. CONTRIBUTING.md, "Known vulnerabilities", has the rule.
+#
+# Every entry below is in the docsite's lock (docs/experience/bun.lock), was reviewed on
+# 2026-11-07, and expires together, so the owner re-decides them at once.
+
+# --- SvelteKit 2: the fixes ship in SvelteKit 3 -------------------------------------------
+# Kit 2.70.4 is the newest 2.x; moving the docsite to Kit 3 is its own change, for the owner.
+
+[[accept]]
+id = "GHSA-27mw-82g8-phjj"
+package = "@sveltejs/kit"
+reason = """XSS through an untrusted cache-control header that setHeaders writes into a \
+prerendered page. The docsite never calls setHeaders. Fixed in Kit 3.0.0 only."""
+expires = 2027-01-07
+
+[[accept]]
+id = "GHSA-pfhg-q3qv-9q6r"
+package = "@sveltejs/kit"
+reason = """Open redirect through use:enhance form actions on a route that accepts a path \
+starting with //. The docsite has no form action and no use:enhance, and the published site \
+is static. Fixed in Kit 3.0.0 only."""
+expires = 2027-01-07
+
+[[accept]]
+id = "GHSA-pxg6-pf52-xh8x"
+package = "cookie"
+reason = """Kit 2.x requires cookie ^0.6.0; the fix is 0.7.0, which only Kit 3 takes. The \
+flaw needs an untrusted cookie name, path or domain passed to serialize; the docsite sets no \
+cookie."""
+expires = 2027-01-07
+
+# --- no fix published ---------------------------------------------------------------------
+
+[[accept]]
+id = "GHSA-gcqx-w48m-w2h4"
+package = "deepmerge"
+reason = """Prototype poisoning in mergeObject; 4.3.1 is the latest release and is affected, \
+so no fix exists. @sveltejs/vite-plugin-svelte uses it at build time on its own config, with \
+no untrusted input, and it is not in the built site."""
+expires = 2027-01-07
+
+# --- held by @excalidraw/excalidraw 0.18.1 ------------------------------------------------
+# The latest excalidraw pins nanoid 3.3.3 and @excalidraw/mermaid-to-excalidraw 2.2.2 exactly,
+# and that pins nanoid 4.0.2 and @mermaid-js/parser 0.6.3 (whose chevrotain pins lodash-es
+# 4.17.21), and takes mermaid 11, which takes katex ^0.16. Only the dossier's /map page imports
+# excalidraw. The public build still emits its chunks, though no published page loads them.
+# Each flaw below needs input the docsite never gives these libraries. The way out is an
+# excalidraw release on mermaid-to-excalidraw 3 (its `next` tag has one), package.json
+# overrides, or the map page without excalidraw: a decision for the owner.
+
+[[accept]]
+id = "GHSA-238p-pmpm-9mq7"
+package = "katex"
+reason = """A prototype-pollution gadget: it needs Object.prototype already polluted. Fixed in \
+0.18.2, outside the ^0.16 range mermaid 11 declares; the dossier map's excalidraw holds it."""
+expires = 2027-01-07
+
+[[accept]]
+id = "GHSA-xxjr-mmjv-4gpg"
+package = "lodash-es"
+reason = """Prototype pollution through crafted paths given to _.unset, _.omit or _.pullAt. \
+chevrotain 11.0.3 pins lodash-es 4.17.21, under the dossier map's excalidraw."""
+expires = 2027-01-07
+
+[[accept]]
+id = "GHSA-r5fr-rjxr-66jc"
+package = "lodash-es"
+reason = """Code injection through untrusted options.imports keys given to _.template. \
+chevrotain 11.0.3 pins lodash-es 4.17.21, under the dossier map's excalidraw."""
+expires = 2027-01-07
+
+[[accept]]
+id = "GHSA-mwcw-c2x4-8c55"
+package = "nanoid"
+reason = """Predictable ids when nanoid is given a fractional size. Pinned at 3.3.3 by \
+excalidraw and 4.0.2 by mermaid-to-excalidraw, which pass no caller's size."""
+expires = 2027-01-07
+
+[[accept]]
+id = "GHSA-xwg4-73v4-xw9w"
+package = "nanoid"
+reason = """Integer overflow from a size of 2^31 or more. Pinned at 3.3.3 by excalidraw and \
+4.0.2 by mermaid-to-excalidraw, which pass no caller's size."""
+expires = 2027-01-07
+
+[[accept]]
+id = "GHSA-28wg-ghj8-5hjv"
+package = "nanoid"
+reason = """An endless loop in nanoid/non-secure on a negative size. Pinned at 3.3.3 by \
+excalidraw and 4.0.2 by mermaid-to-excalidraw, which pass no caller's size."""
+expires = 2027-01-07
+
+[[accept]]
+id = "GHSA-2v37-7h3g-55p8"
+package = "nanoid"
+reason = """An endless loop in customAlphabet or customRandom on a size of 0. Pinned at 3.3.3 \
+by excalidraw and 4.0.2 by mermaid-to-excalidraw, which pass no caller's size."""
+expires = 2027-01-07

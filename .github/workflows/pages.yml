@@ -14,18 +14,23 @@ name: pages
 
 # A push to main deploys only once `ci` has passed on that commit, and what deploys is that
 # commit, not whatever main points at by then. A manual run deploys main as it stands.
+#
+# workflow_run is the trigger zizmor warns of: it runs with this repository's permissions for a
+# run that a fork's pull request can start, and the harm comes from building that pull request's
+# code. Here the build job runs only for a `ci` run on a push (`event == 'push'` below), which no
+# fork can make, and checks out that push's commit on main.
 on:
-  workflow_run:
+  workflow_run: # zizmor: ignore[dangerous-triggers] -- only ci runs on a push to main deploy
+
     workflows: [ci]
     types: [completed]
     branches: [main]
   workflow_dispatch:
 
-# Least privilege: only what deploy-pages needs.
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+# Least privilege, per job: the build, which runs bun install and the build's own code, can read
+# the repository and the Pages settings and nothing else; only deploy can write to Pages or mint
+# the OIDC token deploy-pages presents.
+permissions: {}
 
 # One deploy at a time. A newer run replaces one still waiting, so stale builds do not queue,
 # and a deploy already under way finishes rather than being cut off mid-flight.
@@ -44,16 +49,21 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read # the checkout
+      pages: read # configure-pages reads the site's settings, its base path among them
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
         id: pages
 
       - name: bun (pinned + checksummed)
-        run: |
+        # The path written to GITHUB_PATH is this step's own constant, never input.
+        run: | # zizmor: ignore[github-env]
           set -euo pipefail
           BIN="$HOME/.gnx-tools"
           mkdir -p "$BIN"
@@ -88,6 +98,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      pages: write # publish the artifact the build uploaded
+      id-token: write # the OIDC token deploy-pages presents to Pages
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

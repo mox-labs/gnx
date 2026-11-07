@@ -1,0 +1,91 @@
+name: audit
+
+# A vulnerability is often published after the lockfile that holds it was last changed, so a
+# gate that runs only on a push or a pull request misses it. Once a week this runs `just audit`
+# against main as it stands, and `just workflows-lint` with a token, which adds zizmor's audits
+# that ask GitHub (a pinned action with a known vulnerability, a SHA that is no commit of the
+# action's repository). A failure here is a finding on main: CONTRIBUTING.md, "Known
+# vulnerabilities", says what to do.
+#
+# The gates are the justfile's, as in ci.yml. The toolchain block is ci.yml's, cut to the tools
+# these two recipes need; keep its pins in step with ci.yml's until both lift into the shared
+# setup action that file describes.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays, 06:17 UTC
+  workflow_dispatch:
+
+# Read the repository; nothing else. zizmor's online audits read public repositories only.
+permissions:
+  contents: read
+
+concurrency:
+  group: audit
+  cancel-in-progress: true
+
+env:
+  JUST_VERSION: "1.58.0"
+  JUST_SHA256: "4a5cc2f53e6f0f8c59092a6cc38291eb729d46a7dd95d3ae582008881b84931d"
+  UV_VERSION: "0.12.5"
+  UV_SHA256: "68a509da24b06b4223a1c0175fb5eb5bc79342b76cbeff0cfe51ac3f5b17b6b2"
+  OSV_SCANNER_VERSION: "2.7.0"
+  OSV_SCANNER_SHA256: "160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b"
+  ZIZMOR_VERSION: "1.31.1"
+  ZIZMOR_SHA256: "d185f726bdaf92df78273217dfdd24ebcd6b0ef48cf3ce776ff5762b6e138c99"
+
+jobs:
+  audit:
+    name: known vulnerabilities on main
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: toolchain (just, uv, osv-scanner, zizmor — pinned + checksummed)
+        run: |
+          set -euo pipefail
+          BIN="$HOME/.gnx-tools"
+          mkdir -p "$BIN" "$RUNNER_TEMP/dl"
+          cd "$RUNNER_TEMP/dl"
+
+          # Verify BEFORE unpacking, as in ci.yml.
+          fetch() { # url  expected-sha256  filename
+            curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$3" "$1"
+            echo "$2  $3" | sha256sum -c -
+          }
+
+          fetch "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+                "$JUST_SHA256" just.tar.gz
+          tar -xzf just.tar.gz just && mv just "$BIN/"
+
+          fetch "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
+                "$UV_SHA256" uv.tar.gz
+          tar -xzf uv.tar.gz --strip-components=1 -C "$BIN" uv-x86_64-unknown-linux-gnu/uv uv-x86_64-unknown-linux-gnu/uvx
+
+          fetch "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" \
+                "$OSV_SCANNER_SHA256" osv-scanner
+          mv osv-scanner "$BIN/"
+
+          fetch "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz" \
+                "$ZIZMOR_SHA256" zizmor.tar.gz
+          tar -xzf zizmor.tar.gz zizmor && mv zizmor "$BIN/"
+
+          chmod +x "$BIN"/*
+          echo "$BIN" >> "$GITHUB_PATH"
+
+      - name: versions
+        run: just --version && uv --version && osv-scanner --version && zizmor --version
+
+      - name: just audit
+        run: just audit
+
+      # Runs when the audit fails too, so one run reports both.
+      - name: just workflows-lint (with zizmor's online audits)
+        if: success() || failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: just workflows-lint

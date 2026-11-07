@@ -7,7 +7,7 @@ on:
 
 # This repo's Actions policy is `allowed_actions: selected` with `sha_pinning_required`,
 # and the allowlist is vaani's — actions/*, dtolnay/rust-toolchain, the cargo-* family.
-# gnx needs just, uv, bun, gitleaks and k6, none of which are on it. Every `uses:` must
+# gnx needs just, uv, bun, gitleaks, osv-scanner, zizmor and k6, none of which are on it. Every `uses:` must
 # therefore resolve to `actions/*`, pinned to a full commit SHA.
 #
 # So the toolchain installs from pinned release URLs with SHA256 verification instead.
@@ -34,6 +34,14 @@ env:
   BUN_SHA256: "951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f"
   GITLEAKS_VERSION: "8.30.1"
   GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  # `just audit`. The checksum is the one the release's osv-scanner_SHA256SUMS gives.
+  OSV_SCANNER_VERSION: "2.7.0"
+  OSV_SCANNER_SHA256: "160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b"
+  # `just workflows-lint`. zizmor publishes no checksum file: this is the release asset's
+  # digest as GitHub reports it, and the asset's build-provenance attestation matches it
+  # (`gh attestation verify <file> --repo zizmorcore/zizmor`).
+  ZIZMOR_VERSION: "1.31.1"
+  ZIZMOR_SHA256: "d185f726bdaf92df78273217dfdd24ebcd6b0ef48cf3ce776ff5762b6e138c99"
   # ix's end-to-end CLI tests drive a real k6 against a real subject.
   K6_VERSION: "1.8.1"
   K6_SHA256: "b02cd649a0e391576909502e9b7760d3fb9e1fd14d179e3da18ee4a185f4c583"
@@ -52,6 +60,8 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
+          # Nothing here pushes, so the token is not left in .git/config for the steps after.
+          persist-credentials: false
 
       # Cached on the pinned versions, so a bump is a cache miss by construction and a
       # tampered cache entry cannot survive the checksum step below.
@@ -59,9 +69,9 @@ jobs:
         id: toolcache
         with:
           path: ~/.gnx-tools
-          key: gnx-tools-${{ runner.os }}-just${{ env.JUST_VERSION }}-uv${{ env.UV_VERSION }}-bun${{ env.BUN_VERSION }}-gitleaks${{ env.GITLEAKS_VERSION }}-k6${{ env.K6_VERSION }}
+          key: gnx-tools-${{ runner.os }}-just${{ env.JUST_VERSION }}-uv${{ env.UV_VERSION }}-bun${{ env.BUN_VERSION }}-gitleaks${{ env.GITLEAKS_VERSION }}-osv${{ env.OSV_SCANNER_VERSION }}-zizmor${{ env.ZIZMOR_VERSION }}-k6${{ env.K6_VERSION }}
 
-      - name: toolchain (just, uv, bun, gitleaks, k6 — pinned + checksummed)
+      - name: toolchain (just, uv, bun, gitleaks, osv-scanner, zizmor, k6 — pinned + checksummed)
         run: |
           set -euo pipefail
           BIN="$HOME/.gnx-tools"
@@ -99,6 +109,18 @@ jobs:
             tar -xzf gitleaks.tar.gz gitleaks && mv gitleaks "$BIN/"
           fi
 
+          if [ ! -x "$BIN/osv-scanner" ]; then
+            fetch "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" \
+                  "$OSV_SCANNER_SHA256" osv-scanner
+            mv osv-scanner "$BIN/"
+          fi
+
+          if [ ! -x "$BIN/zizmor" ]; then
+            fetch "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz" \
+                  "$ZIZMOR_SHA256" zizmor.tar.gz
+            tar -xzf zizmor.tar.gz zizmor && mv zizmor "$BIN/"
+          fi
+
           if [ ! -x "$BIN/k6" ]; then
             fetch "https://github.com/grafana/k6/releases/download/v${K6_VERSION}/k6-v${K6_VERSION}-linux-amd64.tar.gz" \
                   "$K6_SHA256" k6.tar.gz
@@ -109,7 +131,9 @@ jobs:
           echo "$BIN" >> "$GITHUB_PATH"
 
       - name: versions
-        run: just --version && uv --version && bun --version && gitleaks version && k6 version
+        run: |
+          just --version && uv --version && bun --version && gitleaks version
+          osv-scanner --version && zizmor --version && k6 version
 
       # The runner's docker, with its compose plugin, for ix's live compose test.
       - name: docker compose and the compose test's image
@@ -136,9 +160,14 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: validate conventional commits
+        # Through the environment, never `${{ }}` in the script: a branch name is text the
+        # shell would otherwise run.
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
         run: |
-          base="origin/${{ github.base_ref || 'main' }}"
+          base="origin/$BASE_REF"
           git rev-parse "$base" >/dev/null 2>&1 || { echo "no base $base; skipping"; exit 0; }
           fail=0
           for sha in $(git rev-list "$base"..HEAD); do

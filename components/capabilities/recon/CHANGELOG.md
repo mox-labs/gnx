@@ -4,6 +4,11 @@
 
 On matrix 0.10. Nothing of recon's own surface changes.
 
+### Security
+
+- floors raised past known advisories: httpx2 >= 2.12 (GHSA-8xx6-hgc6-gc2m, GHSA-h4x7-gw46-3wm6, GHSA-pf96-p4fj-6566)
+- floors raised past known advisories: opentelemetry-api >= 1.45.1 (GHSA-xcq7-p3pf-p88h)
+
 ### Changed
 
 - **A recon session imports no other package's registration.** matrix 0.10 loads only the
