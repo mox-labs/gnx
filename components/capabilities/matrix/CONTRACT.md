@@ -29,7 +29,7 @@ provides and does its work; matrix decides when, keeps what it hands over, and s
 | `Registry.register` | `(point, type_url, build, *, config=None, needs=(), summary="", stability="beta", stand_in=False, drives=(), capabilities=None)`; `capabilities` only for an agent runtime with a config |
 | `Registry.register_payload` | `(type_url, model, summary="")`: the schema rows of a kind validate against |
 | `matrix.extensions` | the entry-point group: an entry point's name is a point its extension registers at or declares, and its value the extension's `register(registry) -> None`; one line per point, all naming one `register`. A session loads only the extensions that declare a point it reads |
-| `NEEDS` | the shared needs, each a `Need` with its type: `agents`, `model_runtimes`, `schemas`, `cwd`, `name` stable; `model_runtime_entries` beta. An agent runtime that declares `model_runtimes` makes its sessions' model calls on them |
+| `NEEDS` | the shared needs, each a `Need` with its type, all stable: `agents`, `model_runtimes`, `schemas`, `cwd`, `name`. `model_runtimes` is a `ModelRuntimes`, a read-only mapping of each model runtime by name with `type_url(name)` and `drives(name)`, what each was built as, which a session row made on it names; a host that hands it itself hands one. An agent runtime that declares `model_runtimes` makes its sessions' model calls on them |
 | the stop protocol | `ctx.stopping` is set; the component has `grace_s` to return; then it is cancelled. Every `ctx.defer` release is called once at the end of the run, last first |
 | `ContractError` | what breaking the contract raises (kind `contract`) |
 
@@ -194,10 +194,16 @@ deadline).
 **Defaults.** None of its own: a plan reports defaults, and makes none. Every limit is
 listed, the run's and each component's, as are every option of the store, of each runtime and
 observer, of each component's config, and each agent's `model`, `tools` and `max_turns`. The
-run's `deadline_s` defaults to null, no deadline, and the plan says so.
+run's `deadline_s` defaults to 3600, an hour for each component (ruling M-O7), and the plan
+says so; written as null it is no deadline, on the run or on one component. A model step's
+`runtime` and the pydantic-ai runtime's `model_runtime`, left unset, are the one model runtime
+the config composes (ruling M-RT): the plan gives its name, origin `matrix`, note `the only
+model runtime composed`.
 
 **Failure behaviour.** A config that does not compose or wire is the error envelope with
-every problem, and no plan; a `limits.components` name that is no component is one of them.
+every problem, and no plan; a `limits.components` name that is no component is one of them,
+and so is a model step's `runtime` or a pydantic-ai runtime's `model_runtime` left unset when
+the config composes no model runtime, or several (`missing_key`, listing them).
 Nothing is run or called. Each component's limits in `settings` are those the executor runs
 it under (`tests/test_plan_and_run.py` rebuilds them from the plan and compares).
 

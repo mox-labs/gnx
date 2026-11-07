@@ -40,6 +40,13 @@ compares with 0.8.0.
   session that reads none of them (a recon survey) does not import ix. ix's root asks for
   matrix's points and its own. A third party's adapter declares its family's point the same way
   (`"ix.sensor" = "acme.ix_ext:register"`).
+- **The plan shows an agent session's `tools` left out** (ruling Q2): `subjects.<name>.tools`,
+  every tool the runtime offers (default), from the kind, where it was not listed at all. What
+  it means is unchanged. A kind declares such a meaning on an option whose absence is a
+  behaviour rather than a value, `Option.left_out`, which the skill and `ix kinds` show too.
+- ix's experiment runs keep no matrix deadline, as before: matrix 0.10 gives each component an
+  hour unless told otherwise, and ix now says `deadline_s=None` for the one matrix run an
+  experiment run is.
 
 ## 0.8.0 — 2026-11-06
 

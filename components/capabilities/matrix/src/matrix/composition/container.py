@@ -70,14 +70,14 @@ from matrix.domain.errors import (
 )
 from matrix.domain.executor import Executor, Limits, Reuse
 from matrix.domain.model_step import MODEL_CALL, MODEL_STEP
-from matrix.domain.needs import NEEDS
+from matrix.domain.needs import NEEDS, ModelRuntimes, model_runtime_named
 from matrix.domain.optional import SupportsResolved, SupportsWarnings
 from matrix.domain.ports._out.construct_store import location_of
 from matrix.domain.problems import problem, sourced
 from matrix.domain.registry import MATRIX_POINTS, Extension, Registry
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
     from importlib.metadata import EntryPoint
 
     from matrix.domain.executor import Run
@@ -99,7 +99,7 @@ class Container:
         registry: Registry,
         *,
         agent_runtimes: Mapping[str, AgentRuntime] | None = None,
-        model_runtimes: Mapping[str, ModelRuntime] | None = None,
+        model_runtimes: ModelRuntimes | None = None,
         definitions: Mapping[str, AgentDefinition] | None = None,
         agents: Mapping[str, BoundAgent] | None = None,
         observers: Sequence[Observer] = (),
@@ -110,7 +110,11 @@ class Container:
         self._config = config
         self._registry = registry
         self._agent_runtimes = dict(agent_runtimes or {})
-        self._model_runtimes = dict(model_runtimes or {})
+        self._model_runtimes = (
+            model_runtimes
+            if model_runtimes is not None
+            else _ComposedModelRuntimes({}, config.matrix.model_runtimes, registry)
+        )
         self._definitions = dict(definitions or {})
         self._agents = dict(agents or {})
         self._observers = tuple(observers)
@@ -223,12 +227,7 @@ class Container:
         return {
             **self._context,
             "agents": dict(self._agents),
-            "model_runtimes": dict(self._model_runtimes),
-            "model_runtime_entries": {
-                name: self._registry.entry(MODEL_RUNTIME, model_runtime_type_url(spec.type))
-                for name, spec in self._config.matrix.model_runtimes.items()
-                if (MODEL_RUNTIME, model_runtime_type_url(spec.type)) in self._registry
-            },
+            "model_runtimes": self._model_runtimes,
             "schemas": self._registry.payload_schemas(),
             "cwd": self._context.get("cwd"),
         }
@@ -317,7 +316,10 @@ class Container:
             made_of["agent"] = self._agent_made_of(str(entry.config.get("agent")))
         if entry.type == MODEL_STEP:
             needs.discard("model_runtimes")
-            made_of["model_runtime"] = self._model_runtime_made_of(str(entry.config.get("runtime")))
+            named = model_runtime_named(
+                entry.config.get("runtime"), self._model_runtimes, key="runtime"
+            )
+            made_of["model_runtime"] = self._model_runtime_made_of(named)
         made_of["needs"] = self._needs_made_of(needs)
         text = json.dumps(made_of, sort_keys=True, default=str)
         return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
@@ -916,11 +918,12 @@ def compose(
         where=f"{source}.model_runtimes",
         problems=problems,
     )
+    composed = _ComposedModelRuntimes(model_runtimes, matrix.model_runtimes, reg)
     agent_runtimes = build_runtimes(
         matrix.agent_runtimes,
         AGENT_RUNTIME,
         reg,
-        {**shared, "model_runtimes": dict(model_runtimes)},
+        {**shared, "model_runtimes": composed},
         where=f"{source}.agent_runtimes",
         problems=problems,
     )
@@ -980,7 +983,7 @@ def compose(
         full,
         reg,
         agent_runtimes=agent_runtimes,
-        model_runtimes=model_runtimes,
+        model_runtimes=composed,
         definitions=loaded,
         agents=agents,
         observers=observers,
@@ -988,6 +991,38 @@ def compose(
         store=store,
         warnings=warnings,
     )
+
+
+class _ComposedModelRuntimes(ModelRuntimes):
+    """The model runtimes ``compose`` built, by name, each with the type URL its config's
+    ``type`` resolves to and what that registry entry drives."""
+
+    def __init__(
+        self,
+        built: Mapping[str, ModelRuntime],
+        specs: Mapping[str, RuntimeConfig],
+        registry: Registry,
+    ) -> None:
+        self._built = dict(built)
+        self._urls = {name: model_runtime_type_url(specs[name].type) for name in self._built}
+        self._drives = {
+            name: _drives(registry, MODEL_RUNTIME, url) for name, url in self._urls.items()
+        }
+
+    def __getitem__(self, name: str) -> ModelRuntime:
+        return self._built[name]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._built)
+
+    def __len__(self) -> int:
+        return len(self._built)
+
+    def type_url(self, name: str) -> str:
+        return self._urls[name]
+
+    def drives(self, name: str) -> tuple[str, ...]:
+        return self._drives[name]
 
 
 def _drives(registry: Registry | None, point: str, url: str) -> tuple[str, ...]:

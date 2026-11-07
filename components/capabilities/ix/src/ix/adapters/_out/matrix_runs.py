@@ -49,6 +49,11 @@ EVENTS = "matrix.v1.event"
 #: for a load tool and a subject to be stopped politely.
 GRACE_S = 15.0
 
+# A run's components get no matrix deadline (``deadline_s=None``, matrix's "no deadline"):
+# one experiment run is one matrix run, so its trials component lasts as long as all of the
+# experiment's trials, and matrix's default of an hour would cut a long experiment mid-way.
+# What bounds a trial is ix's: each probe's ``budget_s``, where its kind declares one.
+
 #: How long the environment's releases have when the run ends: a compose stack's ``down``
 #: stops each container and removes its volumes, which outlasts matrix's default.
 ENVIRONMENT_CLEANUP_S = DOWN_TIMEOUT_S + 30.0
@@ -111,6 +116,7 @@ async def execute(
                 store=store,
                 run_id=manifest.run,
                 limits=Limits(
+                    deadline_s=None,
                     grace_s=GRACE_S,
                     components={"environment": ComponentLimits(cleanup_s=ENVIRONMENT_CLEANUP_S)},
                 ),

@@ -4,7 +4,9 @@ A plan reports each value as composition will use it: given in a config file (``
 with the file), taken from an agent definition (``definition``), the default of an
 extension's own typed config (``extension``: a runtime's, the store's, a component type's),
 or matrix's own default (``matrix``). A default is never left out. A key whose default means
-"no bound" says so in its ``note``.
+"no bound" says so in its ``note``, and a key left to the only model runtime composed
+(:data:`~matrix.domain.needs.ONLY_COMPOSED`) is reported as that runtime's name, ``matrix``'s
+default, with a note saying so.
 
 Whether a key was given is what its validated model records (``model_fields_set``); which
 file gave it is what loading recorded (``Config.origins``), found by the key's path or the
@@ -28,9 +30,10 @@ from matrix.composition.builtins import (
 )
 from matrix.domain.config import ObserverConfig
 from matrix.domain.executor import Limits, Retry
+from matrix.domain.needs import OnlyComposed, model_runtime_named
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Collection, Iterator, Mapping
 
     from matrix.composition.container import Container
     from matrix.domain.component import Wiring
@@ -41,10 +44,16 @@ if TYPE_CHECKING:
 #: default, or matrix's own default.
 Origin = Literal["config", "definition", "extension", "matrix"]
 
-#: What a limit left at its default of None means.
+#: What a limit of None means.
 _UNBOUNDED = {
     "concurrency": "no cap: as many components at once as the wiring allows",
     "deadline_s": "no deadline: a component runs until it returns or the run is stopped",
+}
+
+#: What a limit left at a default that is not None means.
+_DEFAULTED = {
+    "deadline_s": "each component's, from when it starts: past it, the component is stopped "
+    "and fails; null is no deadline",
 }
 
 
@@ -69,6 +78,7 @@ def settings(loaded: Config[Any], container: Container, wiring: Wiring) -> list[
     matrix = loaded.matrix
     origins = loaded.origins
     registry = container.registry
+    composed = list(container.model_runtimes)
     run = list(_limits(matrix.limits, origins))
     found = list(run)
     for name in wiring.order():
@@ -82,12 +92,13 @@ def settings(loaded: Config[Any], container: Container, wiring: Wiring) -> list[
         store_type_url(matrix.store.type),
         matrix.store.options(),
         origins,
+        composed,
     )
     found += _runtimes(
-        "matrix.agent_runtimes", matrix.agent_runtimes, AGENT_RUNTIME, registry, origins
+        "matrix.agent_runtimes", matrix.agent_runtimes, AGENT_RUNTIME, registry, origins, composed
     )
     found += _runtimes(
-        "matrix.model_runtimes", matrix.model_runtimes, MODEL_RUNTIME, registry, origins
+        "matrix.model_runtimes", matrix.model_runtimes, MODEL_RUNTIME, registry, origins, composed
     )
     found += _agents(loaded, container)
     for index, spec in enumerate(matrix.observers):
@@ -103,6 +114,7 @@ def settings(loaded: Config[Any], container: Container, wiring: Wiring) -> list[
             observer_type_url(kind),
             options,
             origins,
+            composed,
         )
     for entry in matrix.components:
         found += _options(
@@ -112,6 +124,7 @@ def settings(loaded: Config[Any], container: Container, wiring: Wiring) -> list[
             entry.type,
             entry.config,
             origins,
+            composed,
         )
     found.append(
         _leaf(
@@ -156,25 +169,36 @@ def _walk(
     fallback: Origin,
     *,
     skip: frozenset[str] = frozenset(),
+    composed: Collection[str] = (),
 ) -> Iterator[SourcedValue]:
-    """Each leaf of ``model`` under ``at``."""
+    """Each leaf of ``model`` under ``at``; ``composed`` the model runtimes composition built,
+    which a key left to the only one of them resolves to."""
     dumped = model.model_dump(mode="json")
+    fields = type(model).model_fields
     for name, value in model:
         if name in skip:
             continue
         path = f"{at}.{name}"
-        if isinstance(value, BaseModel):
-            yield from _walk(value, path, origins, fallback)
+        only = next((m for m in fields[name].metadata if isinstance(m, OnlyComposed)), None)
+        if only is not None and value is None:
+            resolved = model_runtime_named(None, composed, key=path)
+            yield SourcedValue(path=path, value=resolved, origin="matrix", note=only.note)
+        elif isinstance(value, BaseModel):
+            yield from _walk(value, path, origins, fallback, composed=composed)
         elif (
             isinstance(value, dict)
             and value
             and all(isinstance(inner, BaseModel) for inner in value.values())
         ):
             for key, inner in value.items():
-                yield from _walk(inner, f"{path}.{key}", origins, fallback)
+                yield from _walk(inner, f"{path}.{key}", origins, fallback, composed=composed)
         else:
-            note = _UNBOUNDED.get(name, "") if value is None and isinstance(model, Limits) else ""
-            yield _leaf(path, dumped[name], name in model.model_fields_set, origins, fallback, note)
+            given = name in model.model_fields_set
+            note = ""
+            if isinstance(model, Limits):
+                note = _UNBOUNDED.get(name, "") if value is None else ""
+                note = note or ("" if given else _DEFAULTED.get(name, ""))
+            yield _leaf(path, dumped[name], given, origins, fallback, note)
 
 
 def _limits(limits: Limits, origins: Mapping[str, str]) -> Iterator[SourcedValue]:
@@ -193,8 +217,11 @@ def _component_limits(
     inherited = {value.path.removeprefix("matrix.limits."): value for value in run}
     found: list[SourcedValue] = []
     for key in ("deadline_s", "grace_s", "cleanup_s"):
-        if overrides.get(key) is not None:  # None, given or not, is the run's
+        if overrides.get(key) is not None:
             found.append(_leaf(f"{at}.{key}", overrides[key], True, origins, "config"))
+        elif key == "deadline_s" and own is not None and key in own.model_fields_set:
+            # None written is no deadline for this component; any other None is the run's.
+            found.append(_leaf(f"{at}.{key}", None, True, origins, "config", _UNBOUNDED[key]))
         else:
             found.append(_inherited(f"{at}.{key}", inherited[key]))
     if own is not None and own.retry is not None:
@@ -220,11 +247,12 @@ def _typed(
     url: str,
     options: Mapping[str, Any],
     origins: Mapping[str, str],
+    composed: Collection[str],
 ) -> list[SourcedValue]:
     """An entry's ``type``, then each of its options."""
     return [
         _leaf(f"{at}.type", kind, given, origins, "matrix"),
-        *_options(at, registry, point, url, options, origins),
+        *_options(at, registry, point, url, options, origins, composed),
     ]
 
 
@@ -235,6 +263,7 @@ def _options(
     url: str,
     options: Mapping[str, Any],
     origins: Mapping[str, str],
+    composed: Collection[str],
 ) -> list[SourcedValue]:
     """Each option of the entry at ``point`` under ``url``, as its typed config validates
     ``options``; none for an entry that takes no config."""
@@ -247,7 +276,7 @@ def _options(
         validated = config.model_validate(dict(options))
     except ValidationError:  # composition reported it; a plan is never made of it
         return []
-    return list(_walk(validated, at, origins, "extension"))
+    return list(_walk(validated, at, origins, "extension", composed=composed))
 
 
 def _runtimes(
@@ -256,13 +285,14 @@ def _runtimes(
     point: str,
     registry: Registry,
     origins: Mapping[str, str],
+    composed: Collection[str],
 ) -> list[SourcedValue]:
     url_of = agent_runtime_type_url if point == AGENT_RUNTIME else model_runtime_type_url
     found: list[SourcedValue] = []
     for name, spec in runtimes.items():
         found += _typed(
             f"{at}.{name}", spec.type, True, registry, point, url_of(spec.type), spec.options(),
-            origins,
+            origins, composed,
         )  # fmt: skip
     return found
 

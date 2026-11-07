@@ -366,6 +366,7 @@ async def test_each_component_has_its_own_deadline() -> None:
     limits = Limits(
         concurrency=2,  # the third component starts only once `hangs` has timed out
         on_failure="isolate",
+        deadline_s=None,  # no deadline but the one `hangs` has (unset, each has an hour)
         grace_s=0,
         components={"hangs": ComponentLimits(deadline_s=0.01)},
     )

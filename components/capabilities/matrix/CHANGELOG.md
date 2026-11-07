@@ -30,6 +30,13 @@ bridge distribution of its own, `matrix-hardline` 0.1.0.
 - **`ModelRequest(prompt=..., system=...)` is gone**: a request is its `turns`
   (`ModelRequest.from_prompt(prompt, system=...)` makes a prompt's), and `prompt` is a derived
   read, the one user turn's text.
+- **The `model_runtime_entries` need is gone** (beta since 0.7), and `NEEDS` holds no beta
+  need. It handed a component every model runtime's registry `Entry` so that the model step
+  could name its runtime on its session rows. `model_runtimes` says that now (below): a
+  component that declared both declares `model_runtimes` alone and reads
+  `model_runtimes.type_url(name)` and `model_runtimes.drives(name)` where it read the entry's
+  `type_url` and `drives`, to pass to `call_model(..., runtime_url=..., drives=...)`. A
+  model step's session rows name its runtime's type URL and what it drives, as before.
 
 ### Changed (breaking)
 
@@ -42,7 +49,8 @@ bridge distribution of its own, `matrix-hardline` 0.1.0.
   `temperature`. **`ModelCall` gains `tool_calls`** (`ToolCall`) and **`provenance`**. A
   `provenance` key that is not a versioned type URL is refused.
 - **The `pydantic-ai` agent runtime makes its calls on a matrix model runtime**: its config
-  names one, `model_runtime` (required), of `matrix.model_runtimes`; its `models` option is
+  names one, `model_runtime`, of `matrix.model_runtimes` (unset, the only one composed: see
+  Added); its `models` option is
   gone, it needs `model_runtimes`, and it drives `pydantic-ai-slim` alone. Composition builds
   model runtimes before agent runtimes. A pydantic-ai setting a call cannot carry (all but
   `max_tokens` and `temperature`) is a `ConfigError`, never dropped; a part it cannot send
@@ -51,6 +59,20 @@ bridge distribution of its own, `matrix-hardline` 0.1.0.
 - **`call_sent` digests the request's turns, tools, model, output schema and overrides**, so
   a `sent` from 0.9 does not match the same request under 0.10. A judge's call made through
   `pydantic_ai_model` digests by the same rule as a step's.
+- **The `model_runtimes` need is a `ModelRuntimes`**: a read-only mapping of each model
+  runtime by name, as before, which every reader of it keeps reading as one, that also says
+  what each was built as, `type_url(name)` and `drives(name)`. A host that hands the need
+  itself, building through the registry rather than through `compose`, hands a
+  `ModelRuntimes`: subclass it and implement the mapping and both methods (ix does, for the
+  runtimes it builds when asked).
+- **`limits.deadline_s` defaults to 3600** (ruling M-O7), where it was none: each component
+  has an hour from when it starts unless the config says otherwise, so a run left alone ends.
+  `deadline_s: null` written is no deadline, for a soak run, and is told apart from unset: on
+  the run, and on one component (`limits.components.<name>.deadline_s: null`, which used to
+  mean "the run's" and now means none for that component). A component past its deadline is
+  stopped through the stop path as before, and its failure names the key to raise or set to
+  null. The plan shows the hour as matrix's default. A run that relied on no deadline writes
+  `deadline_s: null`; ix does, for its experiment runs.
 - **`RELEASE_TAG` is `matrix-v0.10.0`**: the install lines and every repair fix name it.
 - **A `matrix.extensions` entry point's name is a point its extension registers at** (ruling
   M-DISC), and its value the extension's `register`: an extension at three points has three
@@ -72,6 +94,12 @@ bridge distribution of its own, `matrix-hardline` 0.1.0.
 - **`matrix.pydantic_ai_model(runtime, model=None, *, settings=None, runtime_url=None,
   drives=())`**: pydantic-ai's `Model` over any `ModelRuntime` (ruling M-O6); each call is a
   session row, as a step's is.
+- **A model step's `runtime` and the pydantic-ai runtime's `model_runtime` default to the
+  only model runtime the config composes** (ruling M-RT), resolved when the step or the
+  runtime is built and never at a call. With none composed, or several, a key left unset is a
+  `missing_key` problem at its path listing them, so adding a second model runtime never
+  changes which one answers. `matrix plan` gives the name each resolved to, origin `matrix`,
+  note `the only model runtime composed`. A name given is held to the composed ones as before.
 - **`through_model_runtime`**: composition binds an agent whose runtime needs
   `model_runtimes` so, its end event says so, and the `otel` observer counts none of its
   tokens, which its model runtime counts.
@@ -83,7 +111,7 @@ bridge distribution of its own, `matrix-hardline` 0.1.0.
   session of either. `Extension.points` is what an extension declares; one given in code
   declares nothing and is trusted.
 - New exports: `Turn`, `Role`, `ToolSpec`, `ToolCall`, `Use`, `pydantic_ai_model`,
-  `MATRIX_POINTS`.
+  `MATRIX_POINTS`, `ModelRuntimes`.
 
 ## 0.9.0 — 2026-11-06
 

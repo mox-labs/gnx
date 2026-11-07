@@ -50,7 +50,12 @@ from matrix import (
     record_session,
     wire,
 )
-from matrix.adapters._out.runtime.mock import MockAgentRuntime, MockAgentRuntimeConfig
+from matrix.adapters._out.runtime.mock import (
+    MockAgentRuntime,
+    MockAgentRuntimeConfig,
+    MockModelRuntime,
+    MockModelRuntimeConfig,
+)
 from matrix.testing import AgentRuntimeConformance
 
 if TYPE_CHECKING:
@@ -110,6 +115,23 @@ async def test_a_model_call_is_a_session_row_its_reply_points_at_and_its_rows_na
     assert (reply.usage, reply.latency_ms, reply.name, reply.provenance) == (None, None, None, {})
     behind = {e.kind: e.sessions for e in run.construct.ledger if e.kind != SESSION}
     assert behind == {PROMPT: (), MODEL_CALL: (0,), RATING: (0,)}
+
+
+async def test_a_model_step_s_row_names_the_type_and_the_distributions_of_its_runtime() -> None:
+    """A model step's session row says which model runtime answered: the type URL the
+    config's name was built from, and the distributions that registry entry drives, for a
+    runtime another package registers as for matrix's own."""
+    url = "acme.v1.model-runtime.echo"
+    registry = default_registry(discover=False).register(
+        "model-runtime", url, MockModelRuntime, config=MockModelRuntimeConfig, drives=("acme",)
+    )
+    box = compose(
+        MatrixConfig.model_validate({"model_runtimes": {"m": {"type": url, "default": "ok"}}}),
+        registry=registry,
+    )
+    run = await box.executor().run(box.wire(_model_step(), inputs=[PROMPT]), {PROMPT: "hi"})
+    (session,) = run.rows(SESSION)
+    assert (session.port, session.runtime, session.drives) == ("model-runtime", url, ("acme",))
 
 
 async def test_an_agent_session_is_a_session_row_its_response_points_at() -> None:

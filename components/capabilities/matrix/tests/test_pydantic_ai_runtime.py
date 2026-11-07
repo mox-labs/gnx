@@ -273,6 +273,21 @@ def test_a_model_runtime_it_names_must_be_composed() -> None:
     )  # fmt: skip
 
 
+def test_a_runtime_that_names_no_model_runtime_is_on_the_only_one_composed() -> None:
+    """Ruling M-RT: unset, ``model_runtime`` is the one model runtime the config composes,
+    resolved when the runtime is built, and its config says which. With none or several
+    composed it is refused (``test_plan_and_run``)."""
+    config = {
+        "model_runtimes": {"m": {"type": "mock"}},
+        "agent_runtimes": {"p": {"type": "pydantic-ai"}},
+    }
+    box = compose(MatrixConfig.model_validate(config), registry=default_registry(discover=False))
+    runtime = box.agent_runtime("p")
+    assert isinstance(runtime, PydanticAiRuntime)
+    assert runtime.config.model_runtime == "m"
+    assert runtime.model_runtime is box.model_runtimes["m"]
+
+
 async def test_reaching_max_turns_ends_the_session_as_a_limit_not_a_failure() -> None:
     LOOKED_UP.clear()
     response = await _runtime(ASKS, ASKS).run(_agent(max_turns=2), "Define ossify, forever.")

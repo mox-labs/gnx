@@ -546,8 +546,10 @@ run would be recorded, and `settings`: the effective value of every key the run 
 config), each `{path, value, origin, file, note}`. `origin` is `config` (with the `file`
 that set it), `definition`, `extension` (a runtime's or the store's own default) or `matrix`
 (matrix's default); `note` says what a default means where the value does not, as
-`deadline_s: null`, which is no deadline. Read the settings before a long run: nothing bounds
-it in time unless one says so. A problem anywhere is the error envelope with every problem.
+`deadline_s: null`, which is no deadline. Read the settings before a long run: unset,
+`deadline_s` is an hour for each component, and a component past it fails, naming the key to
+raise; a soak run writes `deadline_s: null`. A problem anywhere is the error envelope with
+every problem.
 
 `matrix run [CONFIG] --input KIND=PATH ... --json` runs it. Each `--input` file holds one
 JSON value a line, the rows of that run-input kind (`-` is standard input, once). It prints
@@ -668,7 +670,7 @@ def _reference_agents() -> str:
 - name: rate
   type: matrix.v1.model-step
   config:
-    runtime: fast                     # a matrix.model_runtimes name
+    runtime: fast                     # a matrix.model_runtimes name; unset, the only one
     model: haiku                      # a name the runtime resolves; unset, its default
     system: "Rate the claims 1-5."    # optional, as written
     inputs: {{claims: acme.v1.claims}}  # placeholder -> the kind whose rows fill it
@@ -721,7 +723,8 @@ Agent runtimes (`matrix.agent_runtimes`):
   that many USD (`stop: max_budget_usd`), and `cost_usd` is what the SDK reported;
   `max_turns` (on the agent) bounds its turns.
 - `pydantic-ai`: a pydantic-ai agent loop whose every model call is one call on the model
-  runtime its `model_runtime` names (one of `matrix.model_runtimes`; no default). Options:
+  runtime its `model_runtime` names (one of `matrix.model_runtimes`; unset, the only one the
+  config composes, refused when it composes none or several). Options:
   `model_runtime`, `default_model` (a name that runtime resolves; unset, its default),
   `tools` (name to `module:function`, a Python function whose module is
   found when the runtime is built and imported when a session first offers it; one whose

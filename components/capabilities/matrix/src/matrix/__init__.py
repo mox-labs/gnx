@@ -124,7 +124,7 @@ from .domain.model_step import (
     ModelStepConfig,
     call_model,
 )
-from .domain.needs import NEEDS, Need
+from .domain.needs import NEEDS, ModelRuntimes, Need
 from .domain.observer import (
     Event,
     EventPolicy,
@@ -246,6 +246,7 @@ __all__ = [
     "ModelRequest",
     "ModelRuntime",
     "ModelRuntimeError",
+    "ModelRuntimes",
     "ModelStep",
     "ModelStepConfig",
     "Need",

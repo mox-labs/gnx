@@ -10,6 +10,7 @@ repository migrated in the same change, and then update the snapshot.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from typing import Any
 
 import pytest
@@ -22,6 +23,7 @@ from matrix import (
     ContractError,
     Inputs,
     MatrixError,
+    ModelRuntimes,
     Registry,
     check_type_url,
     wire,
@@ -97,11 +99,18 @@ def test_the_stable_needs_are_as_promised() -> None:
     stable = {name: need.type for name, need in NEEDS.items() if need.stability == "stable"}
     assert stable == {
         "agents": "Mapping[str, Agent]",
-        "model_runtimes": "Mapping[str, ModelRuntime]",
+        "model_runtimes": "ModelRuntimes",
         "schemas": "Mapping[str, type[BaseModel]]",
         "cwd": "str | None",
         "name": "str",
     }
+    # A mapping of each model runtime by name, which also says what each was built as.
+    assert issubclass(ModelRuntimes, Mapping)
+    assert ModelRuntimes.__abstractmethods__ >= {"type_url", "drives"}
+    assert str(inspect.signature(ModelRuntimes.type_url)) == "(self, name: 'str') -> 'str'"
+    assert str(inspect.signature(ModelRuntimes.drives)) == (
+        "(self, name: 'str') -> 'tuple[str, ...]'"
+    )
 
 
 @pytest.mark.parametrize("kind", ["acme.v1.review", "acme.tools.v2beta1.score", "a.v1.b-c"])

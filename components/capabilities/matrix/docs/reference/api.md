@@ -66,6 +66,7 @@ from matrix import (
     TASK,
     # model calls
     ModelRuntime,
+    ModelRuntimes,
     ModelRequest,
     ModelCall,
     Turn,
@@ -295,11 +296,20 @@ maps each name to a `Need` (`name`, `type`, `summary`, `stability`, `components_
 | Need | Type | What | Stability |
 |------|------|------|-----------|
 | `agents` | `Mapping[str, Agent]` | every agent the config binds, bound to its agent runtime, by name | stable |
-| `model_runtimes` | `Mapping[str, ModelRuntime]` | every model runtime the config builds, by name; an agent runtime that declares it makes its sessions' model calls through them (composition builds model runtimes first) | stable |
+| `model_runtimes` | `ModelRuntimes` | every model runtime the config builds, by name, each with what it was built as (below); an agent runtime that declares it makes its sessions' model calls through them (composition builds model runtimes first) | stable |
 | `schemas` | `Mapping[str, type[BaseModel]]` | the registered payload schemas, by kind | stable |
 | `cwd` | `str \| None` | the working directory the host composed for (`compose(context={"cwd": ...})`); None when it gave none, which is the process's | stable |
 | `name` | `str` | the component's name in the run; components only | stable |
-| `model_runtime_entries` | `Mapping[str, Entry]` | the registry entry of each model runtime the config builds, by name | beta |
+
+`ModelRuntimes` is a read-only `Mapping[str, ModelRuntime]` that also says what each runtime
+was built as: `type_url(name) -> str`, the type URL of the registry entry it was built from
+(a short name in config resolved), and `drives(name) -> tuple[str, ...]`, the distributions
+that entry drives. A component that records a call it makes on one passes them to
+`call_model(..., runtime_url=..., drives=...)`, as the model step does; each raises
+`KeyError` for a name the mapping does not hold. `compose` builds one; a host that hands
+`model_runtimes` itself, building through the registry, hands a `ModelRuntimes` (it is an
+abstract base: subclass it and implement the mapping and both methods, as ix does for
+runtimes it builds when asked).
 
 A host hands needs of its own through `compose(context={...})` (ix hands its components
 `ix_kit`); a `context` key that names one of the needs above other than `cwd` is a
@@ -373,12 +383,12 @@ from config.
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `concurrency` | `None` | how many components run at once (`>= 1`); `None` leaves it to the wiring |
-| `deadline_s` | `None` | bounds each component separately, from when it starts (`> 0`); each attempt has the whole of it |
+| `deadline_s` | `3600.0` | bounds each component separately, from when it starts (`> 0`); each attempt has the whole of it. `None` given is no deadline, for a soak run. A component past it is stopped through the stop path and fails, its message naming the key to raise (`matrix.limits.deadline_s`, or its own under `components`) |
 | `grace_s` | `5.0` | how long a component has to return after a stop request before it is cancelled (`>= 0`) |
 | `cleanup_s` | `30.0` | how long a cancelled component, or one async deferred release, has to finish before it is abandoned (`> 0`); a synchronous release is not bounded |
 | `on_failure` | `"fast"` | `fast`: the first failure stops every running component and skips the rest. `isolate`: only components that depend on the failed one are skipped |
 | `retry` | `Retry()` | the retry policy of every component; the default runs each once |
-| `components` | `{}` | name to `ComponentLimits(deadline_s, grace_s, cleanup_s, retry)`; a field left `None` inherits the run's |
+| `components` | `{}` | name to `ComponentLimits(deadline_s, grace_s, cleanup_s, retry)`; a field left unset inherits the run's, and so does one given `None`, but for `deadline_s`, where `None` given is no deadline for that component |
 
 `limits.of(name)` is `(deadline_s, grace_s, cleanup_s)` for a component and
 `limits.retry_of(name)` its `Retry`.
@@ -774,7 +784,7 @@ takes the short name.
 | `type` | Type URL | Config fields | Needs | Notes |
 |--------|----------|---------------|-------|-------|
 | `claude-sdk` | `matrix.v1.agent-runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (each `user`, `project` or `local`; `[]` is hermetic), `plugins` (each `{type: local, path}`; a relative `path` resolved against `cwd`), `skills` (names, or `all`), `fallback_model`, `max_budget_usd` (the SDK's own option, passed as it stands: the SDK ends a session once it has spent that many USD, `stop: max_budget_usd`), `agents` (inline subagents by name, each `description`, `prompt`, `tools`, `disallowed_tools`, `model`, `skills`, `max_turns`, passed as the SDK's `AgentDefinition`) | `cwd` | The config is the whole of what a session can be given; an option outside it fails at its key. `check` refuses a definition whose `tools` leave out `Skill` when the runtime has `skills`, and any option the installed SDK's own dataclasses lack, with the remedy. An agent's `model` is an alias the Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the CLI's default. `bypassPermissions` and `dontAsk` log a WARNING on `RUNTIME_LOGGER`, once per process, and are a `permissive` warning in every document the `matrix` command prints. Stamps `family="claude"`, `provider="anthropic"`, and times each tool call. The reply is the session's result, every text block its `transcript`. `model` is the one the SDK's `model_usage` names, or, when it names several, the one that wrote the final reply. `tokens_input` adds the cache's tokens to Anthropic's `input_tokens`, which leaves them out. Keeps the session id and the SDK's `stop_reason` (`native_finish_reason`, mapped to `finish_reason`). With OpenTelemetry active, hands the CLI the trace context current when the session starts (`TRACEPARENT`, `TRACESTATE`, through the SDK's `env`), so the CLI's spans join the run's trace under the session's `invoke_agent` |
-| `pydantic-ai` | `matrix.v1.agent-runtime.pydantic-ai` | `model_runtime` (required: the name, under `matrix.model_runtimes`, of the model runtime every call is made on), `default_model`, `tools` (tool name to `module:function`, a Python function whose module is found, not run, when the runtime is built, and imported when a session first offers it; a module that cannot be found is a config problem at `tools.<name>`, a function it does not hold, or a module whose import raises, fails the session as `incapable`, and every later session that offers the tool, without importing the module again; naming a tool is a grant to run its code, owner ruling 2026-10-22), `temperature`, `max_tokens` | `model_runtimes` | A pydantic-ai `Agent` per session, its model the `ModelRuntime` its config names: every model call is one call on the port, with that runtime's retries, fallbacks, record and telemetry. The definition's `system_prompt` is the agent's instructions; its `tools` choose from the runtime's (`None`: all, `()`: none); `max_turns` bounds its model calls (`stop: max_turns` when reached; pydantic-ai's own default bound otherwise). An agent's `model` is a name the model runtime resolves; unset, `default_model`, then the model runtime's default. `check` refuses a tool the runtime does not have, and a model, or tools on it, that the model runtime's `check` refuses. A pydantic-ai setting a call cannot carry (anything but `max_tokens` and `temperature`) is refused, never dropped. The reply is the run's output, every text the model wrote its `transcript`; each tool call is timed from the response that asked for it to the request that carried its result, `error` when the tool failed or its arguments were refused (sent back as a tool turn with `is_error`). `model`, `family`, `provider`, `finish_reason` and `native_finish_reason` are those of the last call; usage is summed over every call; `num_turns` counts the calls; `session_id` is pydantic-ai's run id; no cost. A model runtime's failure is an `AgentRuntimeError` with its reason, carrying what the session had spent (`response`). Its sessions are `through_model_runtime`: the model runtime counts their tokens. pydantic-ai's instrumentation is switched off on every agent. Has `aclose()`; the model runtime's connections in a loop close when the last session running there ends. Imports pydantic-ai only when built |
+| `pydantic-ai` | `matrix.v1.agent-runtime.pydantic-ai` | `model_runtime` (the name, under `matrix.model_runtimes`, of the model runtime every call is made on; unset, the only one the config composes, resolved when the runtime is built, and a `missing_key` problem at the key, listing them, when it composes none or several), `default_model`, `tools` (tool name to `module:function`, a Python function whose module is found, not run, when the runtime is built, and imported when a session first offers it; a module that cannot be found is a config problem at `tools.<name>`, a function it does not hold, or a module whose import raises, fails the session as `incapable`, and every later session that offers the tool, without importing the module again; naming a tool is a grant to run its code, owner ruling 2026-10-22), `temperature`, `max_tokens` | `model_runtimes` | A pydantic-ai `Agent` per session, its model the `ModelRuntime` its config names: every model call is one call on the port, with that runtime's retries, fallbacks, record and telemetry. The definition's `system_prompt` is the agent's instructions; its `tools` choose from the runtime's (`None`: all, `()`: none); `max_turns` bounds its model calls (`stop: max_turns` when reached; pydantic-ai's own default bound otherwise). An agent's `model` is a name the model runtime resolves; unset, `default_model`, then the model runtime's default. `check` refuses a tool the runtime does not have, and a model, or tools on it, that the model runtime's `check` refuses. A pydantic-ai setting a call cannot carry (anything but `max_tokens` and `temperature`) is refused, never dropped. The reply is the run's output, every text the model wrote its `transcript`; each tool call is timed from the response that asked for it to the request that carried its result, `error` when the tool failed or its arguments were refused (sent back as a tool turn with `is_error`). `model`, `family`, `provider`, `finish_reason` and `native_finish_reason` are those of the last call; usage is summed over every call; `num_turns` counts the calls; `session_id` is pydantic-ai's run id; no cost. A model runtime's failure is an `AgentRuntimeError` with its reason, carrying what the session had spent (`response`). Its sessions are `through_model_runtime`: the model runtime counts their tokens. pydantic-ai's instrumentation is switched off on every agent. Has `aclose()`; the model runtime's connections in a loop close when the last session running there ends. Imports pydantic-ai only when built |
 | `mock` | `matrix.v1.agent-runtime.mock` | `responses` (the whole task as sent, to a reply), `by_agent` (agent name to a reply), `default` (reply for an unmatched task and agent; `None` echoes `mock:<agent>:<task>`), `family` (default `mock`) | | A stand-in (`stand_in`). Offline. Plays every definition; an agent's `model` is recorded, never used. The first of `responses`, `by_agent`, `default` that matches replies. Each reply reports no cost (`cost_usd` is `None`): no provider reported one. Records `calls`, each `(agent, task)` |
 
 Classes: `matrix.adapters._out.runtime.claude_sdk.ClaudeSdkRuntime`,
@@ -934,14 +944,14 @@ Class: `matrix.adapters._out.runtime.mock.MockModelRuntime`.
 
 A registered `component` that makes one call on a configured model runtime. Constants:
 `MODEL_STEP = "matrix.v1.model-step"`, `MODEL_CALL = "matrix.v1.model-call"`,
-`PROMPT = "matrix.v1.prompt"`. Needs `model_runtimes`, `schemas` and `model_runtime_entries`
-(its runtime's type URL and what it drives, for the session row).
+`PROMPT = "matrix.v1.prompt"`. Needs `model_runtimes` (its session rows name what its runtime
+was built as, `type_url` and `drives`) and `schemas`.
 
 `ModelStepConfig` (unknown keys rejected):
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `runtime` | `str` | required | a name under `matrix.model_runtimes` |
+| `runtime` | `str \| None` | `None` | a name under `matrix.model_runtimes`; `None` is the only one the config composes, resolved when the step is built, and a `missing_key` problem at the key, listing them, when it composes none or several. A name given is held to the composed ones (`NotFoundError`) |
 | `model` | `str \| None` | `None` | a name the runtime resolves, checked with its `check` when the step is built; `None` is its default |
 | `system` | `str \| None` | `None` | the system prompt, as written |
 | `inputs` | `dict[str, str]` | `{"prompt": "matrix.v1.prompt"}` | placeholder name to kind; the kinds are the step's `requires` |
@@ -1083,7 +1093,7 @@ Matrix's own entries:
 | `agent-runtime` | `matrix.v1.agent-runtime.mock` (stand-in) | |
 | `model-runtime` | `matrix.v1.model-runtime.mock` (stand-in) | |
 | `component` | `matrix.v1.agent-step` | `agents` |
-| `component` | `matrix.v1.model-step` | `model_runtimes`, `schemas`, `model_runtime_entries` |
+| `component` | `matrix.v1.model-step` | `model_runtimes`, `schemas` |
 | `payload-type` | `matrix.v1.agent-response` | |
 | `payload-type` | `matrix.v1.model-call` | |
 | `payload-type` | `matrix.v1.task` | |
@@ -1701,7 +1711,8 @@ as one, each `{path, value, origin, file, note}`:
   `extension` (the default of a runtime's, the store's, an observer's or a component type's
   own config; for an agent's `model`, `tools` and `max_turns` left unset, the agent runtime's
   own default) or `matrix` (matrix's default).
-- `note` says what a value means where it alone does not: `deadline_s: null` is no deadline,
+- `note` says what a value means where it alone does not: the default `deadline_s` is each
+  component's, `deadline_s: null` is no deadline,
   `concurrency: null` no cap, and a component's limit it does not override is "the run's".
 
 The run's limits come first, then each component's, in the order of work, each of its

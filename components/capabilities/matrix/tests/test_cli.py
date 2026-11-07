@@ -158,8 +158,7 @@ def test_describe_shows_each_need_with_its_type(capsys: pytest.CaptureFixture[st
     code, data, _ = _cli(capsys, "describe", "matrix.v1.model-step", "--json")
     needs = {n["name"]: (n["type"], n["stability"]) for n in data["entries"][0]["needs"]}
     assert needs == {
-        "model_runtime_entries": ("Mapping[str, Entry]", "beta"),
-        "model_runtimes": ("Mapping[str, ModelRuntime]", "stable"),
+        "model_runtimes": ("ModelRuntimes", "stable"),
         "schemas": ("Mapping[str, type[BaseModel]]", "stable"),
     }
 

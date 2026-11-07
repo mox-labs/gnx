@@ -953,6 +953,8 @@ def _option_values(option: Option) -> str:
         text += f"; left out, as its {option.default_by.option} says"
     elif option.default_from:
         text += "; left out, its runtime's own"
+    elif option.left_out:
+        text += f"; left out, {option.left_out}"
     if option.fields:
         text += "; keys " + ", ".join(
             f"{name}{'*' if field.required else ''}"
