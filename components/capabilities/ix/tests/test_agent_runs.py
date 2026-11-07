@@ -1231,6 +1231,42 @@ class TestASecondRealAgentRuntime:
         assert {tuple(s["drives"]) for s in sessions} == {("pydantic-ai-slim",)}
 
 
+def test_a_runtime_that_needs_the_model_runtimes_is_handed_them_as_the_need_declares() -> None:
+    """ix hands a runtime that needs ``model_runtimes`` the need as matrix declares it, a
+    ``matrix.ModelRuntimes``: each model runtime matrix's config names, and what it is built
+    as, so a session row made on one can name it."""
+    from matrix.adapters._out.runtime.mock import (
+        MockAgentRuntime,
+        MockModelRuntime,
+        MockModelRuntimeConfig,
+    )
+
+    from ix.composition import _Runtimes
+
+    handed: list[matrix.ModelRuntimes] = []
+
+    def capture(*, model_runtimes: matrix.ModelRuntimes) -> MockAgentRuntime:
+        handed.append(model_runtimes)
+        return MockAgentRuntime()
+
+    url = "acme.v1.model-runtime.echo"
+    registry = matrix.default_registry(discover=False)
+    registry.register(
+        "agent-runtime", "acme.v1.agent-runtime.capture", capture, needs={"model_runtimes"}
+    )
+    registry.register(
+        "model-runtime", url, MockModelRuntime, config=MockModelRuntimeConfig, drives=("acme",)
+    )
+    settings = matrix.MatrixConfig.model_validate({"model_runtimes": {"e": {"type": url}}})
+    _Runtimes(registry, lambda: settings).build(
+        "agent-runtime", "acme.v1.agent-runtime.capture", {}
+    )
+    [named] = handed
+    assert isinstance(named, matrix.ModelRuntimes) and list(named) == ["e"]
+    assert (named.type_url("e"), named.drives("e")) == (url, ("acme",))
+    assert isinstance(named["e"], MockModelRuntime)
+
+
 class Hanging(Scripted):
     """A runtime whose agent never finishes a task that asks for something hard, and
     answers every other one at once."""

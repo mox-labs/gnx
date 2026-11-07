@@ -13,6 +13,7 @@
       ],
       "allow": [
         "__future__",
+        "abc",
         "asyncio",
         "collections",
         "contextlib",
@@ -68,7 +69,7 @@
         "sys"
       ],
       "why": {
-        "stdlib": "computation (a template's placeholders read with string.Formatter, a session's request digested with hashlib and json), plus the asyncio scheduling, clock, run ids and log records the executor needs to run components",
+        "stdlib": "computation (a template's placeholders read with string.Formatter, a session's request digested with hashlib and json), plus the asyncio scheduling, clock, run ids and log records the executor needs to run components; abc for a need's abstract mapping (ModelRuntimes), which a host subclasses",
         "pydantic": "the one third-party library the core admits: every document and config is a pydantic model, so the core runs with pydantic alone",
         "matrix.domain.* by name": "listed module by module rather than as the prefix matrix.domain, so the reach into the ports is its own visible allowance, and a new domain module is added here on purpose",
         "matrix.domain.ports._out": "the application services kept in the domain (Executor, BoundAgent, the steps, Loader, the registry) drive the driven ports; the inside owns the port protocols",

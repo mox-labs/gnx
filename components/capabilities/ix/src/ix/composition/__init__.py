@@ -26,7 +26,6 @@ import logging
 import os
 import secrets
 import time
-from collections.abc import Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -98,7 +97,7 @@ from ix.extension import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Iterator, Sequence
+    from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 
     from matrix import ConstructStore, Entry
 
@@ -276,12 +275,13 @@ class _Runtimes:
         return entry.capabilities(config)
 
 
-class _NamedModelRuntimes(Mapping[str, Any]):
+class _NamedModelRuntimes(matrix.ModelRuntimes):
     """The model runtimes matrix's config names (``matrix.model_runtimes``), by name: the
-    ``model_runtimes`` need, as composition hands it. Each is built through the registry when
-    it is asked for, afresh each time, as every runtime ix builds is built per trial and not
-    used again: an agent runtime built for one trial shares no model runtime with another's.
-    Reading the names builds none."""
+    ``model_runtimes`` need, as composition hands it, each with the type URL and the
+    distributions of the registry entry it is built from. Each is built through the registry
+    when it is asked for, afresh each time, as every runtime ix builds is built per trial and
+    not used again: an agent runtime built for one trial shares no model runtime with
+    another's. Reading the names, or what one is built as, builds none."""
 
     def __init__(self, runtimes: _Runtimes, settings: Callable[[], MatrixConfig]) -> None:
         self._runtimes = runtimes
@@ -296,6 +296,16 @@ class _NamedModelRuntimes(Mapping[str, Any]):
 
     def __len__(self) -> int:
         return len(self._settings().model_runtimes)
+
+    def type_url(self, name: str) -> str:
+        return self._entry(name).type_url
+
+    def drives(self, name: str) -> tuple[str, ...]:
+        return self._entry(name).drives
+
+    def _entry(self, name: str) -> Entry:
+        spec = self._settings().model_runtimes[name]  # KeyError: no such name
+        return self._runtimes._entry(MODEL_RUNTIME, spec.type)
 
 
 class _JudgeModels:

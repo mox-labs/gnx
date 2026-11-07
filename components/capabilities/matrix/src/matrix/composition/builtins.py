@@ -46,9 +46,10 @@ if TYPE_CHECKING:
     from matrix.adapters._out.observers.otel import OtelObserver
     from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntime
     from matrix.adapters._out.runtime.pydantic_ai import PydanticAiRuntime
+    from matrix.domain.needs import ModelRuntimes
     from matrix.domain.ports._out.agent_runtime import Agent
     from matrix.domain.ports._out.model_runtime import ModelRuntime
-    from matrix.domain.registry import Entry, Registry
+    from matrix.domain.registry import Registry
 
 #: The registry point of each kind of runtime.
 AGENT_RUNTIME = "agent-runtime"
@@ -136,17 +137,18 @@ def _agent_step(config: AgentStepConfig, *, agents: Mapping[str, Agent]) -> Agen
 def _model_step(
     config: ModelStepConfig,
     *,
-    model_runtimes: Mapping[str, ModelRuntime],
+    model_runtimes: ModelRuntimes,
     schemas: Mapping[str, type[BaseModel]],
-    model_runtime_entries: Mapping[str, Entry],
 ) -> ModelStep:
-    entry = model_runtime_entries.get(config.runtime)
+    # Its rows name what its runtime was built as. A name nothing built is ModelStep's to
+    # refuse, with the names that were.
+    built = config.runtime in model_runtimes
     return ModelStep(
         config,
         model_runtimes=model_runtimes,
         schemas=schemas,
-        runtime_url=None if entry is None else entry.type_url,
-        drives=() if entry is None else entry.drives,
+        runtime_url=model_runtimes.type_url(config.runtime) if built else None,
+        drives=model_runtimes.drives(config.runtime) if built else (),
     )
 
 
@@ -203,7 +205,7 @@ def register(registry: Registry) -> None:
         MODEL_STEP,
         _model_step,
         config=ModelStepConfig,
-        needs={"model_runtimes", "schemas", "model_runtime_entries"},
+        needs={"model_runtimes", "schemas"},
         summary="One model call as a component: the rows it requires rendered into its prompt",
     )
     registry.register_payload(AGENT_RESPONSE, AgentResponse)

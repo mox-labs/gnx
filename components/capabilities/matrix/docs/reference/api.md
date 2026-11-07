@@ -66,6 +66,7 @@ from matrix import (
     TASK,
     # model calls
     ModelRuntime,
+    ModelRuntimes,
     ModelRequest,
     ModelCall,
     Turn,
@@ -295,11 +296,20 @@ maps each name to a `Need` (`name`, `type`, `summary`, `stability`, `components_
 | Need | Type | What | Stability |
 |------|------|------|-----------|
 | `agents` | `Mapping[str, Agent]` | every agent the config binds, bound to its agent runtime, by name | stable |
-| `model_runtimes` | `Mapping[str, ModelRuntime]` | every model runtime the config builds, by name; an agent runtime that declares it makes its sessions' model calls through them (composition builds model runtimes first) | stable |
+| `model_runtimes` | `ModelRuntimes` | every model runtime the config builds, by name, each with what it was built as (below); an agent runtime that declares it makes its sessions' model calls through them (composition builds model runtimes first) | stable |
 | `schemas` | `Mapping[str, type[BaseModel]]` | the registered payload schemas, by kind | stable |
 | `cwd` | `str \| None` | the working directory the host composed for (`compose(context={"cwd": ...})`); None when it gave none, which is the process's | stable |
 | `name` | `str` | the component's name in the run; components only | stable |
-| `model_runtime_entries` | `Mapping[str, Entry]` | the registry entry of each model runtime the config builds, by name | beta |
+
+`ModelRuntimes` is a read-only `Mapping[str, ModelRuntime]` that also says what each runtime
+was built as: `type_url(name) -> str`, the type URL of the registry entry it was built from
+(a short name in config resolved), and `drives(name) -> tuple[str, ...]`, the distributions
+that entry drives. A component that records a call it makes on one passes them to
+`call_model(..., runtime_url=..., drives=...)`, as the model step does; each raises
+`KeyError` for a name the mapping does not hold. `compose` builds one; a host that hands
+`model_runtimes` itself, building through the registry, hands a `ModelRuntimes` (it is an
+abstract base: subclass it and implement the mapping and both methods, as ix does for
+runtimes it builds when asked).
 
 A host hands needs of its own through `compose(context={...})` (ix hands its components
 `ix_kit`); a `context` key that names one of the needs above other than `cwd` is a
@@ -934,8 +944,8 @@ Class: `matrix.adapters._out.runtime.mock.MockModelRuntime`.
 
 A registered `component` that makes one call on a configured model runtime. Constants:
 `MODEL_STEP = "matrix.v1.model-step"`, `MODEL_CALL = "matrix.v1.model-call"`,
-`PROMPT = "matrix.v1.prompt"`. Needs `model_runtimes`, `schemas` and `model_runtime_entries`
-(its runtime's type URL and what it drives, for the session row).
+`PROMPT = "matrix.v1.prompt"`. Needs `model_runtimes` (its session rows name what its runtime
+was built as, `type_url` and `drives`) and `schemas`.
 
 `ModelStepConfig` (unknown keys rejected):
 
@@ -1083,7 +1093,7 @@ Matrix's own entries:
 | `agent-runtime` | `matrix.v1.agent-runtime.mock` (stand-in) | |
 | `model-runtime` | `matrix.v1.model-runtime.mock` (stand-in) | |
 | `component` | `matrix.v1.agent-step` | `agents` |
-| `component` | `matrix.v1.model-step` | `model_runtimes`, `schemas`, `model_runtime_entries` |
+| `component` | `matrix.v1.model-step` | `model_runtimes`, `schemas` |
 | `payload-type` | `matrix.v1.agent-response` | |
 | `payload-type` | `matrix.v1.model-call` | |
 | `payload-type` | `matrix.v1.task` | |

@@ -30,6 +30,13 @@ bridge distribution of its own, `matrix-hardline` 0.1.0.
 - **`ModelRequest(prompt=..., system=...)` is gone**: a request is its `turns`
   (`ModelRequest.from_prompt(prompt, system=...)` makes a prompt's), and `prompt` is a derived
   read, the one user turn's text.
+- **The `model_runtime_entries` need is gone** (beta since 0.7), and `NEEDS` holds no beta
+  need. It handed a component every model runtime's registry `Entry` so that the model step
+  could name its runtime on its session rows. `model_runtimes` says that now (below): a
+  component that declared both declares `model_runtimes` alone and reads
+  `model_runtimes.type_url(name)` and `model_runtimes.drives(name)` where it read the entry's
+  `type_url` and `drives`, to pass to `call_model(..., runtime_url=..., drives=...)`. A
+  model step's session rows name its runtime's type URL and what it drives, as before.
 
 ### Changed (breaking)
 
@@ -51,6 +58,12 @@ bridge distribution of its own, `matrix-hardline` 0.1.0.
 - **`call_sent` digests the request's turns, tools, model, output schema and overrides**, so
   a `sent` from 0.9 does not match the same request under 0.10. A judge's call made through
   `pydantic_ai_model` digests by the same rule as a step's.
+- **The `model_runtimes` need is a `ModelRuntimes`**: a read-only mapping of each model
+  runtime by name, as before, which every reader of it keeps reading as one, that also says
+  what each was built as, `type_url(name)` and `drives(name)`. A host that hands the need
+  itself, building through the registry rather than through `compose`, hands a
+  `ModelRuntimes`: subclass it and implement the mapping and both methods (ix does, for the
+  runtimes it builds when asked).
 - **`RELEASE_TAG` is `matrix-v0.10.0`**: the install lines and every repair fix name it.
 - **A `matrix.extensions` entry point's name is a point its extension registers at** (ruling
   M-DISC), and its value the extension's `register`: an extension at three points has three
@@ -83,7 +96,7 @@ bridge distribution of its own, `matrix-hardline` 0.1.0.
   session of either. `Extension.points` is what an extension declares; one given in code
   declares nothing and is trusted.
 - New exports: `Turn`, `Role`, `ToolSpec`, `ToolCall`, `Use`, `pydantic_ai_model`,
-  `MATRIX_POINTS`.
+  `MATRIX_POINTS`, `ModelRuntimes`.
 
 ## 0.9.0 — 2026-11-06
 

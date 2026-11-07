@@ -29,7 +29,7 @@ provides and does its work; matrix decides when, keeps what it hands over, and s
 | `Registry.register` | `(point, type_url, build, *, config=None, needs=(), summary="", stability="beta", stand_in=False, drives=(), capabilities=None)`; `capabilities` only for an agent runtime with a config |
 | `Registry.register_payload` | `(type_url, model, summary="")`: the schema rows of a kind validate against |
 | `matrix.extensions` | the entry-point group: an entry point's name is a point its extension registers at or declares, and its value the extension's `register(registry) -> None`; one line per point, all naming one `register`. A session loads only the extensions that declare a point it reads |
-| `NEEDS` | the shared needs, each a `Need` with its type: `agents`, `model_runtimes`, `schemas`, `cwd`, `name` stable; `model_runtime_entries` beta. An agent runtime that declares `model_runtimes` makes its sessions' model calls on them |
+| `NEEDS` | the shared needs, each a `Need` with its type, all stable: `agents`, `model_runtimes`, `schemas`, `cwd`, `name`. `model_runtimes` is a `ModelRuntimes`, a read-only mapping of each model runtime by name with `type_url(name)` and `drives(name)`, what each was built as, which a session row made on it names; a host that hands it itself hands one. An agent runtime that declares `model_runtimes` makes its sessions' model calls on them |
 | the stop protocol | `ctx.stopping` is set; the component has `grace_s` to return; then it is cancelled. Every `ctx.defer` release is called once at the end of the run, last first |
 | `ContractError` | what breaking the contract raises (kind `contract`) |
 
