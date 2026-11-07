@@ -316,5 +316,5 @@ are in the repository's history. Generated code runs again from 0.5.0, in a chil
 
 ## Reporting
 
-Open an issue on the gnx repository, https://github.com/mox-labs/gnx/issues. There is no
-separate embargo channel.
+Report a vulnerability privately, through GitHub's private vulnerability reporting, as the
+repository's [SECURITY.md](../../../SECURITY.md) says. Do not open a public issue for one.

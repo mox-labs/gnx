@@ -4,6 +4,7 @@ Complete config examples for common recon use cases. Copy, adapt, write to `.rec
 
 ## Contents
 
+- [Files on Disk](#files-on-disk)
 - [Code Mining (Multi-Repo)](#code-mining-multi-repo)
 - [Code Mining (Single Repo)](#code-mining-single-repo)
 - [Forensic Code Analysis with code-maat](#forensic-code-analysis-with-code-maat)
@@ -15,6 +16,42 @@ Complete config examples for common recon use cases. Copy, adapt, write to `.rec
 - [Issue Triage Across Repos](#issue-triage-across-repos)
 - [Modern Search APIs (POST body)](#modern-search-apis-post-body)
 - [MCP Results Captured by a Hook](#mcp-results-captured-by-a-hook)
+
+## Files on Disk
+
+A `local` source is a directory, not a file reader: a `cli` collector reads a file by running a command there, and recon parses its stdout a line at a time. A line that is a JSON object is that record; any other line is `{line_number, line}`, a CSV header included. recon parses no CSV and no JSON document spread over lines, and ships no converter for either: convert in the command, one JSON object a line.
+
+```yaml
+catalog:
+  - name: data
+    type: local
+    url: data          # a directory, relative to the project root
+
+collectors:
+  - name: people       # JSON lines
+    type: cli
+    source: data
+    run: cat people.jsonl
+    changes: {key: [id]}
+  - name: teams        # CSV, a record a row keyed by the header
+    type: cli
+    source: data
+    run: >-
+      python3 -c "import csv, json, sys;
+      [print(json.dumps(row)) for row in csv.DictReader(open('teams.csv'))]"
+  - name: repos        # one JSON array, a record an item
+    type: cli
+    source: data
+    run: >-
+      python3 -c "import json;
+      [print(json.dumps(r)) for r in json.load(open('repos.json'))]"
+```
+
+```
+recon query team "SELECT p.name, t.lead FROM people p JOIN teams t USING (team)" --json
+```
+
+Run again, each survey writes a whole new archive: the latest holds no duplicates, and `--archive <id>` reads an earlier one. `people_changes` holds what changed, by `id`: on the mission's first survey every record is an `insert`; with `changes:` added to a mission that has archives already, the next survey writes one `rebaselined` row and nothing else, and changes are told from the survey after it. A PDF, DOCX or XLSX file a record names becomes markdown through `$markitdown` (`-r normalize-spec`); a `file` source is for `tail` alone (`-r streaming`).
 
 ## Code Mining (Multi-Repo)
 

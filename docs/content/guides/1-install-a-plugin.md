@@ -29,9 +29,8 @@ claude plugin list
 
 ## What you can install
 
-[The catalog](/catalog) lists every plugin and what each contains, read from source. It is
-deliberately a small set — [what gnx is](/docs/what-is-gnx) says why components wait in
-`incubator/` until they have been evaluated.
+[The catalog](/catalog) lists every plugin and what each contains, read from source.
+[What gnx is](/docs/what-is-gnx) says what each kind of component is.
 
 ## Using it
 

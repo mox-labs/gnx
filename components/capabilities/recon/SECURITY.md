@@ -719,5 +719,5 @@ Regression: `recon/tests/test_query.py::TestConfinement`,
 
 ## Reporting
 
-Open an issue on the gnx repository, https://github.com/mox-labs/gnx/issues. There is no
-separate embargo channel.
+Report a vulnerability in recon as the repository's [SECURITY.md](../../../SECURITY.md)
+says: one route for every gnx package.

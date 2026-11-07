@@ -7,8 +7,9 @@
 <div class="quickstart">
 	<span class="badge">install</span>
 	<p>
-		<code>/plugin marketplace add mox-labs/gnx</code> — then pick from
-		<a href="{base}/catalog">the catalog</a>.
+		Plugins: <code>/plugin marketplace add mox-labs/gnx</code>, then pick from
+		<a href="{base}/catalog">the catalog</a>. Packages: <code>uv</code>, with the line in each
+		README.
 	</p>
 </div>
 

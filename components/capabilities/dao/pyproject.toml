@@ -1,9 +1,12 @@
 [project]
 name = "dao"
 version = "0.1.0"
-description = "Stand up and audit a Directed Agentic Organization for a project — the eleven-component dao spec, made checkable"
+description = "Audit a project's Directed Agentic Organization against the eleven-component dao spec: each part present, partial or absent"
+readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
+# A copy of the repository's LICENSE: a package built from this directory alone carries it.
+license-files = ["LICENSE"]
 authors = [
     { name = "yzavyas", email = "yza.vyas@gmail.com" }
 ]

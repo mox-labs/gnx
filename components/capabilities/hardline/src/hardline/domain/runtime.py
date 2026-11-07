@@ -658,6 +658,7 @@ class ModelRuntime:
             + f". Last: {last}",
             reason=last.reason,
             retry_after=last.retry_after,
+            fix=last.fix,
         )
         raise _logged(exhausted, log) from last
 

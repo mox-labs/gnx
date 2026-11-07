@@ -171,10 +171,12 @@ def build_plugin(
             problems.append(f"{name}: skill component {slug!r} has no SKILL.md")
             continue
         _copy_tree(src, pdir / "skills" / slug)
-        # A manifest is catalog-side metadata, not part of the installed plugin.
-        stale = pdir / "skills" / slug / "manifest.yaml"
-        if stale.exists():
-            stale.unlink()
+        # The manifest is catalog-side metadata and overview.md the component's page on the
+        # docsite: neither is part of the installed plugin.
+        for catalog_side in ("manifest.yaml", "overview.md"):
+            stale = pdir / "skills" / slug / catalog_side
+            if stale.exists():
+                stale.unlink()
 
     # --- external skills: a Capability's in-package semantic surface
     for ext in spec.get("external_skills") or []:
@@ -292,7 +294,7 @@ def _tree_differs(a: Path, b: Path) -> list[str]:
 @click.group()
 @click.version_option(package_name="gnx")
 def main() -> None:
-    """gnx — the catalog: component registry + Claude Code marketplace + agentic CLI."""
+    """gnx — the catalog CLI: list the components and project them into Claude Code plugins."""
 
 
 @main.command("list")

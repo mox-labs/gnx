@@ -486,6 +486,37 @@ class TestPlanCommand:
         footer = text[text.index("└") :]
         assert "The genre's design is checked by simulation at its minimum repeats" in footer
 
+    @pytest.mark.parametrize("columns", ["80", "50"])
+    def test_a_settings_path_is_never_broken_in_the_design(self, columns: str) -> None:
+        """Cold read 2026-11-07, round 2: at the default width the Design table broke
+        setting names mid-word (`collec│t_limit`). The path is whole at any width: in the
+        table where a narrow value fits beside it, else one `path: value (from)` line each."""
+        plan = ix.plan(EXAMPLES_DIR / "harness-integrity")
+        printed = CliRunner(env={"COLUMNS": columns}).invoke(
+            main, ["plan", str(EXAMPLES_DIR / "harness-integrity")]
+        )
+        assert printed.exit_code == 0, printed.stderr
+        lines = printed.stdout.splitlines()
+        for value in plan.provenance:
+            assert any(value.path in line for line in lines), (columns, value.path)
+        assert all(len(line) <= int(columns) for line in lines if "│" in line)
+        if columns == "50":
+            assert "Design (setting: value (from))" in printed.stdout
+            assert "  probes.partially-correct.collect_limit: 1000000 (kind)" in lines
+        else:
+            assert "Design (setting" not in printed.stdout
+
+    def test_a_plan_a_stand_in_answers_points_to_an_exploratory_run(self) -> None:
+        """Cold read 2026-11-07, round 2: the plan of harness-integrity, every session on the
+        mock runtime, ended "Next: ix register", whose run would exit simulated (16) with no
+        verdict. A plan no stand-in answers keeps "Next: ix register"."""
+        canned = _run("plan", str(EXAMPLES_DIR / "harness-integrity"))
+        nexts = " ".join(canned.stderr.split())
+        assert f"Next: ix run {EXAMPLES_DIR / 'harness-integrity'} --exploratory" in nexts
+        assert "a stand-in answers subjects.canned" in nexts
+        service = _run("plan", str(EXAMPLES_DIR / "delay-server" / "slower.yaml"))
+        assert "Next: ix register" in service.stderr
+
     def test_nothing_is_printed_as_python_prints_it(
         self, evaluate_data: dict[str, Any], write_experiment: Write
     ) -> None:
@@ -878,24 +909,36 @@ class TestExamplesAndLab:
         assert needs["'k6' on PATH"] == ("probes.0",)
         assert any("environment" in by for by in needs.values())
 
-    def test_the_plan_the_readme_shows_is_what_ix_plan_prints(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        ("page", "name", "experiment"),
+        [
+            ("README.md", "harness-integrity", "examples/harness-integrity"),
+            ("docs/how-to/compare-two-services.md", "delay-slower",
+             "examples/delay-server/slower.yaml"),
+        ],
+    )  # fmt: skip
+    def test_the_plan_a_page_shows_is_what_ix_plan_prints(
+        self, monkeypatch: pytest.MonkeyPatch, page: str, name: str, experiment: str
     ) -> None:
-        """Regression: the README's sample plan carried a digest from an earlier design."""
-        readme = (PACKAGE / "README.md").read_text(encoding="utf-8")
-        (sample,) = re.findall(r"```\n(delay-slower .*?)```", readme, re.S)
+        """Regression: the README's sample plan carried a digest from an earlier design. The
+        README's first run and the service how-to each show one."""
+        text = (PACKAGE / page).read_text(encoding="utf-8")
+        (sample,) = re.findall(rf"```\n({name} .*?)```", text, re.S)
         monkeypatch.chdir(PACKAGE)
-        printed = _run("plan", "examples/delay-server/slower.yaml").stdout.splitlines()
+        printed = _run("plan", experiment).stdout.splitlines()
         for line in sample.splitlines():
             if line != "...":
                 assert line in printed, line
 
-    def test_the_experiment_the_readme_shows_validates(self, tmp_path: Path) -> None:
-        readme = (PACKAGE / "README.md").read_text(encoding="utf-8")
-        blocks = [b for b in re.findall(r"```yaml\n(.*?)```", readme, re.S) if "genre:" in b]
-        assert blocks, "the README shows no experiment"
+    @pytest.mark.parametrize(
+        "page", ["README.md", "docs/how-to/compare-two-services.md", "docs/reference/genres.md"]
+    )
+    def test_the_experiments_a_page_shows_validate(self, tmp_path: Path, page: str) -> None:
+        text = (PACKAGE / page).read_text(encoding="utf-8")
+        blocks = [b for b in re.findall(r"```yaml\n(.*?)```", text, re.S) if "genre:" in b]
+        assert blocks, f"{page} shows no experiment"
         for index, block in enumerate(blocks):
-            file = tmp_path / f"readme-{index}.yaml"
+            file = tmp_path / f"page-{index}.yaml"
             file.write_text(block)
             result = ix.validate(file)
             assert result.valid and result.warnings == (), result.problems
@@ -908,7 +951,7 @@ class TestExamplesAndLab:
         page = (PACKAGE / "docs" / "how-to" / "evaluate-an-agent.md").read_text(encoding="utf-8")
         experiments = [b for b in re.findall(r"```yaml\n(.*?)```", page, re.S) if "genre:" in b]
         probes = re.findall(r"```markdown\n(.*?)\n```\n", page, re.S)
-        parse_duration, routing, skill_experiment = experiments
+        parse_duration, prompts, routing, skill_experiment = experiments
         plain, bad, bad_canned, review_ask, skill_file, greet = probes
 
         def lab(name: str, experiment: str, files: dict[str, str]) -> Path:
@@ -929,6 +972,7 @@ class TestExamplesAndLab:
         )
         for folder in (
             lab("parse-duration", parse_duration, {"plain-units.md": plain, "bad-input.md": bad}),
+            lab("prompts", prompts, {"plain-units.md": plain, "bad-input.md": bad}),
             lab("review-routing", routing, {"review-ask.md": review_ask}),
             skill,
             text_check,
@@ -953,8 +997,8 @@ class TestExamplesAndLab:
         }
         assert scores == {0.6}
 
-    def test_the_api_the_readme_declares_is_ix_s(self) -> None:
-        readme = (PACKAGE / "README.md").read_text(encoding="utf-8")
+    def test_the_api_the_library_reference_declares_is_ix_s(self) -> None:
+        readme = (PACKAGE / "docs" / "reference" / "library.md").read_text(encoding="utf-8")
         start = readme.index("`ix.__all__` is the declared API")
         section = readme[start : readme.index("Every part of", start)]
         named = set(re.findall(r"`([A-Za-z_]+)`", section))

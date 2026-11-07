@@ -1,6 +1,6 @@
 # Changelog — recon
 
-## 0.19.1 — 2026-11-06
+## 0.19.1 — 2026-11-07
 
 On matrix 0.10. Nothing of recon's own surface changes.
 
@@ -21,6 +21,39 @@ On matrix 0.10. Nothing of recon's own surface changes.
   Azure dependencies recon never registers, and from markitdown 0.1.6 a pre-release Azure
   package, which held the resolution at markitdown 0.1.5 and an onnxruntime with no Python 3.14
   wheel: recon would not install on 3.14. The converters recon offers are unchanged.
+- **`recon survey --dry-run` prints every setting first, as a table** (Setting, Value, From,
+  Why), then the runs, their requirements and the summary line. The settings were about
+  forty `path = value (origin)` lines after the runs, so the plan a reader came for and the
+  "nothing was fetched" line were split by them. Each value and its origin is still shown,
+  and `--json` is unchanged.
+- **`recon init -c <file>` says `Next:`**, not `Edit it, then:`: a config the caller wrote
+  has no placeholders to set. A template still says to edit it.
+
+### Documentation
+
+- The README is the entry: a first run that reads a JSON lines file and a CSV and joins
+  them, how to read files (recon parses no CSV; convert in the command), what a second run
+  writes (a new full snapshot; `changes:`, and its first `rebaselined` row), and the library.
+  Its reference sections moved: commands, documents, exit codes and archives to
+  `docs/reference/cli.md`, the design to `docs/explanation/design.md`, telemetry to
+  `docs/reference/telemetry.md`, which held most of it already.
+- `docs/explanation/overview.md` replaces `docs/explanation/capability.md`.
+- `first-survey.md`: a GitHub token is optional (60 requests an hour without one); the
+  mission is made with `recon init -c`, so its directory is private and `recon status` does
+  not warn `mission_exposed`; the outputs are from a real run.
+- The skill says that each survey writes a whole new archive and that CSV is not parsed;
+  `recon --skill -r config-patterns` has a "Files on Disk" mission (JSON lines, CSV and a
+  JSON array through `cli` on a `local` directory) and what a second survey and a first
+  `changes:` survey write. The skill stays within its length budget.
+- The README gives the no-install clone route (`uv --project components/capabilities run
+  recon`), a mission that mixes a directory with a public API and needs no `auth:` block,
+  and what a change table holds: one survey's changes, an `update` as the record now is
+  (the previous value through `--baseline`), and the history across surveys through
+  `recon.changes_since` or a declared subscription. It says what bounds a survey's time: a
+  stalled connection waits out the source's `timeout:` (60 s) before its retry, which is
+  what made a first survey take a minute in a reader's run; an install's first run is not
+  slow.
+- `first-survey.md` says to leave the `auth:` block out for a public API.
 
 ## 0.19.0 — 2026-11-06
 

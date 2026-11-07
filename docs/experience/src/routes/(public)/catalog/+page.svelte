@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { CatalogEntry, PluginEntry } from './+page.server';
+	import type { CatalogEntry, PluginEntry } from '$lib/catalog';
 	import { base } from '$app/paths';
 
 	let { data } = $props();
@@ -36,13 +36,17 @@
 <div class="doc catalog">
 	<h1>The catalog</h1>
 	<p class="lede">
-		gnx is a marketplace of composable components for Claude Code. <b>{plugins.length}</b> plugins
-		ship <b>{entries.length}</b> components, read from this repository's source.
+		Every gnx component and the plugins that ship them, read from this repository's source.
+		<b>{plugins.length}</b> plugins, <b>{entries.length}</b> components. Each name opens its
+		page.
 	</p>
 
-	<section class="install">
-		<h2>Install</h2>
-		<p class="gloss">Add the marketplace once, then install what you want.</p>
+	<section class="install" id="plugins">
+		<h2>Plugins</h2>
+		<p class="gloss">
+			Skills and agents install into Claude Code as plugins. Add the marketplace once, then
+			install what you want.
+		</p>
 		<pre><code>/plugin marketplace add mox-labs/gnx
 /plugin install {plugins[0]?.name ?? '<plugin>'}@gnx</code></pre>
 
@@ -59,7 +63,10 @@
 			<tbody>
 				{#each plugins as p (p.name)}
 					<tr>
-						<td class="pname"><code>{p.name}</code><div class="cat">{p.category}</div></td>
+						<td class="pname">
+							<a href="{base}/plugins/{p.name}"><code>{p.name}</code></a>
+							<div class="cat">{p.category}</div>
+						</td>
 						<td class="desc-cell">{p.description}</td>
 						<td class="num">{p.agents || '—'}</td>
 						<td class="num">{p.skills || '—'}</td>
@@ -92,18 +99,18 @@
 					{#each g.rows as e (e.slug)}
 						<tr class="k-{g.kind.toLowerCase()}">
 							<td class="turl">
-								<code>{e.slug}</code>
+								<a href="{base}/components/{e.slug}"><code>{e.slug}</code></a>
 								{#if e.description}<div class="desc">{e.description}</div>{/if}
 								{#if e.relations.uses?.length}
 									<div class="uses">uses: {e.relations.uses.join(', ')}</div>
 								{/if}
 							</td>
 							<td class="tags">
-								{#each e.plugins as p (p)}<code class="tag">{p}</code>{/each}
+								{#each e.plugins as p (p)}<a class="tag" href="{base}/plugins/{p}"><code>{p}</code></a>{/each}
 								{#if e.kind === 'Capability'}
 									<span class="unbundled">
 										a Python package, installed with uv — not a plugin{#if e.surfaceIn.length}; its skill ships in
-											{#each e.surfaceIn as p (p)}<code class="tag">{p}</code>{/each}
+											{#each e.surfaceIn as p (p)}<a class="tag" href="{base}/plugins/{p}"><code>{p}</code></a>{/each}
 										{/if}
 									</span>
 								{:else if !e.plugins.length}
@@ -132,11 +139,9 @@
 			a name a composer can resolve.
 		</p>
 		<p class="note">
-			That number is small on purpose. The Manifest v1 shape is still being settled, and minting
-			seventy manifests against a moving spec would mean rewriting seventy. The three that exist
-			are the pilot that tests the grammar; the rest follow once the shape stops moving. Until
-			then a component is installable but not yet composable, and the catalog says so rather than
-			showing an empty column as though it were a defect.
+			The manifest shape is still being settled, so the ones that exist are a pilot that tests
+			the grammar. A component without one is installable but not yet composable, and its
+			identity cell reads —.
 		</p>
 		{#if data.composition}
 			<p>
@@ -273,6 +278,7 @@
 		gap: 0.3rem;
 	}
 	.tag {
+		text-decoration: none;
 		font-size: 0.72rem;
 		background: var(--panel);
 		padding: 0.08rem 0.4rem;

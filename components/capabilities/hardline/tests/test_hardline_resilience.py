@@ -116,6 +116,25 @@ async def test_exhausted_retries_keep_the_providers_retry_after() -> None:
     assert e.value.retry_after == 4.0
 
 
+async def test_exhausted_retries_keep_the_last_failures_fix() -> None:
+    # Regression: the exhaustion error is what a caller (the CLI, a matrix run) sees, and it
+    # dropped the fix of the failure behind it.
+    class Refused:
+        structured_modes = frozenset({"prompt"})
+
+        async def complete(self, spec: Any, request: Any, api_key: Any) -> Any:
+            raise BackendError("refused", reason="unavailable", fix="start the server")
+
+    rt = build_runtime(
+        {"models": {"a": {"backend": "refused", "model": "m", "family": "x", "retries": 1}}},
+        backends={"refused": Refused()},
+        sleep=Sleeps(),
+    )
+    with pytest.raises(BackendError, match="exhausted retries") as e:
+        await rt.complete("a", "hi")
+    assert e.value.fix == "start the server"
+
+
 # --- fallbacks -----------------------------------------------------------------------
 
 

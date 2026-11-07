@@ -1,7 +1,7 @@
 # hardline's contracts
 
 What each published surface of hardline hides, what it consists of, its defaults, how it fails,
-and how far it is promised. The [README](README.md) shows how to use each; this file is what a
+and how far it is promised. The [guide](docs/guide.md) shows how to use each; this file is what a
 change to one of them must keep. `tests/test_hardline_contract.py` pins the surfaces marked
 **pinned**.
 
@@ -106,7 +106,7 @@ supplied.
 **Failure behaviour.** A key the reader does not know is ignored, in the record and in each of
 its parts (MRC:c35), so a record a newer 0.x wrote reads in an older one. Another major's
 `type_url` is refused. A digest is `sha256:` over canonical JSON, recomputable without hardline
-(README).
+([the guide](docs/guide.md#what-a-call-returns)).
 
 ## The registry row
 
@@ -184,7 +184,7 @@ name fails only the rows that name it.
 
 ## The command: `hardline`
 
-**Stability: stable** for the `--json` documents (README "Output contract"), the exit codes and
+**Stability: stable** for the `--json` documents ([the guide](docs/guide.md#output-contract)), the exit codes and
 the `hardline.v1.error` envelope, which the capability CLIs agree in `exit-codes.json` and
 `error-envelope.json`. **Public** for the prose output.
 

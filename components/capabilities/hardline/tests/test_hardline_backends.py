@@ -595,6 +595,32 @@ async def test_transport_failures_are_transient(error: Exception, reason: str) -
     assert e.value.reason == reason and e.value.retryable
 
 
+async def test_a_refused_connection_says_where_to_look() -> None:
+    # Regression: a local server that was not running failed with "retry later", which no
+    # wait fixes. A refused connection names the location and the key that sets it.
+    def refuse(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("All connection attempts failed")
+
+    with pytest.raises(BackendError) as e:
+        await OpenAICompatBackend(httpx2.MockTransport(refuse)).complete(_spec(), _request(), None)
+    assert e.value.reason == "unavailable" and e.value.retryable
+    assert e.value.fix is not None
+    assert LOCAL in e.value.fix and "models.q.base_url" in e.value.fix
+    payload, _ = error_payload(e.value)
+    assert payload["error"]["fix"] == e.value.fix
+
+
+async def test_a_connection_that_drops_keeps_the_kinds_fix() -> None:
+    # Only a refused connection knows where to look; a server that hung up mid-reply may be
+    # back on a retry, so the error carries no fix of its own.
+    def hang_up(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.RemoteProtocolError("server hung up")
+
+    with pytest.raises(BackendError) as e:
+        await OpenAICompatBackend(httpx2.MockTransport(hang_up)).complete(_spec(), _request(), None)
+    assert e.value.fix is None
+
+
 @pytest.mark.parametrize(
     "reply",
     [

@@ -13,7 +13,6 @@ import subprocess
 import sys
 import tempfile
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -45,6 +44,7 @@ from tests.test_paginated_survey import PagedApi
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from pathlib import Path
 
     from recon.core.domain.collector import Plugins
     from recon.core.domain.models import SourceEntry
@@ -642,8 +642,14 @@ class TestTheJoinsFiles:
         return child.pid
 
     def test_a_large_join_keeps_its_files_under_the_mission_and_sweeps_the_dead(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # The temporary directory is this test's own, so another suite running at the same
+        # time (its own recon-join-* files) cannot make it fail; a join that wrote there
+        # would still be seen.
+        system_temp = tmp_path / "system-temp"
+        system_temp.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(system_temp))
         _mission(tmp_path, {"key": ["id"]})
         joins = tmp_path / ".recon" / "m" / ".joins"
         dead = joins / f"{self._dead_pid()}-left"
@@ -652,7 +658,6 @@ class TestTheJoinsFiles:
         for leftover in (dead, live):
             leftover.mkdir()
             (leftover / "told.csv").write_text("k,1,2\n")
-        before = set(Path(tempfile.gettempdir()).glob("recon-join-*"))
         surveys = Surveys(tmp_path)
         surveys.recon = root({}, project=tmp_path, clock=surveys.clock, memory_keys=0,
                              requester=lambda t, d, r: surveys.inbox)  # fmt: skip
@@ -661,7 +666,7 @@ class TestTheJoinsFiles:
         assert not dead.exists(), "a join a dead process left is swept"
         assert live.exists(), "one a live process holds is not"
         assert sorted(p.name for p in joins.iterdir()) == [live.name], "its own is removed"
-        assert set(Path(tempfile.gettempdir()).glob("recon-join-*")) == before
+        assert list(system_temp.iterdir()) == [], "nothing is left in the temporary directory"
 
     def test_its_spill_is_capped_and_the_cap_is_a_setting(self, tmp_path: Path) -> None:
         from recon.adapters._out.duckdb_query import MAX_TEMP_DIRECTORY_SIZE, DuckdbJoin

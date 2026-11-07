@@ -4,7 +4,7 @@
 agent definitions live, the agents that bind a definition to an agent runtime, the observers,
 the components a run wires, where runs are recorded and the limits a run keeps.
 ``matrix.composition.compose`` builds it; nothing here does I/O. :class:`Config` pairs that
-section with a tool's own typed section. The matrix README has a complete example.
+section with a tool's own typed section. docs/guide.md has complete examples.
 """
 
 from __future__ import annotations

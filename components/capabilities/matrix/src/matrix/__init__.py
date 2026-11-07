@@ -18,7 +18,7 @@
 * **Loading**: ``load`` and ``load_each`` read YAML and markdown documents as the pydantic
   type the caller names, reporting every problem as a :class:`Problem` with its key path.
 
-The README says which of these are promised: the component-author contract alone.
+CONTRACT.md says which of these are promised: the component-author contract alone.
 
 A type URL is ``<namespace>.v<N>.<name>``: lowercase segments joined by dots, checked by
 :func:`check_type_url`.

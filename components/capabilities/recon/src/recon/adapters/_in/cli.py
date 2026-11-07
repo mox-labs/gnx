@@ -270,7 +270,9 @@ def init(
         err.print(f"[dim]No --template given; used {document.from_.removeprefix('template:')}[/]")
     said = {"created": "Created", "unchanged": "Unchanged", "replaced": "Replaced"}
     err.print(f"[green]{said[document.outcome]}:[/] {escape(document.config)}")
-    err.print(f"[dim]Edit it, then: recon survey {name} --dry-run && recon survey {name}[/]")
+    # A template has placeholders to set; a config the caller gave is theirs already.
+    first = "Edit it, then" if config is None else "Next"
+    err.print(f"[dim]{first}: recon survey {name} --dry-run && recon survey {name}[/]")
 
 
 # --- survey ------------------------------------------------------------------------------
@@ -557,8 +559,26 @@ def _stopping(stop: recon.StreamStop, *, as_json: bool) -> Iterator[None]:
 
 
 def _print_plan(name: str, plan: recon.PlanDocument) -> None:
+    """Every setting first, as a table, then the runs, what they need and the summary line:
+    what will run and what the dry run did are the last thing on the screen."""
     _print_warnings(plan.warnings)
-    table = Table(show_header=True, header_style="dim", title=f"recon survey {name}: plan")
+    if plan.provenance:
+        settings = Table(
+            show_header=True, header_style="dim", title="settings: each value and its origin",
+            title_justify="left",
+        )  # fmt: skip
+        for column in ("Setting", "Value", "From", "Why"):
+            settings.add_column(column, overflow="fold")
+        for value in plan.provenance:
+            settings.add_row(
+                escape(value.path), escape(json.dumps(value.value)), value.origin,
+                escape(value.note),
+            )  # fmt: skip
+        _print_table(settings)
+    table = Table(
+        show_header=True, header_style="dim", title=f"recon survey {name}: plan",
+        title_justify="left",
+    )  # fmt: skip
     for column in ("Output", "Type", "Source", "Effects", "Does"):
         table.add_column(column)
     for run in plan.runs:
@@ -579,10 +599,6 @@ def _print_plan(name: str, plan: recon.PlanDocument) -> None:
         out.print(f"{holds}  {escape(said)}")
     if plan.runnable is False:
         out.print("[red]Runnable: no[/]: a survey fails each table whose requirement is NO")
-    for value in plan.provenance:
-        said = f"{value.path} = {json.dumps(value.value)} ({value.origin}"
-        said += f": {value.note})" if value.note else ")"
-        out.print(f"[dim]{escape(said)}[/]")
     if plan.writes.config:
         out.print(f"[dim]Would copy the config to {plan.writes.config}[/]")
     if plan.preflight:

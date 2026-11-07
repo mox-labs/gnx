@@ -1,6 +1,6 @@
 """The component-author contract, pinned: what a component and its registration are written
-against, and the one surface of matrix that changes only by addition (README, "What is
-promised"; CONTRACT.md).
+against, and the one surface of matrix that changes only by addition (CONTRACT.md, "The
+component-author contract").
 
 A failure here is not a test to update to the code. It says a promised name changed: make the
 change an addition, or make it a break the changelog says, with every consumer in this

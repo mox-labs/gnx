@@ -255,7 +255,7 @@ def validate(path: str, as_json: bool) -> None:
 
 def _field(label: str, text: str, *more: str) -> None:
     """One ``Label:  text`` line; continuation lines align under the text."""
-    out.print(f"[bold]{label + ':':<14}[/bold]{escape(text)}")
+    out.print(f"[bold]{label + ':':<13}[/bold] {escape(text)}")
     for line in more:
         out.print(f"{'':<14}{escape(line)}")
 
@@ -343,11 +343,12 @@ def _print_plan_cost(plan: ix.Plan) -> None:
     out.print()
 
 
+#: The narrowest the Design table's value column may be before the table gives way to lines.
+_VALUE_MIN = 16
+
+
 def _print_plan_design(plan: ix.Plan, path: str) -> None:
-    design = Table(title="Design", title_justify="left")
-    # A setting's path folds rather than being cut: a nested default's is long.
-    for column in ("setting", "value", "from"):
-        design.add_column(column, overflow="fold")
+    rows = []
     footnotes = []
     for value in plan.provenance:
         if value.origin == "runtime":
@@ -356,12 +357,29 @@ def _print_plan_design(plan: ix.Plan, path: str) -> None:
             shown = value.note
         else:
             shown = _text(value.value)
-        design.add_row(escape(value.path), escape(shown), value.origin)
+        rows.append((value.path, shown, value.origin))
         # The margin's note is on its own line above; a kind's default names its kind, which
         # the entry's own line already implies.
         if value.note and value.path != "margin" and value.origin != "kind":
             footnotes.append(f"{value.path}: {value.note}")
-    out.print(design)
+    # A setting's path is never broken: it is what a reader searches for and copies. The
+    # value folds; where even a narrow value does not fit beside the longest path, each
+    # setting is a line of its own.
+    key = max((len(row[0]) for row in rows), default=len("setting"))
+    origin = max((len(row[2]) for row in rows), default=len("from"))
+    borders = 10  # three columns' padding and four rules
+    if key + origin + _VALUE_MIN + borders <= out.width:
+        design = Table(title="Design", title_justify="left")
+        design.add_column("setting", no_wrap=True, min_width=key)
+        design.add_column("value", overflow="fold")
+        design.add_column("from", no_wrap=True, min_width=origin)
+        for setting, shown, came in rows:
+            design.add_row(escape(setting), escape(shown), came)
+        out.print(design)
+    else:
+        out.print("[bold]Design[/bold] (setting: value (from))")
+        for setting, shown, came in rows:
+            out.print(f"  {escape(setting)}: {escape(shown)} ({came})", soft_wrap=True)
     for note in footnotes:
         out.print(f"[dim]{escape(note)}[/dim]")
     for note in plan.notes:
@@ -371,6 +389,12 @@ def _print_plan_design(plan: ix.Plan, path: str) -> None:
         "matches": f"ix run {path}",
         "deviations": f"ix deviations {path}",
     }[plan.registration.status]
+    if plan.work.stood_in and plan.registration.status != "deviations":
+        # A stand-in answers: a registered run of it exits simulated, never with a verdict.
+        next_step = (
+            f"ix run {path} --exploratory (a stand-in answers "
+            f"{', '.join(plan.work.stood_in)}: it checks the harness and gives no verdict)"
+        )
     if plan.overridden:  # a width to try: a run that gives a verdict refuses it
         next_step = f"ix run {path} --exploratory --trials-in-flight {plan.order.trials_in_flight}"
     err.print(f"[dim]Next: {escape(next_step)}[/dim]", soft_wrap=True)
@@ -657,14 +681,19 @@ def _print_findings(report: ix.Report) -> None:
     findings = report.analysis.findings
     if not findings:
         return
-    if _stood_in(report):
+    canned = _stood_in(report)
+    if canned:
         out.print(
-            "[bold]Findings on mock replies[/bold] [yellow](the harness, not the agent)[/yellow]"
+            "[bold]Findings on mock replies[/bold] [yellow](the harness, not the agent: hold "
+            "each estimate to the grade its canned reply should get)[/yellow]",
+            soft_wrap=True,
         )
     else:
         out.print("[bold]Findings[/bold]")
     for finding in findings:
-        mark = _MARK[finding.outcome]
+        # On canned replies an outcome grades the harness's reading of known answers, so it
+        # is not marked as a verdict would be.
+        mark = "dim" if canned else _MARK[finding.outcome]
         where = f" in {_cell(finding.cell)}" if finding.cell else ""
         out.print(
             f"  [bold]{escape(finding.subject)}[/bold]{escape(where)}: "
@@ -1416,7 +1445,7 @@ def mutants_sample(
         "Drawn with",
         ", ".join(f"{key} {value['value']} ({value['from']})" for key, value in settings.items()),
     )
-    _field("By operator", ", ".join(f"{op} {count}" for op, count in found["by_operator"].items()))
+    _field("By operator", _by_operator(found["by_operator"]))
     dropped = {reason: count for reason, count in found["dropped"].items() if count}
     _field(
         "Left out",
@@ -1444,6 +1473,18 @@ def mutants_sample(
         )
     err.print(f"[dim]{escape(found['estimate_note'])}[/dim]")
     err.print(f"[dim]Next: ix validate {escape(path)}, then ix plan, ix register, ix run[/dim]")
+
+
+#: How many operators a sample's ``By operator`` line names; ``--json`` has every one.
+_OPERATORS_SHOWN = 5
+
+
+def _by_operator(counts: Mapping[str, int]) -> str:
+    """The operators that made the most of a population, most first, and how many more."""
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    shown = ", ".join(f"{op} {count}" for op, count in ranked[:_OPERATORS_SHOWN])
+    rest = len(ranked) - _OPERATORS_SHOWN
+    return shown + (f", and {rest} more (--json lists every one)" if rest > 0 else "")
 
 
 @mutants.command(name="map", epilog=EXIT_CODES)

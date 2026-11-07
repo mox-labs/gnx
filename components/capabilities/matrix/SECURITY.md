@@ -165,5 +165,5 @@ come from an allowlist, and content needs `capture_content`. Regression tests:
 
 ## Reporting
 
-Open an issue on the gnx repository, https://github.com/mox-labs/gnx/issues. There is no
-separate embargo channel.
+Report a vulnerability as the repository's [SECURITY.md](../../../SECURITY.md) says. It
+covers every package in this repository, this one included.

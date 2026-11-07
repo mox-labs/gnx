@@ -1,50 +1,35 @@
 # gnx
 
-The catalog CLI — turns authored components into installable Claude Code plugins.
+The catalog CLI. It lists the components in this repository and projects them into the Claude
+Code plugins the marketplace serves. A contributor's tool: it runs inside a clone of this
+repository.
 
-## What this is
+gnx installs nothing on a user's machine. Users install plugins with Claude Code's
+`/plugin install`; gnx builds what that command finds.
 
-gnx holds a catalog of **components** (a skill, an agent, a runnable capability — one per
-directory) and projects them into **plugins**, which is the shape Claude Code installs.
+## Run it
 
-Those are different granularities on purpose. A component is the unit of authorship; a
-plugin is a bundle someone installs. Keeping them separate is what lets one component ship
-in several plugins, and what lets a bundle be re-cut without touching the components in it.
-
-The regrouping is **declared**, in `components/bundles.yaml`, not hardcoded in this tool.
-Adding a plugin is a data change.
-
-### Why the projection is committed
-
-`plugins/` is generated output that is nevertheless checked in, and that is forced by the
-platform rather than chosen: **no install-time build hook exists** in Claude Code — hooks
-are session-lifecycle only. Nothing can run at install time to build a plugin, so the built
-form has to be in the repository before publish.
-
-That makes drift the real risk, which is why `gnx build --check` is a commit gate. It fails
-if the committed projection does not match `components/`.
-
-### What it is not
-
-gnx does not install anything yet. The registry and installer surface — `gnx add`,
-`gnx search`, `gnx validate` — is designed, not built. Today the tool projects and lists.
-
-## Using it
+From the root of a clone:
 
 ```bash
-gnx build          # project components/ → plugins/ + .claude-plugin/marketplace.json
-gnx build --check  # verify the committed projection matches; non-zero on drift
-gnx list           # the registered components
+uv --project components/capabilities run gnx list            # the components, by kind and type URL
+uv --project components/capabilities run gnx build --check   # exits 1 if plugins/ has drifted from components/
+uv --project components/capabilities run gnx build           # write plugins/ and .claude-plugin/marketplace.json
 ```
 
-`gnx build` writes to a staging directory and swaps atomically, so an interrupted build
-cannot leave a half-written plugin tree. It also prunes: a plugin removed from
-`bundles.yaml` has its directory deleted rather than left behind as a stale install target.
+`just projection` runs `gnx build --check`, and `just check` runs it before every commit.
 
-## Install
-
-gnx is the one package in this repository that publishes. Until a release:
+To install the command on its own:
 
 ```bash
-uv tool install "gnx @ git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/gnx"
+uv tool install "git+https://github.com/mox-labs/gnx@gnx-v0.1.0#subdirectory=components/capabilities/gnx"
 ```
+
+It reads `./components` from the directory it runs in, so run it from the repository root.
+
+## Next
+
+- [docs/explanation/overview.md](docs/explanation/overview.md): why the projection is committed,
+  and a worked run.
+- [SECURITY.md](SECURITY.md): `bundles.yaml` decides what a stranger installs.
+- [CHANGELOG.md](CHANGELOG.md): what changed.

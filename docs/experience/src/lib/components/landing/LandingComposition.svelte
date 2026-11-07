@@ -26,9 +26,10 @@
 </div>
 
 <style>
+	/* min-height, not height: on a short window the panels grow the page rather than clip */
 	.landing-grid {
-		height: 100vh;
-		height: 100dvh;
+		min-height: 100vh;
+		min-height: 100dvh;
 		position: relative;
 		overflow: hidden;
 		display: grid;
@@ -104,10 +105,11 @@
 			gap: 0;
 			padding: 0;
 		}
+		/* what gnx is and where to start come before the mark */
 		.pos-north { order: 1; }
-		.pos-center { order: 2; }
-		.pos-west { order: 3; }
-		.pos-east { order: 4; }
+		.pos-west { order: 2; }
+		.pos-east { order: 3; }
+		.pos-center { order: 4; }
 		.pos-south { order: 5; }
 		.pos-north,
 		.pos-center,
@@ -123,9 +125,11 @@
 			text-align: center;
 			padding: var(--space-5);
 		}
+		/* the text panels take the height their text needs; the brand and the mark keep a screen */
+		.pos-west,
+		.pos-east,
 		.pos-south {
-			min-height: 60vh;
-			min-height: 60dvh;
+			min-height: auto;
 		}
 	}
 

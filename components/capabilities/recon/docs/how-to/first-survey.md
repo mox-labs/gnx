@@ -15,22 +15,23 @@ recon --version
 
 (Working inside a gnx checkout, `uv tool install --editable components/capabilities/recon` points at your working copy instead.)
 
-Export a GitHub personal access token so the API gives you the real rate limit (5,000/hr instead of 60/hr):
+A GitHub token is optional. Without one, the walkthrough runs as it is: GitHub allows 60 unauthenticated requests an hour from one address, and this walkthrough sends five. With one, the limit is 5,000 an hour:
 
 ```bash
-export GITHUB_TOKEN=ghp_...
+export GITHUB_TOKEN=ghp_...    # optional: any token that can read public repositories
 ```
 
-Any fine-grained or classic token with public-repo read is enough.
+The configs below carry an `auth:` block so that a token is sent when you set one. For a public API you never mean to authenticate to, leave the `auth:` block out altogether.
 
 ## Create the mission
 
-A mission is a named unit of work. Each mission gets its own directory under `.recon/` at the root of your git repository (or the current directory outside one). Pick a descriptive name:
+A mission is a named unit of work. Each mission gets its own directory under `.recon/` at the root of your git repository (or the current directory outside one). Write the config below as `dep-releases.yaml`, then let recon make the mission from it:
 
 ```bash
-mkdir -p .recon/dep-releases
-$EDITOR .recon/dep-releases/config.yaml
+recon init dep-releases -c dep-releases.yaml
 ```
+
+`recon init` copies the file to `.recon/dep-releases/config.yaml`, in a directory only you can read. From here on, edit that copy. (A mission directory made by hand with `mkdir -p` keeps your umask's mode, usually readable by other users, and `recon status` warns `mission_exposed` with the `chmod -R go-rwx` that closes it.)
 
 The config has two sections: **catalog** (where to look) and **collectors** (what to ask). You'll build it in three stages.
 
@@ -70,7 +71,7 @@ Plan it first. A dry run validates the config and prints what the survey would d
 recon survey dep-releases --dry-run
 ```
 
-If the config has mistakes, every one is listed with its location (`collectors.0.endpoint: ...`) and the command exits 3. If `GITHUB_TOKEN` is unset you get a warning: the request would go out unauthenticated. Then run it:
+It prints every setting with its value and where that came from (your config, or recon's default), then the run itself; nothing is sent. If the config has mistakes, every one is listed with its location (`collectors.0.endpoint: ...`) and the command exits 3. With `GITHUB_TOKEN` unset you get a warning, `GITHUB_TOKEN is not set; requests to 'github' will be sent without credentials`, and the survey still runs. Then run it:
 
 ```bash
 recon survey dep-releases
@@ -81,7 +82,7 @@ You should see:
 ```
 1 run(s) from 1 collector(s), 1 source(s)
   probe: 1 records
-2026-04-06-143022-123456
+2026-11-07-211455-933552
 ```
 
 One request, one record, one timestamped archive. The last line, the archive's id (what `--archive` takes), is the only thing on stdout (the summary and any warning go to stderr), so it pipes; `--json` prints the whole result instead, every table's status included.
@@ -96,14 +97,14 @@ recon query dep-releases "SELECT json FROM json.probe" --json | jq -r '.rows[].j
 
 ```json
 {
-  "url": "https://api.github.com/repos/tokio-rs/tokio/releases/...",
-  "html_url": "https://github.com/tokio-rs/tokio/releases/tag/tokio-1.46.0",
-  "tag_name": "tokio-1.46.0",
-  "name": "Tokio v1.46.0",
-  "author": { "login": "Darksonn", "id": 6716370 },
+  "url": "https://api.github.com/repos/tokio-rs/tokio/releases/420057069",
+  "html_url": "https://github.com/tokio-rs/tokio/releases/tag/tokio-1.54.1",
+  "tag_name": "tokio-1.54.1",
+  "name": "Tokio v1.54.1",
+  "author": { "login": "Darksonn", "id": 928074, … },
   "prerelease": false,
-  "published_at": "2026-03-15T18:42:31Z",
-  "body": "### Added\n- ..."
+  "published_at": "2026-10-21T21:07:05Z",
+  …
 }
 ```
 
@@ -140,17 +141,19 @@ recon query dep-releases "SELECT * FROM probe" --json | jq '.rows'
 ```
 
 ```json
-{
-  "tag": "tokio-1.46.0",
-  "name": "Tokio v1.46.0",
-  "published": "2026-03-15T18:42:31Z",
-  "author": "Darksonn",
-  "prerelease": false,
-  "url": "https://github.com/tokio-rs/tokio/releases/tag/tokio-1.46.0"
-}
+[
+  {
+    "tag": "tokio-1.54.1",
+    "name": "Tokio v1.54.1",
+    "published": "2026-10-21T21:07:05",
+    "author": "Darksonn",
+    "prerelease": false,
+    "url": "https://github.com/tokio-rs/tokio/releases/tag/tokio-1.54.1"
+  }
+]
 ```
 
-Uniform columns, populated. If a path was wrong, that field would be `null` — fix the path in the config and re-run. Iteration is cheap because the sample is one record and the rate limit budget is tiny per attempt.
+Uniform columns, populated. DuckDB read `published` as a timestamp, so it prints without the `Z`. If a path was wrong, that field would be `null` — fix the path in the config and re-run. Iteration is cheap because the sample is one record and the rate limit budget is tiny per attempt.
 
 This is the whole point of probing first: the iteration loop happens at the cheapest possible scale.
 
@@ -217,10 +220,10 @@ recon survey dep-releases
   tokio: 10 records
   axum: 10 records
   serde: 10 records
-2026-04-06-151107-654321
+2026-11-07-211526-557730
 ```
 
-Three tables in the latest archive, one per collector. The `probe` table is gone because you renamed its collector: it lives only in the earlier archive, which `recon query dep-releases "SELECT * FROM probe" --archive 2026-04-06-143022-123456` still reads.
+Three tables in the latest archive, one per collector. Each survey wrote a new archive holding everything it collected, a full snapshot: nothing is appended, so querying the latest gives no duplicates. The `probe` table is gone because you renamed its collector: it lives only in the earlier archives, which `recon query dep-releases "SELECT * FROM probe" --archive 2026-11-07-211455-933552` still reads. For what changed between two runs, record by record, see [Running it again](../../README.md#running-it-again).
 
 A longer survey can be read while it runs: in another terminal, `recon watch dep-releases` prints each record as it is written and returns when the survey ends ([watch-a-survey.md](./watch-a-survey.md)).
 
@@ -282,4 +285,4 @@ If a table fails (GitHub down, token expired), the archive is still written and 
 - `recon --skill -r normalize-spec` — full normalize spec syntax including the built-in transforms (`$html2text`, `$inverted_index`, `$join`, `$first`, `$markitdown`)
 - [capture-mcp-results.md](./capture-mcp-results.md) — normalize results an MCP tool already fetched, captured by a Claude Code hook
 - [watch-a-survey.md](./watch-a-survey.md) — read a survey's records while it runs
-- [capability.md](../explanation/capability.md) — the deeper "why" behind the tool
+- [overview.md](../explanation/overview.md) — what recon is for, and what it does not do

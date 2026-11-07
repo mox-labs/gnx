@@ -3,12 +3,12 @@
 		brand?: string;
 		tagline?: string;
 	}
-	let { brand = 'gnx', tagline = 'a mech suit for agents' }: Props = $props();
+	let { brand = 'gnx', tagline = '' }: Props = $props();
 </script>
 
 <div class="brand-hero">
 	<h1 class="brand">{brand}</h1>
-	<p class="tagline">{tagline}</p>
+	{#if tagline}<p class="tagline">{tagline}</p>{/if}
 </div>
 
 <style>

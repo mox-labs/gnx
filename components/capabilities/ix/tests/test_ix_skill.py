@@ -143,6 +143,15 @@ class TestTheSkillIsASkill:
             ]
             assert lines and all(source in line for line in lines), (name, lines)
             assert "pip install" not in text, name
+        # Every other page of ix's docs that installs ix pins the same tag (the mutation
+        # how-to installs ix-cosmic-ray beside it, on the same line).
+        for page in sorted((package / "docs").rglob("*.md")):
+            lines = [
+                line
+                for line in page.read_text(encoding="utf-8").splitlines()
+                if "subdirectory=components/capabilities/ix" in line
+            ]
+            assert all(source in line for line in lines), (str(page), lines)
 
     def test_ix_speaks_http_through_the_stacks_one_client(self) -> None:
         """Regression: ix was the one package on httpx, where the stack is httpx2 (owner

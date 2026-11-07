@@ -165,6 +165,15 @@ class Http:
                 f"{where}: no reply within timeout_s={spec.timeout_s:g} ({type(e).__name__})",
                 reason="timeout",
             ) from None
+        except httpx2.ConnectError as e:
+            # Nothing accepted the connection: most often a local server that is not running,
+            # which no retry later fixes, so the fix says where to look.
+            raise BackendError(
+                f"{where}: {type(e).__name__}: {scrub(str(e), api_key)}",
+                reason="unavailable",
+                fix=f"check that a server is listening at {spec.base_url} (start it, for a "
+                f"local model server), or point models.{spec.name}.base_url at one that is",
+            ) from None
         except httpx2.TransportError as e:
             raise BackendError(
                 f"{where}: {type(e).__name__}: {scrub(str(e), api_key)}", reason="unavailable"

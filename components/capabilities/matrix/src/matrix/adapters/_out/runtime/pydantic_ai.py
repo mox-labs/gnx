@@ -279,9 +279,15 @@ class PydanticAiRuntime:
         """One pydantic-ai session, its model calls on the model runtime. A limit reached
         (``max_turns``) ends it; anything else that stops it is an AgentRuntimeError carrying
         what the session had done (``response``)."""
+        import pydantic_ai
         from pydantic_ai import Agent, Tool, UsageLimitExceeded, capture_run_messages
         from pydantic_ai.usage import UsageLimits
 
+        # pydantic-ai prints a first-run banner to a terminal's stderr unless an installed
+        # package starts the run itself, which it cannot see through the executor's tasks; the
+        # flag is the one it gives a library that runs agents on its users' behalf (its
+        # `BANNER_ENABLED` docstring). Without it, `matrix run --json` gets an advert on stderr.
+        pydantic_ai.BANNER_ENABLED = False  # type: ignore[attr-defined,unused-ignore]
         offered = {name: self._function(name, definition) for name in self._offered(definition)}
         model = _model_class()(
             self._model_runtime,

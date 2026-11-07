@@ -72,7 +72,7 @@ EXIT_MEANINGS: dict[str, str] = {
 EXIT_NEXT: dict[str, str] = {
     "ok": "go on: validate, plan, register, run, in that order; after a run with no verdict "
     "(exploratory or dry), register and run it for one; once `ix status` says a run "
-    "completed, `ix report <run directory>` gives its verdict",
+    "completed, `ix report <run directory>` reads what it found",
     "unknown": "report it as a bug in ix, with the command that raised it",
     "usage": "correct the command; `ix <command> --help` lists its arguments",
     "config": "fix each problem at its `path` as its `fix` says, then validate again; for a "

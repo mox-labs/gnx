@@ -88,12 +88,20 @@ COLLECTION = "<collection>"
 #: How long the check that the suite's Python has coverage.py may take.
 CHECK_TIMEOUT_S = 60.0
 
+#: Where ix-cosmic-ray, the mutant source this repository ships, is installed from: its
+#: release's tag. The skill's mutation reference names the same (``MUTANT_SOURCE``), and a
+#: test holds both to ix-cosmic-ray's version.
+COSMIC_RAY_SOURCE = (
+    "git+https://github.com/mox-labs/gnx@ix-cosmic-ray-v0.1.0"
+    "#subdirectory=components/capabilities/ix-cosmic-ray"
+)
+
 #: What to install when no mutant source is. It is on no package index, where another project
 #: could take the name (SECURITY.md, I-8), so where it comes from is said with it.
 SOURCE_INSTALL = (
-    "install ix-cosmic-ray beside ix, from this repository at its release's tag "
-    "(components/capabilities/ix-cosmic-ray; `uv tool install <ix> --with <its git URL>`): "
-    "it is on no package index"
+    "install ix-cosmic-ray beside ix, from this repository at its release's tag: "
+    f'`uv tool install <ix\'s git URL> --with "{COSMIC_RAY_SOURCE}"`, or in a project '
+    f'`uv add "ix-cosmic-ray @ {COSMIC_RAY_SOURCE}"`; it is on no package index'
 )
 
 
@@ -149,8 +157,10 @@ def coverage_installed(python: str, root: Path) -> str | None:
 def coverage_fix(python: str) -> str:
     return (
         f"install pytest-cov, which brings coverage.py, into the suite's environment "
-        f"({python} -m pip install pytest-cov, or the suite's own dev dependencies): ix runs "
-        "the baseline under its per-test contexts; ix itself does not depend on it"
+        f"(`uv pip install --python {python} pytest-cov` for a uv environment, which has no "
+        f"pip; `{python} -m pip install pytest-cov` otherwise; or the suite's own dev "
+        "dependencies): ix runs the baseline under its per-test contexts; ix itself does not "
+        "depend on it"
     )
 
 

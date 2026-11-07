@@ -78,3 +78,8 @@ imported. Text is returned as data. Anything a caller does with it is the caller
 - **M-2: entry-point backends run in-process.** Discovery imports every installed
   `hardline.backends` entry point at composition, each on its own: one that fails to load fails
   only the rows that name it. Installing a package is trusting it.
+
+## Reporting
+
+Report a vulnerability as the repository's [SECURITY.md](../../../SECURITY.md) says. It
+covers every package in this repository, this one included.

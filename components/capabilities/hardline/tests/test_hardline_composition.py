@@ -319,8 +319,8 @@ def test_cli_check(cli_config: Path, capsys: pytest.CaptureFixture[str]) -> None
 
 
 def test_cli_complete_json(cli_config: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    # HL-5: `complete --json` is the Completion in 0.3's shape, as README "Output contract" says:
-    # the reply, whether it is a whole answer, and hardline's record under its own type URL.
+    # HL-5: `complete --json` is the Completion in 0.3's shape, as the guide's "Output contract"
+    # says: the reply, whether it is a whole answer, and hardline's record under its own type URL.
     assert main(["complete", "", "hello", "--json"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert set(out) == set(Completion.model_fields) | {"answered"}

@@ -10,6 +10,11 @@
 # tiers give it, the one that raises scores 0 and is recorded rather than crashing the run,
 # and the reply with no code scores 0. ix's own tests run this experiment and hold each
 # reading to those grades.
+#
+# So the run should read: tests_passed 0.25 (one probe in four passes every test),
+# tests_score 0.375 (1, 0.5, 0 and 0), tests_pass_share 0.4444 (4 of the 9 test cases),
+# outcome_score 1. Against the threshold of 0.5 the finding reads "fails": that is the
+# grading working. Any other reading is a sensor or a grader that grades wrong.
 name: harness-integrity
 question: Do the function-test and outcome sensors grade answers of known worth as they should?
 genre: evaluate

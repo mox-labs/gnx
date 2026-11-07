@@ -1,19 +1,7 @@
-# What is matrix?
+# How matrix works
 
-matrix is an executor. It takes components that declare the kinds of data they require and
-provide, and the rows a caller supplies; it infers who waits on whom, checks that wiring,
-runs each component when what it requires is ready, and records every row they produce, as
-they produce it. It also composes agents from config, so an agent can be run on its own or as
-one component among others.
-
-matrix knows nothing about what a run is for. An eval harness, a review pipeline and a data
-transform are the same thing to it: components, the kinds they exchange, a registry to find
-them in, and config that says which to use. It refuses the rest: it does not repeat a run,
-score anything, or carry any client's vocabulary.
-
-The type URL grammar is slick's; matrix carries its own copy.
-
----
+The model behind matrix, one idea at a time. [The overview](overview.md) says what matrix is
+for and what it does not do; [the guide](../guide.md) shows each piece running.
 
 ## The model
 
@@ -22,11 +10,13 @@ The type URL grammar is slick's; matrix carries its own copy.
 `acme.v1.review` names a kind of data: reviews. A kind is compared by equality and never
 dereferenced. It is the only thing two components need to agree on, and it is the schema of
 the table its rows are kept in. When the wiring carries a model for a kind, every row of that
-kind is validated against it: `Container.wire` carries every registered payload type, and
-`wire` takes them as `schemas`.
+kind is validated against it, and reaches the components that require it as an instance of
+that model, not a dict (`review.verdict`; [the guide](../guide.md#components-wired-by-kind)).
+`Container.wire` carries every registered payload type, and `wire` takes them as `schemas`.
 
-"Kind" here always means the kind of data. (slick uses the word for kinds of component; that
-is a different thing and stays with slick.)
+"Kind" here always means the kind of data. (slick, the project whose type URL grammar
+matrix carries a copy of, uses the word for kinds of component; that is a different thing and
+stays with slick.)
 
 ### A component declares what it requires and provides
 
@@ -185,12 +175,13 @@ One call to one model (a triage, an extraction, a judge) has no loop, no tools a
 so it is not played on an agent runtime. It has its own port, `ModelRuntime`, with two calls:
 `check(model)`, which resolves the model name when a step is built, so an unknown one is a
 `config` problem before anything runs; and `call(request)`, which returns a `ModelCall`. The
-record carries what the runtime reports of the call: why the reply ended (`finish_reason`,
+record carries what any runtime can say of the call: why the reply ended (`finish_reason`,
 the provider's own value, and any `refusal`), the model that answered (a fallback may make it
-differ from the one asked for, and `fallback_from` says so), usage with cache tokens, the
-request id, attempts, retries and latency, what was sent, every attempt made and the
-registry row that answered. A fact the runtime does not report stays empty rather than being
-filled with a constant: a call has no `num_turns`.
+differ from the one asked for), usage with cache tokens, the request id and latency. What only
+one runtime knows (hardline's attempts, retries, fallback, what it sent, the registry row that
+answered) is that runtime's own document in `provenance`, under a type URL its package
+registered. A fact the runtime does not report stays empty rather than being filled with a
+constant: a call has no `num_turns`.
 
 The two ports are separate because their contracts differ. A runtime that makes one call
 cannot honour a definition with tools; behind one port its `check` would refuse what another
@@ -336,17 +327,3 @@ its caller and either merges the documents as tiers or collects one model per fi
 once, and reports every problem with its key path and its file. What `body` means is the
 type's business: an `AgentDefinition` takes it as its system prompt, an ix probe as its
 prompt.
-
-## What matrix is not
-
-- **Not a scheduler or a service.** It is a library and a CLI that runs one config at a time.
-  There is no daemon.
-- **Not a retry engine.** A retry policy runs a component again after a transient failure,
-  within the run, and never one that has already handed rows over. A failed run raises with
-  its partial state; running it again is the caller's decision, and `matrix run --from`
-  reuses what completed.
-- **Not a sandbox.** Components are in-process Python. Holding a component to its kinds is a
-  correctness boundary, not a trust boundary. Agent sessions get whatever authority their runtime's
-  config grants; the package's security notes (`SECURITY.md`) say what that means.
-- **Not domain-aware.** It has no notion of probes, sensors or hypotheses. Those are the
-  vocabulary of the packages that register components.

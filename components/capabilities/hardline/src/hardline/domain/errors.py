@@ -73,9 +73,14 @@ class BackendError(HardlineError):
     limit: Limit | None = None
 
     def __init__(
-        self, message: str, *, reason: Reason = "unknown", retry_after: float | None = None
+        self,
+        message: str,
+        *,
+        reason: Reason = "unknown",
+        retry_after: float | None = None,
+        fix: str | None = None,
     ) -> None:
-        super().__init__(message)
+        super().__init__(message, fix=fix)
         self.reason: Reason = reason
         self.retry_after = retry_after
 

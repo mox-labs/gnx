@@ -1,6 +1,6 @@
 # Changelog — matrix-hardline
 
-## 0.1.0 — 2026-11-06
+## 0.1.0 — 2026-11-07
 
 The first release: the hardline model runtime moves out of matrix, which depends on no model runtime
 from matrix 0.10 (owner ruling HO1, 2026-11-06). Compared with matrix 0.9's `hardline` model runtime:
@@ -33,3 +33,10 @@ from matrix 0.10 (owner ruling HO1, 2026-11-06). Compared with matrix 0.9's `har
   hardline's `complete` takes, as matrix 0.10's widened port does.
 - **Its entry points name its points**, `model-runtime` and `payload-type`, as matrix 0.10 reads them:
   a session that reads neither (a recon survey) does not import the bridge or hardline.
+
+### Documentation
+
+- The README says plainly why the bridge exists, installs it beside matrix at the tags and
+  from a clone, runs a model step offline on a hardline `mock` row, and shows an ollama row;
+  `docs/explanation/overview.md` says what it is for.
+

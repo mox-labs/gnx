@@ -2,8 +2,11 @@
 name = "hardline"
 version = "0.3.1"
 description = "Model runtime — one port for every model family: messages in, text or a validated object out, tagged with the family that answered"
+readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
+# A copy of the repository's LICENSE: a package built from this directory alone carries it.
+license-files = ["LICENSE"]
 authors = [
     { name = "yzavyas", email = "yza.vyas@gmail.com" }
 ]
@@ -27,6 +30,12 @@ dependencies = [
     # The CLI, on the workspace's one stack.
     "rich-click>=1.8",
 ]
+
+[project.urls]
+Repository = "https://github.com/mox-labs/gnx"
+Documentation = "https://mox-labs.github.io/gnx"
+Issues = "https://github.com/mox-labs/gnx/issues"
+Changelog = "https://github.com/mox-labs/gnx/blob/main/components/capabilities/hardline/CHANGELOG.md"
 
 [project.scripts]
 hardline = "hardline.adapters._in.cli:main"
