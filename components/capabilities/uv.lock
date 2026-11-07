@@ -862,7 +862,7 @@ wheels = [
 
 [[package]]
 name = "hardline"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "hardline" }
 dependencies = [
     { name = "httpx2" },

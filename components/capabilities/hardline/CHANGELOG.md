@@ -1,5 +1,11 @@
 # Changelog — hardline
 
+## 0.3.1 — 2026-11-06
+
+### Fixed
+
+- **A failed tool's result is no longer sent as a success on `openai-compat`.** The chat-completions `tool` role has no error flag, and `Message.is_error` was dropped there, so a model was told a tool that failed had answered. The result's content is now marked, `[tool error] <content>`, the one encoding `CONTRACT.md` declares (ruling HO7: what a backend cannot carry is never dropped silently). `anthropic` already sent the Messages API's own `is_error`.
+
 ## 0.3.0 — 2026-11-06
 
 A call's reply and hardline's record of it are two documents; what a backend can do beyond the

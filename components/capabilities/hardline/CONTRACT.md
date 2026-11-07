@@ -156,7 +156,11 @@ wraps it for telemetry (the wrapper declares none of them):
 | `LocatedBackend` | `default_base_url`, an http(s) URL | a row names its own location, or has none |
 
 A backend is handed an `Endpoint` (the row as one attempt needs it), a `Request`, and the
-resolved key. It registers as a `hardline.backends` entry point; the name is what a row puts in
+resolved key. A backend carries every part of a turn it is sent, or refuses the call: none is
+dropped (ruling HO7). Where its protocol has no field for one, it carries it in-band, in one
+documented encoding: `openai-compat` sends a failed tool's result (`Message.is_error`) in the
+`tool` role with its content marked, `[tool error] <content>`, since that role has no error
+flag; `anthropic` sends the Messages API's own `is_error`. It registers as a `hardline.backends` entry point; the name is what a row puts in
 `backend:`. `backend_problems` and `answer_problems` check a backend against these, by the same
 protocols.
 

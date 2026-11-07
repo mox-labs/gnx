@@ -145,6 +145,23 @@ async def test_openai_compat_offers_tools_sends_tool_turns_and_reads_the_calls_a
     )
 
 
+async def test_openai_compat_marks_a_failed_tool_s_result_in_its_content() -> None:
+    """``is_error`` is never dropped (ruling HO7): the protocol's ``tool`` role has no flag
+    for it, so the content says so, with the one marker CONTRACT.md declares."""
+    wire = Wire({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+    failed = (*CALLED, Message(role="tool", tool_call_id="c1", content="no", is_error=True))
+    await OpenAICompatBackend(wire.transport).complete(
+        _spec("openai-compat", "http://127.0.0.1:9/v1"),
+        Request(messages=failed, tools=(LOOKUP,), max_tokens=8),
+        None,
+    )
+    sent = wire.bodies[-1]["messages"]
+    assert [m["content"] for m in sent if m["role"] == "tool"] == [
+        "to turn into bone",
+        "[tool error] no",
+    ]
+
+
 async def test_openai_compat_sends_no_tools_key_when_none_are_offered() -> None:
     wire = Wire({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
     request = Request(messages=(Message(role="user", content="hi"),), max_tokens=8)
