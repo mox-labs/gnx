@@ -20,7 +20,14 @@ from ix.domain import schema
 from ix.domain.analysis import METHOD
 from ix.domain.errors import ERROR_KINDS, EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT, UsageError
 from ix.domain.experiment import ESTIMATORS, STATISTICS, Experiment, Threshold
-from ix.domain.kind import KIND_FAMILIES, NOTE_PREFIX
+from ix.domain.kind import (
+    KIND_FAMILIES,
+    KIND_RECORDS,
+    NOTE_PREFIX,
+    EnvironmentKind,
+    SensorKind,
+    SubjectKind,
+)
 from ix.domain.plan import VERDICTS
 from ix.domain.problem import PROBLEM_KINDS
 
@@ -1001,14 +1008,14 @@ def _kind_line(kind: Kind, runnable: bool) -> str:
         facets.append(f"needs {', '.join(kind.needs)}")
     if kind.offers:
         facets.append(f"offers {', '.join(kind.offers)}")
-    if kind.truth:
+    if isinstance(kind, SensorKind) and kind.truth:
         facets.append(f"reads truth {', '.join(kind.truth)}")
-    if kind.service_keys:
+    if isinstance(kind, EnvironmentKind) and kind.service_keys:
         keys = ", ".join(f"`{{<service>.{key}}}`" for key in kind.service_keys)
         facets.append(f"binds each service as {keys}")
     facets.append(f"overlap {kind.overlap}")
     parts.append(f"  {'; '.join(facets)}")
-    for metric in kind.metrics:
+    for metric in kind.metrics if isinstance(kind, SensorKind) else ():
         traits = [metric.shape, f"{metric.direction} is better"]
         if metric.unit:
             traits.insert(1, metric.unit)
@@ -1036,6 +1043,15 @@ def _kinds(kinds: Kinds) -> str:
         blocks.append(f"### {titles[family]}\n\n{lines}")
     families = "\n\n".join(blocks)
     startup = _default(kinds, "subject", "process", "startup_timeout")
+    shared = [key for key in SubjectKind.model_fields if key != "schema_"]
+    added = []
+    for family, record in KIND_RECORDS.items():
+        keys = ", ".join(
+            f"`{key}`" for key in record.model_fields if key not in [*shared, "schema_"]
+        )
+        if keys:
+            added.append(f"{'an' if family == 'environment' else 'a'} {family} kind adds {keys}")
+    own = "; ".join(added)
     return f"""\
 ## Kinds
 
@@ -1066,6 +1082,10 @@ registered from the package's `matrix.extensions` entry point named for
 with the needs it is built with (`launcher`, `runtimes`, `sessions`, `judge_models`). Everything an
 adapter is written against is in `ix.extension`: the ports, each need's Protocol, the optional
 roles, and what an adapter raises.
+
+Every kind declares {", ".join(f"`{key}`" for key in shared)}; {own}. Which family a
+declaration is comes from its `name` (`acme.v1.sensor.x` is a sensor), and a key of another
+family's is refused (`kind_invalid`, naming the family that declares it).
 
 A `process` subject is up when its `ready` URL answers an HTTP GET with a status below 500;
 without `ready`, when its `url` accepts a connection; with neither, as soon as it starts. One

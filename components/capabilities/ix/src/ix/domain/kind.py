@@ -19,6 +19,11 @@ a sensor reads what it left behind. A new family would need a new place in that 
 the schedule, the record and the analysis, which a declaration cannot give it; a new kind of
 an existing family needs only its file and its adapter.
 
+**Each family has its own record** (:class:`SubjectKind`, :class:`ProbeKind`,
+:class:`SensorKind`, :class:`EnvironmentKind`), and :data:`Kind` is their union, told apart by
+the family segment of the ``name``: a key one family needs (a sensor's ``metrics``, a probe's
+``duration``) is on that family's record alone, so a kind of another family cannot hold it.
+
 **Facets** are how kinds fit together without knowing each other. A subject kind offers how
 it can be reached (``url``, ``pid``, ``respondent``); a probe kind needs some of those and offers
 what applying it leaves behind (``load``, ``response``, ``usage``); a sensor needs what it
@@ -30,17 +35,19 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Annotated, Any, ClassVar, Literal, Self, overload
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Discriminator, Field, Tag, TypeAdapter, ValidationError, model_validator
 
 from ix.domain import schema
 from ix.domain.experiment import Direction, Level, Name, Shape, cells
 from ix.domain.problem import Problem, from_validation_error, problem
 from ix.domain.schema import DeclarationFile, Record
 
+#: A family of kind.
+Family = Literal["subject", "probe", "sensor", "environment"]
 #: The families of kind, in the order a run uses them; closed (see the module docstring).
-KIND_FAMILIES: tuple[str, ...] = ("subject", "probe", "sensor", "environment")
+KIND_FAMILIES: tuple[Family, ...] = ("subject", "probe", "sensor", "environment")
 
 #: Whether two trials may overlap in a kind's use, or a genre's trials at all.
 Overlap = Literal["forbidden", "allowed"]
@@ -377,7 +384,16 @@ class Option(Record):
         return self
 
 
-class Kind(Record):
+class _Declared(Record):
+    """What every kind declares, whatever its family; each family's record adds its own.
+
+    A record of one family has only that family's fields, so a key another family declares
+    is refused like any other key the record does not have.
+    """
+
+    #: The family the record is of; its ``name`` names the same one.
+    family: ClassVar[Family]
+
     schema_: Literal["ix.v1.kind"] = Field(default=schema.KIND, alias="schema")
     #: Type URL: ``<namespace>.v<N>.<family>.<name>``.
     name: str
@@ -385,17 +401,6 @@ class Kind(Record):
     options: dict[Name, Option] = {}
     offers: tuple[str, ...] = ()
     needs: tuple[str, ...] = ()
-    #: Sensors only: the metrics this sensor provides.
-    metrics: tuple[Metric, ...] = ()
-    #: Sensors only: the probe truth keys this sensor reads.
-    truth: tuple[str, ...] = ()
-    #: Probe kinds only: the duration options that add up to the length of one trial.
-    duration: tuple[str, ...] = ()
-    #: Sensors only: the expected and observed labels its readings' detail holds.
-    confusion: Confusion | None = None
-    #: Environment kinds only: the keys each service it brings up is bound with (``host``,
-    #: ``port``, ``url``), which a subject's or a probe's option names as ``{<service>.<key>}``.
-    service_keys: tuple[str, ...] = ()
     #: Whether two trials may use this kind at once: ``allowed`` when neither changes what
     #: the other measures (a fresh session each), ``forbidden`` when they would (a fixed
     #: port, a load generator, an environment brought up once for every trial). A kind
@@ -403,35 +408,14 @@ class Kind(Record):
     overlap: Overlap = "forbidden"
 
     @model_validator(mode="after")
-    def _coherent(self) -> Kind:
-        family = schema.family_of(self.name)
-        if family not in KIND_FAMILIES:
+    def _coherent(self) -> Self:
+        if schema.family_of(self.name) != self.family:
             raise ValueError(
-                f"{self.name!r} is not a kind's type URL; write "
-                f"<namespace>.v1.<{'|'.join(KIND_FAMILIES)}>.<name>"
+                f"{self.name!r} is not a {self.family} kind's type URL; write "
+                f"<namespace>.v1.{self.family}.<name>"
             )
-        if family != "sensor" and (self.metrics or self.truth):
-            raise ValueError("only a sensor kind declares metrics or truth")
-        if family == "sensor" and not self.metrics:
-            raise ValueError("a sensor kind declares at least one metric")
-        names = [metric.name for metric in self.metrics]
-        if len(set(names)) != len(names):
-            raise ValueError("a metric is declared more than once")
-        if self.duration and family != "probe":
-            raise ValueError("only a probe kind declares duration")
-        if self.confusion is not None and family != "sensor":
-            raise ValueError("only a sensor kind declares confusion")
-        if self.service_keys and family != "environment":
-            raise ValueError("only an environment kind declares service_keys")
-        for name in self.duration:
-            if name not in self.options or self.options[name].type != "duration":
-                raise ValueError(f"duration names {name!r}, which is not a duration option")
-        _coherent(self.options, (), reads_subjects=family in ("probe", "sensor"))
+        _coherent(self.options, (), reads_subjects=self.family in ("probe", "sensor"))
         return self
-
-    @property
-    def family(self) -> str:
-        return schema.family_of(self.name) or ""
 
     @property
     def label(self) -> str:
@@ -486,6 +470,99 @@ class Kind(Record):
     def required(self, options: Mapping[str, Any]) -> tuple[str, ...]:
         """The options that must be written beside this kind, given the ``options`` that are."""
         return _required(self.options, options)
+
+
+class SubjectKind(_Declared):
+    """A subject kind: what is reached for each trial. It declares nothing a kind of every
+    family does not."""
+
+    family: ClassVar[Family] = "subject"
+
+
+class ProbeKind(_Declared):
+    """A probe kind: what is applied to the subject in each trial."""
+
+    family: ClassVar[Family] = "probe"
+
+    #: The duration options that add up to the length of one trial.
+    duration: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _timed(self) -> ProbeKind:
+        for name in self.duration:
+            if name not in self.options or self.options[name].type != "duration":
+                raise ValueError(f"duration names {name!r}, which is not a duration option")
+        return self
+
+
+class SensorKind(_Declared):
+    """A sensor kind: what reads a trial, and the metrics it provides."""
+
+    family: ClassVar[Family] = "sensor"
+
+    #: The metrics this sensor provides: at least one, each name once.
+    metrics: tuple[Metric, ...] = Field(min_length=1)
+    #: The probe truth keys this sensor reads.
+    truth: tuple[str, ...] = ()
+    #: The expected and observed labels its readings' detail holds.
+    confusion: Confusion | None = None
+
+    @model_validator(mode="after")
+    def _distinct(self) -> SensorKind:
+        names = [metric.name for metric in self.metrics]
+        if len(set(names)) != len(names):
+            raise ValueError("a metric is declared more than once")
+        return self
+
+
+class EnvironmentKind(_Declared):
+    """An environment kind: what is brought up once, around every trial."""
+
+    family: ClassVar[Family] = "environment"
+
+    #: The keys each service it brings up is bound with (``host``, ``port``, ``url``), which a
+    #: subject's or a probe's option names as ``{<service>.<key>}``.
+    service_keys: tuple[str, ...] = ()
+
+
+#: The record of each family, by family.
+KIND_RECORDS: Mapping[Family, type[_Declared]] = {
+    record.family: record for record in (SubjectKind, ProbeKind, SensorKind, EnvironmentKind)
+}
+
+
+def _family_tag(value: Any) -> str | None:
+    """Which record a declaration is: the family its ``name`` names, read from the data or
+    from a record already built. None when it names no kind's family."""
+    name = value.get("name") if isinstance(value, Mapping) else getattr(value, "name", None)
+    family = schema.family_of(name) if isinstance(name, str) else None
+    return family if family in KIND_FAMILIES else None
+
+
+#: A kind of any family: one of the four records, which one by the family segment of its
+#: ``name``. A kind file is read as one, its YAML unchanged; a kind built in code names its
+#: family's record (``SensorKind(...)``), and data is read with :func:`kind_of`.
+Kind = Annotated[
+    Annotated[SubjectKind, Tag(SubjectKind.family)]
+    | Annotated[ProbeKind, Tag(ProbeKind.family)]
+    | Annotated[SensorKind, Tag(SensorKind.family)]
+    | Annotated[EnvironmentKind, Tag(EnvironmentKind.family)],
+    Discriminator(
+        _family_tag,
+        custom_error_type="kind_name",
+        custom_error_message="'name' is not a kind's type URL; write name: "
+        f"<namespace>.v1.<{'|'.join(KIND_FAMILIES)}>.<name>",
+    ),
+]
+
+_KIND: TypeAdapter[Kind] = TypeAdapter(Kind)
+
+
+def kind_of(data: Mapping[str, Any]) -> Kind:
+    """The kind ``data`` declares, as the record of the family its ``name`` names. Raises
+    :class:`pydantic.ValidationError` when it is not one; each error's location starts with
+    the family's tag."""
+    return _KIND.validate_python(data)
 
 
 # --- the declaration's own rules, and its defaults ---------------------------------------
@@ -681,7 +758,9 @@ def services(options: Mapping[str, Any]) -> tuple[str, ...] | None:
     return None
 
 
-def binding_names(kind: Kind | None, options: Mapping[str, Any]) -> tuple[str, ...] | None:
+def binding_names(
+    kind: EnvironmentKind | None, options: Mapping[str, Any]
+) -> tuple[str, ...] | None:
     """Every ``<service>.<key>`` an environment of ``kind`` written with ``options`` binds;
     None when its services are not named, so any service may be."""
     if kind is None or not kind.service_keys:
@@ -864,9 +943,33 @@ class Kinds(Record):
     #: is missing from ``runnable``.
     quarantined: tuple[str, ...] = ()
 
+    @overload
+    def get(self, family: Literal["subject"], name: str) -> SubjectKind | None: ...
+    @overload
+    def get(self, family: Literal["probe"], name: str) -> ProbeKind | None: ...
+    @overload
+    def get(self, family: Literal["sensor"], name: str) -> SensorKind | None: ...
+    @overload
+    def get(self, family: Literal["environment"], name: str) -> EnvironmentKind | None: ...
+    @overload
+    def get(self, family: str, name: str) -> Kind | None: ...
     def get(self, family: str, name: str) -> Kind | None:
-        return self.kinds.get(schema.url(family, name))
+        """The kind of ``family`` an entry names ``name`` (short for a built-in, a type URL
+        otherwise); None when no kind of that family has the name, a kind of another
+        family included."""
+        found = self.kinds.get(schema.url(family, name))
+        return found if found is not None and found.family == family else None
 
+    @overload
+    def of(self, family: Literal["subject"]) -> tuple[SubjectKind, ...]: ...
+    @overload
+    def of(self, family: Literal["probe"]) -> tuple[ProbeKind, ...]: ...
+    @overload
+    def of(self, family: Literal["sensor"]) -> tuple[SensorKind, ...]: ...
+    @overload
+    def of(self, family: Literal["environment"]) -> tuple[EnvironmentKind, ...]: ...
+    @overload
+    def of(self, family: str) -> tuple[Kind, ...]: ...
     def of(self, family: str) -> tuple[Kind, ...]:
         return tuple(kind for kind in self.kinds.values() if kind.family == family)
 
@@ -906,13 +1009,12 @@ def _parsed(
     name = file.data.get("name")
     key = name if isinstance(name, str) and name else file.origin
     try:
-        kind = Kind.model_validate(dict(file.data))
+        kind = kind_of(dict(file.data))
     except ValidationError as error:
+        family = _family_tag(file.data)
         rejected.setdefault(key, []).extend(
-            found.model_copy(update={"kind": "kind_invalid"})
-            if found.kind == "invalid_value"
-            else found
-            for found in from_validation_error(error, source=file.origin)
+            _as_kinds(found, family)
+            for found in from_validation_error(error, source=file.origin, tagged=True)
         )
         return None
     misnamed = grammar(kind.name)
@@ -929,6 +1031,30 @@ def _parsed(
         )
         return None
     return kind
+
+
+def _as_kinds(found: Problem, family: str | None) -> Problem:
+    """A problem with a kind file in a kind's words: a value that does not fit is
+    ``kind_invalid``, and a key the file's family does not have that another family's
+    record does says which family declares it."""
+    if found.kind == "invalid_value":
+        return found.model_copy(update={"kind": "kind_invalid"})
+    owners = [
+        other
+        for other, record in KIND_RECORDS.items()
+        if other != family and found.path in record.model_fields
+    ]
+    if found.kind != "unknown_key" or family is None or not owners:
+        return found
+    return found.model_copy(
+        update={
+            "kind": "kind_invalid",
+            "message": f"only a {' or '.join(owners)} kind declares {found.path!r}; this is a "
+            f"{family} kind",
+            "fix": f"remove {found.path!r}, or name the kind <namespace>.v1.{owners[0]}.<name> "
+            f"if it is a {owners[0]}",
+        }
+    )
 
 
 def unreadable(origin: str) -> tuple[Problem, ...]:

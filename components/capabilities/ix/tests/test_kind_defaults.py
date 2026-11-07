@@ -27,7 +27,7 @@ import ix
 from ix.adapters._out.matrix_judge import JudgeSensor
 from ix.application.experiments import Vocabulary, examine, find_deviations, register
 from ix.composition import Root
-from ix.domain.kind import Kind, Kinds, Option, kinds
+from ix.domain.kind import Kinds, Option, kind_of, kinds
 from ix.domain.ports import Surroundings
 from ix.domain.run import Target
 from ix.domain.schema import DeclarationFile
@@ -80,7 +80,7 @@ class TestTheDeclaration:
         it says it ``binds`` it (a loop's ``{response}``), or it is refused."""
         options: dict[str, Any] = {"x": {"default": "{size}"}}
         with pytest.raises(ValidationError, match="nothing binds there"):
-            Kind.model_validate({"name": "lab.v1.subject.x", "summary": "s", "options": options})
+            kind_of({"name": "lab.v1.subject.x", "summary": "s", "options": options})
         bound = {
             "loop": {
                 "type": "mapping",
@@ -88,12 +88,12 @@ class TestTheDeclaration:
                 "fields": {"prompt": {"default": "again: {response}"}},
             }
         }
-        Kind.model_validate({"name": "lab.v1.subject.x", "summary": "s", "options": bound})
+        kind_of({"name": "lab.v1.subject.x", "summary": "s", "options": bound})
 
     @pytest.mark.parametrize("named", [["nope"], ["model"]])
     def test_a_default_from_a_runtime_names_another_option(self, named: list[str]) -> None:
         with pytest.raises(ValidationError, match="each names another option"):
-            Kind.model_validate(
+            kind_of(
                 {
                     "name": "lab.v1.subject.x",
                     "summary": "s",

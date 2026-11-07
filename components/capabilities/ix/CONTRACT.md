@@ -1,10 +1,10 @@
 # ix's contracts
 
-What each published surface of ix that 0.8 changed hides, what it consists of, its defaults,
-how it fails, and how far it is promised. The [README](README.md) shows each in use; this file
-is what a change to one of them must keep. The surfaces 0.8 did not change (the experiment
-file, the CLI's commands and exit codes, the report and the run's tables) are described in the
-README and are not repeated here; a surface snapshot test of the whole package comes once its
+What each published surface of ix that 0.8 or a later release changed hides, what it consists
+of, its defaults, how it fails, and how far it is promised. The [README](README.md) shows each
+in use; this file is what a change to one of them must keep. The surfaces none of them changed
+(the experiment file, the report and the run's tables) are described in the README and are not
+repeated here; a surface snapshot test of the whole package comes once its
 refactor is done.
 
 Stability is one of two words. **Stable**: changes only by addition; a break needs a major
@@ -90,6 +90,34 @@ whose default follows one a cell fills must be written (`option_missing`). A
 default a later ix declares otherwise is a deviation of every registration that relied on it
 (`design.defaults.<entry>.<option>`), so the run is not gated until the registration is
 amended.
+
+## A kind's record, by family
+
+**Stability: stable** (`ix.v1.kind`). Pinned by `tests/test_kinds.py`
+(`test_a_kind_declares_only_what_its_family_has_and_says_which_family_does`,
+`test_a_kind_built_in_code_is_its_familys_record`, `test_an_entry_names_a_kind_of_its_own_family`).
+
+**The decision it hides.** Which keys a kind of each family has. The family set is closed
+(`KIND_FAMILIES`), so a key one family needs is that family's record's, and no other record
+carries it.
+
+**Members.** `ix.Kind`: the union of `SubjectKind`, `ProbeKind`, `SensorKind` and
+`EnvironmentKind` (each in `ix.domain`), discriminated by the family segment of `name`. Every
+record declares `schema`, `name`, `summary`, `options`, `offers`, `needs` and `overlap`;
+`ProbeKind` adds `duration`, `SensorKind` adds `metrics`, `truth` and `confusion`,
+`EnvironmentKind` adds `service_keys`. `Kind.family` is the record's family. `Kinds.get(family,
+name)` and `Kinds.of(family)` return that family's record.
+
+**Defaults.** As each field declares: `overlap` `forbidden`, every list empty, `confusion`
+none. A sensor's `metrics` has no default.
+
+**Failure behaviour.** A kind file whose `name` names no kind's family is refused
+(`kind_invalid`, at the file). A key the family's record does not have is refused: one another
+family's record has is `kind_invalid` at that key, naming the family; any other is
+`unknown_key`. A sensor with no `metrics` is `missing_key`, one with an empty list or a metric
+named twice `kind_invalid`; so is a probe whose `duration` names an option that is not a
+duration. A record built in code whose `name` names another family is a `ValidationError`.
+`Kinds.get` returns None for a kind of another family, however it is named.
 
 ## The registered design and the plan digest
 

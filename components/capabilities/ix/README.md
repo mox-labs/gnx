@@ -282,6 +282,14 @@ offers and needs, for a sensor the metrics it provides and whether a model judge
 and for an environment the keys each service it brings up is bound with (`service_keys:
 [host, port, url]`, named `{<service>.<key>}`). `ix kinds` lists them.
 
+Every family has its own record, chosen by the family segment of the kind's `name`
+(`acme.v1.sensor.x` is a sensor kind). All four declare `name`, `summary`, `options`,
+`offers`, `needs` and `overlap`; a probe kind adds `duration` (the duration options that add
+up to one trial), a sensor kind `metrics` (at least one), `truth` and `confusion`, an
+environment kind `service_keys`. A key another family's record has is refused, naming the
+family that declares it. In code, `ix.Kind` is the union of the four, and each record
+(`SubjectKind`, `ProbeKind`, `SensorKind`, `EnvironmentKind`) is exported from `ix.domain`.
+
 Every kind also says whether two trials may use it at once (`overlap: allowed`, or
 `forbidden`, which a kind that says nothing is), and each metric whether what it reads moves
 with whatever runs beside the trial (`contended: true`: a time, a throughput, a memory
@@ -830,7 +838,7 @@ ix.plan(experiment.model_copy(update={"repeats": 9})).trials.total  # 243
 `configure_telemetry`, `error_document`; the documents they return (`Validation`,
 `Problem`, `Design`, `Plan`, `Registered`, `Deviations`, `Report`, `Runs`, `Genres`,
 `Kinds`); the three records an author or an extension writes (`Experiment`, `Genre`,
-`Kind`); the errors (`IxError`, `ConfigError`, `NotFoundError`, `InvalidExperimentError`,
+`Kind`, the union of a kind's four family records); the errors (`IxError`, `ConfigError`, `NotFoundError`, `InvalidExperimentError`,
 `RegistrationConflictError`, `UnregisteredError`, `UsageError`); and the tables
 `PROBLEM_KINDS`, `ERROR_KINDS`, `EXIT_CODES`, `EXIT_MEANINGS` and `EXIT_NEXT`. Every part of
 those records (`SubjectConfig`, `Margin`, `Decision`, `Interval`, ...) is exported from

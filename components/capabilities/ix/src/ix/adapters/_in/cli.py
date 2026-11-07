@@ -1137,6 +1137,7 @@ def kinds(lab: str | None, as_json: bool) -> None:
     metrics = Table(title="Metrics", title_justify="left")
     for column in ("sensor / metric", "unit", "shape", "better", "judged", "contended"):
         metrics.add_column(column, no_wrap=column != "unit")
+    environments = {kind.name: kind.service_keys for kind in found.of("environment")}
     for kind in found.kinds.values():
         label = kind.label
         # One option a line: a name folded across lines could not be read or searched for.
@@ -1145,7 +1146,9 @@ def kinds(lab: str | None, as_json: bool) -> None:
             f"{name}{'*' if option.required else ''}" for name, option in kind.options.items()
         )
         facets = f"{', '.join(kind.needs) or '-'} > {', '.join(kind.offers) or '-'}"
-        keys = [escape(", ".join(kind.service_keys) or "-")] if kind.family == "environment" else []
+        keys = (
+            [escape(", ".join(environments[kind.name]) or "-")] if kind.name in environments else []
+        )
         tables[kind.family].add_row(
             escape(label),
             escape(options or "-"),
@@ -1154,9 +1157,9 @@ def kinds(lab: str | None, as_json: bool) -> None:
             kind.overlap,
             "yes" if kind.name in found.runnable else "no",
         )
-        if kind.metrics:
-            metrics.add_row(f"[bold]{escape(label)}[/bold]")
-        for index, metric in enumerate(kind.metrics, start=1):
+    for sensor in found.of("sensor"):
+        metrics.add_row(f"[bold]{escape(sensor.label)}[/bold]")
+        for index, metric in enumerate(sensor.metrics, start=1):
             metrics.add_row(
                 f"  {escape(metric.name)}",
                 escape(metric.unit or "-"),
@@ -1164,7 +1167,7 @@ def kinds(lab: str | None, as_json: bool) -> None:
                 metric.direction,
                 "yes" if metric.judged else "no",
                 "yes" if metric.contended else "no",
-                end_section=index == len(kind.metrics),
+                end_section=index == len(sensor.metrics),
             )
     for table in tables.values():
         out.print(table)

@@ -222,13 +222,16 @@ def _scalar(value: Any) -> Any:
 
 
 def from_validation_error(
-    error: ValidationError, *, prefix: str = "", source: str = ""
+    error: ValidationError, *, prefix: str = "", source: str = "", tagged: bool = False
 ) -> list[Problem]:
-    """Each pydantic error as a :class:`Problem` with a path, the legal set and a fix."""
+    """Each pydantic error as a :class:`Problem` with a path, the legal set and a fix.
+    ``tagged``: the error is a tagged union's (a kind), whose every location starts with the
+    tag of the record it was read as, which is no key of what was written."""
     problems: list[Problem] = []
     for item in error.errors():
-        path = _path(item["loc"], prefix)
-        key = str(item["loc"][-1]) if item["loc"] else ""
+        loc = item["loc"][1:] if tagged else item["loc"]
+        path = _path(loc, prefix)
+        key = str(loc[-1]) if loc else ""
         got = _scalar(item.get("input"))
         context = item.get("ctx") or {}
         if item["type"] == "extra_forbidden":

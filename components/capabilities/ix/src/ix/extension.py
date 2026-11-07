@@ -1,11 +1,12 @@
 """What an extension of ix implements, and what it is handed: the whole adapter contract.
 
 A package adds a kind in two parts. Its **declaration** is data: a YAML file at the
-``ix.kind`` entry point (:class:`ix.Kind`), saying which options the kind takes and which
-facets it offers and needs. Its **adapter** is code: registered from the
-package's ``matrix.extensions`` entry point, named for the family's point (:data:`POINTS`),
-under the kind's type URL, held to the family's port (:data:`PORTS`) when it is registered and again
-when it is built, and built with what its registration says it ``needs``::
+``ix.kind`` entry point (:data:`ix.Kind`, read as the record of the kind's family), saying
+which options the kind takes and which facets it offers and needs. Its **adapter** is code:
+registered from the package's ``matrix.extensions`` entry point, named for the family's point
+(:data:`POINTS`), under the kind's type URL, held to the family's port (:data:`PORTS`) when it
+is registered and again when it is built, and built with what its registration says it
+``needs``::
 
     from ix.extension import LAUNCHER, POINTS
 

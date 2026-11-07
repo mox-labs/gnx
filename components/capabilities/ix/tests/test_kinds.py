@@ -23,11 +23,14 @@ from ix.domain import schema
 from ix.domain.design import select_sensors
 from ix.domain.experiment import Experiment, probe_set
 from ix.domain.kind import (
-    Kind,
+    EnvironmentKind,
     Kinds,
+    ProbeKind,
+    SensorKind,
     arrivals,
     check_options,
     fill,
+    kind_of,
     kinds,
     per_cell,
     placeholders,
@@ -112,7 +115,15 @@ class TestBuiltInKinds:
             "ix.v1.subject.process", "process", "subject",
         )  # fmt: skip
         assert builtin_kinds.get("subject", "ix.v1.subject.process") is process
-        assert builtin_kinds.get("environment", "process") is not process
+        environment = builtin_kinds.get("environment", "process")
+        assert environment is not None and environment.name == "ix.v1.environment.process"
+
+    def test_an_entry_names_a_kind_of_its_own_family(self, builtin_kinds: Kinds) -> None:
+        """Regression (found building review D5): a type URL passes through as written, so a
+        probe that named ``ix.v1.subject.process`` was given the subject kind and held to
+        its options. A kind of another family is no kind of this one."""
+        assert builtin_kinds.get("probe", "ix.v1.subject.process") is None
+        assert builtin_kinds.get("sensor", "ix.v1.probe.prompt") is None
 
     def test_options_are_declared_with_types_and_which_are_required(
         self, builtin_kinds: Kinds
@@ -134,7 +145,7 @@ class TestBuiltInKinds:
         for kind in builtin_kinds.kinds.values():
             assert "effects" not in kind.document(), kind.name
         with pytest.raises(ValidationError):
-            Kind.model_validate(_sensor("x", effects=["network"]))
+            kind_of(_sensor("x", effects=["network"]))
 
     def test_subjects_offer_and_probes_need(self, builtin_kinds: Kinds) -> None:
         offers = {k.label: set(k.offers) for k in builtin_kinds.of("subject")}
@@ -173,17 +184,49 @@ class TestBuiltInKinds:
         names = [m.name for sensor in builtin_kinds.of("sensor") for m in sensor.metrics]
         assert len(names) == len(set(names))
 
-    def test_only_a_sensor_declares_metrics_and_only_a_probe_a_duration(self) -> None:
-        with pytest.raises(ValidationError, match="only a sensor"):
-            Kind.model_validate({**_sensor("x"), "name": "lab.v1.probe.x"})
-        with pytest.raises(ValidationError, match="at least one metric"):
-            Kind.model_validate({"name": "lab.v1.sensor.x", "summary": "s"})
-        with pytest.raises(ValidationError, match="only a probe"):
-            Kind.model_validate(_sensor("x", options={"t": {"type": "duration"}}, duration=["t"]))
-        with pytest.raises(ValidationError, match="not a duration option"):
-            Kind.model_validate({"name": "lab.v1.probe.x", "summary": "s", "duration": ["length"]})
-        with pytest.raises(ValidationError, match="type URL"):
-            Kind.model_validate({"name": "lab.v1.genre.x", "summary": "s"})
+    def test_a_kind_declares_only_what_its_family_has_and_says_which_family_does(
+        self,
+    ) -> None:
+        """Changed requirement (review D5, ruling Q7): a kind is the record of the family its
+        name names, so a key of another family's is refused as a key that record does not
+        have; the author is told which family declares it. A sensor declares at least one
+        metric, and a probe's duration names its duration options."""
+
+        def refused(data: dict[str, Any]) -> list[tuple[str, str, str]]:
+            found = kinds([DeclarationFile(origin="x.yaml", data=data)], grammar=type_url_problem)
+            assert found.kinds == {}
+            ((_, problems),) = found.rejected.items()
+            return [(p.path, p.kind, p.message) for p in problems]
+
+        probe = {"name": "lab.v1.probe.x", "summary": "s"}
+        for key, value, owner in [
+            ("metrics", _sensor("x")["metrics"], "sensor"),
+            ("truth", ["expected"], "sensor"),
+            ("confusion", {"expected": "a", "observed": "b"}, "sensor"),
+            ("service_keys", ["url"], "environment"),
+        ]:
+            ((path, kind, message),) = refused({**probe, key: value})
+            assert (path, kind) == (key, "kind_invalid")
+            assert message == f"only a {owner} kind declares {key!r}; this is a probe kind"
+        ((path, kind, message),) = refused(_sensor("x", duration=["t"]))
+        assert (path, kind) == ("duration", "kind_invalid") and "only a probe kind" in message
+        ((path, kind, _),) = refused({"name": "lab.v1.sensor.x", "summary": "s"})
+        assert (path, kind) == ("metrics", "missing_key")
+        ((_, _, message),) = refused({**_sensor("x"), "metrics": []})
+        assert "at least 1" in message
+        ((_, _, message),) = refused({**probe, "duration": ["length"]})
+        assert "not a duration option" in message
+        for name in ("lab.v1.genre.x", None):
+            ((path, kind, message),) = refused({"name": name, "summary": "s"})
+            assert (path, kind) == ("", "kind_invalid") and "type URL" in message, name
+
+    def test_a_kind_built_in_code_is_its_familys_record(self) -> None:
+        """A kind built in code names its family's record, and the name must agree with it."""
+        sensor = kind_of(_sensor("x"))
+        assert isinstance(sensor, SensorKind) and sensor.family == "sensor"
+        assert SensorKind.model_validate(_sensor("x")) == sensor
+        with pytest.raises(ValidationError, match="not a probe kind's type URL"):
+            ProbeKind.model_validate({"name": "lab.v1.sensor.y", "summary": "s"})
 
     def test_an_environment_kind_declares_its_service_keys(self, builtin_kinds: Kinds) -> None:
         """Changed requirement (owner ruling 2026-10-22): the keys an environment binds each
@@ -194,13 +237,10 @@ class TestBuiltInKinds:
         assert keys == {"none": (), "process": ("host", "port", "url"),
                         "compose": ("host", "port", "url")}  # fmt: skip
         environment = {"name": "lab.v1.environment.x", "summary": "s"}
-        assert Kind.model_validate({**environment, "service_keys": ["url"]}).service_keys == (
-            "url",
-        )
+        declared = kind_of({**environment, "service_keys": ["url"]})
+        assert isinstance(declared, EnvironmentKind) and declared.service_keys == ("url",)
         with pytest.raises(ValidationError, match="extra"):
-            Kind.model_validate({**environment, "binds": ["url"]})
-        with pytest.raises(ValidationError, match="only an environment kind declares service_keys"):
-            Kind.model_validate(_sensor("x", service_keys=["url"]))
+            kind_of({**environment, "binds": ["url"]})
         session = builtin_kinds.get("subject", "agent-session")
         assert session is not None and "response" in session.options["loop"].binds
 
@@ -228,7 +268,7 @@ class TestBuiltInKinds:
                 **dict.fromkeys(allowed[family], "allowed"),
                 **dict.fromkeys(forbidden[family], "forbidden"),
             }
-        assert Kind.model_validate(_sensor("x")).overlap == "forbidden"
+        assert kind_of(_sensor("x")).overlap == "forbidden"
 
     def test_a_reading_of_time_or_of_a_resource_is_contended(self, builtin_kinds: Kinds) -> None:
         """Ruling X3: a metric is ``contended`` when what it reads (time, memory, a load
@@ -248,7 +288,7 @@ class TestBuiltInKinds:
 
     def test_a_declaration_is_data_and_holds_no_code(self) -> None:
         with pytest.raises(ValidationError, match="extra"):
-            Kind.model_validate(_sensor("x", implementation="acme.sensors:Timing"))
+            kind_of(_sensor("x", implementation="acme.sensors:Timing"))
 
     @pytest.mark.parametrize(
         ("value", "expected"),
@@ -443,7 +483,7 @@ class TestOptions:
             "options": {"rate": {"type": "rate", "required_when": {"mode": "open"}}},
         }
         with pytest.raises(ValidationError, match="required_when"):
-            Kind.model_validate(declared)
+            kind_of(declared)
 
     def test_an_option_another_options_value_requires(self, builtin_kinds: Kinds) -> None:
         load = builtin_kinds.get("probe", "http-load")
@@ -491,7 +531,7 @@ class TestOptions:
             assert "calls no model" in judge.options[option].choices["mock"]
 
     def test_an_options_open_choices_are_listed_and_never_enforced(self) -> None:
-        declared = Kind.model_validate(
+        declared = kind_of(
             {
                 "name": "acme.v1.subject.x",
                 "summary": "s",
@@ -932,7 +972,8 @@ class TestKindExtensionPoint:
     ) -> None:
         file: Path = write_experiment(compare_data)
         (file.parent / "kinds").mkdir()
-        (file.parent / "kinds" / "bad.yaml").write_text("name: lab.v1.sensor.bad\nsummary: s\n")
+        bad = {"name": "lab.v1.probe.bad", "summary": "s", "metrics": _sensor("x")["metrics"]}
+        (file.parent / "kinds" / "bad.yaml").write_text(yaml.safe_dump(bad))
         (file.parent / "kinds" / "worse.yaml").write_text("- not a mapping\n")
         result = ix.validate(file)
         assert result.valid

@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from ix.adapters._out.provenance import checkout, contents, digest
 from ix.domain.experiment import Experiment
-from ix.domain.kind import Kind, check_options
+from ix.domain.kind import Kind, check_options, kind_of
 from ix.domain.provenance import Content, Named, named_files
 from ix.domain.registration import Registration, deviations
 
@@ -147,7 +147,7 @@ class TestTheFilesACommandNames:
 
     def test_within_names_an_option_and_only_a_command_has_one(self) -> None:
         def kind(**option: Any) -> Kind:
-            return Kind.model_validate(
+            return kind_of(
                 {"name": "acme.v1.subject.x", "summary": "x",
                  "options": {"run": option, "dir": {"type": "string"}}}
             )  # fmt: skip

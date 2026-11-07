@@ -52,7 +52,7 @@ if TYPE_CHECKING:
         SubjectConfig,
     )
     from ix.domain.genre import Genre
-    from ix.domain.kind import Kind, Kinds
+    from ix.domain.kind import Kind, Kinds, SensorKind
     from ix.domain.run import Trial
 
 #: Where a resolved value came from.
@@ -258,7 +258,7 @@ def named_metrics(experiment: Experiment) -> list[tuple[str, str]]:
     return named
 
 
-type _Choice = tuple[Kind, Origin, dict[str, Any]]
+type _Choice = tuple[SensorKind, Origin, dict[str, Any]]
 
 
 def _offered(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None) -> set[str] | None:
@@ -275,20 +275,20 @@ def _offered(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None) -> s
     return offered | {facet for kind in probe_kinds if kind for facet in kind.offers}
 
 
-def _fits(sensor: Kind, offered: set[str] | None) -> bool:
+def _fits(sensor: SensorKind, offered: set[str] | None) -> bool:
     return offered is None or set(sensor.needs) <= offered
 
 
-def _provides(sensor: Kind, metric: str) -> bool:
+def _provides(sensor: SensorKind, metric: str) -> bool:
     return any(declared.name == metric for declared in sensor.metrics)
 
 
 def _listed(
     experiment: Experiment, kinds: Kinds, offered: set[str] | None
-) -> tuple[list[tuple[int, Kind]], list[Problem]]:
+) -> tuple[list[tuple[int, SensorKind]], list[Problem]]:
     """The sensors the experiment lists under ``sensors:``, by position, and each that the
     subjects and probes cannot feed."""
-    listed: list[tuple[int, Kind]] = []
+    listed: list[tuple[int, SensorKind]] = []
     problems: list[Problem] = []
     for index, selection in enumerate(experiment.sensors):
         sensor = kinds.get("sensor", selection.kind)
@@ -363,7 +363,7 @@ def _chosen_by_ix(
 
 
 def _unprovided(
-    path: str, metric: str, kinds: Kinds, installed: list[Kind], offered: set[str] | None
+    path: str, metric: str, kinds: Kinds, installed: list[SensorKind], offered: set[str] | None
 ) -> Problem:
     available = sorted(
         {declared.name for sensor in kinds.of("sensor") if _fits(sensor, offered)
@@ -394,7 +394,7 @@ def _choose(
     metric: str,
     experiment: Experiment,
     kinds: Kinds,
-    listed: list[tuple[int, Kind]],
+    listed: list[tuple[int, SensorKind]],
     offered: set[str] | None,
 ) -> tuple[_Choice | None, list[Problem]]:
     """The sensor that provides ``metric``: the one listed under ``sensors:`` that does,
@@ -418,7 +418,7 @@ def _choose(
     return _chosen_by_ix(path, metric, kinds, offered)
 
 
-def _declared(sensor: Kind, metric: str) -> Metric:
+def _declared(sensor: SensorKind, metric: str) -> Metric:
     return next(declared for declared in sensor.metrics if declared.name == metric)
 
 
@@ -450,7 +450,7 @@ def _mismatches(experiment: Experiment, chosen: dict[str, _Choice]) -> list[Prob
 
 
 def _selected(
-    experiment: Experiment, listed: list[tuple[int, Kind]], chosen: dict[str, _Choice]
+    experiment: Experiment, listed: list[tuple[int, SensorKind]], chosen: dict[str, _Choice]
 ) -> tuple[SelectedSensor, ...]:
     """Each sensor a run would use: every listed one, even when no decision reads it, and
     every one chosen for a metric; each reading every metric it declares a flag for."""

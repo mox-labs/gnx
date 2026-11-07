@@ -23,6 +23,17 @@ compares with 0.8.0.
 - **A `model-call` subject's usage facet** keeps the neutral reply's facts: `backend`,
   `attempts`, `retries` and `fallback_from` are gone from it (they are the model runtime's own
   record, the session row's `provenance`).
+- **`ix.Kind` is the union of four records, one per family** (review D5, ruling Q7):
+  `SubjectKind`, `ProbeKind` (adds `duration`), `SensorKind` (adds `metrics`, at least one,
+  `truth` and `confusion`) and `EnvironmentKind` (adds `service_keys`), each exported from
+  `ix.domain`; which one a declaration is comes from the family segment of its `name`. **Kind
+  files are unchanged.** Code that built `ix.Kind(...)` names its family's record; code that
+  called `ix.Kind.model_validate(data)` calls `pydantic.TypeAdapter(ix.Kind).validate_python`.
+  `ix kinds --json` shows each kind with its own family's keys alone: a subject kind has no
+  `metrics`, `truth`, `duration`, `confusion` or `service_keys`. A kind file that holds a key
+  of another family's is refused `kind_invalid` at that key, naming the family that declares
+  it; a sensor kind file with no `metrics` is `missing_key` at `metrics`, where it was
+  `kind_invalid`.
 
 ### Removed (breaking)
 
@@ -35,6 +46,8 @@ compares with 0.8.0.
   `matrix.SupportsAclose`; an error's `fix` and the tracer provider's span processing are read
   through declared types, not by name.
 - ix depends on `matrix>=0.10,<0.11` and `matrix-hardline>=0.1,<0.2`.
+- `ix --skill -r kinds` says which keys every kind declares and which each family adds, read
+  from the records.
 - **ix's `matrix.extensions` entry points name its points** (`ix.subject`, `ix.probe`,
   `ix.sensor`, `ix.environment`, `component`, `payload-type`), as matrix 0.10 reads them, so a
   session that reads none of them (a recon survey) does not import ix. ix's root asks for
