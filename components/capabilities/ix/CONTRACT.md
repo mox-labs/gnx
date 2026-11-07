@@ -224,7 +224,8 @@ file of ix's own. Whether its process is alive is matrix's store's to say (`writ
   (`ix.run(run_id=)`, `ix.start(run_id=)`) names any run.
 - `ix status <run>` (`ix.status(run)`): `Status`, read from the record alone.
 - `ix events <run> [--follow]` (`ix.events(run, follow=)`): the run's `matrix.v1.event`
-  documents, oldest first; with follow, each as it is written until the run ends.
+  documents, oldest first; with follow, each as it is written until the run ends, and
+  refused at once for a run still written on another host.
 - `ix stop <run>` (`ix.stop(run)`): SIGTERM to the process writing the run, then its
   `Status`.
 - `Status` (`ix.v1.status`): `run`, `location`, `experiment`, `status` (`running`,
@@ -257,9 +258,10 @@ report again), and its standard error is appended to `<runs directory>/<run id>.
   printed none is `unknown` with its log's end; one that has not opened it within
   `STARTUP_S` is stopped (SIGTERM, then SIGKILL after 5s) and the start is `config`.
 - A run whose process died on this host reads as `interrupted` (matrix finishes its
-  record), so `status` says so and a follower ends. A run written on another host is read
-  as its record says: `stop` refuses it (`usage`), and a follower waits for its record to
-  say it ended there.
+  record), so `status` says so and a follower ends. A run still written on another host is
+  read as its record says: `stop` and `events --follow` refuse it (`usage`), since whether
+  its writer is alive cannot be read from here; `events` without follow reads its events as
+  they stand. So every follower ends.
 - `stop` on a run that has ended does nothing; on a process it may not signal, `config`. A
   run still releasing after `STOP_WAIT_S` is returned `running`: ask again.
 - What a SIGKILLed run started (a subject, a probe) is not released: as for a run in the

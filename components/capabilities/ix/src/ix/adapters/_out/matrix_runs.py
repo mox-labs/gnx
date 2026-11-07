@@ -233,8 +233,23 @@ class Runs:
         holds it; a line not yet whole, or not JSON, is not one. With ``follow``, it goes on
         yielding each event as it is written until the record says the run ended, and then
         every event written before that: it ends however the run ended, its writer killed
-        included. A run written on another host is followed until its record says it
-        ended there."""
+        included. Raises :class:`UsageError`, before yielding anything, for ``follow`` on a
+        run still written on another host: whether its writer there is alive cannot be read
+        from here, so following it might never end. Without ``follow`` such a run's events
+        are read as they stand."""
+        if follow:
+            host, pid = self.writer(run)
+            if pid is None and self.running(run):
+                raise UsageError(
+                    f"run {run!r} is written by a process on {host or 'another host'}, whose "
+                    "end this host cannot see, so following it might never end",
+                    fix="read its events as they stand without --follow, or ask `ix status` "
+                    "again later",
+                    details={"path": f"{self.root}/{run}"},
+                )
+        return self._events(run, follow=follow)
+
+    def _events(self, run: str, *, follow: bool) -> Iterator[dict[str, Any]]:
         path = Path(self.root, run, EVENT_LOG)
         position = 0
         while True:

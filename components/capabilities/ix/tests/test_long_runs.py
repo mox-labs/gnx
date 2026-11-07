@@ -16,6 +16,7 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -27,7 +28,6 @@ from ix.adapters._out import detached
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from pathlib import Path
 
 Write = Any  # the write_experiment fixture
 
@@ -189,6 +189,31 @@ def test_following_a_run_whose_process_was_killed_ends_and_it_reads_as_interrupt
     assert "ix.trial.start" in names
     after = ix.status(started.location)
     assert (after.status, after.exit_code) == ("interrupted", 12)
+
+
+def test_a_run_written_on_another_host_is_read_but_not_followed(
+    write_experiment: Write, processes: _Processes
+) -> None:
+    """Follow-up to Q5: a follower always ends. Whether the writer of a run on another host
+    is alive cannot be read from here, so ``--follow`` on one is refused at once, with the
+    way to read it instead; without ``--follow`` its events are read as they stand."""
+    report = ix.run(write_experiment(_sleeping(processes, 0.0, 1)), exploratory=True)
+    record = Path(report.location, "run.json")
+    # As a shared run directory shows a run whose writer is on another machine.
+    elsewhere = json.loads(record.read_text())
+    elsewhere |= {"status": "running", "writer": {"pid": 1, "host": "another-machine"}}
+    record.write_text(json.dumps(elsewhere))
+
+    with pytest.raises(ix.UsageError, match="another-machine") as refused:
+        ix.events(report.location, follow=True)
+    assert "without --follow" in (refused.value.fix or "")
+    assert "ix status" in (refused.value.fix or "")
+    code, _ = _cli("events", report.location, "--follow", "--json")
+    assert code == ix.EXIT_CODES["usage"]
+    names = [event["name"] for event in ix.events(report.location)]
+    assert names[0] == "matrix.run.start" and names[-1] == "matrix.run.end"
+    found = ix.status(report.location)
+    assert (found.status, found.pid, found.host) == ("running", None, "another-machine")
 
 
 def test_a_detached_start_is_refused_before_anything_starts_as_a_run_is(

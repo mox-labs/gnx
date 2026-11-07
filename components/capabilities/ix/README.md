@@ -634,8 +634,10 @@ Then, for that run or any other (a run's directory, or an experiment for its lat
 - `ix events <run> --follow` prints the run's events as they are written (`--json`: one
   `matrix.v1.event` a line) and returns once the run has ended, however it ended: a run
   whose process was killed reads as interrupted, and the follower returns. It then exits as
-  `ix status` would. Events are telemetry and may be dropped: read results from the report.
-  Ctrl-C stops following and leaves the run running.
+  `ix status` would. `--follow` on a run still written on another host is refused (exit 2):
+  whether its process there is alive cannot be read from here; read its events without
+  `--follow`, or poll `ix status`. Events are telemetry and may be dropped: read results
+  from the report. Ctrl-C stops following and leaves the run running.
 - `ix stop <run>` stops a running run as Ctrl-C stops one in the foreground (it sends the
   process writing it SIGTERM): the trial in flight is kept as the harness's, everything the
   run started is released, and the record says `interrupted`. It waits up to 30 seconds for
@@ -823,8 +825,8 @@ killed outright is not found and stopped later: in the next run, each trial of a
 whose address already answers is recorded as a harness failure (`address_in_use`) instead
 of being measured. The sensors cannot be run again over a stored run and written back. A
 stopped or killed run cannot be resumed; it is run again. A run written on another host
-(a shared run directory) can be read and followed, not stopped from here, and a follower of
-one whose process died there waits until its record says it ended, which nothing writes.
+(a shared run directory) can be read, not followed or stopped from here, and one whose
+process died there reads as running until a reader on that host finishes its record.
 
 ## Settings and telemetry
 

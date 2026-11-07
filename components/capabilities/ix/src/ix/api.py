@@ -227,8 +227,9 @@ def events(run: PathLike, *, follow: bool = False) -> Iterator[dict[str, Any]]:
     """A run's events, oldest first, each a ``matrix.v1.event`` document (``name``, ``time``,
     ``component``, ``fields``, ...). They are telemetry and may be dropped: read results
     from the report. With ``follow`` it yields each event as it is written, and ends once
-    the run has ended, however it ended (its process killed included). ``run`` is as
-    :func:`status` takes it."""
+    the run has ended, however it ended (its process killed included); ``follow`` on a
+    run still written on another host raises :class:`UsageError` at once, since its end
+    cannot be seen from here. ``run`` is as :func:`status` takes it."""
     return _root().events(run, follow=follow)
 
 

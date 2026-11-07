@@ -1080,9 +1080,11 @@ def status(run: str, as_json: bool) -> None:
 Each is a matrix.v1.event (its name, time, component and fields): a trial starting and
 ending, a component's progress. They are telemetry and may be dropped; read results from
 `ix report`. With --json, one event document a line (JSON lines). With --follow, each event
-as it is written, until the run ends however it ends (its process killed included); a run
-written on another host is followed until its record says it ended there. Ctrl-C stops
-following and leaves the run running. At the end it exits as `ix status` would then.
+as it is written, until the run ends however it ends (its process killed included).
+--follow on a run still written on another host is refused (exit {_CODE["usage"]}): whether
+its process there is alive cannot be read from here, so it might never end; read it without
+--follow, or ask `ix status` again later. Ctrl-C stops following and leaves the run
+running. At the end it exits as `ix status` would then.
 {_STANDING_HELP}""",
 )
 @_RUN_ARGUMENT

@@ -45,7 +45,9 @@ compares with 0.8.0.
   as Ctrl-C does. Each prints `ix.v1.status` and exits as it says: 13 while the run runs, 0
   once it completed (no verdict: `ix report` gives that), 12 stopped or its process gone, 8
   failed. No new exit code. In the library: `ix.start`, `ix.status`, `ix.events`, `ix.stop`
-  and `ix.Status`. `CONTRACT.md` has what each promises.
+  and `ix.Status`. `CONTRACT.md` has what each promises. `--follow` and `stop` refuse a run
+  still written on another host (`usage`), whose end this host cannot see, so a follower
+  always ends.
 - **`ix run --run-id ID`** (`ix.run(run_id=)`) names the run; an id a run is kept under
   already, or one that is no safe directory name, is refused (`usage`).
 - `python -m ix` runs the command line.

@@ -1255,7 +1255,9 @@ ix report <run directory>            # the verdict, once it has ended
   `matrix.v1.event` a line) and returns once the run has ended, however it ended (a killed
   run included), exiting as `ix status` then would. It waits as long as the run takes, so
   call it only when the run will end within your tool call; otherwise ask `ix status`
-  again later. Events are telemetry and may be dropped: results are the report's.
+  again later. On a run still written on another host `--follow` is refused (exit
+  {EXIT_CODES["usage"]}): read its events without it, or poll `ix status`. Events are
+  telemetry and may be dropped: results are the report's.
 - **`ix stop <run>`** stops a running run as Ctrl-C does: the trial in flight is kept as the
   harness's, what the run started is released, and the record says `interrupted`. It waits
   up to 30 seconds and prints the status; one still releasing says `running` (exit
