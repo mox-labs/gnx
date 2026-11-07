@@ -546,8 +546,10 @@ run would be recorded, and `settings`: the effective value of every key the run 
 config), each `{path, value, origin, file, note}`. `origin` is `config` (with the `file`
 that set it), `definition`, `extension` (a runtime's or the store's own default) or `matrix`
 (matrix's default); `note` says what a default means where the value does not, as
-`deadline_s: null`, which is no deadline. Read the settings before a long run: nothing bounds
-it in time unless one says so. A problem anywhere is the error envelope with every problem.
+`deadline_s: null`, which is no deadline. Read the settings before a long run: unset,
+`deadline_s` is an hour for each component, and a component past it fails, naming the key to
+raise; a soak run writes `deadline_s: null`. A problem anywhere is the error envelope with
+every problem.
 
 `matrix run [CONFIG] --input KIND=PATH ... --json` runs it. Each `--input` file holds one
 JSON value a line, the rows of that run-input kind (`-` is standard input, once). It prints

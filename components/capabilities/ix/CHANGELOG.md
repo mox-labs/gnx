@@ -40,6 +40,9 @@ compares with 0.8.0.
   session that reads none of them (a recon survey) does not import ix. ix's root asks for
   matrix's points and its own. A third party's adapter declares its family's point the same way
   (`"ix.sensor" = "acme.ix_ext:register"`).
+- ix's experiment runs keep no matrix deadline, as before: matrix 0.10 gives each component an
+  hour unless told otherwise, and ix now says `deadline_s=None` for the one matrix run an
+  experiment run is.
 
 ## 0.8.0 — 2026-11-06
 

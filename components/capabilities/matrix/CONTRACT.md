@@ -194,7 +194,8 @@ deadline).
 **Defaults.** None of its own: a plan reports defaults, and makes none. Every limit is
 listed, the run's and each component's, as are every option of the store, of each runtime and
 observer, of each component's config, and each agent's `model`, `tools` and `max_turns`. The
-run's `deadline_s` defaults to null, no deadline, and the plan says so. A model step's
+run's `deadline_s` defaults to 3600, an hour for each component (ruling M-O7), and the plan
+says so; written as null it is no deadline, on the run or on one component. A model step's
 `runtime` and the pydantic-ai runtime's `model_runtime`, left unset, are the one model runtime
 the config composes (ruling M-RT): the plan gives its name, origin `matrix`, note `the only
 model runtime composed`.

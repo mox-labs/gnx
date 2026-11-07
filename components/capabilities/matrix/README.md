@@ -105,7 +105,7 @@ supplies when the run starts are declared as `inputs`. A wiring runs any number 
 ```python
 import asyncio
 
-from matrix import Executor, JsonlConstructStore, wire
+from matrix import Executor, JsonlConstructStore, Limits, wire
 
 TRIAL = "demo.v1.trial"
 
@@ -128,7 +128,10 @@ class Trials:
 
 
 store = JsonlConstructStore("runs")
-run = asyncio.run(Executor().run(wire({"trials": Trials()}), store=store, run_id="soak-1"))
+soak = Limits(deadline_s=None)  # a soak run: no deadline (unset, each component has an hour)
+run = asyncio.run(
+    Executor().run(wire({"trials": Trials()}), store=store, run_id="soak-1", limits=soak)
+)
 ```
 
 `ctx.provide(kind, row)` hands over one row while the component is still running. When it
@@ -186,12 +189,16 @@ class Load:
 
 
 limits = Limits(
-    deadline_s=60,  # each component, from when it starts
+    deadline_s=60,  # each component, from when it starts; unset, an hour; None, no deadline
     on_failure="fast",  # or "isolate": only dependents are skipped
     retry=Retry(attempts=3, errors=("transient",)),  # rate limits, timeouts, outages
-    components={"soak": ComponentLimits(deadline_s=4 * 3600)},
+    components={"soak": ComponentLimits(deadline_s=4 * 3600)},  # None: this one has none
 )
 ```
+
+A component past its deadline is stopped through the stop path and fails, and its failure
+names the key that set the deadline (`matrix.limits.deadline_s`, or the component's own
+`matrix.limits.components.<name>.deadline_s`) to raise, or to set to null.
 
 A retry runs a failed component again when its error is transient (or the reason the policy
 names), after a backoff or the `Retry-After` the backend reported, capped. A component that
@@ -442,7 +449,8 @@ null when a component other than an agent or a model step needs `agents` or
 `model_runtimes`, and so may make sessions of its own). Its `settings` are the effective
 value of every key the run is made from, each with who set it: a config file (named), an
 agent definition, an extension's own default, or matrix's. A default is listed as one, so a
-plan of a config that sets no `deadline_s` says the run has no deadline. matrix states no cost and keeps no spending ceiling: a run's cost is not
+plan of a config that sets no `deadline_s` shows matrix's hour for each component, and one
+that writes `deadline_s: null` says the run has no deadline. matrix states no cost and keeps no spending ceiling: a run's cost is not
 something it can measure, so it does not pretend to. The per-call token cap stays (owner ruling
 2026-10-22): `max_tokens` bounds each reply, not a run's cost. `run` prints the run id, where the record is, and its
 files: `run.json`, one `<kind>.jsonl` per kind (an agent step's reply row carries the task as

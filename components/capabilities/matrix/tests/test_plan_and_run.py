@@ -186,14 +186,15 @@ def _settings(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def test_the_plan_shows_every_limit_and_marks_each_default_as_one(
     project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A plan of a config that sets no limits still shows what bounds the run: no deadline
-    (said so), no concurrency cap, the grace and cleanup periods, the failure policy and the
-    retry policy, each as matrix's own default; and each component's, the run's."""
+    """A plan of a config that sets no limits still shows what bounds the run: the deadline
+    (changed requirement, ruling M-O7: an hour, where it was none), no concurrency cap (said
+    so), the grace and cleanup periods, the failure policy and the retry policy, each as
+    matrix's own default; and each component's, the run's."""
     code, plan, _ = _cli(capsys, "plan", "--json")
     assert code == 0 and "limits" not in plan
     found = _settings(plan)
     expected = {
-        "matrix.limits.deadline_s": None,
+        "matrix.limits.deadline_s": 3600.0,
         "matrix.limits.concurrency": None,
         "matrix.limits.grace_s": 5.0,
         "matrix.limits.cleanup_s": 30.0,
@@ -207,17 +208,40 @@ def test_the_plan_shows_every_limit_and_marks_each_default_as_one(
             "matrix",
             None,
         ), path
-    assert "no deadline" in found["matrix.limits.deadline_s"]["note"]
+    assert "null is no deadline" in found["matrix.limits.deadline_s"]["note"]
     assert "no cap" in found["matrix.limits.concurrency"]["note"]
     own = found["matrix.limits.components.review.deadline_s"]
-    assert (own["value"], own["origin"]) == (None, "matrix")
-    assert own["note"].startswith("the run's matrix.limits.deadline_s: no deadline")
+    assert (own["value"], own["origin"]) == (3600.0, "matrix")
+    assert own["note"].startswith("the run's matrix.limits.deadline_s: each component's")
     store = (found["matrix.store.type"], found["matrix.store.root"], found["matrix.store.fsync"])
     assert [(s["value"], s["origin"]) for s in store] == [
         ("jsonl", "matrix"),
         (".matrix/runs", "extension"),
         (False, "extension"),
     ]
+
+
+@pytest.mark.parametrize("at", ["run", "component"])
+def test_a_deadline_written_as_null_is_no_deadline_and_the_plan_says_so(
+    project: Path, capsys: pytest.CaptureFixture[str], at: str
+) -> None:
+    """Ruling M-O7: ``deadline_s: null`` written is no deadline (a soak run), told apart from
+    a deadline left unset, which is the default; on a component, it is that component's alone,
+    and the run's others keep the run's."""
+    limits = (
+        "  limits: {deadline_s: null}\n"
+        if at == "run"
+        else "  limits: {deadline_s: 60, components: {review: {deadline_s: null}}}\n"
+    )
+    (project / "matrix.yaml").write_text(CONFIG + limits)
+    code, plan, _ = _cli(capsys, "plan", "--json")
+    assert code == 0, plan
+    own = _settings(plan)["matrix.limits.components.review.deadline_s"]
+    assert own["value"] is None and "no deadline" in own["note"]
+    assert matrix.compose(matrix.load_config()).limits.of("review")[0] is None
+    assert matrix.compose(matrix.load_config()).limits.of("other")[0] == (
+        None if at == "run" else 60.0
+    )
 
 
 def test_a_value_a_file_sets_names_the_file(
@@ -366,7 +390,7 @@ def test_the_human_plan_lists_each_setting_and_who_set_it(
     code, text, _ = _cli(capsys, "plan")
     assert code == 0
     assert "settings (each effective value, and who set it):" in text
-    assert "  matrix.limits.deadline_s = null  (matrix; no deadline:" in text
+    assert "  matrix.limits.deadline_s = 3600.0  (matrix; each component's, from when" in text
     assert f'  matrix.agents.reviewer.model = "m1"  (config {project / "matrix.yaml"})' in text
 
 

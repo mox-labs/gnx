@@ -44,10 +44,16 @@ if TYPE_CHECKING:
 #: default, or matrix's own default.
 Origin = Literal["config", "definition", "extension", "matrix"]
 
-#: What a limit left at its default of None means.
+#: What a limit of None means.
 _UNBOUNDED = {
     "concurrency": "no cap: as many components at once as the wiring allows",
     "deadline_s": "no deadline: a component runs until it returns or the run is stopped",
+}
+
+#: What a limit left at a default that is not None means.
+_DEFAULTED = {
+    "deadline_s": "each component's, from when it starts: past it, the component is stopped "
+    "and fails; null is no deadline",
 }
 
 
@@ -187,8 +193,12 @@ def _walk(
             for key, inner in value.items():
                 yield from _walk(inner, f"{path}.{key}", origins, fallback, composed=composed)
         else:
-            note = _UNBOUNDED.get(name, "") if value is None and isinstance(model, Limits) else ""
-            yield _leaf(path, dumped[name], name in model.model_fields_set, origins, fallback, note)
+            given = name in model.model_fields_set
+            note = ""
+            if isinstance(model, Limits):
+                note = _UNBOUNDED.get(name, "") if value is None else ""
+                note = note or ("" if given else _DEFAULTED.get(name, ""))
+            yield _leaf(path, dumped[name], given, origins, fallback, note)
 
 
 def _limits(limits: Limits, origins: Mapping[str, str]) -> Iterator[SourcedValue]:
@@ -207,8 +217,11 @@ def _component_limits(
     inherited = {value.path.removeprefix("matrix.limits."): value for value in run}
     found: list[SourcedValue] = []
     for key in ("deadline_s", "grace_s", "cleanup_s"):
-        if overrides.get(key) is not None:  # None, given or not, is the run's
+        if overrides.get(key) is not None:
             found.append(_leaf(f"{at}.{key}", overrides[key], True, origins, "config"))
+        elif key == "deadline_s" and own is not None and key in own.model_fields_set:
+            # None written is no deadline for this component; any other None is the run's.
+            found.append(_leaf(f"{at}.{key}", None, True, origins, "config", _UNBOUNDED[key]))
         else:
             found.append(_inherited(f"{at}.{key}", inherited[key]))
     if own is not None and own.retry is not None:

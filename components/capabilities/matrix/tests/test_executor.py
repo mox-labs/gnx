@@ -10,6 +10,7 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 from matrix import (
     ComponentError,
+    ComponentLimits,
     ConfigError,
     Context,
     ContractError,
@@ -289,6 +290,45 @@ async def test_a_component_past_its_deadline_is_a_failure_naming_it() -> None:
     with pytest.raises(RunError, match="'slow' timed out after 0.01s") as e:
         await Executor().run(wire({"slow": Step(hangs)}), limits=Limits(deadline_s=0.01, grace_s=0))
     assert e.value.cause_kind == "component"
+
+
+@pytest.mark.parametrize(
+    ("limits", "key"),
+    [
+        (Limits(deadline_s=0.01, grace_s=0), "matrix.limits.deadline_s"),
+        (
+            Limits(grace_s=0, components={"slow": ComponentLimits(deadline_s=0.01)}),
+            "matrix.limits.components.slow.deadline_s",
+        ),
+    ],
+    ids=["the run's", "its own"],
+)
+async def test_a_component_past_its_deadline_says_which_setting_to_raise(
+    limits: Limits, key: str
+) -> None:
+    """Ruling M-O7: a run that reaches a deadline stops through the stop path, and the
+    failure the record keeps names the key that set it, and how to lift it."""
+
+    async def hangs(inputs: Inputs, ctx: Context) -> Any:
+        await asyncio.Event().wait()
+
+    with pytest.raises(RunError) as e:
+        await Executor().run(wire({"slow": Step(hangs)}), limits=limits)
+    (failure,) = e.value.run.failures
+    assert f"raise {key}, or set it to null for no deadline" in failure.message
+
+
+def test_the_deadline_is_an_hour_unless_set_and_null_written_is_none() -> None:
+    """Ruling M-O7: unset, each component's deadline is an hour; ``None`` written is no
+    deadline, at the run's level or a component's own, which a component left unset (or given
+    other keys only) does not inherit away."""
+    assert Limits().of("a")[0] == 3600.0
+    assert Limits(deadline_s=None).of("a")[0] is None
+    soak = Limits(
+        deadline_s=60,
+        components={"soak": ComponentLimits(deadline_s=None), "kept": ComponentLimits(grace_s=1)},
+    )
+    assert [soak.of(name)[0] for name in ("soak", "kept", "other")] == [None, 60.0, 60.0]
 
 
 def test_limits_are_checked_when_made() -> None:

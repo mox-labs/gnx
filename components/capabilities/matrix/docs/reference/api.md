@@ -383,12 +383,12 @@ from config.
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `concurrency` | `None` | how many components run at once (`>= 1`); `None` leaves it to the wiring |
-| `deadline_s` | `None` | bounds each component separately, from when it starts (`> 0`); each attempt has the whole of it |
+| `deadline_s` | `3600.0` | bounds each component separately, from when it starts (`> 0`); each attempt has the whole of it. `None` given is no deadline, for a soak run. A component past it is stopped through the stop path and fails, its message naming the key to raise (`matrix.limits.deadline_s`, or its own under `components`) |
 | `grace_s` | `5.0` | how long a component has to return after a stop request before it is cancelled (`>= 0`) |
 | `cleanup_s` | `30.0` | how long a cancelled component, or one async deferred release, has to finish before it is abandoned (`> 0`); a synchronous release is not bounded |
 | `on_failure` | `"fast"` | `fast`: the first failure stops every running component and skips the rest. `isolate`: only components that depend on the failed one are skipped |
 | `retry` | `Retry()` | the retry policy of every component; the default runs each once |
-| `components` | `{}` | name to `ComponentLimits(deadline_s, grace_s, cleanup_s, retry)`; a field left `None` inherits the run's |
+| `components` | `{}` | name to `ComponentLimits(deadline_s, grace_s, cleanup_s, retry)`; a field left unset inherits the run's, and so does one given `None`, but for `deadline_s`, where `None` given is no deadline for that component |
 
 `limits.of(name)` is `(deadline_s, grace_s, cleanup_s)` for a component and
 `limits.retry_of(name)` its `Retry`.
@@ -1711,7 +1711,8 @@ as one, each `{path, value, origin, file, note}`:
   `extension` (the default of a runtime's, the store's, an observer's or a component type's
   own config; for an agent's `model`, `tools` and `max_turns` left unset, the agent runtime's
   own default) or `matrix` (matrix's default).
-- `note` says what a value means where it alone does not: `deadline_s: null` is no deadline,
+- `note` says what a value means where it alone does not: the default `deadline_s` is each
+  component's, `deadline_s: null` is no deadline,
   `concurrency: null` no cap, and a component's limit it does not override is "the run's".
 
 The run's limits come first, then each component's, in the order of work, each of its

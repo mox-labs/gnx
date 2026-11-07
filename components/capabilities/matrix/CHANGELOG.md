@@ -65,6 +65,14 @@ bridge distribution of its own, `matrix-hardline` 0.1.0.
   itself, building through the registry rather than through `compose`, hands a
   `ModelRuntimes`: subclass it and implement the mapping and both methods (ix does, for the
   runtimes it builds when asked).
+- **`limits.deadline_s` defaults to 3600** (ruling M-O7), where it was none: each component
+  has an hour from when it starts unless the config says otherwise, so a run left alone ends.
+  `deadline_s: null` written is no deadline, for a soak run, and is told apart from unset: on
+  the run, and on one component (`limits.components.<name>.deadline_s: null`, which used to
+  mean "the run's" and now means none for that component). A component past its deadline is
+  stopped through the stop path as before, and its failure names the key to raise or set to
+  null. The plan shows the hour as matrix's default. A run that relied on no deadline writes
+  `deadline_s: null`; ix does, for its experiment runs.
 - **`RELEASE_TAG` is `matrix-v0.10.0`**: the install lines and every repair fix name it.
 - **A `matrix.extensions` entry point's name is a point its extension registers at** (ruling
   M-DISC), and its value the extension's `register`: an extension at three points has three
