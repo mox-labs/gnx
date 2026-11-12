@@ -63,6 +63,25 @@
         "email": "mox.rnd@gmail.com"
       },
       "license": "MIT"
+    },
+    {
+      "name": "dao",
+      "source": "./plugins/dao",
+      "description": "Set a project up as a directed agent organization: a constitution, governing policies, operating principles, positions and participants, written down where anyone can read them, and checked.",
+      "version": "0.2.0",
+      "category": "governance",
+      "keywords": [
+        "governance",
+        "agents",
+        "organization",
+        "harness",
+        "gnx"
+      ],
+      "author": {
+        "name": "Mox Labs",
+        "email": "mox.rnd@gmail.com"
+      },
+      "license": "MIT"
     }
   ]
 }

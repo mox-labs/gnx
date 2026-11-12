@@ -8,14 +8,15 @@ from pydantic import ValidationError
 from dao.domain.models import (
     CorpusDomain,
     DomainType,
-    FigureSet,
     GateVerdict,
     Grounding,
-    Seat,
+    Kind,
+    Participant,
+    Position,
     Verdict,
 )
 
-RICH = "This seat owns the following method, described concretely enough to guide behavior."
+RICH = "This position owns the following method, described concretely enough to guide behavior."
 
 
 class TestGateVerdict:
@@ -43,40 +44,27 @@ class TestGateVerdict:
             v.out_of_family = False
 
 
-class TestSeat:
-    def test_blank_method_rejected(self) -> None:
+class TestPosition:
+    def test_remit_is_thin_takes_policy_not_a_constant(self) -> None:
+        p = Position(name="x", does="short", must_not="no")
+        assert p.remit_is_thin(240) is True
+        assert p.remit_is_thin(2) is False
+
+    def test_a_position_read_from_a_file_is_frozen(self) -> None:
+        p = Position(name="x", does=RICH)
         with pytest.raises(ValidationError):
-            Seat(name="x", method="   ")
-
-    def test_method_is_thin_takes_policy_not_a_constant(self) -> None:
-        s = Seat(name="x", method="short")
-        assert s.method_is_thin(240) is True
-        assert s.method_is_thin(2) is False
+            p.does = "other"
 
 
-class TestFigureSet:
-    def test_duplicate_methods_compares_method_not_name(self) -> None:
-        """Two differently-named seats owning one method is the no-merges violation."""
-        fs = FigureSet(
-            project="p",
-            seats=[Seat(name="alpha", method=RICH), Seat(name="beta", method=RICH)],
-        )
-        assert fs.duplicate_methods() == [("alpha", "beta")]
-
-    def test_distinct_methods_do_not_clash(self) -> None:
-        fs = FigureSet(
-            project="p",
-            seats=[
-                Seat(name="alpha", method=RICH + " It reviews boundaries."),
-                Seat(name="beta", method="A wholly different method, described at length here."),
-            ],
-        )
-        assert fs.duplicate_methods() == []
+class TestParticipant:
+    def test_an_unreadable_kind_is_none_not_a_guess(self) -> None:
+        assert Participant(name="x", kind=None).kind is None
+        assert Participant(name="x", kind=Kind.AGENT).kind is Kind.AGENT
 
 
 class TestCorpusDomain:
     def test_only_distilled_counts_as_grounded(self) -> None:
-        """STAGED is pending eval + ratification — not yet ground to stand a seat on."""
+        """STAGED is pending eval + ratification — not yet ground to stand a position on."""
         for g, expected in (
             (Grounding.DISTILLED, True),
             (Grounding.STAGED, False),

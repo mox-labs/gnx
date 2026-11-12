@@ -1,10 +1,10 @@
-"""dao CLI — `dao check`, `dao spec`, `dao figures`.
+"""dao CLI: `dao check`, `dao spec`, `dao policy`, `dao figures`, and `dao --skill`.
 
-`dao init` is deliberately NOT a code command. Scaffolding eleven components is a
-judgment task (which seats, what method prose, which non-negotiables) and the research is
-explicit that the method prose is the load-bearing part. A generator that emits eleven
-plausible files would produce exactly the artifact-shaped-hole this audit exists to
-catch. The method lives in the `dao` skill; the code checks the result.
+`dao init` is deliberately NOT a command. Writing an organization is a judgment task
+(which positions, what each one's remit is, what the constitution commits to), and the
+research is explicit that the prose is the load-bearing part. A generator that emits six
+plausible files would produce exactly the artifact-shaped hole this audit exists to catch.
+The writing lives in the `dao` skill; the code checks the result.
 """
 
 from __future__ import annotations
@@ -21,60 +21,76 @@ from dao.adapters._out.corpus import (
     load_catalog,
     projects,
 )
-from dao.application.audit import POLICY, audit, summarise
-from dao.domain.spec import SPEC, Tier
+from dao.application.audit import POLICY, audit, complete
+from dao.domain.spec import SPEC, Status
+from dao.skill_files import skill as skill_text
+from dao.skill_files import skill_references
 
 console = Console()
 
-_STATUS_STYLE = {"PRESENT": "green", "PARTIAL": "yellow", "ABSENT": "red"}
+_STATUS_STYLE = {Status.PRESENT: "green", Status.PARTIAL: "yellow", Status.ABSENT: "red"}
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.version_option(package_name="dao")
-def main() -> None:
-    """dao — audit a project's Directed Agentic Organization against the eleven components."""
+@click.option(
+    "--skill", is_flag=True, help="Print how to set a project up (for an agent), then exit."
+)
+@click.option(
+    "-r",
+    "--reference",
+    type=click.Choice(skill_references()),
+    help="With --skill: print one reference instead.",
+)
+@click.pass_context
+def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
+    """dao: audit a project's directed agent organization against its six documents."""
+    if reference is not None and not skill:
+        raise click.UsageError("-r/--reference is used with --skill")
+    if skill:
+        click.echo(skill_text(reference), nl=False)
+        ctx.exit(0)
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
 
 
 @main.command("spec")
 @click.option(
     "--findings/--no-findings",
     default=False,
-    help="Show the research finding that constrains each component.",
+    help="Show the research finding behind each element.",
 )
 def spec_cmd(findings: bool) -> None:
-    """The eleven components of a dao."""
-    for tier in (Tier.COUNCIL, Tier.ORGANIZATION):
-        label = (
-            "COUNCIL FLOOR — what deliberating requires"
-            if tier is Tier.COUNCIL
-            else "ORGANIZATION DELTA — what running a project adds (crisis-driven, M3)"
-        )
-        console.print(f"\n[bold]{label}[/]")
-        for c in (x for x in SPEC if x.tier is tier):
-            console.print(f"  [cyan]#{c.n:<2}[/] [bold]{c.name}[/]  [dim]{c.group.value}[/]")
-            console.print(f"      {c.summary}")
-            if c.emits:
-                console.print(f"      [dim]emits: {', '.join(c.emits)}[/]")
-            if findings and c.finding:
-                console.print(f"      [magenta]finding:[/] {c.finding}")
-            if findings and c.substantive_test:
-                console.print(f"      [yellow]test:[/] {c.substantive_test}")
+    """The six documents of a dao, and what each must contain."""
+    for e in SPEC:
+        console.print(f"\n[bold]{e.name}[/]  [dim]{POLICY.directory}/{e.file}[/]")
+        console.print(f"  {e.summary}")
+        for line in e.must_contain:
+            console.print(f"  [yellow]must contain:[/] {line}")
+        if findings and e.finding:
+            console.print(f"  [magenta]finding:[/] {e.finding}")
 
 
 @main.command("check")
 @click.argument(
     "project", type=click.Path(exists=True, file_okay=False, path_type=Path), default="."
 )
-@click.option("--verbose", "-v", is_flag=True, help="Show the substantive test for each gap.")
-def check_cmd(project: Path, verbose: bool) -> None:
-    """Audit PROJECT against the eleven components."""
-    coverage = audit(project)
-    s = summarise(coverage)
+@click.option(
+    "--dir",
+    "directory",
+    default=None,
+    help=f"Where the documents live, relative to PROJECT (default {POLICY.directory}).",
+)
+@click.option(
+    "--verbose", "-v", is_flag=True, help="Show what each element with a gap must contain."
+)
+def check_cmd(project: Path, directory: str | None, verbose: bool) -> None:
+    """Audit PROJECT against the six documents. Exits 1 unless every one is PRESENT."""
+    coverage = audit(project, directory)
 
-    t = Table(title=f"dao check — {project.resolve().name}", title_style="bold")
-    t.add_column("#", justify="right", style="cyan")
-    t.add_column("component")
-    t.add_column("tier", style="dim")
+    t = Table(title=f"dao check: {project.resolve().name}", title_style="bold")
+    t.add_column("element")
+    t.add_column("file", style="dim")
     t.add_column("status")
     t.add_column("evidence / gaps")
     for c in coverage:
@@ -83,41 +99,36 @@ def check_cmd(project: Path, verbose: bool) -> None:
             flagged = "\n".join(f"[yellow]! {g}[/]" for g in c.gaps)
             detail = (detail + "\n" + flagged) if detail else flagged
         t.add_row(
-            str(c.component.n),
-            c.component.name,
-            c.component.tier.value,
-            f"[{_STATUS_STYLE[c.status]}]{c.status}[/]",
-            detail or "—",
+            c.element.name,
+            c.element.file,
+            f"[{_STATUS_STYLE[c.status]}]{c.status.value}[/]",
+            detail or "-",
         )
     console.print(t)
 
-    council = (
-        "[green]COMPLETE[/]"
-        if s["council_complete"]
-        else f"[red]INCOMPLETE[/] — missing {s['council_missing']}"
-    )
-    org = (
-        "[green]COMPLETE[/]"
-        if s["organization_complete"]
-        else f"[yellow]INCOMPLETE[/] — missing {s['organization_missing']}"
-    )
-    console.print(f"\n  council floor      {council}")
-    console.print(f"  organization delta {org}")
+    ok = complete(coverage)
+    not_present = [c.element.name for c in coverage if c.status is not Status.PRESENT]
     console.print(
-        "  [dim]M3: the council→organization transition is crisis-driven. An "
-        "incomplete organization\n  delta is a legitimate state; an incomplete "
-        "council floor is not.[/]"
+        "\n  [green]COMPLETE[/]: all six are present."
+        if ok
+        else f"\n  [red]INCOMPLETE[/]: {', '.join(not_present)}"
+    )
+    console.print(
+        "  [dim]This is a check of form. It does not judge whether a document says "
+        "anything\n  useful; PRESENT is not a review.[/]"
     )
 
     if verbose:
         for c in coverage:
-            if c.gaps and c.component.substantive_test:
-                console.print(f"\n[cyan]#{c.component.n}[/] {c.component.name}")
-                console.print(f"  [yellow]test:[/] {c.component.substantive_test}")
-                if c.component.finding:
-                    console.print(f"  [magenta]why:[/] {c.component.finding}")
+            if c.status is Status.PRESENT:
+                continue
+            console.print(f"\n[bold]{c.element.name}[/]")
+            for line in c.element.must_contain:
+                console.print(f"  [yellow]must contain:[/] {line}")
+            if c.element.finding:
+                console.print(f"  [magenta]why:[/] {c.element.finding}")
 
-    raise SystemExit(0 if s["council_complete"] else 1)
+    raise SystemExit(0 if ok else 1)
 
 
 @main.command("figures")
@@ -169,7 +180,7 @@ def figures_cmd(project: str, corpus: Path | None) -> None:
     if raw:
         console.print(
             f"\n  [yellow]{len(raw)} of {len(rows)} are RAW_GATHERED[/] — sources collected, "
-            "not distilled. A seat projected from\n  these is standing on ungrounded "
+            "not distilled. A position written from\n  these is standing on ungrounded "
             "material; say so rather than implying the corpus validated it."
         )
 
@@ -177,16 +188,15 @@ def figures_cmd(project: str, corpus: Path | None) -> None:
 @main.command("policy")
 def policy_cmd() -> None:
     """The audit's thresholds, as declared policy (M2: no hardcoded constants)."""
-    t = Table(title="dao check — policy contract", title_style="bold")
+    t = Table(title="dao check: policy", title_style="bold")
     t.add_column("key", style="cyan")
     t.add_column("value")
-    for k, v in POLICY.items():
-        t.add_row(k, str(v))
+    for k, v in POLICY.model_dump().items():
+        t.add_row(k, ", ".join(v) if isinstance(v, tuple) else str(v))
     console.print(t)
     console.print(
-        "  [dim]M2 (dao-init schema): every governed surface is a declared, "
-        "ratchet-fed policy\n  contract. A threshold buried in code is a "
-        "governance decision hidden from governance.[/]"
+        "  [dim]M2: every governed surface is a declared policy. A threshold buried in "
+        "code\n  is a governance decision hidden from governance.[/]"
     )
 
 

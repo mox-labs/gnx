@@ -34,7 +34,7 @@ threshold reads `inconclusive`, and a dry run gives no verdict at all.
 | collect data from APIs, CLIs, web pages and files, then query it with SQL | **recon** |
 | compose components and agents, with every row recorded | **matrix** |
 | call any model family through one interface | **hardline** |
-| check a project's agent organization | **dao**: `dao check <project>` audits one; it does not write one for you |
+| set a project up as an agent organization, and check it | **dao**: the plugin's skill writes the organization down with you; `dao check <project>` audits it |
 | install skills into Claude Code | the marketplace: [Install a plugin](/docs/install-a-plugin) |
 
 Each tool's README, in the [repository](https://github.com/mox-labs/gnx), has its install line

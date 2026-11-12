@@ -12,7 +12,7 @@
 # Capabilities (hardline, matrix, ix, recon, dao, gnx) are Python packages, not Claude Code shapes:
 # they are reached over a transport, and the protocol-location question is unresolved
 # (MF7). So a Capability's *runnable* does not project. Its *semantic surface* can, when it
-# has one — recon ships a real SKILL.md inside its package, projected below from its
+# has one — recon and dao each ship a real SKILL.md inside the package, projected below from its
 # in-package path.
 #
 # --- 2026-08-19: the catalog was cut back to what has been evaluated. ---
@@ -76,3 +76,17 @@ plugins:
     external_skills:
       - name: recon
         path: components/capabilities/recon/src/recon/assets/skills/recon
+
+  # dao's skill: the conversation that writes an organization's six documents. The package
+  # under components/capabilities/dao is the audit those documents are checked by.
+  - name: dao
+    version: 0.2.0
+    category: governance
+    description: >-
+      Set a project up as a directed agent organization: a constitution, governing
+      policies, operating principles, positions and participants, written down where
+      anyone can read them, and checked.
+    keywords: [governance, agents, organization, harness, gnx]
+    external_skills:
+      - name: dao
+        path: components/capabilities/dao/src/dao/assets/skills/dao

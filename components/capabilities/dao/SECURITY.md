@@ -1,7 +1,7 @@
 # Security — dao
 
 dao's surface is small: it reads a corpus catalog, reads a
-project's `.claude/` directory, and prints a report. It executes nothing, fetches nothing,
+project's `dao/` directory and its agent instructions, and prints a report. It executes nothing, fetches nothing,
 and writes nothing.
 
 Audience: anyone running `dao check` against a repository they did not write.
@@ -15,28 +15,32 @@ console table. There is deliberately **no `dao init`** — see below.
 
 ### 1. Project directory → audit report
 
-`dao check <project>` walks `.claude/` and `CLAUDE.md` and reports PRESENT / PARTIAL /
-ABSENT. Files are read as text and never executed, imported, or rendered as a template.
-Agent and skill bodies are examined for substance, not evaluated.
+`dao check <project>` reads the six documents in the project's `dao/` directory (or the
+directory `--dir` names), and `CLAUDE.md` and `AGENTS.md` at the project root, and reports
+PRESENT / PARTIAL / ABSENT. Files are read as text and never executed, imported, or rendered
+as a template.
 
-The report is the only output. A hostile project can make the audit *wrong* — a padded
-agent file can pass a length-based substantive test — but it cannot make the audit
-*dangerous*.
+A participants table may name a file under `Defined in`. dao tests whether that path is a file
+and does not open it. A path that resolves outside the project is reported as a gap and is not
+tested, so a hostile document cannot use the report to probe the rest of the filesystem.
 
-### 2. Corpus catalog → seat grounding
+The report is the only output. A hostile project can make the audit *wrong* (a padded
+position can pass a length test) but it cannot make the audit *dangerous*.
+
+### 2. Corpus catalog → grounding
 
 `dao figures` reads `dao-corpus/corpora/agent-craft`'s CATALOG. The catalog's `informs`
-edges decide which domains are offered as grounded seats for a project.
+edges decide which domains are offered as grounded for a project.
 
 **The honesty property is the security property here.** A domain marked `RAW_GATHERED` has
 sources collected but not distilled; presenting it as grounded would launder unreviewed
-material into a project's bench. `dao figures` prints the count explicitly and
+material into a project's positions. `dao figures` prints the count explicitly and
 `CorpusDomain.is_grounded` returns true only for `DISTILLED`.
 
 ### 3. No generation
 
-There is no `dao init`. Scaffolding eleven plausible files is exactly the artifact-shaped
-hole the audit exists to catch, and the load-bearing part — the method prose — is a
+There is no `dao init`. Scaffolding six plausible files is exactly the artifact-shaped
+hole the audit exists to catch, and the load-bearing part, what the documents commit to, is a
 judgment task. The skill holds the judgment; the code holds the checking. This is a
 design ruling, but it is also why dao has no file-writing surface to secure.
 
@@ -59,7 +63,10 @@ reversed:
 ## Not covered
 
 - dao does not verify corpus provenance. It trusts the CATALOG's own grounding labels.
-- dao's substantive tests are heuristics. PARTIAL is a signal to look, not a proof.
+- dao checks form, not meaning, and three of its tests look for words. PARTIAL is a signal
+  to look, not a proof, and PRESENT is not a review.
+- The `dao` plugin's skill writes files into a project, as any agent session does, under the
+  permissions of that session. That surface is the session's, not this package's.
 
 ## Reporting
 

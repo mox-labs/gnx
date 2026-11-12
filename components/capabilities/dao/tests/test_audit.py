@@ -1,190 +1,252 @@
-"""The audit must distinguish PRESENT from PARTIAL — an artifact is not a component.
+"""The audit must tell PRESENT from PARTIAL: a file is not an organization.
 
-These tests exist because the whole failure mode the spec guards against is a projection
-that creates eleven files and claims eleven components. A directory named `agents/` with
-one thin prompt in it must not read as a bench.
+The fixture is the worked organization in the skill's `references/documents.md`, read from
+that file, so the documented formats and the audit cannot drift apart. Each test then breaks
+one thing and checks that the audit names it.
 """
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
-from dao.application.audit import POLICY, audit, read_bench, summarise
-from dao.domain.spec import (
-    CONDITIONAL,
-    COUNCIL_FLOOR,
-    ORGANIZATION_DELTA,
-    SPEC,
-    Tier,
-)
+import pytest
+
+from dao.application.audit import POLICY, audit, complete
+from dao.domain.spec import SPEC, Coverage, Key, Status
+from dao.skill_files import skill
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from dao.domain.spec import Coverage
-
-RICH = "x" * (POLICY["seat_method_min_chars"] + 50)
-
-
-def _seat(
-    tmp_path: Path, name: str, body: str, refuses: str = "Cannot discuss: everything else."
-) -> None:
-    d = tmp_path / ".claude" / "agents"
-    d.mkdir(parents=True, exist_ok=True)
-    (d / f"{name}.md").write_text(f"---\nname: {name}\n---\n\n{body}\n\n{refuses}\n")
+_EXAMPLE = re.compile(r"^## (\S+\.md)\n.*?^```markdown\n(.*?)^```", re.S | re.M)
+POINTER = "This project is run as a dao. Read `dao/README.md` at the start of a session.\n"
 
 
-def _status(coverage: list[Coverage], n: int) -> str:
-    return next(c for c in coverage if c.component.n == n).status
+@pytest.fixture
+def project(tmp_path: Path) -> Path:
+    """The documented example, written out as a project."""
+    examples = dict(_EXAMPLE.findall(skill("documents")))
+    assert set(examples) == {e.file for e in SPEC}, "documents.md must show all six"
+    (tmp_path / "dao").mkdir()
+    for name, body in examples.items():
+        (tmp_path / "dao" / name).write_text(body, encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text(POINTER, encoding="utf-8")
+    agents = tmp_path / ".claude" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "cold-reader.md").write_text("---\nname: cold-reader\n---\nRead the diff.\n")
+    return tmp_path
 
 
-def test_empty_project_has_no_council_floor(tmp_path: Path) -> None:
-    cov = audit(tmp_path)
-    s = summarise(cov)
-    assert not s["council_complete"]
-    missing = s["council_missing"]
-    assert isinstance(missing, list) and set(missing) == set(COUNCIL_FLOOR)
+def _of(coverage: list[Coverage], key: Key) -> Coverage:
+    return next(c for c in coverage if c.element.key is key)
 
 
-def test_spec_tiers_partition_all_eleven() -> None:
-    assert len(SPEC) == 11
-    tiers = [set(COUNCIL_FLOOR), set(ORGANIZATION_DELTA), set(CONDITIONAL)]
-    assert set().union(*tiers) == {c.n for c in SPEC}
-    for a, b in ((0, 1), (0, 2), (1, 2)):
-        assert not tiers[a] & tiers[b], "tiers must be disjoint"
+def _edit(project: Path, name: str, old: str, new: str) -> None:
+    path = project / "dao" / name
+    text = path.read_text(encoding="utf-8")
+    assert old in text, f"{old!r} is not in {name}"
+    path.write_text(text.replace(old, new), encoding="utf-8")
 
 
-def test_council_floor_is_the_five_the_research_named() -> None:
-    assert set(COUNCIL_FLOOR) == {1, 5, 6, 7, 10}
+def _gaps(project: Path, key: Key) -> str:
+    c = _of(audit(project), key)
+    assert c.status is Status.PARTIAL, c.gaps
+    return " | ".join(c.gaps)
 
 
-def test_organization_delta_is_the_five_the_research_named() -> None:
-    assert set(ORGANIZATION_DELTA) == {2, 3, 4, 8, 9}
+def test_the_documented_example_is_complete(project: Path) -> None:
+    coverage = audit(project)
+    assert {c.element.name: c.gaps for c in coverage if c.gaps} == {}
+    assert complete(coverage)
 
 
-def test_component_11_is_conditional_not_organization() -> None:
-    """The cut names 5 council + 5 organization = ten, then "the domain fills the rest".
-
-    #11 is that rest, and its inter-dao half is explicitly conditional. Filing it under
-    ORGANIZATION would claim the research requires something it does not.
-    """
-    assert set(CONDITIONAL) == {11}
+def test_an_empty_project_has_nothing(tmp_path: Path) -> None:
+    coverage = audit(tmp_path)
+    assert [c.status for c in coverage] == [Status.ABSENT] * len(SPEC)
+    assert not complete(coverage)
 
 
-def test_thin_seat_makes_the_bench_partial_not_present(tmp_path: Path) -> None:
-    """M1: a one-word label is the PLAIN arm. A thin seat is a gap, not a bench."""
-    _seat(tmp_path, "terse", "Reviews things.")
-    _seat(tmp_path, "rich", RICH)
-    cov = audit(tmp_path)
-    assert _status(cov, 1) == "PARTIAL"
-    gaps = next(c for c in cov if c.component.n == 1).gaps
-    assert any("PLAIN risk" in g and "terse" in g for g in gaps)
-    assert not any("rich" in g for g in gaps if "PLAIN risk" in g)
+def test_one_partial_element_makes_the_whole_incomplete(project: Path) -> None:
+    _edit(project, "principles.md", "- Stop and ask", "Stop and ask")
+    _edit(project, "principles.md", "- One change", "One change")
+    coverage = audit(project)
+    assert _of(coverage, Key.PRINCIPLES).status is Status.PARTIAL
+    assert not complete(coverage)
 
 
-def test_single_rich_seat_is_still_not_a_bench(tmp_path: Path) -> None:
-    _seat(tmp_path, "solo", RICH)
-    cov = audit(tmp_path)
-    assert _status(cov, 1) == "PARTIAL"
-    assert any("disagree" in g for g in next(c for c in cov if c.component.n == 1).gaps)
+def test_documents_can_live_in_another_directory(project: Path) -> None:
+    (project / "dao").rename(project / "governance")
+    (project / "CLAUDE.md").write_text("Read `governance/README.md` first.\n")
+    assert not complete(audit(project))
+    assert complete(audit(project, "governance"))
 
 
-def test_seat_without_a_stated_refusal_is_flagged(tmp_path: Path) -> None:
-    _seat(tmp_path, "a", RICH, refuses="")
-    _seat(tmp_path, "b", RICH, refuses="")
-    gaps = next(c for c in audit(tmp_path) if c.component.n == 1).gaps
-    assert any("refusal" in g or "boundary" in g for g in gaps)
+# --- constitution ------------------------------------------------------------------
 
 
-def test_same_family_gate_claiming_independence_is_flagged(tmp_path: Path) -> None:
-    """M1-H2's sharpest test: the refuted claim wearing a new hat."""
-    _seat(tmp_path, "maker", RICH)
-    _seat(tmp_path, "reviewer", RICH + " This seat verifies and reviews the work.")
-    (tmp_path / "CLAUDE.md").write_text(
-        "# Project\n\nA verification gate reviews every change independently.\n"
-    )
-    cov = audit(tmp_path)
-    gaps = next(c for c in cov if c.component.n == 7).gaps
-    assert any("out-of-family" in g for g in gaps)
+def test_constitution_without_an_amendment_section_is_partial(project: Path) -> None:
+    _edit(project, "constitution.md", "## Amendment", "### Amendment")
+    assert "no Amendment section" in _gaps(project, Key.CONSTITUTION)
 
 
-def test_out_of_family_gate_satisfies_the_test(tmp_path: Path) -> None:
-    _seat(tmp_path, "maker", RICH)
-    _seat(tmp_path, "gatekeeper", RICH + " This seat verifies the work and may refuse it.")
-    (tmp_path / "CLAUDE.md").write_text(
-        "# Project\n\nThe verification gate runs out-of-family via mlx-lm — a different\n"
-        "model distribution, per M1-H2.\n"
-    )
-    cov = audit(tmp_path)
-    assert not any("out-of-family" in g for g in next(c for c in cov if c.component.n == 7).gaps)
+def test_amendment_must_name_a_position(project: Path) -> None:
+    _edit(project, "constitution.md", "Only the owner changes", "Only the right person changes")
+    assert "names no position" in _gaps(project, Key.CONSTITUTION)
 
 
-def test_honest_cold_reread_label_also_satisfies_it(tmp_path: Path) -> None:
-    """The cheap floor is acceptable — as long as it is labelled, not oversold."""
-    _seat(tmp_path, "maker", RICH)
-    _seat(tmp_path, "checker", RICH + " This seat reviews and may refuse.")
-    (tmp_path / "CLAUDE.md").write_text(
-        "# Project\n\nGate: a mandated cold re-read pass. This is the cheap floor, not an\n"
-        "out-of-family anchor, and is labelled as such.\n"
-    )
-    cov = audit(tmp_path)
-    assert not any("out-of-family" in g for g in next(c for c in cov if c.component.n == 7).gaps)
+def test_amendment_must_rest_with_a_human(project: Path) -> None:
+    _edit(project, "participants.md", "| ada | human | owner | |", "| ada | agent | owner | |")
+    assert "no human holds a position that may amend" in _gaps(project, Key.CONSTITUTION)
 
 
-def test_ratchet_without_trigger_is_partial(tmp_path: Path) -> None:
-    (tmp_path / ".claude").mkdir()
-    (tmp_path / ".claude" / "ratchet.md").write_text("# Ratchet\n\nWe learned a thing.\n")
-    cov = audit(tmp_path)
-    assert _status(cov, 8) == "PARTIAL"
-    assert any("TRIGGER" in g for g in next(c for c in cov if c.component.n == 8).gaps)
+def test_a_heading_with_nothing_under_it_is_not_a_section(project: Path) -> None:
+    path = project / "dao" / "constitution.md"
+    text = path.read_text()
+    start = text.index("## Purpose")
+    end = text.index("## Commitments")
+    path.write_text(text[:start] + "## Purpose\n\nTides.\n\n" + text[end:])
+    assert "'Purpose' section is empty" in _gaps(project, Key.CONSTITUTION)
 
 
-def test_ratchet_with_trigger_is_present(tmp_path: Path) -> None:
-    (tmp_path / ".claude").mkdir()
-    (tmp_path / ".claude" / "ratchet.md").write_text(
-        "# Ratchet\n\n## Learning\n\n### Future Triggers\n- On any intake, re-read this.\n"
-    )
-    assert _status(audit(tmp_path), 8) == "PRESENT"
+# --- governing policies ------------------------------------------------------------
 
 
-def test_charter_without_amendment_path_is_partial(tmp_path: Path) -> None:
-    (tmp_path / "CLAUDE.md").write_text("# Project\n\nNon-negotiable: never ship unverified.\n")
-    cov = audit(tmp_path)
-    assert _status(cov, 2) == "PARTIAL"
-    assert any("amendment" in g for g in next(c for c in cov if c.component.n == 2).gaps)
+def test_decisions_must_route_the_irreversible_and_the_novel(project: Path) -> None:
+    _edit(project, "policies.md", "Anything irreversible (a release", "A big thing (a release")
+    _edit(project, "policies.md", "for the first time", "at night")
+    assert "irreversible or a novel decision" in _gaps(project, Key.POLICIES)
 
 
-def test_direction_without_reversibility_floors_is_partial(tmp_path: Path) -> None:
-    (tmp_path / "CLAUDE.md").write_text(
-        "# Project\n\nThe human is the non-delegable direction inlet and accountable arbiter.\n"
-    )
-    cov = audit(tmp_path)
-    assert _status(cov, 10) == "PARTIAL"
-    assert any(
-        "irreversible" in g.lower() for g in next(c for c in cov if c.component.n == 10).gaps
-    )
+def test_verification_must_say_what_kind_of_check_it_is(project: Path) -> None:
+    path = project / "dao" / "policies.md"
+    text = path.read_text()
+    start = text.index("## Verification")
+    end = text.index("## Changing the rules")
+    vague = "## Verification\n\nEvery change is independently reviewed before it merges.\n\n"
+    path.write_text(text[:start] + vague + text[end:])
+    assert "what kind of check" in _gaps(project, Key.POLICIES)
 
 
-def test_read_bench_prefers_frontmatter_name(tmp_path: Path) -> None:
-    d = tmp_path / ".claude" / "agents"
-    d.mkdir(parents=True)
-    (d / "file-name.md").write_text("---\nname: real-name\n---\n\nbody\n")
-    assert read_bench(tmp_path)[0].name == "real-name"
+def test_policies_need_a_way_to_change_the_rules(project: Path) -> None:
+    _edit(project, "policies.md", "## Changing the rules", "## Later")
+    assert "no Changing the rules section" in _gaps(project, Key.POLICIES)
 
 
-def test_every_component_declares_a_substantive_test() -> None:
-    """A component with no substantive test cannot be audited beyond file-existence."""
-    missing = [c.n for c in SPEC if not c.substantive_test]
-    assert not missing, f"components lacking a substantive test: {missing}"
+# --- positions ---------------------------------------------------------------------
 
 
-def test_council_components_all_carry_a_check() -> None:
+def test_a_label_is_not_a_remit(project: Path) -> None:
+    path = project / "dao" / "positions.md"
+    text = path.read_text()
+    start = text.index("## reviewer")
+    thin = "## reviewer\n\nDoes: Reviews code.\n\nMust not: Merge.\n\nChecked by: owner\n"
+    path.write_text(text[:start] + thin)
+    gaps = _gaps(project, Key.POSITIONS)
+    assert f"remit under {POLICY.position_remit_min_chars} characters" in gaps
+    assert "reviewer" in gaps
+
+
+def test_a_position_cannot_check_its_own_work(project: Path) -> None:
+    _edit(project, "positions.md", "Checked by: reviewer", "Checked by: builder")
+    assert "builder checks its own work" in _gaps(project, Key.POSITIONS)
+
+
+def test_a_checker_must_be_a_position_that_exists(project: Path) -> None:
+    _edit(project, "positions.md", "Checked by: reviewer", "Checked by: auditor")
+    assert "does not exist: auditor" in _gaps(project, Key.POSITIONS)
+
+
+def test_an_agent_held_position_needs_a_checker(project: Path) -> None:
+    _edit(project, "positions.md", "Checked by: reviewer", "")
+    assert "builder has no 'Checked by:'" in _gaps(project, Key.POSITIONS)
+
+
+def test_a_position_only_people_hold_may_end_the_chain(project: Path) -> None:
+    """The example's owner has no checker, and a person holds it: that is not a gap."""
+    assert _of(audit(project), Key.POSITIONS).status is Status.PRESENT
+    _edit(project, "participants.md", "| ada | human | owner | |", "| ada | agent | owner | |")
+    assert "owner has no 'Checked by:'" in _gaps(project, Key.POSITIONS)
+
+
+def test_a_position_needs_does_and_must_not(project: Path) -> None:
+    _edit(project, "positions.md", "Must not: Merge anything.", "It will not merge anything.")
+    assert "no 'Must not:' field: builder" in _gaps(project, Key.POSITIONS)
+
+
+def test_one_position_is_not_an_organization(project: Path) -> None:
+    path = project / "dao" / "positions.md"
+    text = path.read_text()
+    path.write_text(text[: text.index("## builder")])
+    assert f">= {POLICY.positions_min}" in _gaps(project, Key.POSITIONS)
+
+
+def test_fields_may_be_bold_list_items(project: Path) -> None:
+    _edit(project, "positions.md", "Checked by: reviewer", "- **Checked by:** `reviewer`")
+    assert _of(audit(project), Key.POSITIONS).status is Status.PRESENT
+
+
+# --- participants ------------------------------------------------------------------
+
+
+def test_an_organization_with_no_human_is_not_directed(project: Path) -> None:
+    _edit(project, "participants.md", "| ada | human |", "| ada | agent |")
+    assert "no human participant" in _gaps(project, Key.PARTICIPANTS)
+
+
+def test_a_participant_in_a_position_that_does_not_exist(project: Path) -> None:
+    _edit(project, "participants.md", "| agent | builder |", "| agent | wizard |")
+    gaps = _gaps(project, Key.PARTICIPANTS)
+    assert "does not exist: wizard" in gaps
+    assert "nobody holds: builder" in gaps
+
+
+def test_a_defined_in_file_must_exist(project: Path) -> None:
+    (project / ".claude" / "agents" / "cold-reader.md").unlink()
+    assert "file that does not exist" in _gaps(project, Key.PARTICIPANTS)
+
+
+def test_a_defined_in_path_may_not_leave_the_project(project: Path) -> None:
+    _edit(project, "participants.md", ".claude/agents/cold-reader.md", "../../etc/hosts")
+    assert "outside the project" in _gaps(project, Key.PARTICIPANTS)
+
+
+def test_a_kind_that_is_neither_is_reported_not_guessed(project: Path) -> None:
+    _edit(project, "participants.md", "| cold-reader | agent |", "| cold-reader | robot |")
+    assert "Kind is not 'human' or 'agent': cold-reader" in _gaps(project, Key.PARTICIPANTS)
+
+
+def test_participants_without_a_table_is_partial(project: Path) -> None:
+    (project / "dao" / "participants.md").write_text("# Participants\n\nAda and two agents.\n")
+    assert "no table" in _gaps(project, Key.PARTICIPANTS)
+
+
+# --- front door --------------------------------------------------------------------
+
+
+def test_the_readme_must_link_every_document(project: Path) -> None:
+    _edit(project, "README.md", "- [principles.md](principles.md)", "- the principles")
+    assert "does not link: principles.md" in _gaps(project, Key.FRONT_DOOR)
+
+
+def test_agents_must_be_pointed_at_the_organization(project: Path) -> None:
+    (project / "CLAUDE.md").write_text("Be careful.\n")
+    assert "never reads the organization" in _gaps(project, Key.FRONT_DOOR)
+    (project / "CLAUDE.md").unlink()
+    assert "no agent is pointed here" in _gaps(project, Key.FRONT_DOOR)
+
+
+def test_agents_md_is_an_agent_instruction_file_too(project: Path) -> None:
+    (project / "CLAUDE.md").rename(project / "AGENTS.md")
+    assert _of(audit(project), Key.FRONT_DOOR).status is Status.PRESENT
+
+
+# --- the spec ----------------------------------------------------------------------
+
+
+def test_every_element_says_what_it_must_contain_and_has_a_check() -> None:
     from dao.application.audit import _CHECKS
 
-    assert set(_CHECKS) == {c.n for c in SPEC}
-
-
-def test_tier_membership_matches_spec_objects() -> None:
-    for c in SPEC:
-        assert (c.n in COUNCIL_FLOOR) == (c.tier is Tier.COUNCIL)
-        assert (c.n in CONDITIONAL) == (c.tier is Tier.CONDITIONAL)
+    assert {e.key for e in SPEC} == set(_CHECKS) == set(Key)
+    assert all(e.must_contain for e in SPEC)
+    assert len({e.file for e in SPEC}) == len(SPEC)
