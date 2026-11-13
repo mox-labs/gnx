@@ -16,20 +16,21 @@ not parse is left out, and the audit reports what is missing.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from dao.domain.models import Kind, Participant, Position
 
-_H2 = re.compile(r"^##\s+(.+?)\s*#*\s*$")
+# Each pattern below is matched against lines someone else wrote, so none may backtrack: a
+# quantifier followed by something it could also match is possessive (`*+`, `++`, `?+`).
+_H2 = re.compile(r"^##[ \t]++(\S.*)$")
+_CLOSING_HASHES = re.compile(r"(?:^|[ \t])#++$")
 _FENCE = re.compile(r"^\s*(```|~~~)")
-_BOLD = r"(?:\*\*|__)?"
+_BOLD = r"(?:\*\*|__)?+"
 _FIELD = re.compile(
-    rf"^\s*(?:[-*+]\s+)?{_BOLD}\s*(does|must not|checked by)\s*{_BOLD}\s*:\s*{_BOLD}\s*(.*)$",
+    rf"^(?:[-*+]\s++)?{_BOLD}\s*+(does|must not|checked by)\s*+{_BOLD}\s*+:\s*+{_BOLD}\s*+(.*)$",
     re.I,
 )
-_TABLE_ROW = re.compile(r"^\s*\|(.+)\|\s*$")
-_TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$")
-_LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\S")
+_TABLE_RULE = re.compile(r"^\|?+\s*+:?+-{3,}+:?+\s*+(?:\|\s*+:?+-{3,}+:?+\s*+)*+\|?+$")
+_LIST_ITEM = re.compile(r"^\s*+(?:[-*+]|\d++[.)])\s++\S")
 _NOBODY = {"", "-", "—", "–", "none", "nobody", "no one", "n/a"}
 
 _KINDS = {
@@ -39,12 +40,12 @@ _KINDS = {
 }
 
 
-def read_text(path: Path) -> str:
-    """A file's text, or the empty string when it is absent or not UTF-8."""
-    try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return ""
+def heading(line: str, pattern: re.Pattern[str]) -> str | None:
+    """The text of a heading line matched by `pattern`, without closing hashes; else None."""
+    m = pattern.match(line)
+    if m is None:
+        return None
+    return _CLOSING_HASHES.sub("", m.group(1).rstrip()).rstrip()
 
 
 def norm(name: str) -> str:
@@ -63,9 +64,9 @@ def sections(text: str) -> dict[str, str]:
     for line in text.splitlines():
         if _FENCE.match(line):
             fenced = not fenced
-        m = None if fenced else _H2.match(line)
-        if m:
-            current = m.group(1).strip()
+        name = None if fenced else heading(line, _H2)
+        if name is not None:
+            current = name
             out[current] = ""
         elif current is not None:
             out[current] += line + "\n"
@@ -107,7 +108,7 @@ def read_positions(text: str) -> list[Position]:
         fields: dict[str, list[str]] = {"does": [], "must not": [], "checked by": []}
         current: str | None = None
         for line in body.splitlines():
-            m = _FIELD.match(line)
+            m = _FIELD.match(line.strip())
             if m:
                 current = m.group(1).lower()
                 fields[current].append(m.group(2).strip())
@@ -125,8 +126,10 @@ def read_positions(text: str) -> list[Position]:
 
 
 def _cells(line: str) -> list[str] | None:
-    m = _TABLE_ROW.match(line)
-    return [c.strip() for c in m.group(1).split("|")] if m else None
+    row = line.strip()
+    if len(row) < 2 or not (row.startswith("|") and row.endswith("|")):
+        return None
+    return [c.strip() for c in row[1:-1].split("|")]
 
 
 def _cell(cells: list[str], columns: dict[str, int], name: str) -> str:
@@ -153,7 +156,7 @@ def read_participants(text: str) -> list[Participant] | None:
             if "participant" in header and "position" in header:
                 columns = {name: i for i, name in enumerate(header)}
             continue
-        if _TABLE_RULE.match(line):
+        if _TABLE_RULE.match(line.strip()):
             continue
 
         name = _cell(cells, columns, "participant").replace("`", "").replace("*", "").strip()

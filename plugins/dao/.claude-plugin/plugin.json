@@ -1,7 +1,7 @@
 {
   "name": "dao",
   "version": "0.2.0",
-  "description": "Set a project up as a directed agent organization: a constitution, governing policies, operating principles, positions and participants, written down where anyone can read them, and checked.",
+  "description": "Set a project up as a directed agent organization: a constitution, governing policies, operating principles, positions and participants, written down where anyone can read them, checked, and rendered as one page.",
   "author": {
     "name": "Mox Labs",
     "email": "mox.rnd@gmail.com"

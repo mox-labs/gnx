@@ -1,15 +1,21 @@
-"""dao CLI: `dao check`, `dao spec`, `dao policy`, `dao figures`, and `dao --skill`.
+"""dao CLI: `dao check`, `dao book`, `dao spec`, `dao policy`, `dao figures`, `dao --skill`.
 
 `dao init` is deliberately NOT a command. Writing an organization is a judgment task
 (which positions, what each one's remit is, what the constitution commits to), and the
 research is explicit that the prose is the load-bearing part. A generator that emits six
 plausible files would produce exactly the artifact-shaped hole this audit exists to catch.
 The writing lives in the `dao` skill; the code checks the result.
+
+`dao book` is the one command that writes, and it writes one file: a page that shows what
+the six documents already say. It decides nothing, so it is not the generator refused above.
 """
 
 from __future__ import annotations
 
+import json
+from importlib import metadata
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 from rich.console import Console
@@ -21,12 +27,23 @@ from dao.adapters._out.corpus import (
     load_catalog,
     projects,
 )
-from dao.application.audit import POLICY, audit, complete
+from dao.adapters._out.html import render, write
+from dao.application.audit import POLICY, complete
+from dao.application.book import build, check
+from dao.application.organization import Organization
 from dao.domain.spec import SPEC, Status
+
+if TYPE_CHECKING:
+    from dao.domain.book import Book
 from dao.skill_files import skill as skill_text
 from dao.skill_files import skill_references
 
 console = Console()
+
+
+def _page(book: Book) -> str:
+    return render(book, version=metadata.version("dao"))
+
 
 _STATUS_STYLE = {Status.PRESENT: "green", Status.PARTIAL: "yellow", Status.ABSENT: "red"}
 
@@ -44,7 +61,7 @@ _STATUS_STYLE = {Status.PRESENT: "green", Status.PARTIAL: "yellow", Status.ABSEN
 )
 @click.pass_context
 def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
-    """dao: audit a project's directed agent organization against its six documents."""
+    """dao: check a project's directed agent organization, and show it on one page."""
     if reference is not None and not skill:
         raise click.UsageError("-r/--reference is used with --skill")
     if skill:
@@ -84,9 +101,28 @@ def spec_cmd(findings: bool) -> None:
 @click.option(
     "--verbose", "-v", is_flag=True, help="Show what each element with a gap must contain."
 )
-def check_cmd(project: Path, directory: str | None, verbose: bool) -> None:
+@click.option("--json", "as_json", is_flag=True, help="Print the verdicts as JSON.")
+def check_cmd(project: Path, directory: str | None, verbose: bool, as_json: bool) -> None:
     """Audit PROJECT against the six documents. Exits 1 unless every one is PRESENT."""
-    coverage = audit(project, directory)
+    coverage = check(project, directory, render=_page)
+    if as_json:
+        report = {
+            "directory": directory or POLICY.directory,
+            "complete": complete(coverage),
+            "elements": [
+                {
+                    "key": c.element.key.value,
+                    "name": c.element.name,
+                    "file": c.element.file,
+                    "status": c.status.value,
+                    "evidence": c.evidence,
+                    "gaps": c.gaps,
+                }
+                for c in coverage
+            ],
+        }
+        click.echo(json.dumps(report, indent=2))
+        raise SystemExit(0 if complete(coverage) else 1)
 
     t = Table(title=f"dao check: {project.resolve().name}", title_style="bold")
     t.add_column("element")
@@ -129,6 +165,49 @@ def check_cmd(project: Path, directory: str | None, verbose: bool) -> None:
                 console.print(f"  [magenta]why:[/] {c.element.finding}")
 
     raise SystemExit(0 if ok else 1)
+
+
+@main.command("book")
+@click.argument(
+    "project", type=click.Path(exists=True, file_okay=False, path_type=Path), default="."
+)
+@click.option(
+    "--dir",
+    "directory",
+    default=None,
+    help=f"Where the documents live, relative to PROJECT (default {POLICY.directory}).",
+)
+@click.option(
+    "--json", "as_json", is_flag=True, help="Print the organization as JSON; write nothing."
+)
+def book_cmd(project: Path, directory: str | None, as_json: bool) -> None:
+    """Write PROJECT's organization as one page a person can read.
+
+    The page is book.html in the documents' directory. It is a copy of what the six documents
+    say; `dao check` reports it when the documents have changed since.
+    """
+    org = Organization(project, directory)
+    if not org.dir.is_dir():
+        raise click.ClickException(
+            f"no {org.directory}/ in {project}: there are no documents to make a book from"
+        )
+    book = build(project, directory)
+    if as_json:
+        click.echo(book.model_dump_json(indent=2))
+        return
+
+    where = f"{org.directory}/{POLICY.book}"
+    page = _page(book)
+    if org.book.is_symlink() or not org.inside:
+        raise click.ClickException(f"{where} would be written outside {project}; nothing written")
+    write(page, org.book)
+
+    console.print(f"  wrote [bold]{where}[/]: open it in a browser")
+    if not book.complete:
+        console.print(
+            "  [yellow]dao check finds gaps in the documents.[/] The page lists them at the "
+            "top; `dao check` says more."
+        )
 
 
 @main.command("figures")

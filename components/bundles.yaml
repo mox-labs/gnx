@@ -77,15 +77,16 @@ plugins:
       - name: recon
         path: components/capabilities/recon/src/recon/assets/skills/recon
 
-  # dao's skill: the conversation that writes an organization's six documents. The package
-  # under components/capabilities/dao is the audit those documents are checked by.
+  # dao's skill: the conversation that writes an organization's six documents, and the
+  # template of the page they are rendered as. The package under components/capabilities/dao
+  # is the audit those documents are checked by, and the renderer.
   - name: dao
     version: 0.2.0
     category: governance
     description: >-
       Set a project up as a directed agent organization: a constitution, governing
       policies, operating principles, positions and participants, written down where
-      anyone can read them, and checked.
+      anyone can read them, checked, and rendered as one page.
     keywords: [governance, agents, organization, harness, gnx]
     external_skills:
       - name: dao

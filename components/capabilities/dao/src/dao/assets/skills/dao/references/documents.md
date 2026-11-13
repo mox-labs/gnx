@@ -164,6 +164,16 @@ record of how the rules came to be.
 To raise a problem or propose a change to any of this, open an issue. The owner answers it.
 ```
 
+## book.html
+
+Made, not written: `dao book` renders the six documents as one page and writes it beside
+them. When the page is there, `dao check` renders it again and compares, and reports it under
+the front door if the two differ. Run `dao book` again after every change, and commit the
+page with the documents. Do not edit it by hand: the check reports that too.
+
+Each document is an ordinary file in the directory. dao does not read one that is a symbolic
+link or larger than 1 MiB.
+
 ## The pointer
 
 `CLAUDE.md` or `AGENTS.md` at the project root must mention the directory, for example:

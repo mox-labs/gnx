@@ -1,7 +1,7 @@
 [project]
 name = "dao"
 version = "0.2.0"
-description = "Audit a project's directed agent organization: its constitution, policies, principles, positions and participants, each present, partial or absent"
+description = "Check a project's directed agent organization (constitution, policies, principles, positions, participants) and render it as one page a person can read"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -15,6 +15,9 @@ dependencies = [
     "click>=8.1",
     "rich>=13",
     "pydantic>=2.0",
+    # The book: a template, and the Markdown the documents are written in.
+    "jinja2>=3.1",
+    "markdown-it-py>=3.0",
 ]
 
 [project.scripts]
@@ -34,6 +37,7 @@ packages = ["src/dao"]
 include = [
     "src/dao/**/*.py",
     "src/dao/**/*.md",
+    "src/dao/**/*.j2",
     "src/dao/py.typed",
 ]
 

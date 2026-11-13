@@ -1,6 +1,6 @@
 ---
 name: dao
-description: "Sets a project up as a dao, a directed agent organization: reads the project, asks the owner a few questions, and writes six short documents (a constitution, governing policies, operating principles, positions, participants and a front-door README) into the repository, then checks them with the dao command and reviews what they say. This skill should be used when the user asks to \"set up a dao\", \"set this project up as a dao\", \"set up an agent organization\", \"set up the harness for this project\", \"write a constitution for this project\", \"define positions for our agents\", \"audit our dao\", \"check our agent setup\", or runs dao check. Not for doing work inside an organization that is already set up."
+description: "Sets a project up as a dao, a directed agent organization: asks the owner a few questions, writes six short documents (constitution, governing policies, operating principles, positions, participants, a front-door README), checks them with the dao command, and renders them as one page a person can read. This skill should be used when the user asks to \"set up a dao\", \"set this project up as a dao\", \"set up an agent organization\", \"set up the harness for this project\", \"write a constitution for this project\", \"define positions for our agents\", \"audit our dao\", \"check our agent setup\", or runs dao check or dao book. Not for doing work inside an organization that is already set up."
 metadata:
   version: "0.2.0"
 ---
@@ -47,6 +47,9 @@ An organization is described in the terms Ostrom used for institutions that last
 | **Governing policies** | who decides what, how work is checked, how a rule is changed | `dao/policies.md` |
 | **Operating principles** | how day-to-day work is done | `dao/principles.md` |
 | **Front door** | the page that explains all of it to a stranger | `dao/README.md` |
+
+A seventh file is made, not written: `dao/book.html`, the same organization on one page for
+a person to read. `dao book` renders it from the six documents.
 
 Positions are separate from participants because they change at different speeds: a reviewer
 position outlives whichever agent or person holds it this month.
@@ -144,12 +147,21 @@ documents as a stranger would and bring the owner what you find:
 Bring these as findings. They are the owner's decisions, and deciding them is how the
 organization becomes theirs.
 
+Last, run `dao book <project>`. It writes `dao/book.html`: the six documents on one page,
+with what a reader would otherwise cross-reference by hand already worked out (who holds each
+position, whose work each one reads, where each chain of checking ends). The owner is the
+person this organization answers to, and most people they show it to will not read six
+Markdown files; the page is how the organization gets seen. Tell the owner to open it, and
+commit it with the documents. The page is a copy: it runs no script, and `dao check` reports
+it whenever it is no longer exactly what the documents render to.
+
 ## Changing an organization that exists
 
 Find the level of the change first. A new habit is a principle. A change to who decides, or
 to how work is checked, is a policy. A change to the purpose, a commitment or the amendment
 rule is constitutional. Read the document one level up to see who may make it, make the
-change in a commit that says what prompted it, and run `dao check`.
+change in a commit that says what prompted it, then run `dao check` and `dao book` so the
+page a person reads says what the documents now say.
 
 When you hold a position and think a policy or the constitution is wrong, propose the change
 to the position the documents name. Do not make it yourself, even when you are sure. The
@@ -179,11 +191,15 @@ check is then owed.
 | `dao check <project>` | audits the six documents; exits 1 unless all are PRESENT |
 | `dao check <project> -v` | adds what each document with a gap must contain, and why |
 | `dao check <project> --dir <path>` | when the documents are not in `dao/` |
+| `dao check <project> --json` | the same verdicts, for a program to read |
+| `dao book <project>` | writes `dao/book.html`, the organization on one page |
+| `dao book <project> --json` | prints the organization as data and writes nothing |
 | `dao spec --findings` | the six documents, what each must contain, the finding behind it |
 | `dao policy` | the audit's thresholds, as a declared policy |
 
 There is no `dao init`, on purpose: the writing is yours and the owner's, and the checking is
-the command's.
+the command's. `dao book` writes one file and decides nothing: every word on the page comes
+from the documents.
 
 ## References
 
@@ -191,3 +207,5 @@ the command's.
   small worked organization. Read it before writing.
 - **`references/findings.md`**: what was measured behind the requirements, and where the
   measurements stop. Read it when an owner asks why a requirement is there.
+- **`assets/book.html.j2`**: the template `dao book` fills. It is not read to do the setup;
+  it is here so that anyone can see exactly how the page is made.

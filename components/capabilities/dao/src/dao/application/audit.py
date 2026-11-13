@@ -5,9 +5,10 @@ where is one present in name but not in substance?
 
 It is a check of form. It reads structure (sections, fields, table rows), whether the
 documents agree with each other (a participant's position exists, a checker is a different
-position, a named file is on disk), and three things the research says a document must
-address. It does not judge meaning: a well-formed constitution that says nothing useful
-passes. That judgment is a reader's, and the `dao` skill's review asks for it.
+position, a named file is on disk), three things the research says a document must
+address. It does not judge
+meaning: a well-formed constitution that says nothing useful passes. That judgment is a
+reader's, and the `dao` skill's review asks for it.
 
 Reports PRESENT / PARTIAL / ABSENT per element, never a score: one number would let a
 strong constitution average away a missing check on the work.
@@ -17,85 +18,24 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from functools import cached_property
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
-
-from dao.application.reading import (
-    find_section,
-    list_items,
-    norm,
-    read_participants,
-    read_positions,
-    read_text,
-    sections,
-)
-from dao.domain.models import Kind, Participant, Position
+from dao.application.organization import Organization, file_of
+from dao.application.policy import POLICY, Policy
+from dao.application.reading import find_section, list_items, norm, sections
+from dao.domain.models import Kind
 from dao.domain.spec import SPEC, Coverage, Key, Status
 
+__all__ = ["POLICY", "Policy", "audit", "complete"]
 
-# --- policy values -----------------------------------------------------------------
-# M2's ruling: every governed surface is a declared policy contract, with no hardcoded
-# constants. These are the audit's thresholds, named so they can be cited and amended
-# rather than discovered by reading code. `dao policy` prints them.
-class Policy(BaseModel):
-    """The audit's thresholds. Frozen: a run is judged by one declared set."""
-
-    model_config = ConfigDict(frozen=True)
-
-    # Where the organization's documents live, relative to the project root.
-    directory: str = "dao"
-    # The files an agent reads at the start of a session. One of them must name the directory.
-    agent_instructions: tuple[str, ...] = ("CLAUDE.md", "AGENTS.md")
-    # M1: a position's remit must be prose. Below this it is closer to a label, which
-    # measured about 0.5 worse than either richer condition.
-    position_remit_min_chars: int = 240
-    # One position cannot have its work checked by another.
-    positions_min: int = 2
-    principles_min: int = 3
-    # A section with a heading and nothing under it is not a section.
-    section_min_chars: int = 40
-
-
-POLICY = Policy()
 
 Result = tuple[bool, list[str], list[str]]
 
 
-class Organization:
-    """A project's dao documents, read once and shared by the checks."""
-
-    def __init__(self, root: Path, directory: str) -> None:
-        self.root = root
-        self.directory = directory
-        self.dir = root / directory
-
-    def text(self, key: Key) -> str:
-        return read_text(self.dir / _file(key))
-
-    def has(self, key: Key) -> bool:
-        return (self.dir / _file(key)).is_file()
-
-    @cached_property
-    def positions(self) -> list[Position]:
-        return read_positions(self.text(Key.POSITIONS))
-
-    @cached_property
-    def participants(self) -> list[Participant] | None:
-        """None when `participants.md` has no participants table."""
-        return read_participants(self.text(Key.PARTICIPANTS))
-
-    def holders(self, position: str) -> list[Participant]:
-        return [p for p in (self.participants or []) if position in p.positions]
-
-
-def _file(key: Key) -> str:
-    return next(e.file for e in SPEC if e.key is key)
-
-
 def _absent(org: Organization, key: Key) -> Result:
-    return False, [], [f"no {org.directory}/{_file(key)}"]
+    where = f"{org.directory}/{file_of(key)}"
+    refused = org.refused(key)
+    return False, [], [f"{where} {refused}, so it is not read" if refused else f"no {where}"]
 
 
 def _need_section(parts: dict[str, str], pattern: str, called: str, gaps: list[str]) -> str | None:
@@ -263,10 +203,16 @@ def _check_participants(org: Organization) -> Result:
             if positions and held not in positions:
                 gaps.append(f"{p.name} holds a position that does not exist: {held}")
         if p.defined_in:
-            target = (org.root / p.defined_in).resolve()
-            if not target.is_relative_to(org.root.resolve()):
+            try:
+                target = (org.root / p.defined_in).resolve()
+                outside = not target.is_relative_to(org.root.resolve())
+                missing = not outside and not target.is_file()
+            except (OSError, ValueError):
+                gaps.append(f"{p.name} is defined in a path that cannot be read")
+                continue
+            if outside:
                 gaps.append(f"{p.name} is defined in a path outside the project")
-            elif not target.is_file():
+            elif missing:
                 gaps.append(f"{p.name} is defined in a file that does not exist: {p.defined_in}")
     vacant = sorted(n for n in positions if not org.holders(n))
     if vacant:
@@ -284,9 +230,10 @@ def _check_front_door(org: Organization) -> Result:
         gaps.append("the README does not link: " + ", ".join(unlinked))
 
     names = POLICY.agent_instructions
-    found = [n for n in names if (org.root / n).is_file()]
+    texts = {n: org.instructions(n) for n in names}
+    found = [n for n in names if texts[n] is not None]
     pointer = re.compile(rf"(?<![\w-]){re.escape(org.directory)}/")
-    pointing = [n for n in found if pointer.search(read_text(org.root / n))]
+    pointing = [n for n in found if pointer.search(texts[n] or "")]
     if not found:
         gaps.append(f"no {' or '.join(names)} at the project root: no agent is pointed here")
     elif not pointing:
@@ -312,9 +259,10 @@ def audit(root: Path, directory: str | None = None) -> list[Coverage]:
     """Audit a project root against the six elements.
 
     `directory` is where the organization's documents live, relative to the root; the
-    declared policy value when not given.
+    declared policy value when not given. The book is not part of this: `application.book`
+    adds it, because judging a page needs the page's renderer.
     """
-    org = Organization(root, directory or POLICY.directory)
+    org = Organization(root, directory)
     out: list[Coverage] = []
     for element in SPEC:
         present, evidence, gaps = _CHECKS[element.key](org)
