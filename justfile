@@ -18,7 +18,7 @@ check: docs-check (docs-sync "--tree") secrets grammar payloads projection capab
 # that use them skip and the run fails.
 #
 # The CI gate: CI runs this recipe as it stands.
-ci: docs-check docs-sync harness-test secrets-all audit workflows-lint grammar payloads projection recon-skill capabilities-test capabilities-lint capabilities-typecheck capabilities-standalone lab
+ci: docs-check docs-sync harness-test secrets-all audit workflows-lint grammar payloads dao-book projection recon-skill capabilities-test capabilities-lint capabilities-typecheck capabilities-standalone lab
 
 # `--project` not `--directory`: build reads ./components from the CWD, and
 # --directory would move the CWD into the workspace.
@@ -113,6 +113,18 @@ capabilities-typecheck:
 # lookup in the test process to any host but this machine, and k6 started against one; its
 # docstring lists the routes it does not see (a child process other than k6, among them).
 #
+# The <dao-book> element, which `dao book` copies into a project and the plugin carries: its
+# types, its tests (what a document can and cannot put on a page), and its build. The built
+# file is committed, because the Python package ships it; the last line fails when the
+# committed file is not what this source builds, so the script a page runs is always one a
+# reviewer can read as source.
+dao-book:
+    cd components/capabilities/dao/web && bun install --frozen-lockfile
+    cd components/capabilities/dao/web && bun run check
+    cd components/capabilities/dao/web && bun test
+    cd components/capabilities/dao/web && bun run build
+    git diff --exit-code -- components/capabilities/dao/src/dao/assets/skills/dao/assets/dao-book.js
+
 # The capability packages' tests, each skip listed with its reason.
 capabilities-test:
     uv --directory components/capabilities run --group dev \
@@ -142,7 +154,8 @@ secrets-all:
 # Every locked dependency with a known vulnerability, unless accepted until a date.
 audit:
     uv run --no-project --python 3.12 python harness/audit.py --allow audit-allow.toml \
-        components/capabilities/uv.lock docs/experience/bun.lock
+        components/capabilities/uv.lock docs/experience/bun.lock \
+        components/capabilities/dao/web/bun.lock
 
 # zizmor's audits of every workflow and of dependabot.yml: template injection, credentials left
 # in a checkout, permissions wider than a job needs, risky triggers. Offline unless GH_TOKEN is

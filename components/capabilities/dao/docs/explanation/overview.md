@@ -1,6 +1,6 @@
 ---
 title: dao
-summary: Audits a project's agent organization and reports each of its eleven parts as present, partial or absent.
+summary: Checks that a project's agent organization (constitution, policies, principles, positions, participants) is written down and holds together, and renders it as one page.
 kind: capability
 ---
 
@@ -8,100 +8,178 @@ kind: capability
 
 ## What it is
 
-A checker for the agent organization that maintains a project. `dao check` reads the project's
-`.claude/` and `CLAUDE.md` and says, part by part, whether the organization is really there.
+A checker for the organization that maintains a project when agents do much of the work.
+`dao check` reads six short documents in the project's `dao/` directory and says, one by one,
+whether each is really there. `dao book` makes the six a book a person can explore.
 
 ## The problem
 
-A project has `.claude/agents/` with one file in it: "You review code." On disk it looks like a
-team of agents. It is one thin prompt with no method, nothing it refuses, and no one to disagree
-with. The directory exists, so a glance says yes. Nothing tells you the bench is not a bench.
+A project has three agents and one maintainer. One agent writes changes, one reviews them, and
+nobody has written down which is which. The reviewer is the same model as the writer and is
+described as "independent". Nothing says whether an agent may publish a release. When the
+maintainer is away, an agent decides something that cannot be undone, and afterwards nobody
+can say whether it was allowed to.
+
+The organization exists, in habits and in prompts. It is not anywhere a person or a new
+session can read it, so nobody can check it or change it on purpose.
 
 ## How it works
 
-A **dao** is the agent organization that maintains a project: its agents, its practices, how a
-task finds the right agent, how work is checked, and the person accountable for it.
+A **dao** is a directed agent organization: the people and agents that maintain a project,
+what each may do, who decides, and who is accountable. dao describes it in the terms Ostrom
+used for institutions, as six documents:
 
-dao describes it as eleven **parts**. Five are the **council floor**, what deliberating needs: a
-bench of agents with distinct methods (#1), a practice library (#5), a routing surface (#6), a
-separate verification gate (#7) and a human-accountability surface (#10). The other parts are
-the **organization delta**, what running a project over time adds, such as a charter, recurring
-disciplines and a learning loop.
+| Document | Says |
+|---|---|
+| `constitution.md` | what the organization is for, what it commits to, and who may change its rules |
+| `policies.md` | the **governing policies**: who decides what, how work is checked, how a rule is changed |
+| `principles.md` | the **operating principles**: how day-to-day work is done |
+| `positions.md` | the **positions**: each role, what it does, what it must not do, who checks it |
+| `participants.md` | the **participants**: which person or agent holds each position |
+| `README.md` | the front door: all of it, explained to someone who has never seen the project |
 
-Each part gets a **status**:
+The three rule documents are three levels. Principles govern the work, policies govern how
+principles and policies change, and the constitution governs who may change anything.
+
+Each document gets a **status**:
 
 | status | means |
 |---|---|
-| `PRESENT` | the files are there, and they pass the part's substantive test |
-| `PARTIAL` | the files are there, and the test does not pass |
-| `ABSENT` | nothing for this part |
+| `PRESENT` | the file is there, and it passes its test |
+| `PARTIAL` | the file is there, and the test does not pass |
+| `ABSENT` | no file |
 
-**PARTIAL is the useful verdict.** It is the part that looks done and is not. dao never adds the
-statuses into a score: one number would let a strong charter average away a missing gate.
+**PARTIAL is the useful verdict.** It is the document that looks done and is not. dao never
+adds the statuses into a score: one number would let a careful constitution average away a
+position that checks its own work.
 
-`dao check` exits 1 while the council floor is incomplete. An incomplete organization delta is
-a legitimate state: those parts are what a specific pain buys, not a day-one deliverable.
+Most of what the test looks at is whether the documents agree with each other: every
+participant holds a position that exists, every position is held, a position's checker is a
+different position, the position that may amend the constitution is held by a person, and the
+project's `CLAUDE.md` points at the directory so that an agent reads it at all.
+
+`dao check` exits 0 only when all six are PRESENT.
+
+### The book
+
+Six Markdown files are the right source and the wrong thing to hand a person who asks how the
+project is run. `dao book` writes the same organization as a book. It adds no words of its
+own. What it adds is the cross-referencing a reader would otherwise do by hand: who holds
+each position, whose work it reads, and the chains of checking, such as builder, read by
+reviewer, read by owner.
+
+The book opens small and unfolds where the reader asks. First a map: participants on one
+side, positions on the other, a line for each holding and an arrow from each position to the
+one that checks it. Picking anyone shows what they do, what they must not do, and who reads
+their work. A search finds a word, say "merge", in the positions and the rules. Below, the
+three levels of rule are folded to their section titles, and each opens to the document's own
+text.
+
+It is three files beside the documents. `book.json` is the organization as data. `book.html`
+is a page that carries that data and opens from a clone, a file share or a static host.
+`dao-book.js` is the `<dao-book>` element that draws it, which a project's own site can use
+in two lines ([CONTRACT.md](../../CONTRACT.md#the-element)). The page runs that one script
+and loads nothing from the network. The element shows a document's words and nothing a
+document contains can act: raw HTML is shown as text, and a link or an image is kept only
+when its address is one of a short list of kinds.
+
+`dao check` makes the files again and compares each one that is on disk. If the documents
+have changed since, or a file is not what dao writes, the front door is PARTIAL until
+`dao book` is run again. A book that has fallen behind tells its reader something the
+organization no longer says.
 
 ## Try it
 
-A project with one thin agent and a four-word `CLAUDE.md`:
+A project where someone has started and stopped:
 
 ```
-$ mkdir -p proj/.claude/agents
-$ printf -- '---\nname: reviewer\ndescription: Reviews code.\n---\nYou review code.\n' > proj/.claude/agents/reviewer.md
-$ printf '# proj\n\nBe careful.\n' > proj/CLAUDE.md
+$ mkdir -p proj/dao
+$ printf '# Constitution\n\n## Purpose\n\nBe good.\n' > proj/dao/constitution.md
+$ printf '# Positions\n\n## reviewer\n\nDoes: Reviews code.\n' > proj/dao/positions.md
 $ dao check proj
-┃  # ┃ component                        ┃ tier         ┃ status  ┃ evidence / gaps                 ┃
-│  1 │ A method-distinct bench          │ council      │ PARTIAL │ 1 seat(s): reviewer             │
-│    │                                  │              │         │ ! only 1 seat(s); a bench needs │
-│    │                                  │              │         │ >= 2 to disagree                │
-│    │                                  │              │         │ ! thin method prose (M1 PLAIN   │
-│    │                                  │              │         │ risk, < 240 chars): reviewer    │
-│    │                                  │              │         │ ! no stated refusal/boundary —  │
-│    │                                  │              │         │ method-ownership unverifiable:  │
-│    │                                  │              │         │ reviewer                        │
-│  2 │ A constitution of normative      │ organization │ PARTIAL │ CLAUDE.md (4 words)             │
+┃ element              ┃ file            ┃ status  ┃ evidence / gaps                               ┃
+│ Constitution         │ constitution.md │ PARTIAL │ 6 words, 1 section(s)                         │
+│                      │                 │         │ ! the 'Purpose' section is empty or a single  │
+│                      │                 │         │ line                                          │
+│                      │                 │         │ ! no Commitments section                      │
+│                      │                 │         │ ! no Amendment section                        │
+│ Governing policies   │ policies.md     │ ABSENT  │ ! no dao/policies.md                          │
+│ Operating principles │ principles.md   │ ABSENT  │ ! no dao/principles.md                        │
+│ Positions            │ positions.md    │ PARTIAL │ 1 position(s): reviewer                       │
+│                      │                 │         │ ! only 1 position(s); it takes >= 2 for one   │
+│                      │                 │         │ to check another                              │
+│                      │                 │         │ ! no 'Must not:' field: reviewer              │
+│                      │                 │         │ ! remit under 240 characters, closer to a     │
+│                      │                 │         │ label than a method (M1): reviewer            │
+│                      │                 │         │ ! reviewer has no 'Checked by:' naming        │
+│                      │                 │         │ another position                              │
+│ Participants         │ participants.md │ ABSENT  │ ! no dao/participants.md                      │
+│ Front door           │ README.md       │ ABSENT  │ ! no dao/README.md                            │
 …
-│ 10 │ The human-accountability surface │ council      │ ABSENT  │ ! no human-accountability       │
-│    │                                  │              │         │ surface — this is not DIRECTED  │
-…
-  council floor      INCOMPLETE — missing [1, 5, 6, 7, 10]
-  organization delta INCOMPLETE — missing [2, 3, 4, 8, 9]
+  INCOMPLETE: Constitution, Governing policies, Operating principles, Positions, Participants, Front
+door
 $ echo $?
 1
 ```
 
-The bench exists and is PARTIAL, with the three reasons. `dao check proj -v` adds the test each
-part is held to.
+The positions file exists and is PARTIAL, with the four reasons. `dao check proj -v` adds what
+each document must contain and the finding behind it.
+
+To write the documents, install the `dao` plugin and ask your agent to set the project up as
+a dao. The skill reads the project, asks you a few questions, writes the six documents, runs
+this check, and makes the book:
+
+```
+$ dao book proj
+  wrote book.json, book.html, dao-book.js in dao/
+  open dao/book.html in a browser
+  dao check finds gaps in the documents. The page lists them at the top; `dao check` says more.
+```
 
 ## What it gives an agent
 
 | What an agent can do | Why it can trust it | The command |
 |---|---|---|
-| See which parts of an organization are missing, or there in name only | each gap names the file and the test it failed; no score hides one | `dao check <project>` |
-| Know what each part must contain before writing it | the test is printed beside the research finding that shaped it | `dao spec --findings`, `dao check -v` |
-| Gate on the council floor | the exit code is 1 while it is incomplete, 0 once it is complete | `dao check <project>; echo $?` |
-| Run it on a repository it did not write | it reads files as text and executes and writes nothing | [SECURITY.md](../../SECURITY.md) |
-| Know the thresholds it was judged by | they are a declared policy map, not constants in code | `dao policy` |
+| See which documents are missing, or there in name only | each gap names the document and what failed; no score hides one | `dao check <project>` |
+| Know what a document must contain before writing it | the requirements are printed beside the research finding that shaped them | `dao spec --findings`, `dao check -v` |
+| Gate on the organization being whole | the exit code is 0 only when all six are PRESENT | `dao check <project>; echo $?` |
+| Read the verdicts without parsing a table | one JSON object, with a key, a status and the gaps for each document | `dao check <project> --json` |
+| Give the owner a book to explore and share | it says only what the documents say, and `dao check` reports any of its files that falls behind | `dao book <project>` |
+| Show the organization on the project's site | the element is one script with nothing to load, and takes the site's colours | `<dao-book src="book.json">` |
+| Read the organization as data | positions with their holders and checkers, participants, and each document's text | `dao book <project> --json` |
+| Run it on a repository it did not write | it reads regular files inside the project, as text, never through a symbolic link, and executes nothing; `dao book` writes three files, inside the project | [SECURITY.md](../../SECURITY.md) |
+| Know the thresholds it was judged by | they are a declared policy, not constants in code | `dao policy` |
 
 ## What it does not do
 
-- **It does not set up an organization.** There is no `dao init`: the part that matters, the
-  method prose of each agent, is a judgment, and a generator of eleven plausible files would
-  produce exactly what the audit exists to catch.
-- **Its tests are heuristics.** They look for keywords and lengths, so a padded file can pass.
-  PARTIAL is a signal to look, not a proof, and PRESENT is not a review.
-- **It has no machine-readable output.** The report is a table for a person; there is no
-  `--json`.
+- **It does not set up an organization.** There is no `dao init`: what matters in these
+  documents is what was decided, and a generator of six plausible files would produce exactly
+  what the audit exists to catch. The plugin's skill writes them with the project's owner.
+- **It checks form, not meaning.** It reads sections, fields, table rows and whether the
+  documents agree. A constitution with well-formed, empty sentences passes. PRESENT is not a
+  review; the skill's last step is one, done by a reader.
+- **It does not check that anyone follows the documents.** Whether an agent in a position
+  keeps to it is a question about behaviour, and nothing here measures it.
+- **Three of its tests look for words.** Whether Decisions mentions the irreversible, whether
+  Verification names its kind of check, and the 240-character remit are heuristics. A padded
+  file can pass them.
+- **The book has one layout.** Its colours and type can be set from the page; its parts
+  cannot be rearranged. A project that wants its own page draws it from `book.json`.
+- **The book needs a script to draw it.** With scripts off, the page says where the Markdown
+  documents are and shows nothing else.
+- **The book is a copy.** `dao check` holds it to the documents, not to an agent's defining
+  file, and a book checked by a dao version other than the one that made it may be reported
+  when nothing is wrong with it. `dao check` is the current answer.
 - **`dao figures` needs a corpus that is not distributed.** It reads a catalog of grounded
   domains from `~/mox/packages/dao-corpus`; without it, it reports that no catalog was found
   and exits 1.
-- **A gate's independence is recorded, not ranked.** `dao check` asks a verification gate to
-  say whether it is an out-of-family check or a cold re-read. Whether out-of-family is better
-  has not been measured, so neither label scores above the other.
+- **The model is not a tested design.** Positions, participants and three levels of rule are
+  a clear way to describe an organization. No study read here shows that an agent
+  organization described this way works better than one that is not.
 
 ## Next
 
 - [README](../../README.md): install and the commands.
+- [CONTRACT.md](../../CONTRACT.md): the document formats, exactly.
 - `dao --help`, and `dao <command> --help`.
 - [SECURITY.md](../../SECURITY.md): what it reads, and what it never does.

@@ -1,8 +1,80 @@
 # Changelog — dao
 
-## 0.1.0 — unreleased
+## 0.2.0 — 2026-11-12
 
-The first version. It has been in this repository since 2026-08-18 and has no release tag yet.
+dao now describes an organization in Ostrom's terms: **positions**, **participants**, and three
+levels of rule (a **constitution**, **governing policies** and **operating principles**), with a
+front-door README. They are six Markdown documents in the project's `dao/` directory, and
+`dao check` audits those. `dao book` makes them a book a person can explore. The setup
+skill ships as the `dao` plugin in the gnx marketplace.
+
+### Changed (breaking)
+
+- **`dao check` audits six documents in `dao/`, not eleven parts spread over `.claude/` and
+  `CLAUDE.md`.** A project that passed 0.1.0 is ABSENT on all six until the documents are
+  written. The formats are in [CONTRACT.md](CONTRACT.md).
+- **One verdict.** `dao check` exits 0 only when all six documents are PRESENT. The council
+  floor and the organization delta are gone, and with them the two-line summary.
+- **`dao spec` prints the six documents** and what each must contain.
+- **`dao policy` prints a typed policy**: `directory`, `agent_instructions`, `book`,
+  `book_data`, `book_element`, `document_max_bytes`, `position_remit_min_chars`, `positions_min`, `principles_min`, `section_min_chars`.
+  `seat_method_min_chars`, `bench_min_seats` and `ratchet_requires_trigger` are gone.
+
+### Added
+
+- **Checks that the documents agree with each other.** A participant is listed once and its
+  position exists; every
+  position is held; a position's checker is a different position; the position that may amend
+  the constitution is held by a person; a file named for an agent is on disk and inside the
+  project; the README links all five other documents; `CLAUDE.md` or `AGENTS.md` points at the
+  directory.
+- **`dao check --dir <path>`** for documents kept somewhere other than `dao/`.
+- **`dao book`** writes the organization as a book, in three files beside the documents:
+  `book.json` (the data: the six documents, with who holds each position, whose work each
+  position reads, and the chains of checking worked out), `book.html` (a page that opens from
+  disk or a site) and `dao-book.js` (the element that draws it). `dao book --json` prints the
+  data and writes nothing.
+- **`<dao-book>`**, a custom element for a project's own site. It shows a map of participants
+  and positions to pick from, what each does and must not do, a search over the positions and
+  the rules, and the three levels of rule folded to their section titles. It follows the
+  reader's light or dark setting and takes its colours from custom properties.
+- **`dao check` holds the book to the documents.** Each of the three files that is on disk is
+  made again and compared byte for byte; one that is behind the documents, edited by hand, or
+  not dao's makes the front door PARTIAL until `dao book` is run again.
+- **dao reads only regular files inside the project.** A document that is a symbolic link, is
+  larger than 1 MiB (`document_max_bytes`), or sits in a directory that resolves outside the
+  project is not read, and is reported with the reason.
+- **`dao check --json`** prints the verdicts for a program.
+- **The `dao` plugin**: the skill that reads a project, asks its owner a few questions, writes
+  the six documents, runs `dao check`, reviews what the documents say, and makes the book.
+  The plugin carries the page and the element.
+- **`dao --skill`** prints the skill text the plugin carries, and `-r documents` or
+  `-r findings` one of its references. The skill lives in the package; the plugin is projected
+  from it.
+- [CONTRACT.md](CONTRACT.md).
+
+### Kept, under the new documents
+
+- A position's remit must be prose, not a label (was the bench's method prose, M1).
+- A verification policy must say what kind of check it is (was the gate's label, M1-H2).
+- Irreversible and novel decisions go to a person (was the human-accountability surface, M4).
+- The constitution needs commitments and an amendment rule (was the charter).
+
+### Removed (breaking)
+
+- **Five checks have no counterpart in 0.2.0**: the practice library (`.claude/skills/`), the
+  learning loop (`ratchet.md` and its triggers), the perimeter and drift ladder, the recurring
+  disciplines and their "signal from outside" test, and the peer-content rule. The last two
+  were keyword tests of meaning, which this audit no longer pretends to do; the skill's review
+  asks them of a reader instead.
+- **`Seat`, `Charter`, `FigureSet` and the `ProjectionTarget` port**, which nothing used.
+  `Position` and `Participant` are the types the audit reads.
+- **`dao.domain.spec`'s `Tier`, `Group`, `Component`, `COUNCIL_FLOOR`, `ORGANIZATION_DELTA`,
+  `CONDITIONAL` and `by_number`**, replaced by `Key`, `Status`, `Element` and `by_key`.
+
+## 0.1.0 — 2026-11-07
+
+The first version, tagged `dao-v0.1.0`.
 
 ### What it holds
 

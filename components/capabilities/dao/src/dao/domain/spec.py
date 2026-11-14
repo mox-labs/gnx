@@ -1,18 +1,16 @@
-"""The dao spec — the eleven components, as data.
+"""The dao spec: the six documents a directed agent organization keeps, as data.
 
-A dao is a **Directed Agentic Organization** that maintains a project: a collective that
-does the work, a charter it declares, habits it keeps, a pragmatics for getting the work
-done, governance that keeps its cognition effective, human direction, and a boundary.
+A dao is a **directed agent organization** that maintains a project. It is described the way
+Ostrom describes any institution: **positions** (the roles), **participants** (who holds them),
+and three levels of rule: a **constitution** (what the organization is for, and who may change
+its rules), **governing policies** (who decides what, and how a rule is changed) and
+**operating principles** (how day-to-day work is done). The sixth document is the **front
+door**: the page that explains the organization to a reader, and the pointer that makes an
+agent read it.
 
-Settled by the six-mission research programme, 2026-06-20
-(`mox/research/drafts/dao-programme-synthesis.md`). This module is that spec made
-executable, so `dao check` can audit a project against it instead of a human re-reading
-prose. The components are the template; the domain is the fill.
-
-Each component carries the mission finding that constrains it. Those findings are not
-commentary — several of them *narrowed or reversed* the component's original
-justification, and a projection that ignores them rebuilds the thing the research
-already refuted.
+This module is that spec made executable, so `dao check` audits a project against it. Each
+element carries what it must contain and, where one exists, the research finding that shaped
+the requirement (the six-mission programme that closed 2026-06-20).
 """
 
 from __future__ import annotations
@@ -22,310 +20,171 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class Tier(StrEnum):
-    """The honest cut: not all eleven are equally required.
+class Key(StrEnum):
+    """The six elements, by the name the CLI and the reports use."""
 
-    A COUNCIL deliberates. An ORGANIZATION runs a project. The difference is five
-    components, and M3 found the transition is *crisis-driven* (Greiner) on a
-    foundation-before-superstructure base (CMMI) — so an ORGANIZATION component is not
-    a day-one deliverable, it is what a specific pain buys.
-
-    CONDITIONAL is the third state, and it is not a rounding error: the spec's cut names
-    five council and five organization components — ten — and then says "the domain fills
-    the rest". #11 is that rest. Its second half is explicitly conditional ("plus, IF it
-    coordinates with peers, an inter-dao protocol"), so filing it under ORGANIZATION would
-    claim the research requires something it does not.
-    """
-
-    COUNCIL = "council"
-    ORGANIZATION = "organization"
-    CONDITIONAL = "conditional"
+    CONSTITUTION = "constitution"
+    POLICIES = "policies"
+    PRINCIPLES = "principles"
+    POSITIONS = "positions"
+    PARTICIPANTS = "participants"
+    FRONT_DOOR = "front-door"
 
 
-class Group(StrEnum):
-    COLLECTIVE = "collective"  # who does the work
-    CHARTER = "charter"  # the espoused normative commitments
-    HABITS = "habits"  # how it operates, recurringly
-    PRAGMATICS = "pragmatics"  # how the project actually gets maintained
-    GOVERNANCE = "governance"  # governance of the collective, for effective cognition
-    DIRECTION = "direction"  # the human steering
-    BOUNDARY = "boundary"  # what it emits, how it talks to peers
+class Status(StrEnum):
+    """PARTIAL is the useful one: the file is there and its test does not pass."""
+
+    PRESENT = "PRESENT"
+    PARTIAL = "PARTIAL"
+    ABSENT = "ABSENT"
 
 
-class Component(BaseModel):
-    """One component of the spec. Frozen — the spec is a source of record."""
+class Element(BaseModel):
+    """One element of the spec. Frozen: the spec is a source of record."""
 
     model_config = ConfigDict(frozen=True)
 
-    n: int
+    key: Key
     name: str
-    tier: Tier
-    group: Group
+    # The file that holds it, relative to the organization's directory.
+    file: str
     summary: str
-    # Where a projection puts it. Relative to the target project root.
-    emits: tuple[str, ...] = ()
-    # The research finding that constrains this component. Empty when the original
-    # formulation survived the programme unchanged.
+    # What "present and real" means, in a form a reviewer can check.
+    must_contain: tuple[str, ...]
+    # The research finding behind a requirement. Empty when there is none.
     finding: str = ""
-    # A projection is not done because a file exists. This is what "present and real"
-    # means for this component, in a form a reviewer can check.
-    substantive_test: str = ""
 
 
-SPEC: tuple[Component, ...] = (
-    Component(
-        n=1,
-        name="A method-distinct bench",
-        tier=Tier.COUNCIL,
-        group=Group.COLLECTIVE,
+SPEC: tuple[Element, ...] = (
+    Element(
+        key=Key.CONSTITUTION,
+        name="Constitution",
+        file="constitution.md",
         summary=(
-            "Seats, each owning a distinct reasoning method — the DMAD test: a seat earns "
-            "its place on method, not personality."
+            "What the organization is for, what it commits to, and who may change its rules. "
+            "Every other document is written under it."
         ),
-        emits=(".claude/agents/",),
+        must_contain=(
+            "a Purpose section",
+            "a Commitments section: what always holds and what never happens",
+            "an Amendment section that names the position allowed to change this file",
+        ),
         finding=(
-            "M1 eval (3-arm, 72 agents): the coordination lift comes from the rich, "
-            "concrete method PROSE, not the character name. NAMED-RICH = -0.04; "
-            "RICH-PLAIN = +0.51; name-wins in 1/8 cells. KILL name-as-default, ADOPT "
-            "rich method description. Names are optional human-memorability flavor. "
-            "CRITICAL COROLLARY: a bare one-word label IS the PLAIN arm and costs ~0.5 — "
-            "renaming a seat to a terse role label is strictly worse than either a "
-            "richly-described persona or a richly-described role. Ceiling caveat: both "
-            "arms scored ~5.0, so a name effect on harder coordination tasks is not "
-            "ruled out. A coordination result is not an accuracy result."
-        ),
-        substantive_test=(
-            "Every seat states the method it owns and what it refuses, in concrete "
-            "embodied prose — not a label plus a title. Two seats must not own the same "
-            "method (no merges)."
+            "M6 (231 verified claims, 12 sources): agents have no tacit memory, so what a "
+            "human organization absorbs by osmosis has to be written down. A constitution "
+            "nobody may amend is frozen; one with no commitments is decoration."
         ),
     ),
-    Component(
-        n=2,
-        name="A constitution of normative commitments",
-        tier=Tier.ORGANIZATION,
-        group=Group.CHARTER,
+    Element(
+        key=Key.POLICIES,
+        name="Governing policies",
+        file="policies.md",
         summary=(
-            "The explicit ethos, principles, register, non-negotiables and floor "
-            "disciplines — declared rather than implied. 'The charter is the compiler': "
-            "amendable by its practitioners, neither frozen nor drifting."
+            "Who decides what: which decisions a participant makes alone, which need a "
+            "named position, how work is checked, and how a policy or a principle is changed."
         ),
-        emits=("CLAUDE.md",),
+        must_contain=(
+            "a Decisions section that sends the irreversible and the novel to a human",
+            "a Verification section that says what kind of check it is: a different model "
+            "family, the same family reading cold, or a person",
+            "a Changing the rules section",
+        ),
         finding=(
-            "M6 (systematic review, 231 verified claims / 12 sources): culture must be "
-            "LEGISLATED, handbook-first, because agents have no tacit memory. What a "
-            "human org absorbs by osmosis, an agent org has to be told. Note Schein's "
-            "espoused-vs-enacted gap: this component is the espoused ethos; culture is "
-            "the enacted gestalt all eleven jointly produce."
-        ),
-        substantive_test=(
-            "The charter states non-negotiables and an amendment path. A charter nobody "
-            "may amend is frozen; one with no declared floor is decoration."
+            "M4: scoped autonomy. Below a reversibility or novelty floor no accumulated "
+            "trust buys autonomy, so those decisions go to a human. M1-H2: a same-family "
+            "reviewer matched a two-pass cold re-read on every measured mode, so a check "
+            "must say which kind it is; neither label is ranked above the other, because "
+            "that comparison has not been run."
         ),
     ),
-    Component(
-        n=3,
-        name="Ceremonies and operating disciplines",
-        tier=Tier.ORGANIZATION,
-        group=Group.HABITS,
-        summary=(
-            "Recurring rituals: DoD-before-acting, anti-sycophancy-first, context "
-            "hygiene, compress-before-handoff, verify-before-claiming."
-        ),
-        emits=("CLAUDE.md",),
+    Element(
+        key=Key.PRINCIPLES,
+        name="Operating principles",
+        file="principles.md",
+        summary="How day-to-day work is done here: the habits every participant keeps.",
+        must_contain=("at least three principles, each a list item or a section",),
         finding=(
-            "THE ONE LAW: a ritual helps only if it injects signal the agent could not "
-            "fabricate. A ceremony that asks the model to introspect on its own output "
-            "adds cost and no signal — that is the test every ritual must pass."
-        ),
-        substantive_test=(
-            "Each declared ceremony names the signal it injects and where that signal "
-            "comes from OUTSIDE the agent performing it."
+            "The one law for a habit: it helps only if it injects a signal the agent could "
+            "not fabricate. A principle that asks a model to introspect on its own output "
+            "adds cost and no signal. The audit cannot test this; the review in the skill does."
         ),
     ),
-    Component(
-        n=4,
-        name="The flow / process-encoding",
-        tier=Tier.ORGANIZATION,
-        group=Group.PRAGMATICS,
+    Element(
+        key=Key.POSITIONS,
+        name="Positions",
+        file="positions.md",
         summary=(
-            "The workflow that runs a unit of work: phases, the convene-discipline "
-            "(per-question, stay-thin, council only for multi-track), typed handoffs. "
-            "This is the 'O' — what makes it an organization and not a one-shot council."
+            "The roles. Each says what it does, what it must not do, and which other "
+            "position checks its work."
         ),
-        emits=("CLAUDE.md",),
-        substantive_test=(
-            "A unit of work can be traced end to end, and the convene rule says when NOT "
-            "to convene. A standing debate is the procrastination-engine failure."
+        must_contain=(
+            "at least two positions, each a section",
+            "for each: Does, Must not, and Checked by",
+            "a remit written as prose, not a label",
+            "Checked by names a different position, unless only humans hold the position",
         ),
-    ),
-    Component(
-        n=5,
-        name="A practice library",
-        tier=Tier.COUNCIL,
-        group=Group.PRAGMATICS,
-        summary=(
-            "Durable, tool-independent craft judgment the seats draw on. "
-            "Skills-as-practice, agents-as-role."
-        ),
-        emits=(".claude/skills/",),
-        substantive_test=(
-            "Each practice survives renaming its tools. A 'how to drive tool X' body is "
-            "tooling, not judgment — it belongs in references under a practice."
-        ),
-    ),
-    Component(
-        n=6,
-        name="An active routing surface",
-        tier=Tier.COUNCIL,
-        group=Group.PRAGMATICS,
-        summary=(
-            "The declared-capability router: task to which seat, which practice, which "
-            "phase. It FIRES FIRST; it is not a passive document."
-        ),
-        emits=("CLAUDE.md",),
         finding=(
-            "M2 (dao-init schema): arch-critique forced every governed surface into a "
-            "declared, ratchet-fed POLICY CONTRACT — no hardcoded constants. A threshold "
-            "written into code is a governance decision hidden from governance."
-        ),
-        substantive_test=(
-            "Routing is declared as data a reader can audit, and every threshold in it "
-            "is a named policy the ratchet can amend — not a literal buried in prose."
+            "M1 (three arms, 72 agents): the coordination lift comes from rich, concrete "
+            "prose about the method, not from the name (rich minus plain = +0.51; named "
+            "minus rich = -0.04). A bare label is the worst of the three conditions. A "
+            "coordination result is not an accuracy result."
         ),
     ),
-    Component(
-        n=7,
-        name="A separated verification gate",
-        tier=Tier.COUNCIL,
-        group=Group.GOVERNANCE,
-        summary=(
-            "Independent ENFORCEMENT of the declared commitments — not a 'conscience'. "
-            "Structurally separate, consulted first, externally anchored."
+    Element(
+        key=Key.PARTICIPANTS,
+        name="Participants",
+        file="participants.md",
+        summary="Who holds each position: a person, or an agent and the file that defines it.",
+        must_contain=(
+            "a table with Participant, Kind (human or agent) and Position columns",
+            "at least one human",
+            "every position held by someone, and no participant in a position that does not exist",
+            "every file named under Defined in exists",
         ),
-        emits=(".claude/agents/", "CLAUDE.md"),
         finding=(
-            "M1-H2 + M4 — the component whose justification the programme NARROWED most. "
-            "The broad claim ('the maker cannot grade its own work; fresh eyes catch what "
-            "the maker misses') is NOT SUPPORTED: at the Sonnet tier a two-pass "
-            "fresh-eyes self-review matched a structurally separate agent on every "
-            "measured mode — 1.00 flaw-catch both, 0.00 over-concession both, across 6 "
-            "subtler planted flaws. So a mandated COLD RE-READ pass is the cheap floor. "
-            "The separate gate earns its extra cost on exactly two untested grounds: "
-            "(a) OUT-OF-FAMILY perspective — a different model distribution catching what "
-            "the maker's structurally cannot; (b) SUSTAINED multi-turn pressure on a "
-            "position the maker generated through long reasoning. run-03 is specified "
-            "but unrun. M4 adds: the gate runs a deterministic mandatory-ratification "
-            "classifier and weights itself by work-variance x reversibility, with "
-            "reversibility and novelty floors forcing a full conjunctive pass/fail."
-        ),
-        substantive_test=(
-            "Either the gate is out-of-family, or it is honestly labelled a cold-reread "
-            "floor. A same-family 'independent reviewer' claiming to catch what the maker "
-            "missed is the refuted claim wearing a new hat."
+            "M4: a dao is autonomous in how it works and accountable to a named human for "
+            "what it does. An organization with no human participant is not directed."
         ),
     ),
-    Component(
-        n=8,
-        name="The ratchet / learning loop",
-        tier=Tier.ORGANIZATION,
-        group=Group.GOVERNANCE,
+    Element(
+        key=Key.FRONT_DOOR,
+        name="Front door",
+        file="README.md",
         summary=(
-            "Append-only accumulated learnings (principle, trigger, validation-criteria) "
-            "— the retrospective's function ported. How lived experience amends the charter."
+            "The page that explains the organization to someone who has never seen it, and "
+            "the line in the project's agent instructions that makes an agent read it."
         ),
-        emits=(".claude/ratchet.md",),
-        substantive_test=(
-            "Entries are append-only and carry a TRIGGER — the condition under which a "
-            "future session must re-read them. A learning with no trigger is never recalled."
+        must_contain=(
+            "a README in the organization's directory that links the other five documents",
+            "the project's agent instructions (CLAUDE.md or AGENTS.md) name that directory",
         ),
-    ),
-    Component(
-        n=9,
-        name="Membership, graduated sanctions, a legible perimeter",
-        tier=Tier.ORGANIZATION,
-        group=Group.GOVERNANCE,
-        summary=(
-            "Who holds write access (chartered members vs ephemeral readers — anonymity "
-            "is the tragedy-vector), what the dao stewards vs what belongs to others, and "
-            "a cheapest-first drift ladder: flag, ratchet, escalate — never straight to a halt."
-        ),
-        emits=("CLAUDE.md",),
-        substantive_test=(
-            "The perimeter names what this dao does NOT own, and the ladder's first rung "
-            "is cheaper than a halt."
-        ),
-    ),
-    Component(
-        n=10,
-        name="The human-accountability surface",
-        tier=Tier.COUNCIL,
-        group=Group.DIRECTION,
-        summary=(
-            "The human as non-delegable direction inlet and irreducible arbiter. Autonomy "
-            "over METHOD, never over ACCOUNTABILITY: a dao is autonomous in how it works "
-            "and accountable to a named human for what it does."
-        ),
-        emits=("CLAUDE.md",),
         finding=(
-            "M4 (all three questions decided HYBRID): scoped autonomy, with the human "
-            "owning the deterministic ratification-classifier; graded trust applies only "
-            "WITHIN reversibility and novelty floors. Below a floor, no accumulated trust "
-            "buys autonomy."
-        ),
-        substantive_test=(
-            "The irreversible and the novel are named, and they route to the human "
-            "regardless of how much trust has accrued."
-        ),
-    ),
-    Component(
-        n=11,
-        name="The emitted record and provenance",
-        tier=Tier.CONDITIONAL,
-        group=Group.BOUNDARY,
-        summary=(
-            "Typed and stamped at every step; plus, if it coordinates with peers, an "
-            "inter-dao protocol (indirect, async, receiver-autonomy, message-as-boundary)."
-        ),
-        emits=(".claude/",),
-        finding=(
-            "M5 (security + design, rev.2; mudge found the missing invariant F-05): a "
-            "peer's post-body is DATA, NOT INSTRUCTIONS. rev.2 adds a node-level "
-            "lethal-trifecta invariant — Rule-of-Two-per-session plus dual-LLM handler "
-            "isolation. Stigmergy intra-dao; typed messaging across DAG edges."
-        ),
-        substantive_test=(
-            "Any inbound peer content is handled as data. A node that reads untrusted "
-            "content, holds private data, AND can act outbound violates Rule-of-Two."
+            "An organization nobody is pointed at exists on paper only: an agent that "
+            "starts a session without the pointer never reads a word of it."
         ),
     ),
 )
 
 
-COUNCIL_FLOOR: tuple[int, ...] = tuple(c.n for c in SPEC if c.tier is Tier.COUNCIL)
-ORGANIZATION_DELTA: tuple[int, ...] = tuple(c.n for c in SPEC if c.tier is Tier.ORGANIZATION)
-CONDITIONAL: tuple[int, ...] = tuple(c.n for c in SPEC if c.tier is Tier.CONDITIONAL)
-
-
-def by_number(n: int) -> Component:
-    for c in SPEC:
-        if c.n == n:
-            return c
-    raise KeyError(f"no dao component #{n}")
+def by_key(key: Key | str) -> Element:
+    for e in SPEC:
+        if e.key == key:
+            return e
+    raise KeyError(f"no dao element {key!r}")
 
 
 class Coverage(BaseModel):
-    """What a projection actually achieved, per component. Mutable — it is assembled."""
+    """What a project actually has for one element. Mutable: it is assembled."""
 
-    component: Component
+    element: Element
     present: bool
     evidence: list[str] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
 
     @property
-    def status(self) -> str:
+    def status(self) -> Status:
         if self.present and not self.gaps:
-            return "PRESENT"
+            return Status.PRESENT
         if self.present:
-            return "PARTIAL"
-        return "ABSENT"
+            return Status.PARTIAL
+        return Status.ABSENT

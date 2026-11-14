@@ -15,7 +15,7 @@ Claude; [How gnx is built](docs/content/start/2-how-gnx-is-built.md) says how.
 | I need releases from GitHub, tickets from our tracker's API and a CLI's output in one place, collected the same way every week, that my agent can query. | [recon](components/capabilities/recon/README.md) | One YAML mission. recon shows every request and command before it runs, collects with no model in the loop, keeps each run as an archive, and answers SQL: `recon query <mission> "<SQL>"`. |
 | My pipeline fetches items, has an agent review each, and a model score the review. Afterwards, which agent, prompt and model produced each row? | [matrix](components/capabilities/matrix/README.md) | Components declare the kinds of data they need and provide. matrix orders them, checks the wiring before anything runs, and writes every row to disk as it is handed over, with a ledger naming the component behind it and a session row for every agent session and model call. |
 | My code calls Claude. Can I try the same prompt on a local model or Gemini without rewriting the call, and know which family answered and what it cost? | [hardline](components/capabilities/hardline/README.md) | One call shape for every model family. Models are named rows in `hardline.yaml`; each answer is tagged with the family that gave it, its token usage and its latency. A `mock` backend answers offline, for tests. |
-| Is my project's `.claude/` a real bench of agents, or a few thin prompts that look like one? | [dao](components/capabilities/dao/README.md) | `dao check <project>`: each of eleven parts PRESENT, PARTIAL or ABSENT with the gap named, never a score. It checks an organization; it does not write one. |
+| Who does what in my project, who decides, and is any of it written down? | [dao](components/capabilities/dao/README.md) | `dao check <project>`: the project's constitution, policies, principles, positions and participants, each PRESENT, PARTIAL or ABSENT with the gap named, never a score. `dao book <project>` makes them a book a person can read. The `dao` plugin's skill writes them with you. |
 
 What makes them easier for an agent to drive, and their work easier to check:
 
@@ -80,7 +80,7 @@ uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.9.0#subdirectory=comp
 uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.19.1#subdirectory=components/capabilities/recon"
 uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.10.0#subdirectory=components/capabilities/matrix"
 uv tool install "git+https://github.com/mox-labs/gnx@hardline-v0.3.1#subdirectory=components/capabilities/hardline"
-uv tool install "git+https://github.com/mox-labs/gnx@dao-v0.1.0#subdirectory=components/capabilities/dao"
+uv tool install "git+https://github.com/mox-labs/gnx@dao-v0.2.0#subdirectory=components/capabilities/dao"
 ```
 
 uv takes each package's dependencies from this repository too. Mutation testing adds
@@ -104,7 +104,7 @@ before you move.
 | `matrix` | Runs components wired by the kinds of data they exchange, composes agents from a definition plus a runtime, and records every row as a run goes. CLI and library. | [README](components/capabilities/matrix/README.md) · [SECURITY](components/capabilities/matrix/SECURITY.md) |
 | `hardline` | One interface to every model family (local MLX or ollama, Gemini, Claude), each answer tagged with the family that gave it. CLI and library. | [README](components/capabilities/hardline/README.md) · [SECURITY](components/capabilities/hardline/SECURITY.md) |
 | `matrix-hardline` | The bridge that makes hardline a matrix model runtime. Library; ix depends on it. | [README](components/capabilities/matrix-hardline/README.md) · [SECURITY](components/capabilities/matrix-hardline/SECURITY.md) |
-| `dao` | Audits a project's agent organization: each of eleven parts present, partial or absent, never a score. CLI. | [README](components/capabilities/dao/README.md) · [SECURITY](components/capabilities/dao/SECURITY.md) |
+| `dao` | Audits a project's agent organization: six documents (constitution, policies, principles, positions, participants, front door), each present, partial or absent, never a score; and makes them a book to explore, with an element for a project's site. CLI. |  [README](components/capabilities/dao/README.md) · [SECURITY](components/capabilities/dao/SECURITY.md) |
 | `gnx` | Projects this repository's components into Claude Code plugins, and checks the committed projection. CLI, for contributors. | [README](components/capabilities/gnx/README.md) · [SECURITY](components/capabilities/gnx/SECURITY.md) |
 
 Dependencies: `ix` needs `matrix` and `matrix-hardline`; `matrix-hardline` needs `matrix` and

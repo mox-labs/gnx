@@ -1,7 +1,7 @@
 [project]
 name = "dao"
-version = "0.1.0"
-description = "Audit a project's Directed Agentic Organization against the eleven-component dao spec: each part present, partial or absent"
+version = "0.2.0"
+description = "Check a project's directed agent organization (constitution, policies, principles, positions, participants) and make it a book a person can explore"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -34,6 +34,8 @@ packages = ["src/dao"]
 include = [
     "src/dao/**/*.py",
     "src/dao/**/*.md",
+    "src/dao/**/*.html",
+    "src/dao/**/*.js",
     "src/dao/py.typed",
 ]
 
