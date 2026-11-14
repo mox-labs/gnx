@@ -247,7 +247,13 @@ def test_a_defined_in_path_the_system_rejects_is_a_gap_not_a_crash(project: Path
     participants.write_text(
         participants.read_text().replace(".claude/agents/cold-reader.md", "x" * 5000)
     )
-    assert "cannot be read" in _gaps_of(project, Key.PARTICIPANTS)
+    # Which of the two it is depends on the system: some refuse a name this long, and some
+    # answer that no such file exists. Either way it is a gap that names the participant.
+    gaps = _gaps_of(project, Key.PARTICIPANTS)
+    assert (
+        "cold-reader is defined in a path that cannot be read" in gaps
+        or "cold-reader is defined in a file that does not exist" in gaps
+    )
 
 
 def test_no_line_can_make_reading_slow() -> None:
