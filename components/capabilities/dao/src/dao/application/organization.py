@@ -6,7 +6,7 @@ documents' directory. A repository is somebody else's input. A document that is 
 `~/.ssh/config` would otherwise be copied into a page meant for sharing, and one that is a
 link to `/dev/zero` would be read until memory ran out.
 
-Also here: the digest that ties a rendered book to the documents it was rendered from.
+Also here: the digest that ties a book to the documents it was made from.
 """
 
 from __future__ import annotations
@@ -27,9 +27,10 @@ if TYPE_CHECKING:
 
     from dao.domain.models import Participant, Position
 
-# How a book records its sources. `dao book` writes it; nothing else should.
-SOURCES_META = "dao-sources"
-_RECORDED = re.compile(rf'<meta name="{SOURCES_META}" content="([0-9a-f]{{64}})">')
+# How a book records its sources: a meta tag in the page, a field in the data.
+_RECORDED = re.compile(
+    r'<meta name="dao-sources" content="([0-9a-f]{64})">|"sources": ?"([0-9a-f]{64})"'
+)
 
 # (content, reason). Content is None when the file is not read; the reason is empty when
 # that is because there is no file, and says why otherwise.
@@ -136,17 +137,26 @@ class Organization:
         """None when `participants.md` has no participants table."""
         return read_participants(self.text(Key.PARTICIPANTS))
 
+    @cached_property
+    def _holders(self) -> dict[str, list[Participant]]:
+        """Each position's holders, worked out once: asking per position would make reading
+        an organization quadratic in its size."""
+        out: dict[str, list[Participant]] = {}
+        for p in self.participants or []:
+            for name in dict.fromkeys(p.positions):
+                out.setdefault(name, []).append(p)
+        return out
+
     def holders(self, position: str) -> list[Participant]:
-        return [p for p in (self.participants or []) if position in p.positions]
+        return self._holders.get(position, [])
 
-    @property
-    def book(self) -> Path:
-        """Where this organization's book is written."""
-        return self.dir / POLICY.book
+    def book_file(self, name: str) -> Path:
+        """Where one of the book's files is written."""
+        return self.dir / name
 
-    def read_book(self, limit: int) -> Read:
-        """The book on disk, by the same rule as a document, up to `limit` bytes."""
-        read = _read_regular(self.book, limit, follow=False)
+    def read_book_file(self, name: str, limit: int) -> Read:
+        """One of the book's files on disk, by the same rule as a document, up to `limit` bytes."""
+        read = _read_regular(self.book_file(name), limit, follow=False)
         if not self.inside and (read[0] is not None or read[1]):
             return None, "is outside the project"
         return read
@@ -168,7 +178,7 @@ class Organization:
         return h.hexdigest()
 
 
-def rendered_from(book_html: str) -> str | None:
-    """The digest a book says it was rendered from, or None when it records none."""
-    m = _RECORDED.search(book_html)
-    return m.group(1) if m else None
+def made_from(content: str) -> str | None:
+    """The digest one of a book's files says it was made from, or None when it records none."""
+    m = _RECORDED.search(content)
+    return (m.group(1) or m.group(2)) if m else None

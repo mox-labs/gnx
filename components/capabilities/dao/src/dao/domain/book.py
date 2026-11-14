@@ -2,8 +2,8 @@
 
 A book holds what the six documents say and what follows from reading them together: who
 holds each position, whose work each position reads, and where each chain of checking ends.
-It carries Markdown as written and no HTML, so any front end can render it: the page
-`dao book` writes, or one a project builds from `dao book --json`.
+It carries Markdown as written and no HTML, so any front end can render it: the `<dao-book>`
+element dao ships, a project's own docsite, or a panel in an editor.
 """
 
 from __future__ import annotations
@@ -50,6 +50,9 @@ class Book(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    # The shape of this data. A reader built for one format refuses another; it is raised
+    # when a field is removed or changes meaning, not when one is added.
+    format: int = 1
     title: str
     directory: str
     # Whether `dao check` found all six documents PRESENT when the book was made.

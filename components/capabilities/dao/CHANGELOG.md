@@ -5,7 +5,7 @@
 dao now describes an organization in Ostrom's terms: **positions**, **participants**, and three
 levels of rule (a **constitution**, **governing policies** and **operating principles**), with a
 front-door README. They are six Markdown documents in the project's `dao/` directory, and
-`dao check` audits those. `dao book` renders them as one page a person can read. The setup
+`dao check` audits those. `dao book` makes them a book a person can explore. The setup
 skill ships as the `dao` plugin in the gnx marketplace.
 
 ### Changed (breaking)
@@ -17,32 +17,37 @@ skill ships as the `dao` plugin in the gnx marketplace.
   floor and the organization delta are gone, and with them the two-line summary.
 - **`dao spec` prints the six documents** and what each must contain.
 - **`dao policy` prints a typed policy**: `directory`, `agent_instructions`, `book`,
-  `document_max_bytes`, `position_remit_min_chars`, `positions_min`, `principles_min`, `section_min_chars`.
+  `book_data`, `book_element`, `document_max_bytes`, `position_remit_min_chars`, `positions_min`, `principles_min`, `section_min_chars`.
   `seat_method_min_chars`, `bench_min_seats` and `ratchet_requires_trigger` are gone.
 
 ### Added
 
-- **Checks that the documents agree with each other.** A participant's position exists; every
+- **Checks that the documents agree with each other.** A participant is listed once and its
+  position exists; every
   position is held; a position's checker is a different position; the position that may amend
   the constitution is held by a person; a file named for an agent is on disk and inside the
   project; the README links all five other documents; `CLAUDE.md` or `AGENTS.md` points at the
   directory.
 - **`dao check --dir <path>`** for documents kept somewhere other than `dao/`.
-- **`dao book`** writes `dao/book.html`: the six documents on one page, with who holds each
-  position, whose work each position reads, and the chains of checking worked out. The page is
-  one file that runs no script and loads nothing. `dao book --json` prints the same
-  organization as data and writes nothing.
-- **`dao check` holds the book to the documents.** When a book is there, the check renders
-  the page again and compares it byte for byte; a page that is behind the documents, edited by
-  hand, or not dao's makes the front door PARTIAL until `dao book` is run again.
+- **`dao book`** writes the organization as a book, in three files beside the documents:
+  `book.json` (the data: the six documents, with who holds each position, whose work each
+  position reads, and the chains of checking worked out), `book.html` (a page that opens from
+  disk or a site) and `dao-book.js` (the element that draws it). `dao book --json` prints the
+  data and writes nothing.
+- **`<dao-book>`**, a custom element for a project's own site. It shows a map of participants
+  and positions to pick from, what each does and must not do, a search over the positions and
+  the rules, and the three levels of rule folded to their section titles. It follows the
+  reader's light or dark setting and takes its colours from custom properties.
+- **`dao check` holds the book to the documents.** Each of the three files that is on disk is
+  made again and compared byte for byte; one that is behind the documents, edited by hand, or
+  not dao's makes the front door PARTIAL until `dao book` is run again.
 - **dao reads only regular files inside the project.** A document that is a symbolic link, is
   larger than 1 MiB (`document_max_bytes`), or sits in a directory that resolves outside the
   project is not read, and is reported with the reason.
 - **`dao check --json`** prints the verdicts for a program.
-- dao now depends on jinja2 and markdown-it-py, for the page.
 - **The `dao` plugin**: the skill that reads a project, asks its owner a few questions, writes
-  the six documents, runs `dao check`, reviews what the documents say, and renders the book.
-  The plugin carries the page's template.
+  the six documents, runs `dao check`, reviews what the documents say, and makes the book.
+  The plugin carries the page and the element.
 - **`dao --skill`** prints the skill text the plugin carries, and `-r documents` or
   `-r findings` one of its references. The skill lives in the package; the plugin is projected
   from it.

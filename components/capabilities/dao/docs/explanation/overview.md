@@ -10,7 +10,7 @@ kind: capability
 
 A checker for the organization that maintains a project when agents do much of the work.
 `dao check` reads six short documents in the project's `dao/` directory and says, one by one,
-whether each is really there. `dao book` renders the six as one page for a person to read.
+whether each is really there. `dao book` makes the six a book a person can explore.
 
 ## The problem
 
@@ -63,16 +63,29 @@ project's `CLAUDE.md` points at the directory so that an agent reads it at all.
 ### The book
 
 Six Markdown files are the right source and the wrong thing to hand a person who asks how the
-project is run. `dao book` writes `dao/book.html`: the same organization on one page. It adds
-no words of its own. What it adds is the cross-referencing a reader would otherwise do by
-hand: under each position, who holds it and whose work it reads, and above them the chains of
-checking, such as builder, read by reviewer, read by owner.
+project is run. `dao book` writes the same organization as a book. It adds no words of its
+own. What it adds is the cross-referencing a reader would otherwise do by hand: who holds
+each position, whose work it reads, and the chains of checking, such as builder, read by
+reviewer, read by owner.
 
-The page is one file. It runs no script and loads nothing from the network, so it opens from
-a clone, a file share or a static host and cannot be made to act by what a document contains.
-When a project has a book, `dao check` renders the page again and compares the two. If the
-documents have changed since, or the file is not what dao writes, the front door is PARTIAL
-until `dao book` is run again. A page that has fallen behind tells its reader something the
+The book opens small and unfolds where the reader asks. First a map: participants on one
+side, positions on the other, a line for each holding and an arrow from each position to the
+one that checks it. Picking anyone shows what they do, what they must not do, and who reads
+their work. A search finds a word, say "merge", in the positions and the rules. Below, the
+three levels of rule are folded to their section titles, and each opens to the document's own
+text.
+
+It is three files beside the documents. `book.json` is the organization as data. `book.html`
+is a page that carries that data and opens from a clone, a file share or a static host.
+`dao-book.js` is the `<dao-book>` element that draws it, which a project's own site can use
+in two lines ([CONTRACT.md](../../CONTRACT.md#the-element)). The page runs that one script
+and loads nothing from the network. The element shows a document's words and nothing a
+document contains can act: raw HTML is shown as text, and a link or an image is kept only
+when its address is one of a short list of kinds.
+
+`dao check` makes the files again and compares each one that is on disk. If the documents
+have changed since, or a file is not what dao writes, the front door is PARTIAL until
+`dao book` is run again. A book that has fallen behind tells its reader something the
 organization no longer says.
 
 ## Try it
@@ -114,11 +127,12 @@ each document must contain and the finding behind it.
 
 To write the documents, install the `dao` plugin and ask your agent to set the project up as
 a dao. The skill reads the project, asks you a few questions, writes the six documents, runs
-this check, and renders the book:
+this check, and makes the book:
 
 ```
 $ dao book proj
-  wrote dao/book.html: open it in a browser
+  wrote book.json, book.html, dao-book.js in dao/
+  open dao/book.html in a browser
   dao check finds gaps in the documents. The page lists them at the top; `dao check` says more.
 ```
 
@@ -130,9 +144,10 @@ $ dao book proj
 | Know what a document must contain before writing it | the requirements are printed beside the research finding that shaped them | `dao spec --findings`, `dao check -v` |
 | Gate on the organization being whole | the exit code is 0 only when all six are PRESENT | `dao check <project>; echo $?` |
 | Read the verdicts without parsing a table | one JSON object, with a key, a status and the gaps for each document | `dao check <project> --json` |
-| Give the owner one page to read and share | the page says only what the documents say, and `dao check` reports it when it falls behind | `dao book <project>` |
+| Give the owner a book to explore and share | it says only what the documents say, and `dao check` reports any of its files that falls behind | `dao book <project>` |
+| Show the organization on the project's site | the element is one script with nothing to load, and takes the site's colours | `<dao-book src="book.json">` |
 | Read the organization as data | positions with their holders and checkers, participants, and each document's text | `dao book <project> --json` |
-| Run it on a repository it did not write | it reads regular files inside the project, as text, never through a symbolic link, and executes nothing; `dao book` writes one file, inside the project | [SECURITY.md](../../SECURITY.md) |
+| Run it on a repository it did not write | it reads regular files inside the project, as text, never through a symbolic link, and executes nothing; `dao book` writes three files, inside the project | [SECURITY.md](../../SECURITY.md) |
 | Know the thresholds it was judged by | they are a declared policy, not constants in code | `dao policy` |
 
 ## What it does not do
@@ -148,8 +163,10 @@ $ dao book proj
 - **Three of its tests look for words.** Whether Decisions mentions the irreversible, whether
   Verification names its kind of check, and the 240-character remit are heuristics. A padded
   file can pass them.
-- **The book has one look.** There is no theme and no template option. A project that wants
-  its own page builds it from `dao book --json`.
+- **The book has one layout.** Its colours and type can be set from the page; its parts
+  cannot be rearranged. A project that wants its own page draws it from `book.json`.
+- **The book needs a script to draw it.** With scripts off, the page says where the Markdown
+  documents are and shows nothing else.
 - **The book is a copy.** `dao check` holds it to the documents, not to an agent's defining
   file, and a book checked by a dao version other than the one that made it may be reported
   when nothing is wrong with it. `dao check` is the current answer.

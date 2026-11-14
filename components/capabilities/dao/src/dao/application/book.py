@@ -5,20 +5,20 @@ the documents do not say: it reads them, asks the audit for its verdicts, and wo
 three things a reader would otherwise have to cross-reference by hand (who holds a position,
 whose work it reads, and how far each chain of checking runs).
 
-`check` is the audit plus one question about a book that is on disk: is it, byte for byte,
-the page dao would write from these documents now? A digest in the page could be copied onto
-any HTML, so the answer comes from rendering again and comparing.
+`check` is the audit plus one question about each of a book's files that is on disk: is it,
+byte for byte, the file dao would write from these documents now? A digest in a file could be
+copied onto anything, so the answer comes from making the files again and comparing.
 """
 
 from __future__ import annotations
 
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
 from dao.application.audit import audit, complete
-from dao.application.organization import Organization, rendered_from
+from dao.application.organization import Organization, made_from
 from dao.application.policy import POLICY
 from dao.application.reading import heading
 from dao.domain.book import Book, BookDocument, BookPosition
@@ -30,12 +30,13 @@ if TYPE_CHECKING:
 
     from dao.domain.models import Position
 
-# What turns a book into a page. The application does not know how; an adapter does.
-Render = Callable[[Book], str]
+# What turns a book into its files, by name. The application does not know how; an adapter does.
+Render = Callable[[Book], Mapping[str, str]]
 
 UNTITLED = "How this project is run"
 _H1 = re.compile(r"^#[ \t]++(\S.*)$")
-# A page holds the six documents and the template. Past this it is not a page dao wrote.
+# A file of the book holds at most the six documents and some framing. Past this, or past
+# the size of the file dao would write, it is not one dao wrote.
 _BOOK_MAX_DOCUMENTS = 8
 
 
@@ -151,28 +152,37 @@ def build(root: Path, directory: str | None = None) -> Book:
 def check(root: Path, directory: str | None = None, *, render: Render) -> list[Coverage]:
     """The audit, with a book on disk held to the documents under the front door.
 
-    A project need not have a book. When it has one, the book must be exactly the page
-    `render` gives for the documents as they are now; otherwise the front door is PARTIAL.
+    A project need not have a book, or all of its files. Each one it has must be exactly the
+    file `render` gives for the documents as they are now; otherwise it is a gap under the
+    front door. That holds when the front door has gaps of its own: a book's files are a
+    page and a script somebody will open, whatever else is missing.
     """
     coverage = audit(root, directory)
     org = Organization(root, directory)
     front = next(c for c in coverage if c.element.key is Key.FRONT_DOOR)
-    if not front.present or not os.path.lexists(org.book):
+    names = (POLICY.book, POLICY.book_data, POLICY.book_element)
+    on_disk = [name for name in names if os.path.lexists(org.book_file(name))]
+    if not on_disk:
         return coverage
 
-    where = f"{org.directory}/{POLICY.book}"
-    expected = render(_assemble(org, coverage)).encode("utf-8")
-    limit = max(len(expected), _BOOK_MAX_DOCUMENTS * POLICY.document_max_bytes)
-    content, refused = org.read_book(limit)
-    if content == expected:
-        front.evidence.append(f"{POLICY.book} is the page `dao book` writes")
-    elif content is None:
-        front.gaps.append(f"{where} {refused}, so it is not read")
-    elif rendered_from(content.decode("utf-8", "replace")) not in (None, org.sources()):
-        front.gaps.append(f"{where} was rendered from older documents: run `dao book`")
-    else:
-        front.gaps.append(
-            f"{where} is not the page `dao book` writes from these documents (it was edited "
-            "by hand, or made by another version of dao): run `dao book`"
-        )
+    made = render(_assemble(org, coverage))
+    current: list[str] = []
+    for name in on_disk:
+        where = f"{org.directory}/{name}"
+        expected = made[name].encode("utf-8")
+        limit = max(len(expected), _BOOK_MAX_DOCUMENTS * POLICY.document_max_bytes)
+        content, refused = org.read_book_file(name, limit)
+        if content == expected:
+            current.append(name)
+        elif content is None:
+            front.gaps.append(f"{where} {refused}, so it is not read")
+        elif made_from(content.decode("utf-8", "replace")) not in (None, org.sources()):
+            front.gaps.append(f"{where} was made from older documents: run `dao book`")
+        else:
+            front.gaps.append(
+                f"{where} is not the file `dao book` writes from these documents (it was "
+                "edited by hand, or made by another version of dao): run `dao book`"
+            )
+    if current:
+        front.evidence.append(f"{', '.join(current)}: as `dao book` writes")
     return coverage

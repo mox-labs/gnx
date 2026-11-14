@@ -17,6 +17,7 @@ strong constitution average away a missing check on the work.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
@@ -137,7 +138,7 @@ def _check_positions(org: Organization) -> Result:
         gaps.append(
             f"only {len(positions)} position(s); it takes >= {floor} for one to check another"
         )
-    repeated = sorted({n for n in names if names.count(n) > 1})
+    repeated = sorted(n for n, k in Counter(names).items() if k > 1)
     if repeated:
         gaps.append("defined more than once: " + ", ".join(repeated))
 
@@ -189,6 +190,9 @@ def _check_participants(org: Organization) -> Result:
     evidence = [f"{len(humans)} human, {len(agents)} agent"]
     gaps: list[str] = []
 
+    repeated = sorted(n for n, k in Counter(p.name for p in participants).items() if k > 1)
+    if repeated:
+        gaps.append("listed more than once: " + ", ".join(repeated))
     unkinded = [p.name for p in participants if p.kind is None]
     if unkinded:
         gaps.append("Kind is not 'human' or 'agent': " + ", ".join(unkinded))

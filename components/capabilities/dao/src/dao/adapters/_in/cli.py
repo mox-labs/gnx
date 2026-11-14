@@ -6,8 +6,9 @@ research is explicit that the prose is the load-bearing part. A generator that e
 plausible files would produce exactly the artifact-shaped hole this audit exists to catch.
 The writing lives in the `dao` skill; the code checks the result.
 
-`dao book` is the one command that writes, and it writes one file: a page that shows what
-the six documents already say. It decides nothing, so it is not the generator refused above.
+`dao book` is the one command that writes. It writes what the six documents already say, as
+data, with a page and the element that draws it. It decides nothing, so it is not the
+generator refused above.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from dao.adapters._out.corpus import (
     load_catalog,
     projects,
 )
-from dao.adapters._out.html import render, write
+from dao.adapters._out.page import data, files, write
 from dao.application.audit import POLICY, complete
 from dao.application.book import build, check
 from dao.application.organization import Organization
@@ -41,8 +42,8 @@ from dao.skill_files import skill_references
 console = Console()
 
 
-def _page(book: Book) -> str:
-    return render(book, version=metadata.version("dao"))
+def _files(book: Book) -> dict[str, str]:
+    return files(book, version=metadata.version("dao"))
 
 
 _STATUS_STYLE = {Status.PRESENT: "green", Status.PARTIAL: "yellow", Status.ABSENT: "red"}
@@ -61,7 +62,7 @@ _STATUS_STYLE = {Status.PRESENT: "green", Status.PARTIAL: "yellow", Status.ABSEN
 )
 @click.pass_context
 def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
-    """dao: check a project's directed agent organization, and show it on one page."""
+    """dao: check a project's directed agent organization, and make it explorable."""
     if reference is not None and not skill:
         raise click.UsageError("-r/--reference is used with --skill")
     if skill:
@@ -104,7 +105,7 @@ def spec_cmd(findings: bool) -> None:
 @click.option("--json", "as_json", is_flag=True, help="Print the verdicts as JSON.")
 def check_cmd(project: Path, directory: str | None, verbose: bool, as_json: bool) -> None:
     """Audit PROJECT against the six documents. Exits 1 unless every one is PRESENT."""
-    coverage = check(project, directory, render=_page)
+    coverage = check(project, directory, render=_files)
     if as_json:
         report = {
             "directory": directory or POLICY.directory,
@@ -181,10 +182,12 @@ def check_cmd(project: Path, directory: str | None, verbose: bool, as_json: bool
     "--json", "as_json", is_flag=True, help="Print the organization as JSON; write nothing."
 )
 def book_cmd(project: Path, directory: str | None, as_json: bool) -> None:
-    """Write PROJECT's organization as one page a person can read.
+    """Write PROJECT's organization as a book: data, and a page a person can explore.
 
-    The page is book.html in the documents' directory. It is a copy of what the six documents
-    say; `dao check` reports it when the documents have changed since.
+    Three files go into the documents' directory: book.json (the organization as data),
+    book.html (the page; open it in a browser) and dao-book.js (the element that draws it,
+    for the page and for a docsite). They are copies of what the six documents say;
+    `dao check` reports any that the documents have moved on from.
     """
     org = Organization(project, directory)
     if not org.dir.is_dir():
@@ -193,16 +196,34 @@ def book_cmd(project: Path, directory: str | None, as_json: bool) -> None:
         )
     book = build(project, directory)
     if as_json:
-        click.echo(book.model_dump_json(indent=2))
+        click.echo(data(book), nl=False)
         return
 
-    where = f"{org.directory}/{POLICY.book}"
-    page = _page(book)
-    if org.book.is_symlink() or not org.inside:
-        raise click.ClickException(f"{where} would be written outside {project}; nothing written")
-    write(page, org.book)
+    made = _files(book)
+    for name in made:
+        target = org.book_file(name)
+        if target.is_symlink() or not org.inside:
+            raise click.ClickException(
+                f"{org.directory}/{name} would be written outside {project}; nothing written"
+            )
+        if target.exists() and not target.is_file():
+            raise click.ClickException(
+                f"{org.directory}/{name} is not a file, so it is not replaced; nothing written"
+            )
+    written: list[str] = []
+    for name, content in made.items():
+        try:
+            write(content, org.book_file(name))
+        except OSError as e:
+            done = ", ".join(written) or "nothing"
+            raise click.ClickException(
+                f"{org.directory}/{name} could not be written ({e.strerror or e}); "
+                f"wrote {done} before it"
+            ) from e
+        written.append(name)
 
-    console.print(f"  wrote [bold]{where}[/]: open it in a browser")
+    console.print(f"  wrote [bold]{', '.join(made)}[/] in {org.directory}/")
+    console.print(f"  open [bold]{org.directory}/{POLICY.book}[/] in a browser")
     if not book.complete:
         console.print(
             "  [yellow]dao check finds gaps in the documents.[/] The page lists them at the "

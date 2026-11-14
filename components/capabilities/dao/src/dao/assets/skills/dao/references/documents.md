@@ -129,8 +129,8 @@ in**. Kind is `human` or `agent`. A participant may hold several positions, sepa
 commas. Defined in is the file that defines an agent, relative to the project root; leave it
 empty for a person, and for an agent that is the session itself.
 
-At least one participant is a human, every position is held by someone, and every named file
-exists.
+Each participant has one row. At least one participant is a human, every position is held by
+someone, and every named file exists.
 
 ```markdown
 # Participants
@@ -164,12 +164,13 @@ record of how the rules came to be.
 To raise a problem or propose a change to any of this, open an issue. The owner answers it.
 ```
 
-## book.html
+## The book
 
-Made, not written: `dao book` renders the six documents as one page and writes it beside
-them. When the page is there, `dao check` renders it again and compares, and reports it under
-the front door if the two differ. Run `dao book` again after every change, and commit the
-page with the documents. Do not edit it by hand: the check reports that too.
+Made, not written: `dao book` turns the six documents into `book.html` (the page),
+`book.json` (the data) and `dao-book.js` (the element that draws it), beside them. `dao check`
+makes each one that is there again and compares, and reports it under the front door if the
+two differ. Run `dao book` again after every change, and commit the three with the documents.
+Do not edit any of them by hand: the check reports that too.
 
 Each document is an ordinary file in the directory. dao does not read one that is a symbolic
 link or larger than 1 MiB.

@@ -3,11 +3,11 @@
 Checks that a project's agent organization is written down and holds together. A **dao** is a
 directed agent organization: the people and agents that maintain a project, what each may do,
 who decides, and who is accountable. It lives in the repository as six short documents, and
-`dao check` reports each as PRESENT, PARTIAL or ABSENT, never as a score. `dao book` renders
-the six as one page a person can read.
+`dao check` reports each as PRESENT, PARTIAL or ABSENT, never as a score. `dao book` makes
+the six a book a person can explore: who holds what, who reads whose work, and the rules.
 
 dao checks an organization and shows it. It does not write one: there is no `dao init`. The
-`dao` plugin's skill writes one with you, and calls this command to check it and render it.
+`dao` plugin's skill writes one with you, and calls this command to check it and make its book.
 
 ## Install
 
@@ -27,16 +27,25 @@ dao check <project>          # audit; exits 1 unless all six documents are PRESE
 dao check <project> -v       # plus what each document with a gap must contain, and why
 dao check <project> --dir governance   # when the documents are not in dao/
 dao check <project> --json   # the same verdicts, for a program
-dao book <project>           # write dao/book.html: the organization on one page
+dao book <project>           # write the book: dao/book.html to open, book.json, dao-book.js
 dao book <project> --json    # the organization as data; writes nothing
 dao spec --findings          # the six documents, each with the research finding behind it
 dao policy                   # the audit's thresholds, as declared policy
 dao --skill                  # how to set a project up, for an agent (-r documents, -r findings)
 ```
 
-`dao check` reads files as text. It executes nothing and writes nothing. `dao book` writes one
-file, `book.html` beside the documents: a page that runs no script and loads nothing
-([SECURITY.md](SECURITY.md)).
+`dao check` reads files as text. It executes nothing and writes nothing. `dao book` writes
+three files beside the documents: the organization as data, a page to open, and the
+`<dao-book>` element that draws it. The page runs that one script and loads nothing from the
+network ([SECURITY.md](SECURITY.md)).
+
+To show the book on a project's own site, put the element and the data where the site serves
+them:
+
+```html
+<script src="dao-book.js"></script>
+<dao-book src="book.json"></dao-book>
+```
 
 ## Next
 

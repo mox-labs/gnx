@@ -19,8 +19,11 @@ class Policy(BaseModel):
     directory: str = "dao"
     # The files an agent reads at the start of a session. One of them must name the directory.
     agent_instructions: tuple[str, ...] = ("CLAUDE.md", "AGENTS.md")
-    # The page `dao book` writes into the directory, and `dao check` holds to its sources.
+    # The three files `dao book` writes into the directory, and `dao check` holds to the
+    # documents: the page a person opens, the book as data, and the element that draws it.
     book: str = "book.html"
+    book_data: str = "book.json"
+    book_element: str = "dao-book.js"
     # The largest file dao reads from a project. A document is about a page; this is far
     # above any real one, and is what stops a file that is not a document from being read.
     document_max_bytes: int = 1_048_576
