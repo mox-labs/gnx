@@ -39,7 +39,7 @@ dependencies = [
     # exporter, when none is installed. Imported only then.
     "opentelemetry-sdk>=1.20",
     "rich-click>=1.8",
-    "rich>=13",
+    "rich>=15.0.0",
     "pydantic>=2.0",
     # The evaluator sensor wraps pydantic-evals' evaluators; imported only inside that adapter
     # (ix.adapters._out.evaluators), so it costs nothing until an experiment names one.

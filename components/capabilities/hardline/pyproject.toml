@@ -16,7 +16,7 @@ authors = [
 # from the environment behind a registry row's back. httpx2 is bounded to the major tested.
 # Telemetry is the OpenTelemetry API, which a library may depend on without choosing an SDK.
 dependencies = [
-    "pydantic>=2.0",
+    "pydantic>=2.14.3",
     "pyyaml>=6.0",
     "httpx2>=2.12,<3",
     # The API: it records nothing until an application installs an SDK. 1.27 for the
