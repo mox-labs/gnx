@@ -53,16 +53,6 @@ remote function and does not turn the experimental remote functions option on. F
 Kit 3.1.1 only."""
 expires = 2027-01-07
 
-# --- no fix published ---------------------------------------------------------------------
-
-[[accept]]
-id = "GHSA-gcqx-w48m-w2h4"
-package = "deepmerge"
-reason = """Prototype poisoning in mergeObject; 4.3.1 is the latest release and is affected, \
-so no fix exists. @sveltejs/vite-plugin-svelte uses it at build time on its own config, with \
-no untrusted input, and it is not in the built site."""
-expires = 2027-01-07
-
 # --- held by @excalidraw/excalidraw 0.18.1 ------------------------------------------------
 # The latest excalidraw pins nanoid 3.3.3 and @excalidraw/mermaid-to-excalidraw 2.2.2 exactly,
 # and that pins nanoid 4.0.2 and @mermaid-js/parser 0.6.3 (whose chevrotain pins lodash-es
