@@ -35,6 +35,24 @@ flaw needs an untrusted cookie name, path or domain passed to serialize; the doc
 cookie."""
 expires = 2027-01-07
 
+# Reviewed on 2026-11-19, when both were published against the unchanged lock.
+
+[[accept]]
+id = "GHSA-3r8g-jcqq-3p5j"
+package = "@sveltejs/kit"
+reason = """Denial of service while parsing form data sent to a remote function's form. The \
+docsite defines no remote function and does not turn the experimental remote functions \
+option on, and the published site is static. Fixed in Kit 3.1.1 only."""
+expires = 2027-01-07
+
+[[accept]]
+id = "GHSA-6cf5-gc4q-fm3x"
+package = "@sveltejs/kit"
+reason = """Private query.batch remote functions could collide. The docsite defines no \
+remote function and does not turn the experimental remote functions option on. Fixed in \
+Kit 3.1.1 only."""
+expires = 2027-01-07
+
 # --- no fix published ---------------------------------------------------------------------
 
 [[accept]]
