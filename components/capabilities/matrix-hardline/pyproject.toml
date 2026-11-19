@@ -26,7 +26,7 @@ classifiers = [
 dependencies = [
     "matrix>=0.10,<0.11",
     "hardline>=0.3.1,<0.4",
-    "pydantic>=2.0",
+    "pydantic>=2.14.3",
 ]
 
 [project.urls]

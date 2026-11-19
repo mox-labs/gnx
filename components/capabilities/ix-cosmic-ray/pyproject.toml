@@ -31,7 +31,7 @@ dependencies = [
     # mutation_positions, ast_nodes, get_ast, mutate_code); none of it is documented as stable.
     # MIT. It brings aiohttp, sqlalchemy, gitpython, stevedore and more, which is why it is a
     # package of its own and not ix's dependency (owner ruling HO1 (c')).
-    "cosmic-ray==8.7.*",
+    "cosmic-ray==8.9.*",
 ]
 
 [project.urls]
