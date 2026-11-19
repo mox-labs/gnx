@@ -1,44 +1,8 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import '@excalidraw/excalidraw/index.css';
 	import type { MapNode } from './+page.server';
 
 	let { data } = $props();
 
-	// The excalidraw canvas is the PRIMARY map surface — the scene file is the
-	// artifact (docs/catalog-map/generation-0.excalidraw), rendered and editable
-	// here via the real excalidraw editor (React island; edit-in-place, then use
-	// its export to save back over the scene file if the changes should persist).
-	let xhost: HTMLDivElement;
-	let xready = $state(false);
-	let xerr = $state('');
-	onMount(async () => {
-		try {
-			const [xc, React, rdc] = await Promise.all([
-				import('@excalidraw/excalidraw'),
-				import('react'),
-				import('react-dom/client')
-			]);
-			const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-			rdc.createRoot(xhost).render(
-				React.createElement(xc.Excalidraw, {
-					initialData: {
-						// The scene is read off disk as untyped JSON; excalidraw owns the
-					// element schema, so borrow its type rather than restate it here.
-					elements:
-						(data.scene as { elements?: Parameters<typeof xc.restoreElements>[0] })
-							?.elements ?? [],
-						appState: { viewBackgroundColor: dark ? '#10151a' : '#ffffff' },
-						scrollToContent: true
-					},
-					theme: dark ? 'dark' : 'light'
-				})
-			);
-			xready = true;
-		} catch (e) {
-			xerr = String(e);
-		}
-	});
 	const SIG: Record<string, string> = { Capability: '□', Agent: '○', Skill: '◇', Flow: '→' };
 	const W = 220, H = 52;
 
@@ -81,17 +45,12 @@
 		<h1>the catalog map — generation 0</h1>
 		<p>
 			{data.counts.minted} minted · {data.counts.proposed} proposed · {data.counts.flows} flows —
-			drawn from the manifests at load, topology derived (GEP-0002/0003). Editable twin:
-			<code>docs/catalog-map/generation-0.excalidraw</code>.
+			drawn from the manifests at load, topology derived (GEP-0002/0003). A hand-drawn twin
+			is in the repository at <code>docs/catalog-map/generation-0.excalidraw</code>; open it
+			in excalidraw to view or edit it.
 		</p>
 	</header>
 
-	<div class="xcal" bind:this={xhost}>
-		{#if !xready && !xerr}<p class="xnote">loading excalidraw…</p>{/if}
-		{#if xerr}<p class="xnote">excalidraw failed to mount: {xerr}</p>{/if}
-	</div>
-
-	<h2 class="derived-h">derived live view — from the manifests at load</h2>
 	<div class="canvas" class:hashot={hot !== null}>
 		<svg viewBox={`0 0 1240 ${data.height}`} role="img" aria-label="gnx component map">
 			<defs>
@@ -155,9 +114,6 @@
 
 <style>
 	.map-page { padding: 1rem 1.5rem 3rem; position: relative; }
-	.xcal { height: 74vh; min-height: 480px; border: 1px solid var(--line, #31414d); border-radius: 10px; overflow: hidden; margin-bottom: 1.4rem; }
-	.xnote { color: var(--muted, #8b98a4); font: 0.8rem 'IBM Plex Mono', monospace; padding: 1rem; }
-	.derived-h { font: 600 0.8rem 'IBM Plex Mono', monospace; color: var(--muted, #8b98a4); letter-spacing: 0.1em; text-transform: uppercase; margin: 0 0 0.5rem; }
 	header h1 { font-family: 'IBM Plex Mono', monospace; font-size: 1.05rem; margin: 0 0 0.2rem; }
 	header p { color: var(--muted, #8b98a4); font-size: 0.82rem; max-width: 68ch; margin: 0 0 1rem; }
 	header code { font-size: 0.75rem; }

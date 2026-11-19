@@ -102,15 +102,6 @@ function collect(): Omit<MapNode, 'x' | 'y'>[] {
 }
 
 export const load: PageServerLoad = () => {
-	// the editable scene — the excalidraw canvas IS the primary map surface (D24)
-	let scene: unknown = null;
-	try {
-		scene = JSON.parse(
-			readFileSync(path.resolve(process.cwd(), '..', 'catalog-map', 'generation-0.excalidraw'), 'utf8')
-		);
-	} catch {
-		scene = null;
-	}
 	const raw = collect();
 	const byTu = new Map(raw.map((n) => [n.tu, n]));
 
@@ -200,5 +191,5 @@ export const load: PageServerLoad = () => {
 		...nodes.map((n) => n.y + 140),
 		...hulls.map((h) => h.y + h.h + 60)
 	);
-	return { scene, nodes, edges, hulls, height, counts: { minted: nodes.filter((n) => n.status === 'minted').length, proposed: nodes.filter((n) => n.status === 'proposed').length, flows: flows.length } };
+	return { nodes, edges, hulls, height, counts: { minted: nodes.filter((n) => n.status === 'minted').length, proposed: nodes.filter((n) => n.status === 'proposed').length, flows: flows.length } };
 };
