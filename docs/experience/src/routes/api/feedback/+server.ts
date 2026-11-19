@@ -1,6 +1,6 @@
-import { error, json } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { allThreads, appendEvent, threadsFor, type EventKind } from '$lib/server/feedback';
+import { allThreads, appendEvent, threadsFor, type EventKind } from '#lib/server/feedback.ts';
 
 const KINDS: EventKind[] = ['comment', 'reply', 'resolve', 'reopen', 'question', 'spawn'];
 // root marks open a thread (need bid + body); the rest act on an existing thread (need thread).
@@ -8,7 +8,7 @@ const ROOT_KINDS: EventKind[] = ['comment', 'question'];
 
 export const GET: RequestHandler = ({ url }) => {
 	const doc = url.searchParams.get('doc');
-	return json(doc ? threadsFor(doc) : allThreads());
+	return Response.json(doc ? threadsFor(doc) : allThreads());
 };
 
 export const POST: RequestHandler = async ({ request }) => {
@@ -31,5 +31,5 @@ export const POST: RequestHandler = async ({ request }) => {
 		kind,
 		thread: b.thread
 	});
-	return json(event, { status: 201 });
+	return Response.json(event, { status: 201 });
 };

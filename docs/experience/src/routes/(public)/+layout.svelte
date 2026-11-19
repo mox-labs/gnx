@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { base } from '$app/paths';
+	import { resolve } from '$app/paths';
 
 	let { data, children } = $props();
 
@@ -14,7 +14,7 @@
 	};
 
 	// Only the cinematic landing is full-bleed; the docs share the public shell.
-	const isImmersive = $derived(page.url.pathname === `${base}/` || page.url.pathname === base);
+	const isImmersive = $derived(page.route.id === '/(public)');
 
 	// The public wing is the preview of the public gnx docsite: pragmatics only,
 	// Diataxis sections, no internal register in the spine.
@@ -36,11 +36,12 @@
 		})).filter((g) => g.docs.length)
 	);
 
-	const isDoc = (slug: string) => page.url.pathname === `${base}/docs/${slug}`;
+	const isDoc = (slug: string) =>
+		page.route.id === '/(public)/docs/[slug]' && page.params.slug === slug;
 	// A component or plugin page is a page of the catalog, so the catalog link stays lit there.
 	const inCatalog = $derived(
-		[`${base}/catalog`, `${base}/components/`, `${base}/plugins/`].some((p) =>
-			page.url.pathname.startsWith(p)
+		['/(public)/catalog', '/(public)/components/', '/(public)/plugins/'].some((id) =>
+			page.route.id?.startsWith(id)
 		)
 	);
 </script>
@@ -62,7 +63,7 @@
 	<div class="shell">
 		<aside class="nav">
 			<div class="brand">
-				<a href="{base}/"><b>gnx</b></a>
+				<a href={resolve('')}><b>gnx</b></a>
 			</div>
 
 			<details class="nav-body">
@@ -73,7 +74,7 @@
 					<ol>
 						<li>
 							<a
-								href="{base}/catalog"
+								href={resolve('catalog')}
 								class:active={inCatalog}
 								aria-current={inCatalog ? 'page' : undefined}
 							>
@@ -88,7 +89,7 @@
 							{#each g.docs as doc (doc.slug)}
 								<li>
 									<a
-										href="{base}/docs/{doc.slug}"
+										href={resolve(`docs/${doc.slug}`)}
 										class:active={isDoc(doc.slug)}
 										aria-current={isDoc(doc.slug) ? 'page' : undefined}
 									>

@@ -2,9 +2,9 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { marked } from 'marked';
 import { parse } from 'yaml';
-import { base } from '$app/paths';
-import { compile } from '$lib/dag';
-import { sourceUrl, type Catalog, type CatalogEntry, type PluginEntry, type PluginMember } from '$lib/catalog';
+import { DEPLOY_BASE } from '#lib/base.ts';
+import { compile } from '#lib/dag.ts';
+import { sourceUrl, type Catalog, type CatalogEntry, type PluginEntry, type PluginMember } from '#lib/catalog.ts';
 
 // The catalog reads what is actually on disk. Its sources of record:
 //
@@ -278,7 +278,7 @@ function componentPageFor(repoPath: string): { url: string; rendered: boolean } 
 		repoPath.match(/^(components\/capabilities\/([^/]+))\/docs\/explanation\/overview\.md$/) ??
 		repoPath.match(/^(components\/(?:skills|agents|flows)\/([^/]+))\/overview\.md$/);
 	if (!m || !existsSync(path.join(REPO_ROOT, m[1]))) return null;
-	return { url: `${base}/components/${m[2]}`, rendered: existsSync(path.join(REPO_ROOT, repoPath)) };
+	return { url: `${DEPLOY_BASE}/components/${m[2]}`, rendered: existsSync(path.join(REPO_ROOT, repoPath)) };
 }
 
 /**
@@ -290,7 +290,7 @@ function componentPageFor(repoPath: string): { url: string; rendered: boolean } 
 function resolveLink(href: string, fromRepoPath: string): string {
 	if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('#') || href.startsWith('//'))
 		return href;
-	if (href.startsWith('/')) return `${base}${href}`;
+	if (href.startsWith('/')) return `${DEPLOY_BASE}${href}`;
 	const [p, hash] = href.split('#');
 	const target = path.posix.normalize(path.posix.join(path.posix.dirname(fromRepoPath), p));
 	const page = componentPageFor(target);

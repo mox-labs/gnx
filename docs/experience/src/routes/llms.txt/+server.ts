@@ -1,8 +1,8 @@
-import { base } from '$app/paths';
-import { listDocs, getDocSource } from '$lib/server/content';
-import { loadCatalog } from '$lib/server/catalog';
-import { MARKETPLACE_REF, REPO_URL } from '$lib/catalog';
-import { GOALS } from '$lib/goals';
+import { DEPLOY_BASE } from '#lib/base.ts';
+import { listDocs, getDocSource } from '#lib/server/content.ts';
+import { loadCatalog } from '#lib/server/catalog.ts';
+import { MARKETPLACE_REF, REPO_URL } from '#lib/catalog.ts';
+import { GOALS } from '#lib/goals.ts';
 
 // gnx's primary reader is an agent, often one handed this site and asked "what is this, and
 // why would I use it?". This is the index it fetches first (llms.txt convention): the answer
@@ -60,13 +60,13 @@ export function GET() {
 	for (const w of WHAT) out.push(`- ${w}`);
 
 	out.push('', '## Why you would use it: start by goal', '');
-	for (const g of GOALS) out.push(`- ${g.goal}: [${g.name}](${base}${g.path})`);
+	for (const g of GOALS) out.push(`- ${g.goal}: [${g.name}](${DEPLOY_BASE}/${g.path})`);
 
 	out.push('', '## Components', '');
 	for (const e of entries) {
 		const desc = e.description ? `: ${sentence(e.description)}` : '.';
 		out.push(
-			`- [${e.slug}](${base}/components/${e.slug}) (${e.kind})${desc} Markdown: ${base}/components/${e.slug}.md`
+			`- [${e.slug}](${DEPLOY_BASE}/components/${e.slug}) (${e.kind})${desc} Markdown: ${DEPLOY_BASE}/components/${e.slug}.md`
 		);
 	}
 
@@ -74,20 +74,20 @@ export function GET() {
 	for (const p of plugins) {
 		const members = p.members.map((m) => m.name).join(', ');
 		out.push(
-			`- [${p.name}](${base}/plugins/${p.name}): ${sentence(p.description)} Install: \`/plugin install ${p.name}@gnx\`. Bundles: ${members}.`
+			`- [${p.name}](${DEPLOY_BASE}/plugins/${p.name}): ${sentence(p.description)} Install: \`/plugin install ${p.name}@gnx\`. Bundles: ${members}.`
 		);
 	}
 
 	out.push('', '## Docs', '');
 	for (const d of docs) {
 		out.push(
-			`- [${d.title}](${base}/docs/${d.slug}): ${sentence(note(d.slug))} Markdown: ${base}/docs/${d.slug}.md`
+			`- [${d.title}](${DEPLOY_BASE}/docs/${d.slug}): ${sentence(note(d.slug))} Markdown: ${DEPLOY_BASE}/docs/${d.slug}.md`
 		);
 	}
 
 	out.push(
 		'',
-		`Component and doc pages have a markdown twin at the same path plus \`.md\`. The catalog (${base}/catalog) lists every component and plugin, read from source.`,
+		`Component and doc pages have a markdown twin at the same path plus \`.md\`. The catalog (${DEPLOY_BASE}/catalog) lists every component and plugin, read from source.`,
 		''
 	);
 	return new Response(out.join('\n'), {

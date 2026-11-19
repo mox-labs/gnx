@@ -1,6 +1,6 @@
 <script lang="ts">
-	import Commentable from '$lib/components/Commentable.svelte';
-	import { STATUS_STYLE } from '$lib/dossier/types';
+	import Commentable from '#lib/components/Commentable.svelte';
+	import { STATUS_STYLE } from '#lib/dossier/types.ts';
 
 	let { data } = $props();
 	const st = $derived(STATUS_STYLE[data.concept.status]);

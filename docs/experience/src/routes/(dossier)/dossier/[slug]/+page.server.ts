@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
-import { findConcept, groupOf, conceptBlocks, feedbackDocFor } from '$lib/server/dossier';
-import { threadsFor } from '$lib/server/feedback';
+import { findConcept, groupOf, conceptBlocks, feedbackDocFor } from '#lib/server/dossier.ts';
+import { threadsFor } from '#lib/server/feedback.ts';
 
 export const load: PageServerLoad = ({ params }) => {
 	const concept = findConcept(params.slug);

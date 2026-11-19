@@ -1,6 +1,6 @@
 <script lang="ts">
-	import Commentable from '$lib/components/Commentable.svelte';
-	import { groupById } from '$lib/registers';
+	import Commentable from '#lib/components/Commentable.svelte';
+	import { groupById } from '#lib/registers.ts';
 
 	let { data } = $props();
 

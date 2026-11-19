@@ -1,11 +1,11 @@
 <script lang="ts">
-	import Block from '$lib/components/Block.svelte';
-	import Composer from '$lib/components/Composer.svelte';
-	import DecisionCard from '$lib/components/DecisionCard.svelte';
-	import DecisionMatrix from '$lib/components/DecisionMatrix.svelte';
-	import { offsetsOfRange, quoteAt } from '$lib/client/anchor';
-	import type { DocBlock } from '$lib/server/content';
-	import type { Thread } from '$lib/server/feedback';
+	import Block from '#lib/components/Block.svelte';
+	import Composer from '#lib/components/Composer.svelte';
+	import DecisionCard from '#lib/components/DecisionCard.svelte';
+	import DecisionMatrix from '#lib/components/DecisionMatrix.svelte';
+	import { offsetsOfRange, quoteAt } from '#lib/client/anchor.ts';
+	import type { DocBlock } from '#lib/server/content.ts';
+	import type { Thread } from '#lib/server/feedback.ts';
 
 	let {
 		doc,

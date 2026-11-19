@@ -1,7 +1,7 @@
-import { base } from '$app/paths';
+import { DEPLOY_BASE } from '#lib/base.ts';
 import type { EntryGenerator, RequestHandler } from './$types';
-import { getOverview, loadCatalog } from '$lib/server/catalog';
-import { MARKETPLACE_REF, sourceUrl, shippedIn } from '$lib/catalog';
+import { getOverview, loadCatalog } from '#lib/server/catalog.ts';
+import { MARKETPLACE_REF, sourceUrl, shippedIn } from '#lib/catalog.ts';
 
 // The markdown twin of /components/<name>: what an agent reads instead of the rendered page.
 // Same facts as the page, from the same loader.
@@ -36,7 +36,7 @@ export const GET: RequestHandler = ({ params }) => {
 		`- Install: ${install}`,
 		`- Source: ${sourceUrl(entry.dir)}`,
 		...(entry.readme ? [`- README: ${sourceUrl(entry.readme)}`] : []),
-		`- Page: ${base}/components/${entry.slug}`,
+		`- Page: ${DEPLOY_BASE}/components/${entry.slug}`,
 		''
 	];
 	if (overview) lines.push(overview.markdown, '');

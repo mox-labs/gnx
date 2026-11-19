@@ -8,6 +8,9 @@ declare global {
 		// interface PageState {}
 		// interface Platform {}
 	}
+
+	// The deploy base, set by vite.config.ts (`define`). Read it through #lib/base.ts.
+	const __DEPLOY_BASE__: string;
 }
 
 export {};

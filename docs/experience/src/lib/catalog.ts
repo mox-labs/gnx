@@ -1,7 +1,7 @@
 // The catalog's shapes and the pure helpers over them, shared by the server loaders and the
-// pages that render them. Reading the disk lives in $lib/server/catalog; nothing here touches
+// pages that render them. Reading the disk lives in #lib/server/catalog; nothing here touches
 // it, so a page can import this file.
-import type { Compiled } from '$lib/dag';
+import type { Compiled } from '#lib/dag.ts';
 
 /** Where the source is browsed, and the marketplace a person adds. */
 export const REPO_URL = 'https://github.com/mox-labs/gnx';

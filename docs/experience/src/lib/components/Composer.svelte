@@ -2,7 +2,7 @@
 	// A client-side model of gnx's composition: components declare consumes/produces,
 	// the DAG is compiled from declarations alone (no execution), topology is validated,
 	// parallel batches fall out. This is "compose without running them" made tactile.
-	import { compile } from '$lib/dag';
+	import { compile } from '#lib/dag.ts';
 
 	interface Comp {
 		id: string;

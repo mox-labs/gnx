@@ -1,8 +1,8 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
-import { getDoc } from '$lib/server/content';
-import { threadsFor } from '$lib/server/feedback';
-import { groupOfSection } from '$lib/registers';
+import { getDoc } from '#lib/server/content.ts';
+import { threadsFor } from '#lib/server/feedback.ts';
+import { groupOfSection } from '#lib/registers.ts';
 
 // ONE route for the private wing's doc families: /dossier/{spec|gep|appendix}/<slug>.
 // The group is resolved from the doc's own section against the register config — the

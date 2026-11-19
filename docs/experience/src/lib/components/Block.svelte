@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { invalidateAll } from '$app/navigation';
-	import { browser } from '$app/environment';
-	import { clearAnnots, paintQuote } from '$lib/client/anchor';
-	import type { DocBlock } from '$lib/server/content';
-	import type { Thread } from '$lib/server/feedback';
+	import { refreshAll } from '$app/navigation';
+	import { browser } from '$app/env';
+	import { clearAnnots, paintQuote } from '#lib/client/anchor.ts';
+	import type { DocBlock } from '#lib/server/content.ts';
+	import type { Thread } from '#lib/server/feedback.ts';
 
 	interface PendingSelection {
 		bid: string;
@@ -82,7 +82,7 @@
 				body: JSON.stringify({ doc, author, ...payload })
 			});
 			if (!res.ok) throw new Error(await res.text());
-			await invalidateAll();
+			await refreshAll();
 		} finally {
 			busy = false;
 		}

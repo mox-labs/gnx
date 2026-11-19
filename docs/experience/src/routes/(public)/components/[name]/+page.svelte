@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { base } from '$app/paths';
-	import { sourceUrl } from '$lib/catalog';
+	import { resolve } from '$app/paths';
+	import { sourceUrl } from '#lib/catalog.ts';
 
 	let { data } = $props();
 
@@ -12,7 +12,7 @@
 <svelte:head>
 	<title>{title} · gnx</title>
 	{#if summary}<meta name="description" content={summary} />{/if}
-	<link rel="alternate" type="text/markdown" href="{base}/components/{e.slug}.md" />
+	<link rel="alternate" type="text/markdown" href={resolve(`components/${e.slug}.md`)} />
 </svelte:head>
 
 <article class="doc component">
@@ -32,13 +32,13 @@
 					>{:else}its README{/if} has the install line.
 				{#if data.plugins.length}
 					Its skill ships in
-					{#each data.plugins as p, i (p.name)}{i ? ', ' : ''}<a href="{base}/plugins/{p.name}"
+					{#each data.plugins as p, i (p.name)}{i ? ', ' : ''}<a href={resolve(`plugins/${p.name}`)}
 							><code>{p.name}</code></a
 						>{/each}.
 				{/if}
 			{:else if data.plugins.length}
 				ships in
-				{#each data.plugins as p, i (p.name)}{i ? ', ' : ''}<a href="{base}/plugins/{p.name}"
+				{#each data.plugins as p, i (p.name)}{i ? ', ' : ''}<a href={resolve(`plugins/${p.name}`)}
 						><code>{p.name}</code></a
 					>{/each}
 			{:else}
@@ -49,7 +49,7 @@
 		<dd>
 			<a href={sourceUrl(e.dir)}><code>{e.dir}</code></a>
 			{#if e.readme}· <a href={sourceUrl(e.readme)}>README</a>{/if}
-			· <a href="{base}/components/{e.slug}.md">markdown</a>
+			· <a href={resolve(`components/${e.slug}.md`)}>markdown</a>
 		</dd>
 	</dl>
 
@@ -58,7 +58,7 @@
 	{/if}
 
 	<nav class="pager">
-		<a href="{base}/catalog">← The catalog</a>
+		<a href={resolve('catalog')}>← The catalog</a>
 	</nav>
 </article>
 

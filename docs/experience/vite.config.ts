@@ -16,7 +16,13 @@ function publicBase(): '' | `/${string}` {
 	return trimmed.startsWith('/') ? (trimmed as `/${string}`) : `/${trimmed}`;
 }
 
+// '' in dev and in the local build; the path gh-pages serves under in the public build.
+const BASE = PUBLIC_ONLY ? publicBase() : '';
+
 export default defineConfig({
+	// #lib/base.ts reads this: the same value SvelteKit gets as paths.base, for the few places
+	// that need the absolute base as a string.
+	define: { __DEPLOY_BASE__: JSON.stringify(BASE) },
 	// allow importing the canonical convergence surface (docs/convergence/) from outside the app root
 	server: { fs: { allow: ['..'] } },
 	plugins: [
@@ -33,7 +39,7 @@ export default defineConfig({
 			// gh-pages serves at mox-labs.github.io/gnx unless a custom domain lands.
 			// SvelteKit types base as `` | `/${string}` — an env override must be
 			// normalised to that shape, not asserted into it.
-			...(PUBLIC_ONLY ? { paths: { base: publicBase() } } : {})
+			...(PUBLIC_ONLY ? { paths: { base: BASE } } : {})
 		})
 	]
 });

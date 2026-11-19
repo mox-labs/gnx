@@ -1,6 +1,6 @@
 import { error } from '@sveltejs/kit';
 import type { EntryGenerator, PageServerLoad } from './$types';
-import { loadCatalog } from '$lib/server/catalog';
+import { loadCatalog } from '#lib/server/catalog.ts';
 
 // One page per plugin declared in components/bundles.yaml: what it bundles, and how to install it.
 export const entries: EntryGenerator = () =>

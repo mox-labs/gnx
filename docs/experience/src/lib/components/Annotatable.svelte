@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { invalidateAll } from '$app/navigation';
-	import { browser } from '$app/environment';
-	import { clearAnnots, paintQuote, offsetsOfRange, quoteAt } from '$lib/client/anchor';
-	import type { DocBlock } from '$lib/server/content';
-	import type { Thread } from '$lib/server/feedback';
+	import { refreshAll } from '$app/navigation';
+	import { browser } from '$app/env';
+	import { clearAnnots, paintQuote, offsetsOfRange, quoteAt } from '#lib/client/anchor.ts';
+	import type { DocBlock } from '#lib/server/content.ts';
+	import type { Thread } from '#lib/server/feedback.ts';
 
 	// An annotatable document: the whole artifact rendered as blocks in a content column, with a
 	// right margin where every thread lives as a card anchored at its highlight (or its block top).
@@ -235,7 +235,7 @@
 				body: JSON.stringify({ doc, author, ...payload })
 			});
 			if (!res.ok) throw new Error(await res.text());
-			await invalidateAll();
+			await refreshAll();
 		} finally {
 			busy = false;
 		}

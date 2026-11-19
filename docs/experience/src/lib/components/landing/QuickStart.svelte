@@ -1,14 +1,14 @@
 <script lang="ts">
 	// South panel — the one runnable path, stated without dates or version claims so it
 	// cannot go stale. What exists is the catalog, which is read from source.
-	import { base } from '$app/paths';
+	import { resolve } from '$app/paths';
 </script>
 
 <div class="quickstart">
 	<span class="badge">install</span>
 	<p>
 		Plugins: <code>/plugin marketplace add mox-labs/gnx</code>, then pick from
-		<a href="{base}/catalog">the catalog</a>. Packages: <code>uv</code>, with the line in each
+		<a href={resolve('catalog')}>the catalog</a>. Packages: <code>uv</code>, with the line in each
 		README.
 	</p>
 </div>

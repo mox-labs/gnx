@@ -1,6 +1,6 @@
 import { error } from '@sveltejs/kit';
 import type { EntryGenerator, PageServerLoad } from './$types';
-import { getOverview, loadCatalog } from '$lib/server/catalog';
+import { getOverview, loadCatalog } from '#lib/server/catalog.ts';
 
 // One page per catalog component. The page renders the component's own overview, which lives
 // beside its code; a component without one yet shows its catalog summary and its source.

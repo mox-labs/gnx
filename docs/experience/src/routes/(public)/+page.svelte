@@ -1,12 +1,12 @@
 <script lang="ts">
-	import Sigil from '$lib/components/Sigil.svelte';
+	import Sigil from '#lib/components/Sigil.svelte';
 	import {
 		LandingComposition,
 		BrandHero,
 		Philosophy,
 		NavigationCTA,
 		QuickStart
-	} from '$lib/components/landing';
+	} from '#lib/components/landing/index.ts';
 </script>
 
 <svelte:head>

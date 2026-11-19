@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { base } from '$app/paths';
-	import { MARKETPLACE_REF } from '$lib/catalog';
+	import { resolve } from '$app/paths';
+	import { MARKETPLACE_REF } from '#lib/catalog.ts';
 
 	let { data } = $props();
 
@@ -26,7 +26,7 @@
 	<pre><code>claude plugin marketplace add {MARKETPLACE_REF}
 claude plugin install {p.name}@gnx</code></pre>
 	<p class="gloss">
-		Adding the marketplace is once per machine. <a href="{base}/docs/install-a-plugin">Install a
+		Adding the marketplace is once per machine. <a href={resolve('docs/install-a-plugin')}>Install a
 		plugin</a> says what each command does.
 	</p>
 
@@ -44,14 +44,14 @@ claude plugin install {p.name}@gnx</code></pre>
 				<tr>
 					<td>
 						{#if m.entry}
-							<a href="{base}/components/{m.entry.slug}"><code>{m.name}</code></a>
+							<a href={resolve(`components/${m.entry.slug}`)}><code>{m.name}</code></a>
 						{:else}
 							<code>{m.name}</code>
 						{/if}
 					</td>
 					<td>
 						{m.kind}{#if m.entry && m.entry.kind === 'Capability'}, from the
-							<a href="{base}/components/{m.entry.slug}"><code>{m.entry.slug}</code></a> package{/if}
+							<a href={resolve(`components/${m.entry.slug}`)}><code>{m.entry.slug}</code></a> package{/if}
 					</td>
 					<td class="desc">{m.entry?.description ?? ''}</td>
 				</tr>
@@ -60,7 +60,7 @@ claude plugin install {p.name}@gnx</code></pre>
 	</table>
 
 	<nav class="pager">
-		<a href="{base}/catalog">← The catalog</a>
+		<a href={resolve('catalog')}>← The catalog</a>
 	</nav>
 </article>
 
