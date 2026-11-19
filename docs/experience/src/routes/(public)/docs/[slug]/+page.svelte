@@ -1,6 +1,6 @@
 <script lang="ts">
-	import Commentable from '$lib/components/Commentable.svelte';
-	import { base } from '$app/paths';
+	import Commentable from '#lib/components/Commentable.svelte';
+	import { resolve } from '$app/paths';
 
 	let { data } = $props();
 
@@ -28,12 +28,12 @@
 
 	<nav class="pager">
 		{#if prev}
-			<a href="{base}/docs/{prev.slug}">← {prev.title}</a>
+			<a href={resolve(`docs/${prev.slug}`)}>← {prev.title}</a>
 		{:else}
-			<a href="{base}/">← Cover</a>
+			<a href={resolve('')}>← Cover</a>
 		{/if}
 		{#if next}
-			<a href="{base}/docs/{next.slug}" class="next">{next.title} →</a>
+			<a href={resolve(`docs/${next.slug}`)} class="next">{next.title} →</a>
 		{/if}
 	</nav>
 </article>

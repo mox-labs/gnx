@@ -1,7 +1,7 @@
 import { error, redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
-import { getDoc } from '$lib/server/content';
-import { threadsFor } from '$lib/server/feedback';
+import { getDoc } from '#lib/server/content.ts';
+import { threadsFor } from '#lib/server/feedback.ts';
 
 export const load: PageServerLoad = ({ params }) => {
 	const doc = getDoc(params.slug);

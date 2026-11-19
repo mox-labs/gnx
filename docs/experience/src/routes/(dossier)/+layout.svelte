@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { GROUPS } from '$lib/registers';
+	import { GROUPS } from '#lib/registers.ts';
 
 	let { data, children } = $props();
 

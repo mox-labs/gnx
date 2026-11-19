@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { CatalogEntry, PluginEntry } from '$lib/catalog';
-	import { base } from '$app/paths';
+	import type { CatalogEntry, PluginEntry } from '#lib/catalog.ts';
+	import { resolve } from '$app/paths';
 
 	let { data } = $props();
 
@@ -64,7 +64,7 @@
 				{#each plugins as p (p.name)}
 					<tr>
 						<td class="pname">
-							<a href="{base}/plugins/{p.name}"><code>{p.name}</code></a>
+							<a href={resolve(`plugins/${p.name}`)}><code>{p.name}</code></a>
 							<div class="cat">{p.category}</div>
 						</td>
 						<td class="desc-cell">{p.description}</td>
@@ -99,18 +99,18 @@
 					{#each g.rows as e (e.slug)}
 						<tr class="k-{g.kind.toLowerCase()}">
 							<td class="turl">
-								<a href="{base}/components/{e.slug}"><code>{e.slug}</code></a>
+								<a href={resolve(`components/${e.slug}`)}><code>{e.slug}</code></a>
 								{#if e.description}<div class="desc">{e.description}</div>{/if}
 								{#if e.relations.uses?.length}
 									<div class="uses">uses: {e.relations.uses.join(', ')}</div>
 								{/if}
 							</td>
 							<td class="tags">
-								{#each e.plugins as p (p)}<a class="tag" href="{base}/plugins/{p}"><code>{p}</code></a>{/each}
+								{#each e.plugins as p (p)}<a class="tag" href={resolve(`plugins/${p}`)}><code>{p}</code></a>{/each}
 								{#if e.kind === 'Capability'}
 									<span class="unbundled">
 										a Python package, installed with uv — not a plugin{#if e.surfaceIn.length}; its skill ships in
-											{#each e.surfaceIn as p (p)}<a class="tag" href="{base}/plugins/{p}"><code>{p}</code></a>{/each}
+											{#each e.surfaceIn as p (p)}<a class="tag" href={resolve(`plugins/${p}`)}><code>{p}</code></a>{/each}
 										{/if}
 									</span>
 								{:else if !e.plugins.length}

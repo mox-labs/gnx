@@ -1,6 +1,6 @@
-import { base } from '$app/paths';
+import { DEPLOY_BASE } from '#lib/base.ts';
 import type { EntryGenerator, RequestHandler } from './$types';
-import { getDocSource, listDocs } from '$lib/server/content';
+import { getDocSource, listDocs } from '#lib/server/content.ts';
 
 // The clean markdown twin for each public doc: /docs/<slug>.md beside /docs/<slug>. What an
 // agent reads instead of scraping rendered SvelteKit. Linked from /llms.txt.
@@ -24,9 +24,9 @@ export const GET: RequestHandler = ({ params }) => {
 	// getDocSource strips frontmatter, so prepend the maturity marker the twin would otherwise lose.
 	const status = meta.status ?? 'shipped';
 	// Site-absolute links get the deploy base, as the rendered page's do.
-	const body = `> status: ${status} · canonical: ${base}/docs/${params.slug}\n\n${src.replace(
+	const body = `> status: ${status} · canonical: ${DEPLOY_BASE}/docs/${params.slug}\n\n${src.replace(
 		/\]\(\/(?!\/)/g,
-		`](${base}/`
+		`](${DEPLOY_BASE}/`
 	)}`;
 	return new Response(body, {
 		headers: { 'content-type': 'text/markdown; charset=utf-8' }

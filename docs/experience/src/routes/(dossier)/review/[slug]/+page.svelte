@@ -1,5 +1,5 @@
 <script lang="ts">
-	import Annotatable from '$lib/components/Annotatable.svelte';
+	import Annotatable from '#lib/components/Annotatable.svelte';
 
 	let { data } = $props();
 

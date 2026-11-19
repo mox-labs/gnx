@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
-import { getReview, reviewDocFor, questionCounts } from '$lib/server/review';
-import { threadsFor } from '$lib/server/feedback';
+import { getReview, reviewDocFor, questionCounts } from '#lib/server/review.ts';
+import { threadsFor } from '#lib/server/feedback.ts';
 
 export const load: PageServerLoad = ({ params }) => {
 	const review = getReview(params.slug);

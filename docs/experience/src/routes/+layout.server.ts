@@ -1,7 +1,7 @@
 import type { LayoutServerLoad } from './$types';
-import { listDocs } from '$lib/server/content';
-import { openCounts } from '$lib/server/feedback';
-import { dossierNav } from '$lib/server/dossier';
+import { listDocs } from '#lib/server/content.ts';
+import { openCounts } from '#lib/server/feedback.ts';
+import { dossierNav } from '#lib/server/dossier.ts';
 
 const PUBLIC_ONLY = process.env.GNX_PUBLIC_BUILD === '1';
 

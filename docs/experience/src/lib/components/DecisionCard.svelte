@@ -6,9 +6,9 @@
 	// The commitment surface at the bottom solicits a ruling — silence never closes a
 	// gating decision. Friction is engineered only at irreversibility: a one-way door
 	// carries a heavier warning and requires a note on any ruling.
-	import { invalidateAll } from '$app/navigation';
-	import { browser } from '$app/environment';
-	import type { Thread } from '$lib/server/feedback';
+	import { refreshAll } from '$app/navigation';
+	import { browser } from '$app/env';
+	import type { Thread } from '#lib/server/feedback.ts';
 
 	interface Option {
 		id: string;
@@ -136,7 +136,7 @@
 			if (!res.ok) throw new Error(await res.text());
 			note = '';
 			reRule = false;
-			await invalidateAll();
+			await refreshAll();
 		} catch {
 			// public/static build has no feedback endpoint — degrade, never crash
 			offline = true;

@@ -1,6 +1,6 @@
 import type { PageServerLoad } from './$types';
-import { listReviews, reviewDocFor, questionCounts } from '$lib/server/review';
-import { threadsFor } from '$lib/server/feedback';
+import { listReviews, reviewDocFor, questionCounts } from '#lib/server/review.ts';
+import { threadsFor } from '#lib/server/feedback.ts';
 
 export const load: PageServerLoad = () => {
 	// question counts (open / answered / spawned) per review, from its feedback ledger

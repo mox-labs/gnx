@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { marked, type Token } from 'marked';
-import { base as basePath } from '$app/paths';
+import { DEPLOY_BASE as basePath } from '#lib/base.ts';
 
 // The app runs from docs/experience; content lives one level up.
 const DOCS_ROOT = path.resolve(process.cwd(), '..');

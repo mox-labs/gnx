@@ -2,9 +2,9 @@
 	// East panel — the ways in, by what the reader came to do. Each goal opens the component
 	// that does it; the catalog and llms.txt follow for a reader who wants the whole set.
 	// The dossier is the one discreet seam to the internal register — local only (D22).
-	import { base } from '$app/paths';
+	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import { GOALS } from '$lib/goals';
+	import { GOALS } from '#lib/goals.ts';
 
 	// "How gnx is built" is a content page; link it only once it exists, so the landing never
 	// carries a dead link.
@@ -15,9 +15,9 @@
 	);
 
 	const links = $derived([
-		...(hasBuilt ? [{ href: `${base}/docs/how-gnx-is-built`, label: 'How gnx is built' }] : []),
-		{ href: `${base}/catalog`, label: 'The catalog' },
-		{ href: `${base}/llms.txt`, label: 'For agents: llms.txt' },
+		...(hasBuilt ? [{ href: resolve('docs/how-gnx-is-built'), label: 'How gnx is built' }] : []),
+		{ href: resolve('catalog'), label: 'The catalog' },
+		{ href: resolve('llms.txt'), label: 'For agents: llms.txt' },
 		...(page.data.publicOnly ? [] : [{ href: '/dossier', label: 'the dossier · internal', muted: true }])
 	]);
 </script>
@@ -27,7 +27,7 @@
 	<ul class="goals">
 		{#each GOALS as g (g.name)}
 			<li>
-				<a href="{base}{g.path}">
+				<a href={resolve(g.path)}>
 					<span class="goal">{g.goal}</span>
 					<span class="name">{g.name} <span class="arrow" aria-hidden="true">→</span></span>
 				</a>

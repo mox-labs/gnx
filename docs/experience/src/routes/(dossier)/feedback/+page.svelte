@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { invalidateAll } from '$app/navigation';
+	import { refreshAll } from '$app/navigation';
 
 	let { data } = $props();
 	let showResolved = $state(false);
@@ -10,7 +10,7 @@
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ doc, thread, kind, author: 'yash' })
 		});
-		await invalidateAll();
+		await refreshAll();
 	}
 
 	const docs = $derived(Object.entries(data.threads));

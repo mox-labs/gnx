@@ -1,9 +1,9 @@
 import type { PageServerLoad } from './$types';
 // the canonical convergence surface (docs/convergence/) — the dossier IS this, made annotatable
 import { surface, tensions } from '../../../../../convergence/surface';
-import { openCounts, threadsFor } from '$lib/server/feedback';
-import { conceptSlug, feedbackDocFor } from '$lib/dossier/slug';
-import { SUMMIT_DOC, summitBlocks } from '$lib/server/dossier';
+import { openCounts, threadsFor } from '#lib/server/feedback.ts';
+import { conceptSlug, feedbackDocFor } from '#lib/dossier/slug.ts';
+import { SUMMIT_DOC, summitBlocks } from '#lib/server/dossier.ts';
 
 export const load: PageServerLoad = ({ url }) => {
 	// open-comment count per concept (its feedback ledger) — the live "what's under discussion" signal

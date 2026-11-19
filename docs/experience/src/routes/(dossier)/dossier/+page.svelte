@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { STATUS_STYLE, type InterpretantStatus, type ConvergenceSurface } from '$lib/dossier/types';
-	import { conceptSlug } from '$lib/dossier/slug';
-	import Commentable from '$lib/components/Commentable.svelte';
+	import { STATUS_STYLE, type InterpretantStatus, type ConvergenceSurface } from '#lib/dossier/types.ts';
+	import { conceptSlug } from '#lib/dossier/slug.ts';
+	import Commentable from '#lib/components/Commentable.svelte';
 
 	let { data } = $props();
 
