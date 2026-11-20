@@ -186,7 +186,11 @@ message on every commit. CI mirrors both.
   binary CI pins (`OSV_SCANNER_VERSION` in [ci.yml](.github/workflows/ci.yml)) and check it
   against the release's `osv-scanner_SHA256SUMS`.
 - [zizmor](https://docs.zizmor.sh) — `just workflows-lint`, at the version CI pins.
-- [uv](https://docs.astral.sh/uv/) — the capability packages' workspace.
+- [uv](https://docs.astral.sh/uv/) — the capability packages' workspace. Write `uv.lock` with
+  the uv CI pins (`UV_VERSION` in [ci.yml](.github/workflows/ci.yml)), installed or through
+  `uvx --from uv==<version> uv lock`. uv versions differ in the lock format revision they write
+  when they resolve (0.12.5 writes 3, 0.13.8 writes 5), so a lock written with another one
+  changes format in a pull request that is about something else.
 - [k6](https://k6.io) — ix's service experiments (`ix run` on an `http-load` probe), and
   ix's end-to-end tests in `just ci`.
 - [docker](https://docs.docker.com/compose/) with compose — ix's `compose` environment, and
