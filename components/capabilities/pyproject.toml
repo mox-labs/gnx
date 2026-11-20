@@ -60,6 +60,9 @@ dev = [
 # applies to every package's tests.
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Each async fixture gets a loop of its own, which is pytest-asyncio's coming default; unset,
+# it warns at every run. No fixture here is async yet.
+asyncio_default_fixture_loop_scope = "function"
 # Seconds any one test may take, setup and teardown included; a test that needs longer says
 # so with its own `@pytest.mark.timeout`.
 timeout = 60
