@@ -28,8 +28,9 @@ permissions:
 env:
   JUST_VERSION: "1.58.0"
   JUST_SHA256: "4a5cc2f53e6f0f8c59092a6cc38291eb729d46a7dd95d3ae582008881b84931d"
-  UV_VERSION: "0.12.5"
-  UV_SHA256: "68a509da24b06b4223a1c0175fb5eb5bc79342b76cbeff0cfe51ac3f5b17b6b2"
+  # uv.lock is in the format revision this uv writes. Bump them together: CONTRIBUTING.md, Tools.
+  UV_VERSION: "0.13.8"
+  UV_SHA256: "5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91"
   BUN_VERSION: "1.3.14"
   BUN_SHA256: "951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f"
   GITLEAKS_VERSION: "8.30.1"
