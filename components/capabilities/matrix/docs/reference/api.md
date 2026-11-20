@@ -918,7 +918,10 @@ Nothing else is read of a model runtime.
 `pydantic_ai_model(runtime, model=None, *, settings=None, runtime_url=None, drives=()) -> Model`:
 pydantic-ai's `Model` over any `ModelRuntime`, each request one `runtime.call` on `model`
 (`None`: the runtime's default), for a caller that runs pydantic-ai itself, such as an
-evaluator's judge. pydantic-ai's messages become turns, its tools `ToolSpec`s, its
+evaluator's judge. pydantic-ai's messages become turns, with every system turn at the start:
+pydantic-ai sends a system message from later in a conversation as a `<system>` block in a user
+turn, where it was, since a backend may move a system turn to the top (hardline's Anthropic
+backend does). Its tools become `ToolSpec`s, its
 `max_tokens` and `temperature` the request's overrides; any other setting is refused, a
 `ConfigError` when given here as `settings`, else at the request that carries it, never
 dropped. Raises `ConfigError` for a model the runtime does not resolve, as its `check` does.

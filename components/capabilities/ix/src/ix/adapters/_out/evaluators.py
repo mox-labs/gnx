@@ -102,6 +102,10 @@ READS_NO_SPANS = frozenset(
     {"Equals", "EqualsExpected", "Contains", "IsInstance", "MaxDuration", "LLMJudge", "GEval"}
 )
 
+#: pydantic-evals' evaluators that take a Python function as an argument, which a spec, written
+#: in YAML, cannot give: ``FunctionEvaluator`` wraps one. ix does not offer them.
+TAKES_A_FUNCTION = frozenset({"FunctionEvaluator"})
+
 #: Why a trial's spans are not there, when the watch kept none and said nothing.
 UNWATCHED = "no spans were kept for this trial: the evaluator sensor did not watch it"
 
@@ -112,8 +116,9 @@ class NoSpansError(ValueError):
 
 @cache
 def evaluator_classes() -> dict[str, type[Evaluator[Any, Any, Any]]]:
-    """pydantic-evals' evaluators, by the name a spec gives them: every concrete
-    ``Evaluator`` its ``evaluators`` package exports (report evaluators are not)."""
+    """The evaluators a spec can name, by that name: every concrete ``Evaluator`` that
+    pydantic-evals' ``evaluators`` package exports, except those that take a function
+    (``TAKES_A_FUNCTION``). Report evaluators are not ``Evaluator``s."""
     import pydantic_evals.evaluators as evaluators
     from pydantic_evals.evaluators import Evaluator
 
@@ -121,7 +126,9 @@ def evaluator_classes() -> dict[str, type[Evaluator[Any, Any, Any]]]:
     for name in evaluators.__all__:
         cls = getattr(evaluators, name)
         if isinstance(cls, type) and issubclass(cls, Evaluator) and not inspect.isabstract(cls):
-            found[cls.get_serialization_name()] = cls
+            serialized = cls.get_serialization_name()
+            if serialized not in TAKES_A_FUNCTION:
+                found[serialized] = cls
     return found
 
 
@@ -133,13 +140,19 @@ def _calls_a_model(cls: type) -> bool:
 
 
 def _evaluator_class(options: Mapping[str, Any]) -> type[Evaluator[Any, Any, Any]]:
-    """The evaluator class ``options`` names. Raises ValueError for a name pydantic-evals does
-    not export."""
+    """The evaluator class ``options`` names. Raises ValueError for a name ix does not offer:
+    one pydantic-evals does not export, or one that takes a function."""
     name = str(options.get("evaluator", ""))
     known = evaluator_classes()
+    if name in TAKES_A_FUNCTION:
+        raise ValueError(
+            f"{name} takes a Python function, which a spec cannot give; "
+            f"the evaluators a spec can name are {', '.join(sorted(known))}"
+        )
     if name not in known:
         raise ValueError(
-            f"pydantic-evals has no evaluator named {name!r}; it has {', '.join(sorted(known))}"
+            f"pydantic-evals has no evaluator named {name!r}; "
+            f"the evaluators a spec can name are {', '.join(sorted(known))}"
         )
     return known[name]
 

@@ -498,6 +498,8 @@ class TestValidate:
         ("sensor", "found"),
         [
             ({"evaluator": "Pythonic"}, [("sensors.0.evaluator", "option_invalid")]),
+            ({"evaluator": "FunctionEvaluator", "arguments": {"function": "len"}},
+             [("sensors.0.evaluator", "option_invalid")]),
             ({"evaluator": "Contains", "arguments": {"needle": "x"}},
              [("sensors.0.arguments", "option_invalid")]),
             ({"evaluator": "Equals", "arguments": {"value": 4}, "model_runtime": HARDLINE},
@@ -846,6 +848,36 @@ def test_the_evaluators_said_to_read_no_span_never_reach_for_one() -> None:
         assert ("span_tree" in inspect.getsource(cls)) == (name not in READS_NO_SPANS), name
     assert _sensor().reads_spans({"evaluator": "ToolCorrectness"})
     assert not _sensor().reads_spans({"evaluator": "LLMJudge"})
+
+
+def _needs_a_function(cls: type) -> bool:
+    """Whether ``cls`` has a field with no default whose type is a callable."""
+    import collections.abc
+    import dataclasses
+    import typing
+
+    hints = typing.get_type_hints(cls)
+    return any(
+        field.default is dataclasses.MISSING
+        and field.default_factory is dataclasses.MISSING
+        and typing.get_origin(hints.get(field.name)) is collections.abc.Callable
+        for field in dataclasses.fields(cls)
+    )
+
+
+def test_no_evaluator_offered_needs_a_function_a_spec_cannot_give() -> None:
+    """A spec is YAML, which cannot give a Python function. Checked against the release
+    installed: no evaluator ix offers needs one, and each it holds back for needing one
+    (``TAKES_A_FUNCTION``) is exported by pydantic-evals and does need one. A later release
+    that adds such an evaluator fails here, not at a run."""
+    import pydantic_evals.evaluators as evaluators
+
+    from ix.adapters._out.evaluators import TAKES_A_FUNCTION, evaluator_classes
+
+    offered = evaluator_classes()
+    assert [name for name, cls in offered.items() if _needs_a_function(cls)] == []
+    for name in TAKES_A_FUNCTION:
+        assert name not in offered and _needs_a_function(getattr(evaluators, name)), name
 
 
 class TestTheScriptedAgentRuntime(AgentRuntimeConformance):
