@@ -38,7 +38,7 @@ dependencies = [
     # The SDK's tracer provider, which a run whose sensors read spans installs, with no
     # exporter, when none is installed. Imported only then.
     "opentelemetry-sdk>=1.20",
-    "rich-click>=1.8",
+    "rich-click>=1.9.9",
     "rich>=15.0.0",
     "pydantic>=2.0",
     # The evaluator sensor wraps pydantic-evals' evaluators; imported only inside that adapter
