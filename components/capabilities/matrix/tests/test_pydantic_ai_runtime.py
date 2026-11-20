@@ -679,6 +679,32 @@ async def test_pydantic_ai_model_is_a_model_over_any_model_runtime() -> None:
         pydantic_ai_model(runtime, "unknown")
 
 
+async def test_a_later_system_message_is_sent_where_it_was_never_as_a_system_turn() -> None:
+    """Every system turn the port gets leads the request. A backend may lift system turns to
+    the top (hardline's Anthropic backend does), which would move a later one. So the model
+    keeps pydantic-ai's default profile, on which pydantic-ai sends a system message from later
+    in a conversation as a ``<system>`` block in a user turn, where it was, and a system turn
+    says what such a block is."""
+    from pydantic_ai.messages import ModelRequest as Request
+    from pydantic_ai.messages import ModelResponse, SystemPromptPart, TextPart, UserPromptPart
+
+    runtime = Scripted("Calcifier.")
+    history = [
+        Request(parts=[SystemPromptPart("Define words."), UserPromptPart("What is ossify?")]),
+        ModelResponse(parts=[TextPart("To turn into bone.")]),
+        Request(parts=[SystemPromptPart("Answer in French."), UserPromptPart("And calcify?")]),
+    ]
+    await _ask(pydantic_ai_model(runtime)).run(None, message_history=history)
+    (request,) = runtime.requests
+    roles = [turn.role for turn in request.turns]
+    leading = roles.index("user")
+    assert roles[leading:] == ["user", "assistant", "user", "user"]
+    later = request.turns[leading + 2].content or ""
+    assert "Answer in French." in later and "<system>" in later
+    assert request.turns[leading + 3].content == "And calcify?"
+    assert any("<system>" in (turn.content or "") for turn in request.turns[:leading])
+
+
 async def test_a_setting_a_model_call_cannot_carry_is_refused_never_dropped() -> None:
     """M-5: the port carries ``max_tokens`` and ``temperature``. Any other pydantic-ai setting
     is a ConfigError, when the Model is built with it, else at the request that carries it,

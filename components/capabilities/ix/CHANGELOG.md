@@ -1,5 +1,16 @@
 # Changelog — ix
 
+## 0.9.1 — unreleased
+
+### Changed
+
+- **`ix validate` refuses `FunctionEvaluator`** (`option_invalid`), saying it takes a Python
+  function, which a spec cannot give. pydantic-evals exports it from 2.66, and ix offered every
+  evaluator that package exports. The evaluators a spec can name are listed in the refusal as
+  before. `docs/design/2026-10-19-record.md` §33 has the reasons.
+- requires pydantic-evals >= 2.68, and matrix with pydantic-ai-slim >= 2.68 (matrix's Security
+  entry names the three advisories that floor passes).
+
 ## 0.9.0 — 2026-11-07
 
 On matrix 0.10, which depends on no model runtime; ix depends on the `matrix-hardline` bridge so

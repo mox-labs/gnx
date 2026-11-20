@@ -2,6 +2,21 @@
 
 All notable changes to matrix. Versions follow semver; before 1.0 a minor may break.
 
+## 0.10.1 — unreleased
+
+### Security
+
+- pydantic-ai-slim >= 2.68, past three advisories fixed in 2.66: GHSA-5fj9-5pjw-vpwc,
+  GHSA-jp94-mmr3-2pvv and GHSA-7494-925c-rrxv. None reaches matrix: they concern local URL
+  downloads, instrumented embedding models and the AG-UI adapter, none of which matrix uses.
+
+### Changed
+
+- **A system message from later in a conversation is sent where it was.** pydantic-ai gives
+  it to the port as a `<system>` block in a user turn, and its system prompt says what such a
+  block is. Before, it reached the port as a system turn, which hardline's Anthropic backend
+  moved to the top of the request. Design record `2026-11-06-record.md`, §5.
+
 ## 0.10.0 — 2026-11-07
 
 matrix depends on no model runtime (owner ruling HO1, 2026-11-06), and the model-runtime port

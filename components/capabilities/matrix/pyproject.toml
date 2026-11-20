@@ -43,7 +43,7 @@ dependencies = [
     # The `pydantic-ai` agent runtime. Imported inside its adapter alone, when a runtime is
     # built, so `import matrix` does not load it. The major its Model and Agent APIs are
     # written against.
-    "pydantic-ai-slim>=2.59,<3",
+    "pydantic-ai-slim>=2.68,<3",
     "pyyaml>=6.0",
     "rich>=15.0.0",
     "rich-click>=1.9.9",
