@@ -45,7 +45,7 @@ dependencies = [
     # written against.
     "pydantic-ai-slim>=2.59,<3",
     "pyyaml>=6.0",
-    "rich>=13",
+    "rich>=15.0.0",
     "rich-click>=1.8",
 ]
 
