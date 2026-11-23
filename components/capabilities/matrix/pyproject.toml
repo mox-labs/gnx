@@ -29,7 +29,7 @@ dependencies = [
     # >=0.1.51: the first release that strips CLAUDECODE from the CLI's environment itself
     # (bisected against PyPI wheels), which is what lets the `claude-sdk` runtime leave
     # os.environ alone.
-    "claude-agent-sdk>=0.1.51",
+    "claude-agent-sdk>=0.2.182",
     # The library writes through the API: spans and metrics cost nothing until an application
     # installs an SDK. >=1.23: the first release with a synchronous gauge, which a `gauge`
     # measure records to.

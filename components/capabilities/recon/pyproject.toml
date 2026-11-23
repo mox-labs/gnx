@@ -31,7 +31,7 @@ dependencies = [
     "xmltodict>=0.13",
     # Below 2.0: the skill and the tests state DuckDB 1.x behaviour, and 2.0 changes some of
     # it (it unnests beside an aggregate, which the skill says DuckDB does not).
-    "duckdb>=1.0,<2",
+    "duckdb>=2.0.0,<3",
     # DuckDB imports pytz to return a TIMESTAMP WITH TIME ZONE, and does not declare it.
     "pytz>=2024.1",
     "tenacity>=9.0",
